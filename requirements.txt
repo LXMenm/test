@@ -1,0 +1,21 @@
+# 农作物病害诊治系统依赖包
+langgraph>=0.0.50
+langchain>=0.1.0
+langchain-openai>=0.0.5
+typing-extensions>=4.5.0
+pydantic>=2.0.0
+
+# 大模型API支持
+openai>=1.0.0
+dashscope>=1.10.0  # 通义千问
+qianfan>=0.1.0  # 文心一言
+
+# 深度学习模型支持（诊断智能体）
+torch>=2.0.0
+torchvision>=0.15.0
+Pillow>=10.0.0
+numpy>=1.24.0
+
+# 工具库
+python-dotenv>=1.0.0  # 环境变量管理
+requests>=2.31.0
