@@ -1,0 +1,88 @@
+# Python项目通用.gitignore
+
+# 字节编译的文件和缓存目录
+__pycache__/
+*.py[cod]
+*$py.class
+.cache/
+
+# 环境变量文件
+.env
+.env.local
+.env.*.local
+
+# 安装的依赖包
+*.egg-info/
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg
+
+# IDE配置文件
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# 测试和覆盖率相关文件
+*.coveragerc
+.coverage
+.coverage.*
+.tox/
+.nox/
+.pytest_cache/
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+
+# 日志文件
+*.log
+logs/
+
+# 大型数据集文件
+*.jpg
+*.png
+*.jpeg
+*.gif
+*.bmp
+*.pdf
+
+# 项目特定的大型目录
+tomato/train/
+tomato/test/
+learn/
+
+# 临时文件
+*.tmp
+*.temp
+.tmp/
+.temp/
+
+# 系统文件
+Thumbs.db
+.DS_Store
+
+# 编译后的模型文件
+*.pth
+*.pt
+*.onnx
+*.pb
+
+# 数据库文件
+*.db
+*.sqlite
+*.sqlite3
