@@ -4,6 +4,7 @@
 """
 from langgraph.graph import StateGraph, END
 from state import CropDiseaseState, create_initial_state
+from conversation_logger import log_conversation
 from agents import (
     reception_agent,
     diagnosis_agent,
@@ -114,6 +115,9 @@ def run_diagnosis(user_query: str) -> dict:
     print("\n" + "=" * 80)
     print("诊断完成")
     print("=" * 80)
+
+    # 记录对话与诊疗结果（JSONL 无需数据库）
+    log_conversation(final_state)
 
     # 返回诊断结果
     result = {
