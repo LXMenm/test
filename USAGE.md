@@ -45,6 +45,35 @@ WENXIN_MODEL=ernie-bot-turbo
 python main.py
 ```
 
+### 4. 命令行 CLI 使用
+
+在无需额外数据库的原型阶段，可以直接通过 CLI 调用诊断、查看日志、维护知识库：
+
+```bash
+# 运行诊断（可加图像路径/生长阶段提示）
+python cli.py diagnose --query "番茄叶子发黄有斑点" --growth-stage "开花期" --image ./exam.jpg
+
+# 查看最近 5 条对话记录
+python cli.py logs --limit 5
+
+# 知识库：列出病害及描述
+python cli.py kb list
+
+# 知识库：新增病害
+python cli.py kb add-disease --name "新病害" --description "示例描述"
+
+# 知识库：更新治疗/预防
+python cli.py kb update-treatment --name "早疫病" --treatment "喷药方案..." --prevention "田间管理建议..."
+
+# 知识库：添加诊断规则
+python cli.py kb add-rule --crop "番茄" --symptom "斑点" --disease "早疫病" --confidence 0.8 --explanation "斑点与早疫病典型症状匹配"
+
+# 知识库：维护症状到病害映射
+python cli.py kb add-symptom-map --symptom "霉斑" --diseases "叶霉病,灰霉病"
+```
+
+> 说明：知识库管理操作当前为内存级修改，适合演示与快速迭代；若需长期持久化，可在后续接入文件或数据库存储。
+
 ## API密钥获取
 
 ### OpenAI
@@ -154,4 +183,3 @@ USE_GPU=true
 1. **API费用**：使用大模型API会产生费用，请注意控制调用次数
 2. **诊断仅供参考**：系统诊断结果仅供参考，严重病害请咨询专业农技人员
 3. **数据隐私**：确保API密钥安全，不要泄露给他人
-

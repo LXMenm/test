@@ -3,6 +3,7 @@
 演示如何使用番茄病害诊治系统
 """
 from workflow import run_diagnosis
+from conversation_logger import render_report
 
 
 def print_result(result: dict):
@@ -89,6 +90,10 @@ def main():
     query6 = "图像路径：./exam.jpg"
     result6 = run_diagnosis(query6)
     print_result(result6)
+
+    # 展示最近的对话记录摘要（默认5条）
+    print("\n【最近对话记录摘要】")
+    print(render_report(limit=5))
     
     # 询问用户是否需要可视化展示结果
     try:
