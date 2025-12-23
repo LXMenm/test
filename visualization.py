@@ -203,16 +203,16 @@ class CropDiseaseVisualizer:
         prevention_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=5)
         
         # 治疗方案
-        ttk.Label(treatment_plan_frame, text="💊 治疗方案", font=("Arial", 14, "bold")).pack(anchor=tk.W, pady=5)
-        treatment_text = tk.Text(treatment_plan_frame, height=10, width=40, font=("Arial", 12))
-        treatment_text.insert(tk.END, self.result.get("治疗方案", "暂无治疗方案"))
+        ttk.Label(treatment_plan_frame, text="💊 治疗方案", font= ("Arial", 14, "bold")).pack(anchor=tk.W, pady=5)
+        treatment_text = tk.Text(treatment_plan_frame, height=10, width=40, font= ("Arial", 12))
+        treatment_text.insert("end", str(self.result.get("治疗方案", "暂无治疗方案")))
         treatment_text.config(state=tk.DISABLED, wrap=tk.WORD)
         treatment_text.pack(fill=tk.BOTH, expand=True)
         
         # 预防建议
-        ttk.Label(prevention_frame, text="🛡️ 预防建议", font=("Arial", 14, "bold")).pack(anchor=tk.W, pady=5)
-        prevention_text = tk.Text(prevention_frame, height=10, width=40, font=("Arial", 12))
-        prevention_text.insert(tk.END, self.result.get("预防建议", "暂无预防建议"))
+        ttk.Label(prevention_frame, text="🛡️ 预防建议", font= ("Arial", 14, "bold")).pack(anchor=tk.W, pady=5)
+        prevention_text = tk.Text(prevention_frame, height=10, width=40, font= ("Arial", 12))
+        prevention_text.insert("end", str(self.result.get("预防建议", "暂无预防建议")))
         prevention_text.config(state=tk.DISABLED, wrap=tk.WORD)
         prevention_text.pack(fill=tk.BOTH, expand=True)
         
@@ -241,8 +241,28 @@ def visualize_diagnosis_result(result):
     Args:
         result: 诊断结果字典
     """
+    import matplotlib
+    import matplotlib.pyplot as plt
+    
+    # 确保使用正确的交互式后端
+    if matplotlib.get_backend() == 'Agg':
+        matplotlib.use('TkAgg')  # 切换到Tkinter后端
+    
+    # 清理可能存在的旧图表
+    plt.close('all')
+    
     root = tk.Tk()
+    
+    # 设置窗口关闭时的回调
+    def on_close():
+        # 清理资源
+        plt.close('all')
+        root.destroy()
+    
+    root.protocol("WM_DELETE_WINDOW", on_close)
     app = CropDiseaseVisualizer(root, result)
+    
+    # 运行Tkinter主事件循环，直到窗口关闭
     root.mainloop()
 
 

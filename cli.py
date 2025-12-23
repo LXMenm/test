@@ -35,7 +35,7 @@ def _print_result(result: dict) -> None:
 # ---------------------
 # 诊断命令
 # ---------------------
-def cmd_diagnose(args: argparse.Namespace) -> None:
+def cmd_diagnose(args: argparse.Namespace) -> dict:
     """用户问答交互：运行诊断工作流。"""
     query_parts: List[str] = [args.query]
     if args.image:
@@ -46,6 +46,7 @@ def cmd_diagnose(args: argparse.Namespace) -> None:
 
     result = run_diagnosis(query)
     _print_result(result)
+    return result
 
 
 # ---------------------
@@ -182,18 +183,7 @@ def main() -> None:
     args.func(args)
 
 
-if __name__ == "__main__":
-    # 支持两种入口：命令式 (python cli.py diagnose ...) 或交互菜单 (python cli.py)
-    import sys
-    if len(sys.argv) > 1:
-        main()
-    else:
-        menu()
-
-
-# ---------------------
-# 交互式菜单入口（便于“页面”式体验）
-# ---------------------
+# ---------------------# 交互式菜单入口（便于“页面”式体验）# ---------------------
 
 def menu() -> None:
     """
@@ -221,7 +211,17 @@ def menu() -> None:
             if image.lower() == "b":
                 return
             args = argparse.Namespace(query=query, growth_stage=growth or None, image=image or None)
-            cmd_diagnose(args)
+            result = cmd_diagnose(args)  # 保存诊断结果
+            # 询问用户是否需要可视化展示结果
+            try:
+                from visualization import visualize_diagnosis_result
+                user_input = input("\n是否需要图形化展示诊断结果？(y/n): ").strip().lower()
+                if user_input == 'y':
+                    visualize_diagnosis_result(result)
+            except ImportError as e:
+                print(f"可视化模块导入失败: {e}")
+            except Exception as e:
+                print(f"可视化展示出错: {e}")
             back = input("\n按 Enter 继续诊断，输入 b 返回主菜单: ").strip().lower()
             if back == "b":
                 return
@@ -314,3 +314,12 @@ def menu() -> None:
             break
         else:
             print("无效选项，请重新输入。")
+
+
+if __name__ == "__main__":
+    # 支持两种入口：命令式 (python cli.py diagnose ...) 或交互菜单 (python cli.py)
+    import sys
+    if len(sys.argv) > 1:
+        main()
+    else:
+        menu()
