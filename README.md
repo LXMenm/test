@@ -39,8 +39,10 @@ test/
 ├── main.py               # 示例脚本：演示系统使用
 ├── config.py             # 配置文件：管理API密钥和模型配置
 ├── llm_utils.py          # 大模型API工具模块
+├── personalization/      # 农户个性设置：档案模型、上下文生成与约束过滤
 ├── diagnosis_model.py    # 诊断模型模块：深度学习模型实现
 ├── requirements.txt      # 依赖包列表
+├── data/profiles/        # 农户档案样例存储目录（如 F001.json）
 └── .env.example          # 环境变量配置示例
 ```
 
@@ -131,6 +133,12 @@ print(result)
 - 水稻常见病害（稻瘟病、纹枯病、细菌性条斑病）
 - 番茄常见病害（早疫病、晚疫病、黄化曲叶病毒病）
 - 小麦常见病害（锈病、白粉病、叶枯病）
+
+### 4. 农户个性设置（Farmer Personalization）
+- `personalization/` 模块定义了档案模型（Pydantic）、JSON 持久化、个性化上下文生成及治疗方案过滤规则。
+- 状态中新增 `farmer_id/base_id` 与个性化上下文，低置信度诊断会按档案偏好自动追问。
+- 样例档案：`data/profiles/F001.json`，包含温室位置、有机偏好、禁用成分与采收临近约束。
+- CLI 新增 `profile` 子命令，可 `list/show/edit/set-active-base/reset` 档案；诊断命令支持 `--farmer-id`、`--base-id` 直接应用个性化设置。
 
 ## 技术特性
 
