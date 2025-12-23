@@ -6,6 +6,9 @@ from state import CropDiseaseState
 from llm_utils import call_llm, extract_json_from_response
 from diagnosis_model import get_diagnosis_engine
 from knowledge_base import get_kb_manager
+from personalization.profile_context import build_personalization_context, build_personalization_flags
+from personalization.profile_store import load_profile, default_active_base
+from personalization.profile_rules import filter_treatment_by_constraints
 import re
 import json
 import os
@@ -34,6 +37,21 @@ def reception_agent(state: CropDiseaseState) -> CropDiseaseState:
     print("\n[番茄病害接待智能体] 正在分析用户输入...")
 
     query = state["user_query"]
+    # 补全个性化信息
+    farmer_id = state.get("farmer_id")
+    if farmer_id and not state.get("farmer_profile"):
+        profile = load_profile(farmer_id)
+        if profile:
+            state["farmer_profile"] = profile.__dict__
+            state["base_id"] = state.get("base_id") or default_active_base(profile)
+            state["personalization_context"] = build_personalization_context(profile)
+            state["personalization_flags"] = build_personalization_flags(profile)
+            # 补全地点/环境/生育期
+            state["location"] = state.get("location") or profile.location
+            state["environment"] = state.get("environment") or profile.environment
+            state["facility"] = state.get("facility") or profile.facility
+            state["crop_growth_stage"] = state.get("crop_growth_stage") or profile.growth_stage
+            state["crop_type"] = state.get("crop_type") or profile.crop
     
     # 提取图像路径（如果用户查询中包含）
     image_path = None
@@ -107,7 +125,18 @@ def reception_agent(state: CropDiseaseState) -> CropDiseaseState:
     if not symptoms:
         symptoms = [query]
 
-    message = f"番茄病害接待智能体：作物类型={crop_type}, 生长阶段={crop_growth_stage}, 症状={symptoms}, 图像路径={image_path}"
+    # 个性化缺失提示
+    missing_fields = []
+    if not state.get("location"):
+        missing_fields.append("所在地/基地")
+    if not state.get("environment"):
+        missing_fields.append("种植环境（露地/温室）")
+    if missing_fields:
+        missing_note = f"缺少信息：{', '.join(missing_fields)}，建议追问补充。"
+    else:
+        missing_note = ""
+
+    message = f"番茄病害接待智能体：作物类型={crop_type}, 生长阶段={crop_growth_stage}, 症状={symptoms}, 图像路径={image_path} {missing_note}"
 
     # 更新状态
     state["crop_type"] = crop_type
@@ -177,6 +206,7 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
     crop_growth_stage = state.get("crop_growth_stage")
     image_path = state.get("image_path")
     
+    flags = state.get("personalization_flags") or {}
     # 使用深度学习诊断引擎
     diagnosis_engine = get_diagnosis_engine()
     disease_type = None
@@ -206,7 +236,14 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
         except Exception as e:
             print(f"诊断模型调用失败: {e}，使用规则匹配")
             # 后备方案：规则匹配
-            disease_type, disease_confidence, disease_description = _rule_based_diagnosis(crop_type, symptoms)
+            disease_type, disease_confidence, disease_description = _rule_based_diagnosis(crop_type, symptoms, flags)
+
+    # 个性化低置信度确认
+    confirm_when_low = flags.get("confirm_when_low_confidence", False)
+    threshold = flags.get("low_confidence_threshold", 0.6)
+    followup_question = None
+    if confirm_when_low and disease_confidence is not None and disease_confidence < threshold:
+        followup_question = "诊断置信度较低，是否有更具体的症状、发生时间或环境信息可补充？"
 
     message = f"番茄病害诊断智能体：诊断为{disease_type}，置信度={disease_confidence:.2%}"
 
@@ -214,8 +251,12 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
     state["disease_type"] = disease_type
     state["disease_confidence"] = disease_confidence
     state["disease_description"] = disease_description
+    msgs = [message]
+    if followup_question:
+        msgs.append(followup_question)
+        state["followup_question"] = followup_question  # 供监督判断
     state["current_step"] = "diagnosis_complete"
-    state["messages"] = [message]
+    state["messages"] = msgs
 
     print(f"  - 病害类型: {disease_type}")
     print(f"  - 置信度: {disease_confidence:.2%}")
@@ -224,7 +265,7 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
     return state
 
 
-def _rule_based_diagnosis(crop_type: str, symptoms: list) -> tuple:
+def _rule_based_diagnosis(crop_type: str, symptoms: list, flags: dict | None = None) -> tuple:
     """番茄病害规则匹配诊断（后备方案）"""
     # 番茄病害知识库
     disease_knowledge = {
@@ -278,6 +319,12 @@ def _rule_based_diagnosis(crop_type: str, symptoms: list) -> tuple:
     best_match = None
     max_score = 0
     
+    province = None
+    facility = None
+    if flags:
+        province = flags.get("province")
+        facility = flags.get("facility")
+
     for disease, info in disease_knowledge.items():
         if disease == "健康":
             continue
@@ -289,8 +336,14 @@ def _rule_based_diagnosis(crop_type: str, symptoms: list) -> tuple:
                 if disease_symptom in symptom:
                     match_score += 1
         
-        if match_score > max_score:
-            max_score = match_score
+        weight = match_score
+        # 按地区/设施加入轻微先验
+        if province:
+            weight += 0.1
+        if facility:
+            weight += 0.05
+        if weight > max_score:
+            max_score = weight
             best_match = disease
     
     # 如果找到匹配的病害
@@ -324,6 +377,7 @@ def treatment_agent(state: CropDiseaseState) -> CropDiseaseState:
     crop_growth_stage = state.get("crop_growth_stage")
     disease_description = state.get("disease_description", "")
     
+    personalization_context = state.get("personalization_context") or "无个性化偏好。"
     # 使用大模型生成治疗方案
     prompt = f"""请为以下番茄病害制定详细的治疗方案和预防建议：
 
@@ -331,6 +385,8 @@ def treatment_agent(state: CropDiseaseState) -> CropDiseaseState:
 生长阶段：{crop_growth_stage or '未知'}
 病害类型：{disease_type}
 病害描述：{disease_description}
+个性化偏好与限制：
+{personalization_context}
 
 请提供：
 1. 具体的治疗方案（包括推荐药物、使用方法、使用频率等）
@@ -357,6 +413,10 @@ def treatment_agent(state: CropDiseaseState) -> CropDiseaseState:
     except Exception as e:
         print(f"大模型调用失败，使用知识库: {e}")
         treatment_plan, prevention_advice = _get_treatment_from_knowledge_base(disease_type)
+
+    # 个性化过滤
+    flags = state.get("personalization_flags") or {}
+    treatment_plan, prevention_advice = filter_treatment_by_constraints(treatment_plan, prevention_advice, flags)
 
     message = f"番茄病害治疗方案智能体：已生针对{disease_type}的治疗方案"
 
@@ -402,6 +462,11 @@ def supervisor_agent(state: CropDiseaseState) -> CropDiseaseState:
     # 获取历史next_action，防止无限循环
     history = state.get("history", [])
     
+    # 个性化标记
+    flags = state.get("personalization_flags") or {}
+    low_conf_threshold = flags.get("low_confidence_threshold", 0.6)
+    confirm_when_low = flags.get("confirm_when_low_confidence", False)
+
     # 使用大模型进行智能决策
     context = f"""
 当前番茄病害诊断流程状态：
@@ -437,7 +502,8 @@ def supervisor_agent(state: CropDiseaseState) -> CropDiseaseState:
 当current_step为treatment_complete时，必须执行end
 如果信息不完整，可以返回reception重新收集。
 如果诊断置信度低于0.6，建议结束流程。
-如果所有步骤完成，返回end。"""
+如果所有步骤完成，返回end。
+若个性化要求低置信度需要确认，请返回reception以追问更多信息。"""
 
     try:
         response = call_llm(prompt, system_prompt, temperature=0.3)
@@ -460,6 +526,14 @@ def supervisor_agent(state: CropDiseaseState) -> CropDiseaseState:
     except Exception as e:
         print(f"大模型调用失败，使用规则决策: {e}")
         next_action, is_complete, message = _rule_based_supervisor(current_step, state)
+
+    # 个性化低置信度确认覆盖
+    confidence = state.get("disease_confidence") or 0
+    if current_step == "diagnosis_complete" and confirm_when_low and confidence < low_conf_threshold:
+        next_action = "reception"
+        is_complete = False
+        followup = state.get("followup_question") or "诊断置信度较低，请补充症状、环境或时间信息。"
+        message = f"番茄病害监督智能体：置信度低于个性化阈值，返回接待询问。{followup}"
 
     # 更新状态
     state["next_action"] = next_action
@@ -488,12 +562,17 @@ def supervisor_agent(state: CropDiseaseState) -> CropDiseaseState:
 
 def _rule_based_supervisor(current_step: str, state: CropDiseaseState) -> tuple:
     """番茄病害规则决策（后备方案）"""
+    flags = state.get("personalization_flags") or {}
+    low_conf_threshold = flags.get("low_confidence_threshold", 0.6)
+    confirm_when_low = flags.get("confirm_when_low_confidence", False)
     if current_step == "start":
         return "reception", False, "番茄病害监督智能体：开始诊断流程，转发至接待智能体"
     elif current_step == "reception_complete":
         return "diagnosis", False, "番茄病害监督智能体：信息收集完成，转发至诊断智能体"
     elif current_step == "diagnosis_complete":
         confidence = state.get("disease_confidence", 0)
+        if confirm_when_low and confidence < low_conf_threshold:
+            return "reception", False, "番茄病害监督智能体：置信度低于个性化阈值，回到接待补充信息"
         if confidence > 0.6:
             return "treatment", False, "番茄病害监督智能体：诊断完成，转发至治疗方案智能体"
         else:

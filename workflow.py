@@ -4,6 +4,9 @@
 """
 from langgraph.graph import StateGraph, END
 from state import CropDiseaseState, create_initial_state
+from conversation_logger import log_conversation
+from personalization.profile_store import load_profile, default_active_base
+from personalization.profile_context import build_personalization_context, build_personalization_flags
 from agents import (
     reception_agent,
     diagnosis_agent,
@@ -88,7 +91,7 @@ def build_graph() -> StateGraph:
     return app
 
 
-def run_diagnosis(user_query: str) -> dict:
+def run_diagnosis(user_query: str, farmer_id: str | None = None, base_id: str | None = None) -> dict:
     """
     运行农作物病害诊断系统
 
@@ -103,7 +106,31 @@ def run_diagnosis(user_query: str) -> dict:
     print("=" * 80)
 
     # 创建初始状态
-    initial_state = create_initial_state(user_query)
+    initial_state = create_initial_state(user_query, farmer_id=farmer_id, base_id=base_id)
+    if farmer_id:
+        profile = load_profile(farmer_id)
+        initial_state["farmer_id"] = farmer_id
+        if base_id:
+            initial_state["base_id"] = base_id
+        elif profile:
+            initial_state["base_id"] = default_active_base(profile)
+        if profile:
+            initial_state["farmer_profile"] = profile.__dict__
+            initial_state["personalization_context"] = build_personalization_context(profile)
+            initial_state["personalization_flags"] = build_personalization_flags(profile)
+            initial_state["location"] = initial_state.get("location") or profile.location
+            initial_state["environment"] = initial_state.get("environment") or profile.environment
+            initial_state["facility"] = initial_state.get("facility") or profile.facility
+            initial_state["crop_growth_stage"] = initial_state.get("crop_growth_stage") or profile.growth_stage
+            initial_state["crop_type"] = initial_state.get("crop_type") or profile.crop
+            # 补全缺失信息
+            if not initial_state.get("crop_type") and profile.crop:
+                initial_state["crop_type"] = profile.crop
+            if not initial_state.get("crop_growth_stage") and profile.growth_stage:
+                initial_state["crop_growth_stage"] = profile.growth_stage
+            if not initial_state.get("symptoms"):
+                # 不覆盖用户输入
+                pass
 
     # 构建工作流
     app = build_graph()
@@ -114,6 +141,9 @@ def run_diagnosis(user_query: str) -> dict:
     print("\n" + "=" * 80)
     print("诊断完成")
     print("=" * 80)
+
+    # 记录对话与诊疗结果（JSONL 无需数据库）
+    log_conversation(final_state)
 
     # 返回诊断结果
     result = {

@@ -1,0 +1,22 @@
+{
+  "farmer_id": "F001",
+  "base_id": "B001",
+  "active_base_id": "B001",
+  "name": "示例农户",
+  "province": "山东省",
+  "city": "潍坊市",
+  "location": "安丘基地A区",
+  "environment": "温室",
+  "facility": "日光温室",
+  "crop": "番茄",
+  "growth_stage": "开花期",
+  "organic_only": false,
+  "prohibited_chemicals": ["多菌灵"],
+  "confirm_when_low_confidence": true,
+  "low_confidence_threshold": 0.65,
+  "harvest_within_days": 10,
+  "note": "近期有采收计划，优先低残留方案",
+  "profile_schema_version": "1.0",
+  "profile_updated_at": "2024-12-01T00:00:00Z",
+  "extra": {}
+}

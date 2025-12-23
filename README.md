@@ -151,6 +151,15 @@ print(result)
 - **模型加载失败处理**：诊断模型加载失败时使用规则诊断
 - **JSON解析容错**：支持多种格式的模型回复解析
 
+## 农户个性设置（Farmer Personalization）
+- 目录：`personalization/`，包含画像模型（`profile_models.py`）、文件持久化（`profile_store.py`，JSON 存储于 `data/profiles/`）、LLM 个性化上下文（`profile_context.py`）、治疗方案过滤规则（`profile_rules.py`）
+- 状态扩展：`state.py` 增加 `farmer_id/base_id/farmer_profile/personalization_context/personalization_flags` 以及 `location/environment/facility`
+- 个性化流程：
+  - `run_diagnosis`：当提供 `farmer_id` 时加载 `data/profiles/{id}.json`，补全缺省字段并生成个性化上下文/约束
+  - 智能体：接待自动补全缺失信息；诊断低置信度触发追问；治疗按有机/禁用成分/采收窗口过滤方案；监督在低置信度且需确认时返回接待追问
+- CLI：新增 `profile` 子命令和交互式菜单“个人设置”页，可列出/查看/编辑/重置个人配置
+- 示例：`data/profiles/F001.json`
+
 ## 扩展建议
 
 1. **图像识别增强**

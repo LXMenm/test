@@ -18,6 +18,9 @@ class CropDiseaseState(TypedDict):
     # 作物基本信息
     crop_type: Optional[str]  # 作物类型（如：水稻、小麦、玉米等）
     crop_growth_stage: Optional[str]  # 生长阶段（如：苗期、拔节期、成熟期等）
+    location: Optional[str]  # 地点/基地信息
+    environment: Optional[str]  # 露地/温室
+    facility: Optional[str]  # 设施名称或类型
 
     # 症状信息（可能有多个症状）
     symptoms: List[str]  # 症状列表
@@ -48,8 +51,15 @@ class CropDiseaseState(TypedDict):
     # 错误信息
     error: Optional[str]  # 错误信息（如果有）
 
+    # 个性化信息
+    farmer_id: Optional[str]  # 农户ID
+    base_id: Optional[str]    # 基地ID
+    farmer_profile: Optional[dict]  # 序列化后的农户画像
+    personalization_context: Optional[str]  # 给LLM的个性化上下文
+    personalization_flags: Optional[dict]   # 约束与偏好标记
 
-def create_initial_state(user_query: str) -> CropDiseaseState:
+
+def create_initial_state(user_query: str, farmer_id: str | None = None, base_id: str | None = None) -> CropDiseaseState:
     """
     创建初始状态
 
@@ -63,6 +73,9 @@ def create_initial_state(user_query: str) -> CropDiseaseState:
         user_query=user_query,
         crop_type=None,
         crop_growth_stage=None,
+        location=None,
+        environment=None,
+        facility=None,
         symptoms=[],
         image_path=None,
         disease_type=None,
@@ -75,5 +88,10 @@ def create_initial_state(user_query: str) -> CropDiseaseState:
         is_complete=False,
         messages=[],
         history=[],
-        error=None
+        error=None,
+        farmer_id=farmer_id,
+        base_id=base_id,
+        farmer_profile=None,
+        personalization_context=None,
+        personalization_flags=None
     )
