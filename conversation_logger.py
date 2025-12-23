@@ -40,6 +40,9 @@ def log_conversation(state: Dict[str, Any], log_dir: str = DEFAULT_LOG_DIR) -> s
         "user_query": state.get("user_query"),
         "crop_type": state.get("crop_type"),
         "crop_growth_stage": state.get("crop_growth_stage"),
+        "location": state.get("location"),
+        "province": state.get("province"),
+        "facility": state.get("facility"),
         "symptoms": state.get("symptoms", []),
         "image_path": state.get("image_path"),
         "disease_type": state.get("disease_type"),
@@ -49,6 +52,11 @@ def log_conversation(state: Dict[str, Any], log_dir: str = DEFAULT_LOG_DIR) -> s
         "prevention_advice": state.get("prevention_advice"),
         "messages": state.get("messages", []),
         "history": [list(item) for item in state.get("history", [])],
+        "farmer_id": state.get("farmer_id"),
+        "base_id": state.get("base_id"),
+        "profile_schema_version": state.get("personalization_flags", {}).get("profile_schema_version"),
+        "profile_updated_at": state.get("personalization_flags", {}).get("profile_updated_at"),
+        "profile_hash": state.get("personalization_flags", {}).get("profile_hash"),
     }
 
     with open(log_path, "a", encoding="utf-8") as f:

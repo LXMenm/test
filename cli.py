@@ -7,11 +7,21 @@
 """
 
 import argparse
+import json
 from typing import List
 
 from workflow import run_diagnosis
 from conversation_logger import render_report
 from knowledge_base import get_kb_manager
+from personalization.profile_store import (
+    list_profile_ids,
+    load_profile,
+    reset_profile,
+    save_profile,
+    upsert_base,
+    update_constraints,
+)
+from personalization.profile_models import FarmerProfile
 
 
 def _print_result(result: dict) -> None:
@@ -44,7 +54,7 @@ def cmd_diagnose(args: argparse.Namespace) -> dict:
         query_parts.append(f"生长阶段：{args.growth_stage}")
     query = "，".join(query_parts)
 
-    result = run_diagnosis(query)
+    result = run_diagnosis(query, farmer_id=args.farmer_id, base_id=args.base_id)
     _print_result(result)
     return result
 
@@ -123,6 +133,78 @@ def cmd_kb_add_symptom_map(args: argparse.Namespace) -> None:
         print("更新失败，请确认所有病害名称已存在")
 
 
+# ---------------------
+# 个性化档案命令
+# ---------------------
+def cmd_profile_list(args: argparse.Namespace) -> None:
+    ids = list_profile_ids()
+    if not ids:
+        print("暂无档案。")
+        return
+    print("现有农户ID列表：")
+    for pid in ids:
+        print(f"- {pid}")
+
+
+def cmd_profile_show(args: argparse.Namespace) -> None:
+    profile = load_profile(args.farmer_id)
+    if not profile:
+        print(f"未找到档案：{args.farmer_id}")
+        return
+    print(json.dumps(profile.model_dump(), ensure_ascii=False, indent=2))
+
+
+def cmd_profile_edit(args: argparse.Namespace) -> None:
+    profile = load_profile(args.farmer_id) or FarmerProfile(farmer_id=args.farmer_id)
+    base_id = args.base_id or profile.active_base_id or "B001"
+    profile = upsert_base(
+        profile,
+        base_id,
+        name=args.base_name,
+        location=args.location,
+        province=args.province,
+        facility=args.facility,
+        environment=args.environment,
+        growth_stage=args.growth_stage,
+        notes=args.notes,
+    )
+
+    banned = None
+    if args.banned:
+        banned = [item.strip() for item in args.banned.split(",") if item.strip()]
+    update_constraints(
+        profile,
+        banned_ingredients=banned,
+        harvest_window_days=args.harvest_window,
+        prefer_organic=args.prefer_organic,
+    )
+    if args.confirm_when_low_confidence is not None:
+        profile.confirm_when_low_confidence = args.confirm_when_low_confidence
+    if args.active_base or not profile.active_base_id:
+        profile.active_base_id = base_id
+
+    path = save_profile(profile)
+    print(f"档案已保存：{path}")
+
+
+def cmd_profile_set_active_base(args: argparse.Namespace) -> None:
+    profile = load_profile(args.farmer_id)
+    if not profile:
+        print(f"未找到档案：{args.farmer_id}")
+        return
+    if args.base_id not in profile.bases:
+        print(f"基地 {args.base_id} 不存在，请先使用 edit 创建。")
+        return
+    profile.active_base_id = args.base_id
+    save_profile(profile)
+    print(f"已将 {args.base_id} 设为默认基地。")
+
+
+def cmd_profile_reset(args: argparse.Namespace) -> None:
+    profile = reset_profile(args.farmer_id)
+    print(f"档案已重置：{profile.farmer_id}")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="番茄病害诊疗系统 CLI")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -132,6 +214,8 @@ def build_parser() -> argparse.ArgumentParser:
     diagnose_parser.add_argument("--query", required=True, help="用户输入的症状/场景描述")
     diagnose_parser.add_argument("--image", help="病害图像路径，可选")
     diagnose_parser.add_argument("--growth-stage", help="生长阶段提示，可选")
+    diagnose_parser.add_argument("--farmer-id", help="农户ID，用于加载个性化档案", default=None)
+    diagnose_parser.add_argument("--base-id", help="基地ID，用于切换不同基地", default=None)
     diagnose_parser.set_defaults(func=cmd_diagnose)
 
     # logs
@@ -174,6 +258,61 @@ def build_parser() -> argparse.ArgumentParser:
     )
     kb_symptom.set_defaults(func=cmd_kb_add_symptom_map)
 
+    # profile group
+    profile_parser = subparsers.add_parser("profile", help="农户个性设置管理")
+    profile_sub = profile_parser.add_subparsers(dest="profile_command", required=True)
+
+    profile_list = profile_sub.add_parser("list", help="列出所有档案")
+    profile_list.set_defaults(func=cmd_profile_list)
+
+    profile_show = profile_sub.add_parser("show", help="查看档案详情")
+    profile_show.add_argument("--farmer-id", required=True, help="农户ID")
+    profile_show.set_defaults(func=cmd_profile_show)
+
+    profile_edit = profile_sub.add_parser("edit", help="创建或更新档案/基地")
+    profile_edit.add_argument("--farmer-id", required=True, help="农户ID")
+    profile_edit.add_argument("--base-id", help="基地ID，默认使用当前活跃基地", default=None)
+    profile_edit.add_argument("--base-name", help="基地名称", default=None)
+    profile_edit.add_argument("--location", help="基地位置", default=None)
+    profile_edit.add_argument("--province", help="省份/区域", default=None)
+    profile_edit.add_argument("--facility", help="设施类型（露地、温室等）", default=None)
+    profile_edit.add_argument("--environment", help="近期环境描述", default=None)
+    profile_edit.add_argument("--growth-stage", help="默认生育期", default=None)
+    profile_edit.add_argument("--notes", help="其他备注", default=None)
+    profile_edit.add_argument("--banned", help="禁用成分，逗号分隔", default=None)
+    profile_edit.add_argument("--harvest-window", type=int, help="距采收天数", default=None)
+    pref_group = profile_edit.add_mutually_exclusive_group()
+    pref_group.add_argument("--prefer-organic", dest="prefer_organic", action="store_true", help="偏好有机/低残留")
+    pref_group.add_argument("--no-prefer-organic", dest="prefer_organic", action="store_false", help="不强制有机偏好")
+    pref_group.set_defaults(prefer_organic=None)
+    confirm_group = profile_edit.add_mutually_exclusive_group()
+    confirm_group.add_argument(
+        "--confirm-when-low-confidence",
+        dest="confirm_when_low_confidence",
+        action="store_true",
+        help="低置信度时要求追问确认",
+    )
+    confirm_group.add_argument(
+        "--no-confirm-when-low-confidence",
+        dest="confirm_when_low_confidence",
+        action="store_false",
+        help="低置信度时不强制追问",
+    )
+    confirm_group.set_defaults(confirm_when_low_confidence=None)
+    profile_edit.add_argument(
+        "--active-base", action="store_true", help="将该基地设置为默认基地", default=False
+    )
+    profile_edit.set_defaults(func=cmd_profile_edit)
+
+    profile_active = profile_sub.add_parser("set-active-base", help="切换默认基地")
+    profile_active.add_argument("--farmer-id", required=True, help="农户ID")
+    profile_active.add_argument("--base-id", required=True, help="基地ID")
+    profile_active.set_defaults(func=cmd_profile_set_active_base)
+
+    profile_reset = profile_sub.add_parser("reset", help="重置档案为默认值")
+    profile_reset.add_argument("--farmer-id", required=True, help="农户ID")
+    profile_reset.set_defaults(func=cmd_profile_reset)
+
     return parser
 
 
@@ -210,7 +349,19 @@ def menu() -> None:
             image = input("可选：图像路径 (回车跳过，输入 b 返回): ").strip()
             if image.lower() == "b":
                 return
-            args = argparse.Namespace(query=query, growth_stage=growth or None, image=image or None)
+            farmer_id = input("可选：农户ID (回车跳过，输入 b 返回): ").strip()
+            if farmer_id.lower() == "b":
+                return
+            base_id = input("可选：基地ID (回车跳过，输入 b 返回): ").strip()
+            if base_id.lower() == "b":
+                return
+            args = argparse.Namespace(
+                query=query,
+                growth_stage=growth or None,
+                image=image or None,
+                farmer_id=farmer_id or None,
+                base_id=base_id or None,
+            )
             result = cmd_diagnose(args)  # 保存诊断结果
             # 询问用户是否需要可视化展示结果
             try:
@@ -296,11 +447,73 @@ def menu() -> None:
             else:
                 print("无效选项，请重新输入。")
 
+    def _page_profile():
+        """页面 4：个人设置管理。"""
+        while True:
+            print("\n[个人设置] 请选择操作：")
+            print("1) 列出档案")
+            print("2) 查看档案")
+            print("3) 编辑/创建档案与基地")
+            print("4) 重置档案")
+            print("b) 返回上级")
+            choice = input("请输入选项: ").strip().lower()
+            if choice == "1":
+                cmd_profile_list(argparse.Namespace())
+            elif choice == "2":
+                fid = input("农户ID: ").strip()
+                if fid:
+                    cmd_profile_show(argparse.Namespace(farmer_id=fid))
+            elif choice == "3":
+                fid = input("农户ID: ").strip()
+                base_id = input("基地ID(留空使用默认): ").strip() or None
+                base_name = input("基地名称(可空): ").strip() or None
+                location = input("基地位置(可空): ").strip() or None
+                province = input("省份/区域(可空): ").strip() or None
+                facility = input("设施类型(可空): ").strip() or None
+                environment = input("近期环境(可空): ").strip() or None
+                growth_stage = input("默认生育期(可空): ").strip() or None
+                notes = input("备注(可空): ").strip() or None
+                banned = input("禁用成分，逗号分隔(可空): ").strip() or None
+                harvest = input("距采收天数(可空): ").strip()
+                harvest_window = int(harvest) if harvest.isdigit() else None
+                prefer = input("偏好有机/低残留? (y/n/回车跳过): ").strip().lower()
+                prefer_organic = True if prefer == "y" else False if prefer == "n" else None
+                confirm = input("低置信度要求追问? (y/n/回车跳过): ").strip().lower()
+                confirm_flag = True if confirm == "y" else False if confirm == "n" else None
+                active = input("将此基地设为默认? (y/n): ").strip().lower() == "y"
+                cmd_profile_edit(
+                    argparse.Namespace(
+                        farmer_id=fid,
+                        base_id=base_id,
+                        base_name=base_name,
+                        location=location,
+                        province=province,
+                        facility=facility,
+                        environment=environment,
+                        growth_stage=growth_stage,
+                        notes=notes,
+                        banned=banned,
+                        harvest_window=harvest_window,
+                        prefer_organic=prefer_organic,
+                        confirm_when_low_confidence=confirm_flag,
+                        active_base=active,
+                    )
+                )
+            elif choice == "4":
+                fid = input("输入要重置的农户ID: ").strip()
+                if fid:
+                    cmd_profile_reset(argparse.Namespace(farmer_id=fid))
+            elif choice == "b":
+                return
+            else:
+                print("无效选项，请重新输入。")
+
     while True:
         print("\n===== 番茄病害诊疗 CLI 界面 =====")
         print("1) 用户与系统问答交互")
         print("2) 对话记录展示")
         print("3) 知识库管理")
+        print("4) 个人设置")
         print("q) 退出")
         choice = input("请选择页面: ").strip().lower()
         if choice == "1":
@@ -309,6 +522,8 @@ def menu() -> None:
             _page_logs()
         elif choice == "3":
             _page_kb()
+        elif choice == "4":
+            _page_profile()
         elif choice == "q":
             print("已退出。")
             break

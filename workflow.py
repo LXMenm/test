@@ -89,12 +89,14 @@ def build_graph() -> StateGraph:
     return app
 
 
-def run_diagnosis(user_query: str) -> dict:
+def run_diagnosis(user_query: str, farmer_id: str | None = None, base_id: str | None = None) -> dict:
     """
     运行农作物病害诊断系统
 
     Args:
         user_query: 用户输入的病害描述
+        farmer_id: 农户ID（可选，用于个性化）
+        base_id: 基地ID（可选，用于个性化）
 
     Returns:
         诊断结果字典
@@ -104,7 +106,7 @@ def run_diagnosis(user_query: str) -> dict:
     print("=" * 80)
 
     # 创建初始状态
-    initial_state = create_initial_state(user_query)
+    initial_state = create_initial_state(user_query, farmer_id=farmer_id, base_id=base_id)
 
     # 构建工作流
     app = build_graph()

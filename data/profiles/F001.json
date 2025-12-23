@@ -1,0 +1,25 @@
+{
+  "farmer_id": "F001",
+  "name": "李大哥",
+  "schema_version": "1.0",
+  "updated_at": "2024-06-01T10:00:00Z",
+  "active_base_id": "B001",
+  "confirm_when_low_confidence": true,
+  "bases": {
+    "B001": {
+      "base_id": "B001",
+      "name": "日光温室1号",
+      "location": "山东潍坊寿光",
+      "province": "山东",
+      "facility": "温室大棚",
+      "environment": "最近一周连阴雨，高湿度",
+      "growth_stage": "结果期",
+      "notes": "优先选择低毒低残留方案"
+    }
+  },
+  "constraints": {
+    "banned_ingredients": ["多菌灵", "百菌清"],
+    "harvest_window_days": 10,
+    "prefer_organic": true
+  }
+}
