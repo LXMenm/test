@@ -97,6 +97,8 @@ class DiseaseDiagnosisEngine:
     """病害诊断引擎"""
     
     def __init__(self, model_type: str = DIAGNOSIS_MODEL_TYPE, model_path: Optional[str] = None):
+        if model_path is None:
+            model_path = DIAGNOSIS_MODEL_PATH
         self.device = torch.device("cuda" if USE_GPU and torch.cuda.is_available() else "cpu")
         self.model = create_model(model_type)
         
@@ -223,6 +225,5 @@ def get_diagnosis_engine() -> DiseaseDiagnosisEngine:
     """获取诊断引擎单例"""
     global _diagnosis_engine
     if _diagnosis_engine is None:
-        _diagnosis_engine = DiseaseDiagnosisEngine()
+        _diagnosis_engine = DiseaseDiagnosisEngine(model_path=DIAGNOSIS_MODEL_PATH)
     return _diagnosis_engine
-
