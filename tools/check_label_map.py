@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from typing import List, Set
-
-from knowledge_base import get_kb_manager
-
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 LABEL_MAP_PATH = REPO_ROOT / "tomato" / "label_map_cn.json"
 TRAIN_DIR = REPO_ROOT / "tomato" / "train"
+
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from knowledge_base import get_kb_manager
 
 
 def load_label_map() -> dict[str, str]:
