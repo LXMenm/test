@@ -13,9 +13,11 @@ from PIL import Image
 
 from config import DIAGNOSIS_CONFIDENCE_THRESHOLD
 from diagnosis_model import get_diagnosis_engine
+from knowledge_base import get_kb_manager
 
 
 app = FastAPI(title="Tomato Diagnosis API", version="1.0.0")
+kb = get_kb_manager()
 UPLOAD_DIR = Path(".cache/uploads")
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
@@ -36,7 +38,6 @@ app.add_middleware(
 )
 
 
-<<<<<<< codex/find-project-structure-in-repository-sf2sig
 def cleanup_old_uploads(max_age_hours: int = 24) -> None:
     now_ts = __import__("time").time()
     max_age_seconds = max_age_hours * 3600
@@ -52,8 +53,7 @@ def cleanup_old_uploads(max_age_hours: int = 24) -> None:
             continue
 
 
-=======
->>>>>>> main
+
 @app.get("/")
 def index() -> FileResponse:
     return FileResponse(WEB_DIR / "index.html")
@@ -111,10 +111,9 @@ async def diagnose_image(
             raise HTTPException(status_code=400, detail=f"上传文件不是有效图片: {exc}") from exc
 
         saved_path.write_bytes(data)
-<<<<<<< codex/find-project-structure-in-repository-sf2sig
         cleanup_old_uploads()
-=======
->>>>>>> main
+        cleanup_old_uploads()
+
     except HTTPException:
         raise
     except Exception as exc:
@@ -160,6 +159,19 @@ async def diagnose_image(
             }
             fallback_used = True
 
+    final_disease = disease
+    if fallback_used and rule_result and rule_result.get("rule_disease"):
+        final_disease = rule_result["rule_disease"]
+
+    treatment = None
+    if final_disease:
+        plan = kb.get_treatment_plan(final_disease)
+        if isinstance(plan, dict) and "treatment" in plan and "prevention" in plan:
+            treatment = {
+                "plan": plan["treatment"],
+                "prevention": plan["prevention"],
+            }
+
     return {
         "image_id": unique_name,
         "image_url": f"/uploads/{unique_name}",
@@ -170,6 +182,8 @@ async def diagnose_image(
         },
         "fallback_used": fallback_used,
         "rule_result": rule_result,
+        "final_disease": final_disease,
+        "treatment": treatment,
     }
 
 
