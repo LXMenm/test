@@ -97,9 +97,45 @@ class DiseaseDiagnosisEngine:
     """病害诊断引擎"""
     
     def __init__(self, model_type: str = DIAGNOSIS_MODEL_TYPE, model_path: Optional[str] = None):
+        if model_path is None:
+            model_path = DIAGNOSIS_MODEL_PATH
+        self.model_path = model_path
+        self.tf_backend = False
+        self.tf_model = None
+        self.class_names: List[str] = []
+        self.label_map_cn: Dict[str, str] = {}
         self.device = torch.device("cuda" if USE_GPU and torch.cuda.is_available() else "cpu")
+        self.model = None
+        self.transform = None
+
+        if model_path and model_path.endswith((".h5", ".keras")):
+            self.tf_backend = True
+            self._load_tf_model(model_path)
+        else:
+            self._load_torch_model(model_type, model_path)
+
+    def _load_tf_model(self, model_path: str) -> None:
+        if not os.path.exists(model_path):
+            print(f"模型文件不存在，请先运行 tomato/train_densenet121.py 生成 models/*.h5: {model_path}")
+            return
+        try:
+            import tensorflow as tf
+        except ImportError as exc:
+            raise ImportError("未安装 TensorFlow，无法加载 .h5/.keras 模型") from exc
+
+        self.tf_model = tf.keras.models.load_model(model_path)
+        self.class_names = self._load_tf_class_names()
+        self.label_map_cn = self._load_label_map_cn()
+        output_dim = self.tf_model.output_shape[-1]
+        if output_dim != len(self.class_names):
+            raise ValueError(
+                f"模型输出维度({output_dim})与类别数量({len(self.class_names)})不一致"
+            )
+        print(f"已加载TensorFlow模型: {model_path}")
+
+    def _load_torch_model(self, model_type: str, model_path: Optional[str]) -> None:
         self.model = create_model(model_type)
-        
+
         # 加载预训练模型（如果存在）
         if model_path and os.path.exists(model_path):
             try:
@@ -108,17 +144,45 @@ class DiseaseDiagnosisEngine:
             except Exception as e:
                 print(f"加载模型失败: {e}，使用预训练权重")
         else:
-            print(f"模型文件不存在，使用预训练权重")
-        
+            print("模型文件不存在，使用预训练权重")
+
         self.model.to(self.device)
         self.model.eval()
-        
+
         # 图像预处理
         self.transform = transforms.Compose([
             transforms.Resize((224, 224)),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         ])
+
+    def _load_tf_class_names(self) -> List[str]:
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        classes_path = os.path.join(base_dir, "tomato", "tomato_disease_classes.txt")
+        train_dir = os.path.join(base_dir, "tomato", "train")
+        if os.path.exists(classes_path):
+            with open(classes_path, "r", encoding="utf-8") as f:
+                return [line.strip() for line in f if line.strip()]
+        if os.path.isdir(train_dir):
+            return sorted(
+                [name for name in os.listdir(train_dir) if os.path.isdir(os.path.join(train_dir, name))]
+            )
+        return []
+
+    def _load_label_map_cn(self) -> Dict[str, str]:
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        label_map_path = os.path.join(base_dir, "tomato", "label_map_cn.json")
+        if not os.path.exists(label_map_path):
+            return {}
+        try:
+            import json
+            with open(label_map_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+
+    def _map_label_cn(self, label: str) -> str:
+        return self.label_map_cn.get(label, label)
     
     def diagnose_from_image(self, image_path: str) -> Tuple[str, float, Dict[str, float]]:
         """
@@ -130,6 +194,36 @@ class DiseaseDiagnosisEngine:
         Returns:
             (病害类型, 置信度, 所有类别的概率分布)
         """
+        if self.tf_backend:
+            if not self.tf_model:
+                return "模型未加载", 0.0, {}
+            try:
+                from tensorflow.keras.preprocessing.image import load_img, img_to_array
+            except ImportError as exc:
+                raise ImportError("未安装 TensorFlow，无法进行图像诊断") from exc
+
+            try:
+                img = load_img(image_path, target_size=(224, 224))
+                img_array = img_to_array(img)
+                img_array = np.expand_dims(img_array, axis=0)
+                img_array = img_array / 255.0
+                predictions = self.tf_model.predict(img_array)
+                probs = predictions[0]
+                predicted_idx = int(np.argmax(probs))
+                confidence_score = float(probs[predicted_idx])
+                raw_label = self.class_names[predicted_idx]
+                disease_type = self._map_label_cn(raw_label)
+                probs_dict = {
+                    self._map_label_cn(label): float(prob)
+                    for label, prob in zip(self.class_names, probs)
+                }
+                if confidence_score < DIAGNOSIS_CONFIDENCE_THRESHOLD:
+                    disease_type = "疑似病害（置信度不足）"
+                return disease_type, confidence_score, probs_dict
+            except Exception as e:
+                print(f"图像诊断失败: {e}")
+                return "未知病害", 0.0, {}
+
         try:
             image = Image.open(image_path).convert('RGB')
             image_tensor = self.transform(image).unsqueeze(0).to(self.device)
@@ -223,6 +317,5 @@ def get_diagnosis_engine() -> DiseaseDiagnosisEngine:
     """获取诊断引擎单例"""
     global _diagnosis_engine
     if _diagnosis_engine is None:
-        _diagnosis_engine = DiseaseDiagnosisEngine()
+        _diagnosis_engine = DiseaseDiagnosisEngine(model_path=DIAGNOSIS_MODEL_PATH)
     return _diagnosis_engine
-
