@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.responses import FileResponse
 
 from config import DIAGNOSIS_CONFIDENCE_THRESHOLD
 from diagnosis_model import get_diagnosis_engine
@@ -19,6 +20,22 @@ IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/uploads/{image_id}")
+def get_uploaded_image(image_id: str) -> FileResponse:
+    suffix = Path(image_id).suffix.lower()
+    if suffix not in IMAGE_EXTS:
+        raise HTTPException(status_code=400, detail="不支持的图片后缀")
+
+    target = (UPLOAD_DIR / image_id).resolve()
+    upload_root = UPLOAD_DIR.resolve()
+    if not str(target).startswith(str(upload_root)):
+        raise HTTPException(status_code=400, detail="非法文件路径")
+    if not target.exists() or not target.is_file():
+        raise HTTPException(status_code=404, detail="图片不存在")
+
+    return FileResponse(path=target)
 
 
 @app.post("/api/diagnose-image")
@@ -90,7 +107,8 @@ async def diagnose_image(
             fallback_used = True
 
     return {
-        "image_path": str(saved_path),
+        "image_id": unique_name,
+        "image_url": f"/uploads/{unique_name}",
         "image_result": {
             "disease": disease,
             "confidence": float(conf),
