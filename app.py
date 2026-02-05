@@ -3,13 +3,14 @@ from __future__ import annotations
 import uuid
 from io import BytesIO
 from pathlib import Path
-from typing import Any
+from typing import Optional
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from PIL import Image
+from pydantic import BaseModel
 
 from config import DIAGNOSIS_CONFIDENCE_THRESHOLD
 from diagnosis_model import get_diagnosis_engine
@@ -22,6 +23,44 @@ UPLOAD_DIR = Path(".cache/uploads")
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 WEB_DIR = Path("web")
+MAX_UPLOAD_MB = 8
+TOP_MARGIN = 0.15
+
+
+class Top3Item(BaseModel):
+    disease: str
+    prob: float
+    prob_pct: float
+
+
+class ImageResult(BaseModel):
+    disease: str
+    confidence: float
+    confidence_pct: float
+    top3: list[Top3Item]
+
+
+class RuleResult(BaseModel):
+    rule_disease: Optional[str]
+    rule_confidence: float
+    rule_confidence_pct: float
+    rule_description: str
+
+
+class TreatmentPlan(BaseModel):
+    plan: str
+    prevention: str
+
+
+class DiagnoseResponse(BaseModel):
+    image_id: str
+    image_url: str
+    image_result: ImageResult
+    fallback_used: bool
+    fallback_reason: Optional[list[str]]
+    rule_result: Optional[RuleResult]
+    final_disease: str
+    treatment: Optional[TreatmentPlan]
 
 app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
 
@@ -53,7 +92,6 @@ def cleanup_old_uploads(max_age_hours: int = 24) -> None:
             continue
 
 
-
 @app.get("/")
 def index() -> FileResponse:
     return FileResponse(WEB_DIR / "index.html")
@@ -80,13 +118,13 @@ def get_uploaded_image(image_id: str) -> FileResponse:
     return FileResponse(path=target)
 
 
-@app.post("/api/diagnose-image")
+@app.post("/api/diagnose-image", response_model=DiagnoseResponse)
 async def diagnose_image(
     file: UploadFile = File(...),
     crop_type: str = Form("番茄"),
     symptoms: str | None = Form(None),
     growth_stage: str | None = Form(None),
-) -> dict[str, Any]:
+) -> DiagnoseResponse:
     if not file.filename:
         raise HTTPException(status_code=400, detail="文件名为空")
 
@@ -102,8 +140,8 @@ async def diagnose_image(
         data = await file.read()
         if not data:
             raise HTTPException(status_code=400, detail="上传文件为空")
-        if len(data) > 8 * 1024 * 1024:
-            raise HTTPException(status_code=413, detail="上传文件超过8MB限制")
+        if len(data) > MAX_UPLOAD_MB * 1024 * 1024:
+            raise HTTPException(status_code=413, detail=f"上传文件超过{MAX_UPLOAD_MB}MB限制")
 
         try:
             Image.open(BytesIO(data)).verify()
@@ -112,8 +150,6 @@ async def diagnose_image(
 
         saved_path.write_bytes(data)
         cleanup_old_uploads()
-        cleanup_old_uploads()
-
     except HTTPException:
         raise
     except Exception as exc:
@@ -127,16 +163,31 @@ async def diagnose_image(
     if probs is None:
         probs = {}
 
-    top3_pairs = sorted(probs.items(), key=lambda x: x[1], reverse=True)[:3]
-    top3 = [{"disease": name, "prob": float(prob)} for name, prob in top3_pairs]
+    sorted_probs = sorted(probs.items(), key=lambda x: x[1], reverse=True)
+    top3_pairs = sorted_probs[:3]
+    top3 = [
+        {
+            "disease": name,
+            "prob": float(prob),
+            "prob_pct": round(float(prob) * 100, 2),
+        }
+        for name, prob in top3_pairs
+    ]
+
+    top1_conf = float(top3_pairs[0][1]) if top3_pairs else float(conf)
+    top2_conf = float(top3_pairs[1][1]) if len(top3_pairs) > 1 else None
+
+    fallback_reasons: list[str] = []
+    if top1_conf < DIAGNOSIS_CONFIDENCE_THRESHOLD:
+        fallback_reasons.append("low_confidence")
+    if top2_conf is not None and (top1_conf - top2_conf) < TOP_MARGIN:
+        fallback_reasons.append("low_margin")
 
     symptoms_list = [s.strip() for s in (symptoms or "").split(",") if s.strip()]
-    fallback_condition = (
-        disease == "疑似病害（置信度不足）" or float(conf) < DIAGNOSIS_CONFIDENCE_THRESHOLD
-    )
+    fallback_condition = bool(fallback_reasons)
 
     fallback_used = False
-    rule_result: dict[str, Any] | None = None
+    rule_result: RuleResult | None = None
 
     if fallback_condition and symptoms_list:
         try:
@@ -146,45 +197,49 @@ async def diagnose_image(
                 growth_stage=growth_stage,
             )
             fallback_used = True
-            rule_result = {
-                "rule_disease": rule_disease,
-                "rule_confidence": float(rule_confidence),
-                "rule_description": rule_description,
-            }
+            rule_result = RuleResult(
+                rule_disease=rule_disease,
+                rule_confidence=float(rule_confidence),
+                rule_confidence_pct=round(float(rule_confidence) * 100, 2),
+                rule_description=rule_description,
+            )
         except Exception as exc:
-            rule_result = {
-                "rule_disease": None,
-                "rule_confidence": 0.0,
-                "rule_description": f"症状回退诊断失败: {exc}",
-            }
+            rule_result = RuleResult(
+                rule_disease=None,
+                rule_confidence=0.0,
+                rule_confidence_pct=0.0,
+                rule_description=f"症状回退诊断失败: {exc}",
+            )
             fallback_used = True
 
     final_disease = disease
-    if fallback_used and rule_result and rule_result.get("rule_disease"):
-        final_disease = rule_result["rule_disease"]
+    if fallback_used and rule_result and rule_result.rule_disease:
+        final_disease = rule_result.rule_disease
 
-    treatment = None
+    treatment: TreatmentPlan | None = None
     if final_disease:
         plan = kb.get_treatment_plan(final_disease)
         if isinstance(plan, dict) and "treatment" in plan and "prevention" in plan:
-            treatment = {
-                "plan": plan["treatment"],
-                "prevention": plan["prevention"],
-            }
+            treatment = TreatmentPlan(
+                plan=plan["treatment"],
+                prevention=plan["prevention"],
+            )
 
-    return {
-        "image_id": unique_name,
-        "image_url": f"/uploads/{unique_name}",
-        "image_result": {
-            "disease": disease,
-            "confidence": float(conf),
-            "top3": top3,
-        },
-        "fallback_used": fallback_used,
-        "rule_result": rule_result,
-        "final_disease": final_disease,
-        "treatment": treatment,
-    }
+    return DiagnoseResponse(
+        image_id=unique_name,
+        image_url=f"/uploads/{unique_name}",
+        image_result=ImageResult(
+            disease=disease,
+            confidence=float(conf),
+            confidence_pct=round(float(conf) * 100, 2),
+            top3=[Top3Item(**item) for item in top3],
+        ),
+        fallback_used=fallback_used,
+        fallback_reason=fallback_reasons or None,
+        rule_result=rule_result,
+        final_disease=final_disease,
+        treatment=treatment,
+    )
 
 
 if __name__ == "__main__":
