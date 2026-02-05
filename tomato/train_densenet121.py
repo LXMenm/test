@@ -34,8 +34,9 @@ BATCH_SIZE = 32
 EPOCHS = 50
 LEARNING_RATE = 1e-4
 REPO_ROOT = Path(__file__).resolve().parents[1]
-TRAIN_DIR = "train"
-VAL_DIR = "val"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+TRAIN_DIR = os.path.join(BASE_DIR, "train")
+VAL_DIR = os.path.join(BASE_DIR, "val")
 MODEL_DIR = REPO_ROOT / "models"
 BASE_MODEL_PATH = MODEL_DIR / "densenet121_tomato_disease_model.h5"
 FINE_TUNED_MODEL_PATH = MODEL_DIR / "densenet121_tomato_disease_model_fine_tuned.h5"
@@ -66,6 +67,16 @@ if args.trainable is not None:
     backbone_trainable = trainable_flag == "true"
 else:
     backbone_trainable = False
+
+print("CWD:", os.getcwd())
+print("TRAIN_DIR:", TRAIN_DIR)
+print("VAL_DIR:", VAL_DIR)
+
+if not os.path.isdir(TRAIN_DIR):
+    print(f"训练数据目录不存在: {TRAIN_DIR}")
+    raise SystemExit(1)
+if not os.path.isdir(VAL_DIR):
+    print(f"验证数据目录不存在: {VAL_DIR}")
 
 # 创建数据生成器
 train_generator = train_datagen.flow_from_directory(
