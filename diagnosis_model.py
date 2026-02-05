@@ -95,6 +95,7 @@ def create_model(model_type: str = DIAGNOSIS_MODEL_TYPE, num_classes: int = len(
 
 class DiseaseDiagnosisEngine:
     """病害诊断引擎"""
+    _tf_load_announced_paths: set[str] = set()
     
     def __init__(self, model_type: str = DIAGNOSIS_MODEL_TYPE, model_path: Optional[str] = None):
         if model_path is None:
@@ -131,7 +132,10 @@ class DiseaseDiagnosisEngine:
             raise ValueError(
                 f"模型输出维度({output_dim})与类别数量({len(self.class_names)})不一致"
             )
-        print(f"已加载TensorFlow模型: {model_path}")
+        normalized_path = os.path.abspath(model_path)
+        if normalized_path not in self._tf_load_announced_paths:
+            print(f"已加载TensorFlow模型: {model_path}")
+            self._tf_load_announced_paths.add(normalized_path)
 
     def _load_torch_model(self, model_type: str, model_path: Optional[str]) -> None:
         self.model = create_model(model_type)
@@ -311,11 +315,18 @@ class DiseaseDiagnosisEngine:
 
 # 全局诊断引擎实例
 _diagnosis_engine: Optional[DiseaseDiagnosisEngine] = None
+_diagnosis_engine_model_path: Optional[str] = None
 
 
 def get_diagnosis_engine() -> DiseaseDiagnosisEngine:
     """获取诊断引擎单例"""
-    global _diagnosis_engine
+    global _diagnosis_engine, _diagnosis_engine_model_path
+    resolved_model_path = DIAGNOSIS_MODEL_PATH
     if _diagnosis_engine is None:
         _diagnosis_engine = DiseaseDiagnosisEngine(model_path=DIAGNOSIS_MODEL_PATH)
+        _diagnosis_engine_model_path = resolved_model_path
+    elif _diagnosis_engine_model_path != resolved_model_path:
+        # 配置路径变更时才重建，避免重复加载
+        _diagnosis_engine = DiseaseDiagnosisEngine(model_path=DIAGNOSIS_MODEL_PATH)
+        _diagnosis_engine_model_path = resolved_model_path
     return _diagnosis_engine
