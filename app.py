@@ -6,6 +6,7 @@ from typing import Any
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from config import DIAGNOSIS_CONFIDENCE_THRESHOLD
 from diagnosis_model import get_diagnosis_engine
@@ -15,6 +16,14 @@ app = FastAPI(title="Tomato Diagnosis API", version="1.0.0")
 UPLOAD_DIR = Path(".cache/uploads")
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+WEB_DIR = Path("web")
+
+app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
+
+
+@app.get("/")
+def index() -> FileResponse:
+    return FileResponse(WEB_DIR / "index.html")
 
 
 @app.get("/health")
