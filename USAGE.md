@@ -183,3 +183,37 @@ USE_GPU=true
 1. **API费用**：使用大模型API会产生费用，请注意控制调用次数
 2. **诊断仅供参考**：系统诊断结果仅供参考，严重病害请咨询专业农技人员
 3. **数据隐私**：确保API密钥安全，不要泄露给他人
+
+
+## Day3：FastAPI + Web 上传演示
+
+### 1) 安装依赖
+
+```bash
+pip install -r requirements.txt
+```
+
+### 2) 启动服务
+
+```bash
+uvicorn app:app --reload --host 0.0.0.0 --port 8000
+```
+
+### 3) 浏览器访问
+
+打开：`http://127.0.0.1:8000/`
+
+### 4) curl 调用示例
+
+```bash
+curl -F "file=@tomato/val/某张图片.jpg" -F "crop_type=番茄" -F "symptoms=斑点,发黄" http://127.0.0.1:8000/api/diagnose-image
+```
+
+### 5) 返回字段说明（简要）
+
+- `image_result`：图像诊断主结果（病害名、置信度、Top3）。
+- `top3`：候选病害及概率（含百分比字段）。
+- `treatment`：基于知识库返回的治疗方案与预防建议；若无则为 `null`。
+- `fallback_reason`：回退触发原因（如低置信度、低边际差）。
+
+> 说明：`models/*.h5` 为本地训练生成产物，不随仓库默认提交。
