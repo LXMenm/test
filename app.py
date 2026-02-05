@@ -53,6 +53,7 @@ def cleanup_old_uploads(max_age_hours: int = 24) -> None:
             continue
 
 
+
 @app.get("/")
 def index() -> FileResponse:
     return FileResponse(WEB_DIR / "index.html")
@@ -111,6 +112,8 @@ async def diagnose_image(
 
         saved_path.write_bytes(data)
         cleanup_old_uploads()
+        cleanup_old_uploads()
+
     except HTTPException:
         raise
     except Exception as exc:
