@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import uuid
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from PIL import Image
 
 from config import DIAGNOSIS_CONFIDENCE_THRESHOLD
 from diagnosis_model import get_diagnosis_engine
@@ -19,6 +22,18 @@ IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 WEB_DIR = Path("web")
 
 app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:8000",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.get("/")
@@ -69,6 +84,14 @@ async def diagnose_image(
         data = await file.read()
         if not data:
             raise HTTPException(status_code=400, detail="上传文件为空")
+        if len(data) > 8 * 1024 * 1024:
+            raise HTTPException(status_code=413, detail="上传文件超过8MB限制")
+
+        try:
+            Image.open(BytesIO(data)).verify()
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"上传文件不是有效图片: {exc}") from exc
+
         saved_path.write_bytes(data)
     except HTTPException:
         raise
