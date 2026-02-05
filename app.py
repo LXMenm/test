@@ -36,6 +36,24 @@ app.add_middleware(
 )
 
 
+<<<<<<< codex/find-project-structure-in-repository-sf2sig
+def cleanup_old_uploads(max_age_hours: int = 24) -> None:
+    now_ts = __import__("time").time()
+    max_age_seconds = max_age_hours * 3600
+    for path in UPLOAD_DIR.glob("*"):
+        if not path.is_file():
+            continue
+        if path.suffix.lower() not in IMAGE_EXTS:
+            continue
+        try:
+            if now_ts - path.stat().st_mtime > max_age_seconds:
+                path.unlink(missing_ok=True)
+        except Exception:
+            continue
+
+
+=======
+>>>>>>> main
 @app.get("/")
 def index() -> FileResponse:
     return FileResponse(WEB_DIR / "index.html")
@@ -93,6 +111,10 @@ async def diagnose_image(
             raise HTTPException(status_code=400, detail=f"上传文件不是有效图片: {exc}") from exc
 
         saved_path.write_bytes(data)
+<<<<<<< codex/find-project-structure-in-repository-sf2sig
+        cleanup_old_uploads()
+=======
+>>>>>>> main
     except HTTPException:
         raise
     except Exception as exc:
