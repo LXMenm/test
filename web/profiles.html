@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>农户档案</title>
+  <style>
+    :root {
+      font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      color: #1f2933;
+      background: #f6f7fb;
+    }
+    body {
+      margin: 0;
+    }
+    header {
+      padding: 16px 24px;
+      background: #ffffff;
+      border-bottom: 1px solid #e5e7eb;
+    }
+    header h1 {
+      margin: 0;
+      font-size: 18px;
+    }
+    main {
+      display: flex;
+      gap: 16px;
+      padding: 20px 24px;
+    }
+    .panel {
+      background: #ffffff;
+      border-radius: 10px;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+      padding: 16px;
+      flex: 1;
+      min-height: 520px;
+    }
+    .panel h2 {
+      margin: 0 0 12px;
+      font-size: 16px;
+    }
+    .profiles {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+    }
+    .profiles li {
+      padding: 8px 10px;
+      border-radius: 6px;
+      cursor: pointer;
+      border: 1px solid transparent;
+      margin-bottom: 6px;
+    }
+    .profiles li.active {
+      background: #e0f2fe;
+      border-color: #bae6fd;
+    }
+    .profiles li:hover {
+      background: #f3f4f6;
+    }
+    textarea {
+      width: 100%;
+      min-height: 420px;
+      border: 1px solid #d1d5db;
+      border-radius: 8px;
+      padding: 12px;
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+      font-size: 12px;
+      box-sizing: border-box;
+    }
+    .controls {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 12px;
+      align-items: center;
+    }
+    button {
+      border: 1px solid #d1d5db;
+      background: #ffffff;
+      padding: 6px 12px;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+    .status {
+      font-size: 12px;
+      color: #b91c1c;
+    }
+    .status.success {
+      color: #15803d;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>农户档案管理</h1>
+  </header>
+  <main>
+    <section class="panel" style="max-width: 240px;">
+      <h2>农户列表</h2>
+      <ul id="profileList" class="profiles"></ul>
+    </section>
+    <section class="panel">
+      <h2 id="currentId">未选择</h2>
+      <div class="controls">
+        <button id="refreshBtn">刷新</button>
+        <button id="saveBtn">保存</button>
+        <span id="status" class="status"></span>
+      </div>
+      <textarea id="profileEditor" placeholder="请选择左侧农户"></textarea>
+    </section>
+  </main>
+
+  <script>
+    const profileList = document.getElementById("profileList");
+    const currentId = document.getElementById("currentId");
+    const profileEditor = document.getElementById("profileEditor");
+    const refreshBtn = document.getElementById("refreshBtn");
+    const saveBtn = document.getElementById("saveBtn");
+    const status = document.getElementById("status");
+
+    let activeId = null;
+
+    function setStatus(message, isSuccess = false) {
+      status.textContent = message;
+      status.classList.toggle("success", isSuccess);
+    }
+
+    async function fetchJson(url, options) {
+      const response = await fetch(url, options);
+      if (!response.ok) {
+        const text = await response.text();
+        throw new Error(text || `请求失败: ${response.status}`);
+      }
+      return response.json();
+    }
+
+    async function loadProfiles() {
+      setStatus("");
+      profileList.innerHTML = "";
+      try {
+        const data = await fetchJson("/api/profiles");
+        const profiles = data.profiles || [];
+        if (profiles.length === 0) {
+          profileList.innerHTML = "<li>暂无档案</li>";
+          return;
+        }
+        profiles.forEach((item) => {
+          const li = document.createElement("li");
+          li.textContent = item.id;
+          li.dataset.id = item.id;
+          if (item.id === activeId) {
+            li.classList.add("active");
+          }
+          li.addEventListener("click", () => {
+            selectProfile(item.id);
+          });
+          profileList.appendChild(li);
+        });
+        if (!activeId && profiles[0]) {
+          selectProfile(profiles[0].id);
+        }
+      } catch (error) {
+        setStatus(error.message || "加载档案失败");
+      }
+    }
+
+    async function selectProfile(farmerId) {
+      activeId = farmerId;
+      currentId.textContent = `当前农户：${farmerId}`;
+      Array.from(profileList.children).forEach((li) => {
+        li.classList.toggle("active", li.dataset.id === farmerId);
+      });
+      await loadProfileDetail(farmerId);
+    }
+
+    async function loadProfileDetail(farmerId) {
+      setStatus("");
+      try {
+        const data = await fetchJson(`/api/profiles/${farmerId}`);
+        profileEditor.value = JSON.stringify(data, null, 2);
+      } catch (error) {
+        setStatus(error.message || "读取档案失败");
+      }
+    }
+
+    async function saveProfile() {
+      if (!activeId) {
+        setStatus("请先选择农户");
+        return;
+      }
+      let payload;
+      try {
+        payload = JSON.parse(profileEditor.value);
+      } catch (error) {
+        setStatus(`JSON 解析失败: ${error.message}`);
+        return;
+      }
+      try {
+        await fetchJson(`/api/profiles/${activeId}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        setStatus("保存成功", true);
+      } catch (error) {
+        setStatus(error.message || "保存失败");
+      }
+    }
+
+    refreshBtn.addEventListener("click", () => {
+      if (activeId) {
+        loadProfileDetail(activeId);
+      } else {
+        loadProfiles();
+      }
+    });
+    saveBtn.addEventListener("click", saveProfile);
+
+    loadProfiles();
+  </script>
+</body>
+</html>

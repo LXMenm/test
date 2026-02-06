@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Body, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -27,6 +28,9 @@ from event_store import (
     geo_points_range,
 )
 from knowledge_base import get_kb_manager
+from personalization.profile_models import TreatmentConstraint
+from personalization.profile_rules import filter_treatment_by_constraints
+from personalization.profile_store import get_profile_path, load_profile, list_profile_ids
 
 
 app = FastAPI(title="Tomato Diagnosis API", version="1.0.0")
@@ -74,6 +78,10 @@ class DiagnoseResponse(BaseModel):
     rule_result: Optional[RuleResult]
     final_disease: str
     treatment: Optional[TreatmentPlan]
+    personalization_applied: bool
+    farmer_id: Optional[str]
+    filtered: bool
+    filtered_reasons: list[str]
 
 app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
 
@@ -129,6 +137,73 @@ def get_uploaded_image(image_id: str) -> FileResponse:
         raise HTTPException(status_code=404, detail="图片不存在")
 
     return FileResponse(path=target)
+
+
+def apply_personalization_to_treatment(
+    *,
+    constraints: TreatmentConstraint,
+    treatment: TreatmentPlan | None,
+    disease: str,
+) -> tuple[TreatmentPlan | None, bool, list[str]]:
+    if not treatment:
+        return None, False, []
+
+    original_plan = treatment.plan or ""
+    original_prevention = treatment.prevention or ""
+    filtered_plan, dropped_plan = filter_treatment_by_constraints(original_plan, constraints)
+    filtered_prevention, dropped_prevention = filter_treatment_by_constraints(
+        original_prevention, constraints
+    )
+
+    reasons: list[str] = []
+    banned_hits: list[str] = []
+    combined = f"{original_plan}\n{original_prevention}".lower()
+    for ingredient in constraints.banned_ingredients:
+        if ingredient and ingredient.lower() in combined:
+            banned_hits.append(ingredient)
+    if banned_hits:
+        reasons.append(f"包含禁用成分：{', '.join(sorted(set(banned_hits)))}")
+    if constraints.prefer_organic:
+        reasons.append("有机偏好已应用")
+        filtered_plan = f"（有机偏好）优先选择生物防治/低残留药剂。\n{filtered_plan}".strip()
+    if constraints.harvest_window_days:
+        reasons.append(f"采收期约束：{constraints.harvest_window_days}天")
+
+    filtered = bool(
+        reasons
+        or dropped_plan
+        or dropped_prevention
+        or filtered_plan != original_plan
+        or filtered_prevention != original_prevention
+    )
+
+    filtered_treatment = TreatmentPlan(
+        plan=filtered_plan or original_plan,
+        prevention=filtered_prevention or original_prevention,
+    )
+    return filtered_treatment, filtered, reasons
+
+
+def load_profile_payload(farmer_id: str) -> tuple[dict | None, TreatmentConstraint | None]:
+    path = get_profile_path(farmer_id)
+    if not path.exists():
+        return None, None
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            payload = json.load(f)
+    except Exception:
+        return None, None
+
+    profile = load_profile(farmer_id)
+    if profile:
+        return payload, profile.constraints
+
+    constraints_data = payload.get("constraints") if isinstance(payload, dict) else None
+    try:
+        constraints = TreatmentConstraint.model_validate(constraints_data or {})
+    except Exception:
+        constraints = TreatmentConstraint()
+    return payload, constraints
 
 
 @app.post("/api/diagnose-image", response_model=DiagnoseResponse)
@@ -244,6 +319,19 @@ async def diagnose_image(
                 prevention=plan["prevention"],
             )
 
+    personalization_applied = False
+    filtered = False
+    filtered_reasons: list[str] = []
+    if farmer_id:
+        _, constraints = load_profile_payload(farmer_id)
+        if constraints:
+            personalization_applied = True
+            treatment, filtered, filtered_reasons = apply_personalization_to_treatment(
+                constraints=constraints,
+                treatment=treatment,
+                disease=final_disease,
+            )
+
     image_result_dict = {
         "disease": disease,
         "confidence": conf,
@@ -267,7 +355,15 @@ async def diagnose_image(
         "rule_result": rule_result_dict,
         "final_disease": final_disease,
         "treatment": treatment_or_none,
-        "meta": {"farmer_id": farmer_id, "base_id": base_id, "lat": lat, "lon": lon},
+        "meta": {
+            "farmer_id": farmer_id,
+            "base_id": base_id,
+            "lat": lat,
+            "lon": lon,
+            "personalization_applied": personalization_applied,
+            "filtered": filtered,
+            "filtered_reasons": filtered_reasons,
+        },
     }
     try:
         append_event(event)
@@ -283,7 +379,43 @@ async def diagnose_image(
         rule_result=rule_result,
         final_disease=final_disease,
         treatment=treatment,
+        personalization_applied=personalization_applied,
+        farmer_id=farmer_id,
+        filtered=filtered,
+        filtered_reasons=filtered_reasons,
     )
+
+
+@app.get("/api/profiles")
+def list_profiles() -> dict[str, list[dict[str, str]]]:
+    profiles = []
+    for farmer_id in list_profile_ids():
+        path = get_profile_path(farmer_id)
+        profiles.append({"id": farmer_id, "path": str(path)})
+    return {"profiles": profiles}
+
+
+@app.get("/api/profiles/{farmer_id}")
+def get_profile(farmer_id: str) -> dict:
+    path = get_profile_path(farmer_id)
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="档案不存在")
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            return json.load(f)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail=f"档案内容非法: {exc}") from exc
+
+
+@app.post("/api/profiles/{farmer_id}")
+def save_profile(farmer_id: str, payload: dict = Body(...)) -> dict[str, bool]:
+    path = get_profile_path(farmer_id)
+    try:
+        with path.open("w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"保存档案失败: {exc}") from exc
+    return {"ok": True}
 
 
 @app.get("/api/events")
@@ -351,6 +483,14 @@ def get_dashboard() -> FileResponse:
     if not dashboard_path.exists():
         raise HTTPException(status_code=404, detail="dashboard.html 不存在")
     return FileResponse(dashboard_path)
+
+
+@app.get("/profiles")
+def get_profiles_page() -> FileResponse:
+    profiles_path = WEB_DIR / "profiles.html"
+    if not profiles_path.exists():
+        raise HTTPException(status_code=404, detail="profiles.html 不存在")
+    return FileResponse(profiles_path)
 
 
 if __name__ == "__main__":
