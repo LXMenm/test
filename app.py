@@ -283,17 +283,20 @@ def get_events(limit: int = 50) -> list[dict]:
 
 @app.get("/api/stats/disease")
 def get_disease_stats(days: int = 30) -> dict[str, int]:
-    return stats_by_disease(days)
+    safe_days = max(1, min(3650, int(days)))
+    return stats_by_disease(safe_days)
 
 
 @app.get("/api/stats/timeseries")
 def get_timeseries(days: int = 30) -> list[dict]:
-    return timeseries(days)
+    safe_days = max(1, min(3650, int(days)))
+    return timeseries(safe_days)
 
 
 @app.get("/api/stats/geo")
 def get_geo_stats(days: int = 30) -> list[dict]:
-    return geo_points(days)
+    safe_days = max(1, min(3650, int(days)))
+    return geo_points(safe_days)
 
 
 @app.get("/dashboard")
