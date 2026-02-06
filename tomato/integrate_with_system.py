@@ -6,6 +6,7 @@
 import os
 import shutil
 import json
+import re
 
 # 配置参数
 SYSTEM_PATH = '..'  # 系统根目录
@@ -103,38 +104,32 @@ def update_system_config():
 
 # 更新诊断模型中的类别
 def update_diagnosis_model_classes():
-    # 读取当前的diagnosis_model.py
-    model_path = os.path.join(SYSTEM_PATH, 'diagnosis_model.py')
-    with open(model_path, 'r', encoding='utf-8') as f:
-        model_content = f.read()
+    # 读取当前的知识库病害类别
+    kb_path = os.path.join(SYSTEM_PATH, 'knowledge_base', 'disease_kb.py')
+    with open(kb_path, 'r', encoding='utf-8') as f:
+        kb_content = f.read()
     
     # 加载并转换类别名称
     class_names = load_class_names()
     chinese_names = convert_to_chinese(class_names)
     
-    # 更新DISEASE_CLASSES列表
-    classes_str = json.dumps(chinese_names, ensure_ascii=False, indent=2)
-    updated_content = model_content.replace(
-        "# 番茄病害类别（根据论文和实际应用扩展）
-DISEASE_CLASSES = [
-    \"健康\",
-    \"早疫病\",
-    \"晚疫病\",
-    \"黄化曲叶病毒病\",
-    \"叶霉病\",
-    \"白粉病\",
-    \"细菌性斑点病\",
-    \"灰霉病"
-]",
-        f"# 番茄病害类别（使用自定义训练的DenseNet121模型）
-DISEASE_CLASSES = {classes_str}"
+    # 更新病害类别列表
+    entries = ",\n".join(f"            \"{name}\"" for name in chinese_names)
+    classes_str = f"[\n{entries}\n        ]"
+    updated_content, replacements = re.subn(
+        r"(self\.disease_classes\s*=\s*)\[[\s\S]*?\]",
+        rf"\1{classes_str}",
+        kb_content,
+        count=1
     )
+    if replacements == 0:
+        raise ValueError(f"未能在知识库中找到病害类别列表: {kb_path}")
     
     # 写入更新后的内容
-    with open(model_path, 'w', encoding='utf-8') as f:
+    with open(kb_path, 'w', encoding='utf-8') as f:
         f.write(updated_content)
     
-    print(f"已更新诊断模型类别: {model_path}")
+    print(f"已更新知识库病害类别: {kb_path}")
     print(f"新的病害类别: {chinese_names}")
 
 # 主函数

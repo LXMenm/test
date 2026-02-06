@@ -1,0 +1,413 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>诊断看板</title>
+  <style>
+    :root {
+      color-scheme: light;
+      font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      background: #f6f7fb;
+      color: #1f2933;
+    }
+    body {
+      margin: 0;
+      padding: 0;
+    }
+    header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 16px 24px;
+      background: #ffffff;
+      border-bottom: 1px solid #e5e7eb;
+      position: sticky;
+      top: 0;
+      z-index: 10;
+    }
+    header h1 {
+      margin: 0;
+      font-size: 18px;
+      font-weight: 600;
+    }
+    header .controls {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      margin-left: auto;
+    }
+    select, input, button {
+      border: 1px solid #d1d5db;
+      background: #ffffff;
+      color: #111827;
+      padding: 6px 10px;
+      border-radius: 6px;
+      font-size: 14px;
+    }
+    input[type="number"] {
+      width: 72px;
+    }
+    .quick-day {
+      background: #f3f4f6;
+    }
+    button {
+      cursor: pointer;
+    }
+    main {
+      padding: 20px 24px 32px;
+    }
+    .error-banner {
+      display: none;
+      background: #fee2e2;
+      color: #991b1b;
+      border: 1px solid #fecaca;
+      padding: 10px 12px;
+      border-radius: 6px;
+      margin-bottom: 16px;
+    }
+    .layout {
+      display: flex;
+      gap: 16px;
+    }
+    .panel {
+      background: #ffffff;
+      border-radius: 10px;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+      padding: 16px;
+      min-height: 520px;
+      flex: 1;
+      overflow: hidden;
+    }
+    .panel h2 {
+      margin: 0 0 12px;
+      font-size: 16px;
+    }
+    #chart {
+      width: 100%;
+      min-height: 420px;
+    }
+    .empty {
+      color: #6b7280;
+      font-size: 14px;
+      padding: 24px 0;
+      text-align: center;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+    th, td {
+      padding: 8px 6px;
+      text-align: left;
+      border-bottom: 1px solid #e5e7eb;
+      vertical-align: top;
+    }
+    tbody tr {
+      cursor: pointer;
+    }
+    tbody tr:hover {
+      background: #f9fafb;
+    }
+    tbody tr.selected {
+      background: #e0f2fe;
+    }
+    .detail {
+      display: grid;
+      gap: 10px;
+      font-size: 13px;
+    }
+    .detail img {
+      width: 100%;
+      max-height: 220px;
+      object-fit: contain;
+      background: #f3f4f6;
+      border-radius: 6px;
+    }
+    .detail-section {
+      background: #f9fafb;
+      border-radius: 6px;
+      padding: 8px 10px;
+    }
+    .detail-section h3 {
+      margin: 0 0 6px;
+      font-size: 13px;
+      color: #374151;
+    }
+    .detail-section pre {
+      white-space: pre-wrap;
+      word-break: break-word;
+      margin: 0;
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+      font-size: 12px;
+    }
+    .tag {
+      display: inline-block;
+      background: #e5f0ff;
+      color: #1d4ed8;
+      padding: 2px 6px;
+      border-radius: 999px;
+      font-size: 12px;
+      margin-right: 6px;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>诊断事件看板</h1>
+    <div class="controls">
+      <label for="daysInput">天数</label>
+      <input id="daysInput" type="number" min="1" max="3650" step="1" value="30" />
+      <button class="quick-day" data-days="7">7</button>
+      <button class="quick-day" data-days="30">30</button>
+      <button class="quick-day" data-days="90">90</button>
+      <button class="quick-day" data-days="180">180</button>
+      <button id="refresh">刷新</button>
+    </div>
+  </header>
+  <main>
+    <div id="error" class="error-banner"></div>
+    <div class="layout">
+      <section class="panel" style="max-width: 360px;">
+        <h2>病害 Top 8</h2>
+        <div id="chart"></div>
+      </section>
+      <section class="panel" style="flex: 1.2;">
+        <h2>最近诊断</h2>
+        <div id="table-wrapper"></div>
+      </section>
+      <section class="panel" style="flex: 1.1;">
+        <h2>详情</h2>
+        <div id="detail" class="detail"></div>
+      </section>
+    </div>
+  </main>
+
+  <script>
+    const daysInput = document.getElementById("daysInput");
+    const refreshButton = document.getElementById("refresh");
+    const quickDayButtons = Array.from(document.querySelectorAll(".quick-day"));
+    const errorBanner = document.getElementById("error");
+    const chartContainer = document.getElementById("chart");
+    const tableWrapper = document.getElementById("table-wrapper");
+    const detailContainer = document.getElementById("detail");
+
+    let currentEvents = [];
+    let selectedId = null;
+
+    function showError(message) {
+      errorBanner.textContent = message;
+      errorBanner.style.display = "block";
+    }
+
+    function clearError() {
+      errorBanner.textContent = "";
+      errorBanner.style.display = "none";
+    }
+
+    function formatTs(ts) {
+      if (!ts) return "-";
+      const date = new Date(ts);
+      if (Number.isNaN(date.getTime())) return ts;
+      return date.toLocaleString(undefined, { hour12: false, minute: "2-digit", hour: "2-digit", year: "numeric", month: "2-digit", day: "2-digit" });
+    }
+
+    function renderChart(stats) {
+      chartContainer.innerHTML = "";
+      if (!stats || stats.length === 0) {
+        chartContainer.innerHTML = '<div class="empty">暂无统计数据</div>';
+        return;
+      }
+      const max = Math.max(...stats.map(item => item.count));
+      const barHeight = 32;
+      const width = 300;
+      const height = stats.length * barHeight + 20;
+      const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+      svg.setAttribute("width", "100%");
+      svg.setAttribute("height", height.toString());
+      svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+
+      stats.forEach((item, index) => {
+        const y = index * barHeight + 10;
+        const barWidth = max === 0 ? 0 : (item.count / max) * 180;
+
+        const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
+        label.setAttribute("x", "0");
+        label.setAttribute("y", (y + 14).toString());
+        label.setAttribute("font-size", "12");
+        label.textContent = `${item.disease} (${item.count})`;
+        svg.appendChild(label);
+
+        const rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+        rect.setAttribute("x", "140");
+        rect.setAttribute("y", y.toString());
+        rect.setAttribute("width", barWidth.toString());
+        rect.setAttribute("height", "16");
+        rect.setAttribute("rx", "4");
+        rect.setAttribute("fill", "#2563eb");
+        svg.appendChild(rect);
+      });
+
+      chartContainer.appendChild(svg);
+    }
+
+    function renderTable(events) {
+      tableWrapper.innerHTML = "";
+      if (!events || events.length === 0) {
+        tableWrapper.innerHTML = '<div class="empty">暂无诊断记录</div>';
+        return;
+      }
+      const table = document.createElement("table");
+      table.innerHTML = `
+        <thead>
+          <tr>
+            <th>时间</th>
+            <th>最终病害</th>
+            <th>置信度%</th>
+            <th>回退</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      `;
+      const tbody = table.querySelector("tbody");
+
+      events.forEach(event => {
+        const row = document.createElement("tr");
+        row.dataset.id = event.id || event.ts || "";
+        if (selectedId && row.dataset.id === selectedId) {
+          row.classList.add("selected");
+        }
+        row.innerHTML = `
+          <td>${formatTs(event.ts)}</td>
+          <td>${event.final_disease || "-"}</td>
+          <td>${event.image_result?.confidence_pct ?? "-"}</td>
+          <td>${event.fallback_used ? "是" : "否"}</td>
+        `;
+        row.addEventListener("click", () => {
+          selectedId = row.dataset.id;
+          renderTable(currentEvents);
+          renderDetail(event);
+        });
+        tbody.appendChild(row);
+      });
+      tableWrapper.appendChild(table);
+    }
+
+    function renderDetail(event) {
+      detailContainer.innerHTML = "";
+      if (!event) {
+        detailContainer.innerHTML = '<div class="empty">选择一条记录查看详情</div>';
+        return;
+      }
+      const top3 = event.image_result?.top3 || [];
+      const top3Html = top3.length
+        ? top3.map(item => `${item.disease}: ${item.prob_pct}%`).join("<br/>")
+        : "暂无";
+
+      const treatment = event.treatment || {};
+      const fallbackReason = event.fallback_reason ? event.fallback_reason.join(", ") : "暂无";
+      const ruleResult = event.rule_result || null;
+      const meta = event.meta || {};
+
+      detailContainer.innerHTML = `
+        <img src="${event.image_url || ""}" alt="诊断图片" />
+        <div class="detail-section">
+          <h3>Top1 / Top3</h3>
+          <div><span class="tag">Top1</span>${event.image_result?.disease || "-"} (${event.image_result?.confidence_pct ?? "-"}%)</div>
+          <div>${top3Html}</div>
+        </div>
+        <div class="detail-section">
+          <h3>最终病害</h3>
+          <div>${event.final_disease || "-"}</div>
+        </div>
+        <div class="detail-section">
+          <h3>治疗方案</h3>
+          <div>治疗：${treatment.plan || "暂无"}</div>
+          <div>预防：${treatment.prevention || "暂无"}</div>
+        </div>
+        <div class="detail-section">
+          <h3>回退诊断</h3>
+          <div>原因：${fallbackReason}</div>
+          <div>${ruleResult ? `规则结果：${ruleResult.rule_disease || "-"} (${ruleResult.rule_confidence_pct ?? "-"}%)` : "暂无"}</div>
+        </div>
+        <div class="detail-section">
+          <h3>Meta</h3>
+          <div>农户：${meta.farmer_id || "-"}</div>
+          <div>基地：${meta.base_id || "-"}</div>
+          <div>位置：${meta.lat ?? "-"}, ${meta.lon ?? "-"}</div>
+        </div>
+        <div class="detail-section">
+          <h3>原始 JSON</h3>
+          <pre>${JSON.stringify(event, null, 2)}</pre>
+        </div>
+      `;
+    }
+
+    async function fetchJson(url) {
+      const response = await fetch(url);
+      if (!response.ok) {
+        throw new Error(`${url} 返回 ${response.status}`);
+      }
+      return response.json();
+    }
+
+    function resolveDays() {
+      const raw = parseInt(daysInput.value, 10);
+      if (!raw || Number.isNaN(raw)) {
+        showError("天数无效，已回退为 30");
+        daysInput.value = "30";
+        localStorage.setItem("dashboard_days", "30");
+        return 30;
+      }
+      const clamped = Math.min(3650, Math.max(1, raw));
+      if (clamped !== raw) {
+        daysInput.value = String(clamped);
+      }
+      localStorage.setItem("dashboard_days", String(clamped));
+      return clamped;
+    }
+
+    async function loadData() {
+      clearError();
+      const days = resolveDays();
+      try {
+        const [statsResponse, eventsResponse] = await Promise.all([
+          fetchJson(`/api/stats/disease?days=${days}`),
+          fetchJson("/api/events?limit=50"),
+        ]);
+        const stats = Object.entries(statsResponse || {})
+          .map(([disease, count]) => ({ disease, count }))
+          .sort((a, b) => b.count - a.count)
+          .slice(0, 8);
+        currentEvents = eventsResponse || [];
+        renderChart(stats);
+        renderTable(currentEvents);
+        renderDetail(currentEvents[0] || null);
+      } catch (error) {
+        showError(error.message || "加载失败");
+      }
+    }
+
+    refreshButton.addEventListener("click", loadData);
+    daysInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        loadData();
+      }
+    });
+    daysInput.addEventListener("change", loadData);
+    quickDayButtons.forEach((button) => {
+      button.addEventListener("click", () => {
+        daysInput.value = button.dataset.days || "30";
+        loadData();
+      });
+    });
+
+    const savedDays = localStorage.getItem("dashboard_days");
+    if (savedDays) {
+      daysInput.value = savedDays;
+    }
+    loadData();
+  </script>
+</body>
+</html>
