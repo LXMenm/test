@@ -15,7 +15,17 @@ from pydantic import BaseModel
 
 from config import DIAGNOSIS_CONFIDENCE_THRESHOLD
 from diagnosis_model import get_diagnosis_engine
-from event_store import append_event, list_events, stats_by_disease, timeseries, geo_points
+from event_store import (
+    append_event,
+    list_events,
+    stats_by_disease,
+    timeseries,
+    geo_points,
+    list_events_range,
+    stats_by_disease_range,
+    timeseries_range,
+    geo_points_range,
+)
 from knowledge_base import get_kb_manager
 
 
@@ -277,24 +287,60 @@ async def diagnose_image(
 
 
 @app.get("/api/events")
-def get_events(limit: int = 50) -> list[dict]:
+def get_events(start: str | None = None, end: str | None = None, limit: int = 50) -> list[dict]:
+    if start or end:
+        if (start and not validate_date_str(start)) or (end and not validate_date_str(end)):
+            raise HTTPException(status_code=400, detail="日期格式应为 YYYY-MM-DD")
+        return list_events_range(start, end, limit)
     return list_events(limit)
 
 
+def validate_date_str(value: str) -> bool:
+    try:
+        datetime.strptime(value, "%Y-%m-%d")
+    except ValueError:
+        return False
+    return True
+
+
 @app.get("/api/stats/disease")
-def get_disease_stats(days: int = 30) -> dict[str, int]:
+def get_disease_stats(
+    start: str | None = None,
+    end: str | None = None,
+    days: int = 30,
+) -> dict[str, int]:
+    if start or end:
+        if (start and not validate_date_str(start)) or (end and not validate_date_str(end)):
+            raise HTTPException(status_code=400, detail="日期格式应为 YYYY-MM-DD")
+        return stats_by_disease_range(start, end)
     safe_days = max(1, min(3650, int(days)))
     return stats_by_disease(safe_days)
 
 
 @app.get("/api/stats/timeseries")
-def get_timeseries(days: int = 30) -> list[dict]:
+def get_timeseries(
+    start: str | None = None,
+    end: str | None = None,
+    days: int = 30,
+) -> list[dict]:
+    if start or end:
+        if (start and not validate_date_str(start)) or (end and not validate_date_str(end)):
+            raise HTTPException(status_code=400, detail="日期格式应为 YYYY-MM-DD")
+        return timeseries_range(start, end)
     safe_days = max(1, min(3650, int(days)))
     return timeseries(safe_days)
 
 
 @app.get("/api/stats/geo")
-def get_geo_stats(days: int = 30) -> list[dict]:
+def get_geo_stats(
+    start: str | None = None,
+    end: str | None = None,
+    days: int = 30,
+) -> list[dict]:
+    if start or end:
+        if (start and not validate_date_str(start)) or (end and not validate_date_str(end)):
+            raise HTTPException(status_code=400, detail="日期格式应为 YYYY-MM-DD")
+        return geo_points_range(start, end)
     safe_days = max(1, min(3650, int(days)))
     return geo_points(safe_days)
 

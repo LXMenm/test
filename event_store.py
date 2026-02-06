@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 import json
 import os
 from typing import Any, Dict, List, Optional
@@ -35,6 +35,24 @@ def _parse_ts(value: Any) -> datetime | None:
         except ValueError:
             return None
     return None
+
+
+def _parse_date_str(value: str | None) -> date | None:
+    if not value:
+        return None
+    try:
+        return datetime.strptime(value, "%Y-%m-%d").date()
+    except ValueError:
+        return None
+
+
+def _in_date_range(ts: datetime, start_date: date | None, end_date: date | None) -> bool:
+    ts_date = ts.date()
+    if start_date and ts_date < start_date:
+        return False
+    if end_date and ts_date > end_date:
+        return False
+    return True
 
 
 def _get_final_disease(event: Dict[str, Any]) -> Optional[str]:
@@ -89,6 +107,23 @@ def _within_days(ts: datetime, days: int, now: datetime) -> bool:
     return ts >= now - timedelta(days=days)
 
 
+def list_events_range(start: str | None = None, end: str | None = None, limit: int = 50) -> List[Dict[str, Any]]:
+    """Return recent events sorted by ts descending within a date range."""
+    start_date = _parse_date_str(start)
+    end_date = _parse_date_str(end)
+    events = []
+    for event in _read_events():
+        ts = _parse_ts(event.get("ts"))
+        if ts is None or not _in_date_range(ts, start_date, end_date):
+            continue
+        events.append(event)
+    events.sort(
+        key=lambda event: _parse_ts(event.get("ts")) or datetime.min,
+        reverse=True,
+    )
+    return events[:limit]
+
+
 def list_events(limit: int = 50) -> List[Dict[str, Any]]:
     """Return recent events sorted by ts descending."""
     events = _read_events()
@@ -114,6 +149,22 @@ def stats_by_disease(days: int = 30) -> Dict[str, int]:
     return counts
 
 
+def stats_by_disease_range(start: str | None = None, end: str | None = None) -> Dict[str, int]:
+    """Aggregate counts by disease for events within a date range."""
+    start_date = _parse_date_str(start)
+    end_date = _parse_date_str(end)
+    counts: Dict[str, int] = {}
+    for event in _read_events():
+        ts = _parse_ts(event.get("ts"))
+        if ts is None or not _in_date_range(ts, start_date, end_date):
+            continue
+        disease = _get_final_disease(event)
+        if not disease:
+            continue
+        counts[disease] = counts.get(disease, 0) + 1
+    return counts
+
+
 def timeseries(days: int = 30) -> List[Dict[str, Any]]:
     """Return daily counts for events within the last N days."""
     now = datetime.utcnow()
@@ -128,6 +179,21 @@ def timeseries(days: int = 30) -> List[Dict[str, Any]]:
     return [{"date": date, "count": counts[date]} for date in dates]
 
 
+def timeseries_range(start: str | None = None, end: str | None = None) -> List[Dict[str, Any]]:
+    """Return daily counts for events within a date range."""
+    start_date = _parse_date_str(start)
+    end_date = _parse_date_str(end)
+    counts: Dict[str, int] = {}
+    for event in _read_events():
+        ts = _parse_ts(event.get("ts"))
+        if ts is None or not _in_date_range(ts, start_date, end_date):
+            continue
+        date_key = ts.date().isoformat()
+        counts[date_key] = counts.get(date_key, 0) + 1
+    dates = sorted(counts.keys())
+    return [{"date": date, "count": counts[date]} for date in dates]
+
+
 def geo_points(days: int = 30) -> List[Dict[str, Any]]:
     """Return geo points for recent events with location data."""
     now = datetime.utcnow()
@@ -135,6 +201,38 @@ def geo_points(days: int = 30) -> List[Dict[str, Any]]:
     for event in _read_events():
         ts = _parse_ts(event.get("ts"))
         if ts is None or not _within_days(ts, days, now):
+            continue
+        meta = event.get("meta") or {}
+        lat = meta.get("lat") if meta.get("lat") is not None else event.get("lat")
+        lon = meta.get("lon") if meta.get("lon") is not None else event.get("lon")
+        if lat is None or lon is None:
+            continue
+        disease = _get_final_disease(event)
+        points.append(
+            {
+                "lat": lat,
+                "lon": lon,
+                "disease": disease,
+                "ts": event.get("ts"),
+                "image_url": event.get("image_url"),
+                "confidence_pct": _get_confidence_pct(event),
+            }
+        )
+    points.sort(
+        key=lambda event: _parse_ts(event.get("ts")) or datetime.min,
+        reverse=True,
+    )
+    return points
+
+
+def geo_points_range(start: str | None = None, end: str | None = None) -> List[Dict[str, Any]]:
+    """Return geo points for events within a date range."""
+    start_date = _parse_date_str(start)
+    end_date = _parse_date_str(end)
+    points: List[Dict[str, Any]] = []
+    for event in _read_events():
+        ts = _parse_ts(event.get("ts"))
+        if ts is None or not _in_date_range(ts, start_date, end_date):
             continue
         meta = event.get("meta") or {}
         lat = meta.get("lat") if meta.get("lat") is not None else event.get("lat")

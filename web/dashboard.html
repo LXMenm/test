@@ -45,10 +45,10 @@
       border-radius: 6px;
       font-size: 14px;
     }
-    input[type="number"] {
-      width: 72px;
+    input[type="date"] {
+      width: 140px;
     }
-    .quick-day {
+    .quick-range {
       background: #f3f4f6;
     }
     button {
@@ -66,14 +66,10 @@
       border-radius: 6px;
       margin-bottom: 16px;
     }
-    #toast {
-      display: none;
-      margin-left: 12px;
-      padding: 4px 8px;
-      background: #eef2ff;
-      color: #3730a3;
-      border-radius: 6px;
+    .range-error {
+      color: #b91c1c;
       font-size: 12px;
+      margin-left: 8px;
     }
     .layout {
       display: flex;
@@ -166,14 +162,15 @@
   <header>
     <h1>诊断事件看板</h1>
     <div class="controls">
-      <label for="daysInput">天数</label>
-      <input id="daysInput" type="number" min="1" max="3650" step="1" value="30" />
-      <button class="quick-day" data-days="7">7</button>
-      <button class="quick-day" data-days="30">30</button>
-      <button class="quick-day" data-days="90">90</button>
-      <button class="quick-day" data-days="180">180</button>
+      <label for="startDate">开始</label>
+      <input id="startDate" type="date" />
+      <label for="endDate">结束</label>
+      <input id="endDate" type="date" />
+      <button class="quick-range" data-days="7">近7天</button>
+      <button class="quick-range" data-days="30">近30天</button>
+      <button class="quick-range" data-days="90">近90天</button>
       <button id="refresh">刷新</button>
-      <span id="toast"></span>
+      <span id="rangeError" class="range-error"></span>
     </div>
   </header>
   <main>
@@ -181,6 +178,7 @@
     <div class="layout">
       <section class="panel" style="max-width: 360px;">
         <h2>病害 Top 8</h2>
+        <div id="rangeText" style="color: #6b7280; font-size: 12px; margin-bottom: 6px;"></div>
         <div id="chart"></div>
       </section>
       <section class="panel" style="flex: 1.2;">
@@ -195,14 +193,16 @@
   </main>
 
   <script>
-    const daysInput = document.getElementById("daysInput");
+    const startDateInput = document.getElementById("startDate");
+    const endDateInput = document.getElementById("endDate");
     const refreshButton = document.getElementById("refresh");
-    const quickDayButtons = Array.from(document.querySelectorAll(".quick-day"));
+    const quickRangeButtons = Array.from(document.querySelectorAll(".quick-range"));
     const errorBanner = document.getElementById("error");
-    const toast = document.getElementById("toast");
+    const rangeError = document.getElementById("rangeError");
     const chartContainer = document.getElementById("chart");
     const tableWrapper = document.getElementById("table-wrapper");
     const detailContainer = document.getElementById("detail");
+    const rangeText = document.getElementById("rangeText");
 
     let currentEvents = [];
     let selectedId = null;
@@ -363,46 +363,73 @@
       return response.json();
     }
 
-    function showToast(message) {
-      toast.textContent = message;
-      toast.style.display = "inline-block";
-      window.clearTimeout(showToast._timer);
-      showToast._timer = window.setTimeout(() => {
-        toast.textContent = "";
-        toast.style.display = "none";
-      }, 3000);
+    function formatDate(value) {
+      const year = value.getFullYear();
+      const month = String(value.getMonth() + 1).padStart(2, "0");
+      const day = String(value.getDate()).padStart(2, "0");
+      return `${year}-${month}-${day}`;
     }
 
-    function resolveDays() {
-      const raw = parseInt(daysInput.value, 10);
-      if (!raw || Number.isNaN(raw)) {
-        daysInput.value = "30";
-        localStorage.setItem("dashboard_days", "30");
-        showToast("天数无效，已回退为 30");
-        return 30;
+    function getDefaultRange() {
+      const endDate = new Date();
+      const startDate = new Date();
+      startDate.setDate(endDate.getDate() - 30);
+      return { start: formatDate(startDate), end: formatDate(endDate) };
+    }
+
+    function isValidDateString(value) {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+        return false;
       }
-      const clamped = Math.min(3650, Math.max(1, raw));
-      if (clamped !== raw) {
-        daysInput.value = String(clamped);
-        showToast(`天数已调整为 ${clamped}`);
+      const parsed = new Date(`${value}T00:00:00`);
+      if (Number.isNaN(parsed.getTime())) {
+        return false;
       }
-      localStorage.setItem("dashboard_days", String(clamped));
-      return clamped;
+      return formatDate(parsed) === value;
+    }
+
+    function resolveRange() {
+      rangeError.textContent = "";
+      const defaults = getDefaultRange();
+      let start = startDateInput.value || defaults.start;
+      let end = endDateInput.value || defaults.end;
+
+      if (!isValidDateString(start)) {
+        start = defaults.start;
+      }
+      if (!isValidDateString(end)) {
+        end = defaults.end;
+      }
+
+      startDateInput.value = start;
+      endDateInput.value = end;
+      localStorage.setItem("dashboard_start", start);
+      localStorage.setItem("dashboard_end", end);
+
+      if (start > end) {
+        rangeError.textContent = "开始日期不能晚于结束日期";
+        return null;
+      }
+      return { start, end };
     }
 
     async function loadData() {
       clearError();
-      const days = resolveDays();
+      const range = resolveRange();
+      if (!range) {
+        return;
+      }
       try {
         const [statsResponse, eventsResponse] = await Promise.all([
-          fetchJson(`/api/stats/disease?days=${days}`),
-          fetchJson("/api/events?limit=50"),
+          fetchJson(`/api/stats/disease?start=${range.start}&end=${range.end}`),
+          fetchJson(`/api/events?start=${range.start}&end=${range.end}&limit=50`),
         ]);
         const stats = Object.entries(statsResponse || {})
           .map(([disease, count]) => ({ disease, count }))
           .sort((a, b) => b.count - a.count)
           .slice(0, 8);
         currentEvents = eventsResponse || [];
+        rangeText.textContent = `区间：${range.start} ~ ${range.end}`;
         renderChart(stats);
         renderTable(currentEvents);
         renderDetail(currentEvents[0] || null);
@@ -412,24 +439,29 @@
     }
 
     refreshButton.addEventListener("click", loadData);
-    daysInput.addEventListener("keydown", (event) => {
-      if (event.key === "Enter") {
-        loadData();
-      }
-    });
-    daysInput.addEventListener("change", loadData);
-    quickDayButtons.forEach((button) => {
+    startDateInput.addEventListener("change", loadData);
+    endDateInput.addEventListener("change", loadData);
+    quickRangeButtons.forEach((button) => {
       button.addEventListener("click", () => {
-        daysInput.value = button.dataset.days || "30";
+        const days = parseInt(button.dataset.days || "30", 10);
+        const end = new Date();
+        const start = new Date();
+        start.setDate(end.getDate() - (days - 1));
+        startDateInput.value = formatDate(start);
+        endDateInput.value = formatDate(end);
         loadData();
       });
     });
 
-    const savedDays = localStorage.getItem("dashboard_days");
-    if (savedDays) {
-      daysInput.value = savedDays;
-      resolveDays();
+    const savedStart = localStorage.getItem("dashboard_start");
+    const savedEnd = localStorage.getItem("dashboard_end");
+    if (savedStart) {
+      startDateInput.value = savedStart;
     }
+    if (savedEnd) {
+      endDateInput.value = savedEnd;
+    }
+    resolveRange();
     loadData();
   </script>
 </body>
