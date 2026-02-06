@@ -19,3 +19,8 @@ numpy>=1.24.0
 # 工具库
 python-dotenv>=1.0.0  # 环境变量管理
 requests>=2.31.0
+
+# Day3 Web/API
+fastapi>=0.110.0
+uvicorn>=0.29.0
+python-multipart>=0.0.9
