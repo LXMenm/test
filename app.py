@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
 from typing import Optional
@@ -14,6 +15,7 @@ from pydantic import BaseModel
 
 from config import DIAGNOSIS_CONFIDENCE_THRESHOLD
 from diagnosis_model import get_diagnosis_engine
+from event_store import append_event, list_events, stats_by_disease, timeseries, geo_points
 from knowledge_base import get_kb_manager
 
 
@@ -125,6 +127,10 @@ async def diagnose_image(
     crop_type: str = Form("番茄"),
     symptoms: str | None = Form(None),
     growth_stage: str | None = Form(None),
+    farmer_id: str | None = Form(None),
+    base_id: str | None = Form(None),
+    lat: float | None = Form(None),
+    lon: float | None = Form(None),
 ) -> DiagnoseResponse:
     if not file.filename:
         raise HTTPException(status_code=400, detail="文件名为空")
@@ -228,21 +234,74 @@ async def diagnose_image(
                 prevention=plan["prevention"],
             )
 
+    image_result_dict = {
+        "disease": disease,
+        "confidence": conf,
+        "confidence_pct": round(conf * 100, 2),
+        "top3": top3,
+    }
+    rule_result_dict = rule_result.model_dump() if rule_result else None
+    treatment_or_none = treatment.model_dump() if treatment else None
+    image_url = f"/uploads/{unique_name}"
+
+    event = {
+        "id": uuid.uuid4().hex,
+        "ts": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        "crop_type": crop_type,
+        "symptoms": symptoms_list,
+        "image_id": unique_name,
+        "image_url": image_url,
+        "image_result": image_result_dict,
+        "fallback_used": fallback_used,
+        "fallback_reason": fallback_reasons or None,
+        "rule_result": rule_result_dict,
+        "final_disease": final_disease,
+        "treatment": treatment_or_none,
+        "meta": {"farmer_id": farmer_id, "base_id": base_id, "lat": lat, "lon": lon},
+    }
+    try:
+        append_event(event)
+    except Exception as exc:
+        print(f"Warning: failed to append event: {exc}")
+
     return DiagnoseResponse(
         image_id=unique_name,
-        image_url=f"/uploads/{unique_name}",
-        image_result=ImageResult(
-            disease=disease,
-            confidence=conf,
-            confidence_pct=round(conf * 100, 2),
-            top3=[Top3Item(**item) for item in top3],
-        ),
+        image_url=image_url,
+        image_result=ImageResult(**image_result_dict),
         fallback_used=fallback_used,
         fallback_reason=fallback_reasons or None,
         rule_result=rule_result,
         final_disease=final_disease,
         treatment=treatment,
     )
+
+
+@app.get("/api/events")
+def get_events(limit: int = 50) -> list[dict]:
+    return list_events(limit)
+
+
+@app.get("/api/stats/disease")
+def get_disease_stats(days: int = 30) -> dict[str, int]:
+    return stats_by_disease(days)
+
+
+@app.get("/api/stats/timeseries")
+def get_timeseries(days: int = 30) -> list[dict]:
+    return timeseries(days)
+
+
+@app.get("/api/stats/geo")
+def get_geo_stats(days: int = 30) -> list[dict]:
+    return geo_points(days)
+
+
+@app.get("/dashboard")
+def get_dashboard() -> FileResponse:
+    dashboard_path = WEB_DIR / "dashboard.html"
+    if not dashboard_path.exists():
+        raise HTTPException(status_code=404, detail="dashboard.html 不存在")
+    return FileResponse(dashboard_path)
 
 
 if __name__ == "__main__":
