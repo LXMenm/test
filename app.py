@@ -23,6 +23,7 @@ UPLOAD_DIR = Path(".cache/uploads")
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 WEB_DIR = Path("web")
+WEB_DIR.mkdir(parents=True, exist_ok=True)
 MAX_UPLOAD_MB = 8
 TOP_MARGIN = 0.15
 
@@ -157,6 +158,8 @@ async def diagnose_image(
 
     engine = get_diagnosis_engine()
     disease, conf, probs = engine.diagnose_from_image(str(saved_path))
+    disease = disease or "未知病害"
+    conf = float(conf or 0.0)
 
     if disease == "模型未加载":
         raise HTTPException(status_code=500, detail="模型未加载，请先配置并加载模型")
@@ -174,7 +177,7 @@ async def diagnose_image(
         for name, prob in top3_pairs
     ]
 
-    top1_conf = float(top3_pairs[0][1]) if top3_pairs else float(conf)
+    top1_conf = float(top3_pairs[0][1]) if top3_pairs else conf
     top2_conf = float(top3_pairs[1][1]) if len(top3_pairs) > 1 else None
 
     fallback_reasons: list[str] = []
@@ -230,8 +233,8 @@ async def diagnose_image(
         image_url=f"/uploads/{unique_name}",
         image_result=ImageResult(
             disease=disease,
-            confidence=float(conf),
-            confidence_pct=round(float(conf) * 100, 2),
+            confidence=conf,
+            confidence_pct=round(conf * 100, 2),
             top3=[Top3Item(**item) for item in top3],
         ),
         fallback_used=fallback_used,
