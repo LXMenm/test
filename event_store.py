@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 import json
 import os
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 
 _EVENTS_DIR = os.path.join(".cache", "events")
@@ -35,6 +35,28 @@ def _parse_ts(value: Any) -> datetime | None:
         except ValueError:
             return None
     return None
+
+
+def _get_final_disease(event: Dict[str, Any]) -> Optional[str]:
+    if event.get("final_disease"):
+        return event.get("final_disease")
+    image_result = event.get("image_result") or {}
+    if image_result.get("disease"):
+        return image_result.get("disease")
+    rule_result = event.get("rule_result") or {}
+    if rule_result.get("rule_disease"):
+        return rule_result.get("rule_disease")
+    return event.get("disease") or event.get("disease_name")
+
+
+def _get_confidence_pct(event: Dict[str, Any]) -> Optional[float]:
+    rule_result = event.get("rule_result") or {}
+    if event.get("fallback_used") is True and rule_result.get("rule_confidence_pct") is not None:
+        return rule_result.get("rule_confidence_pct")
+    image_result = event.get("image_result") or {}
+    if image_result.get("confidence_pct") is not None:
+        return image_result.get("confidence_pct")
+    return event.get("confidence_pct")
 
 
 def append_event(event: Dict[str, Any]) -> None:
@@ -85,7 +107,7 @@ def stats_by_disease(days: int = 30) -> Dict[str, int]:
         ts = _parse_ts(event.get("ts"))
         if ts is None or not _within_days(ts, days, now):
             continue
-        disease = event.get("disease") or event.get("disease_name")
+        disease = _get_final_disease(event)
         if not disease:
             continue
         counts[disease] = counts.get(disease, 0) + 1
@@ -114,18 +136,20 @@ def geo_points(days: int = 30) -> List[Dict[str, Any]]:
         ts = _parse_ts(event.get("ts"))
         if ts is None or not _within_days(ts, days, now):
             continue
-        lat = event.get("lat")
-        lon = event.get("lon")
+        meta = event.get("meta") or {}
+        lat = meta.get("lat") if meta.get("lat") is not None else event.get("lat")
+        lon = meta.get("lon") if meta.get("lon") is not None else event.get("lon")
         if lat is None or lon is None:
             continue
+        disease = _get_final_disease(event)
         points.append(
             {
                 "lat": lat,
                 "lon": lon,
-                "disease": event.get("disease") or event.get("disease_name"),
+                "disease": disease,
                 "ts": event.get("ts"),
                 "image_url": event.get("image_url"),
-                "confidence_pct": event.get("confidence_pct"),
+                "confidence_pct": _get_confidence_pct(event),
             }
         )
     points.sort(
