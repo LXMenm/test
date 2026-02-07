@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-KB_DIR = Path("data/kb")
+KB_DIR = Path(__file__).resolve().parent.parent / "data" / "kb"
 DISEASES_PATH = KB_DIR / "diseases.json"
 TREATMENTS_PATH = KB_DIR / "treatments.json"
 RULES_PATH = KB_DIR / "rules.json"

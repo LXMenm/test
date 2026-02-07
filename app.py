@@ -36,10 +36,11 @@ from personalization.profile_store import get_profile_path, load_profile, list_p
 
 app = FastAPI(title="Tomato Diagnosis API", version="1.0.0")
 kb = get_kb_manager()
-UPLOAD_DIR = Path(".cache/uploads")
+ROOT_DIR = Path(__file__).resolve().parent
+UPLOAD_DIR = ROOT_DIR / ".cache" / "uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
-WEB_DIR = Path("web")
+WEB_DIR = ROOT_DIR / "web"
 WEB_DIR.mkdir(parents=True, exist_ok=True)
 MAX_UPLOAD_MB = 8
 TOP_MARGIN = 0.15
