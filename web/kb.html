@@ -172,6 +172,9 @@
         overflow: hidden;
         text-overflow: ellipsis;
       }
+      .row-selected {
+        background: #e0f2fe;
+      }
       .modal-overlay {
         position: fixed;
         inset: 0;
@@ -590,6 +593,21 @@
         updateButtonStates();
       }
 
+      function toggleRowSelection(key, selectedSet) {
+        if (selectedSet.has(key)) {
+          selectedSet.delete(key);
+        } else {
+          selectedSet.add(key);
+        }
+        updateButtonStates();
+      }
+
+      function selectSingle(key, selectedSet) {
+        selectedSet.clear();
+        selectedSet.add(key);
+        updateButtonStates();
+      }
+
       function renderDiseaseTable(filter = "") {
         const tbody = document.getElementById("diseaseTable");
         const empty = document.getElementById("diseaseEmpty");
@@ -599,6 +617,7 @@
           (item) =>
             !keyword || item.name.includes(keyword) || (item.description || "").includes(keyword)
         );
+        syncSelection(state.selected.diseases, items.map((item) => item.name));
         if (items.length === 0) {
           empty.style.display = "block";
         } else {
@@ -606,22 +625,17 @@
         }
         items.forEach((item) => {
           const row = document.createElement("tr");
+          row.dataset.key = item.name;
+          row.classList.toggle("row-selected", state.selected.diseases.has(item.name));
           row.innerHTML = `
             <td><input type="checkbox" data-id="${item.name}" /></td>
             <td>${item.name}</td>
             <td class="truncate" title="${item.description || ""}">${item.description || ""}</td>
           `;
-          row.querySelector("input").addEventListener("change", (event) => {
-            if (event.target.checked) {
-              state.selected.diseases.add(item.name);
-            } else {
-              state.selected.diseases.delete(item.name);
-            }
-            updateButtonStates();
-          });
+          row.querySelector("input").checked = state.selected.diseases.has(item.name);
           tbody.appendChild(row);
         });
-        setCheckboxes("diseaseTable", state.selected.diseases);
+        updateButtonStates();
       }
 
       function renderTreatmentTable(filter = "") {
@@ -633,6 +647,7 @@
           const combined = `${item.disease || ""} ${item.treatment || ""} ${item.prevention || ""}`;
           return !keyword || combined.includes(keyword);
         });
+        syncSelection(state.selected.treatments, items.map((item) => item.disease));
         if (items.length === 0) {
           empty.style.display = "block";
         } else {
@@ -640,23 +655,18 @@
         }
         items.forEach((item) => {
           const row = document.createElement("tr");
+          row.dataset.key = item.disease;
+          row.classList.toggle("row-selected", state.selected.treatments.has(item.disease));
           row.innerHTML = `
             <td><input type="checkbox" data-id="${item.disease}" /></td>
             <td>${item.disease}</td>
             <td class="truncate" title="${item.treatment || ""}">${item.treatment || ""}</td>
             <td class="truncate" title="${item.prevention || ""}">${item.prevention || ""}</td>
           `;
-          row.querySelector("input").addEventListener("change", (event) => {
-            if (event.target.checked) {
-              state.selected.treatments.add(item.disease);
-            } else {
-              state.selected.treatments.delete(item.disease);
-            }
-            updateButtonStates();
-          });
+          row.querySelector("input").checked = state.selected.treatments.has(item.disease);
           tbody.appendChild(row);
         });
-        setCheckboxes("treatmentTable", state.selected.treatments);
+        updateButtonStates();
       }
 
       function renderRuleTable(filter = "") {
@@ -668,6 +678,7 @@
           const combined = `${item.crop_type || ""} ${item.disease || ""} ${item.symptoms || ""} ${item.evidence || ""}`;
           return !keyword || combined.includes(keyword);
         });
+        syncSelection(state.selected.rules, items.map((item) => item.rule_id));
         if (items.length === 0) {
           empty.style.display = "block";
         } else {
@@ -676,6 +687,8 @@
         items.forEach((rule) => {
           const symptomsText = Array.isArray(rule.symptoms) ? rule.symptoms.join(",") : "";
           const row = document.createElement("tr");
+          row.dataset.key = rule.rule_id;
+          row.classList.toggle("row-selected", state.selected.rules.has(rule.rule_id));
           row.innerHTML = `
             <td><input type="checkbox" data-id="${rule.rule_id}" /></td>
             <td>${rule.crop_type || ""}</td>
@@ -684,17 +697,10 @@
             <td>${rule.confidence ?? ""}</td>
             <td class="truncate" title="${rule.evidence || ""}">${rule.evidence || ""}</td>
           `;
-          row.querySelector("input").addEventListener("change", (event) => {
-            if (event.target.checked) {
-              state.selected.rules.add(rule.rule_id);
-            } else {
-              state.selected.rules.delete(rule.rule_id);
-            }
-            updateButtonStates();
-          });
+          row.querySelector("input").checked = state.selected.rules.has(rule.rule_id);
           tbody.appendChild(row);
         });
-        setCheckboxes("ruleTable", state.selected.rules);
+        updateButtonStates();
       }
 
       function renderMapTable(filter = "") {
@@ -706,6 +712,7 @@
           const combined = `${item.symptom || ""} ${(item.diseases || []).join(",")}`;
           return !keyword || combined.includes(keyword);
         });
+        syncSelection(state.selected.maps, items.map((item) => item.symptom));
         if (items.length === 0) {
           empty.style.display = "block";
         } else {
@@ -713,22 +720,17 @@
         }
         items.forEach((item) => {
           const row = document.createElement("tr");
+          row.dataset.key = item.symptom;
+          row.classList.toggle("row-selected", state.selected.maps.has(item.symptom));
           row.innerHTML = `
             <td><input type="checkbox" data-id="${item.symptom}" /></td>
             <td>${item.symptom || ""}</td>
             <td>${(item.diseases || []).join(",")}</td>
           `;
-          row.querySelector("input").addEventListener("change", (event) => {
-            if (event.target.checked) {
-              state.selected.maps.add(item.symptom);
-            } else {
-              state.selected.maps.delete(item.symptom);
-            }
-            updateButtonStates();
-          });
+          row.querySelector("input").checked = state.selected.maps.has(item.symptom);
           tbody.appendChild(row);
         });
-        setCheckboxes("mapTable", state.selected.maps);
+        updateButtonStates();
       }
 
       function refreshDiseaseSelects() {
@@ -1085,6 +1087,48 @@
         });
         openModal("map", "edit", symptom);
       });
+
+      function handleRowClick(event, items, selectedSet, keyField) {
+        const row = event.target.closest("tr");
+        if (!row) {
+          return;
+        }
+        const key = row.dataset.key;
+        if (!key) {
+          return;
+        }
+        if (event.target.type === "checkbox") {
+          toggleRowSelection(key, selectedSet);
+        } else if (event.metaKey || event.ctrlKey) {
+          toggleRowSelection(key, selectedSet);
+        } else {
+          if (selectedSet.size === 1 && selectedSet.has(key)) {
+            selectedSet.delete(key);
+          } else {
+            selectSingle(key, selectedSet);
+          }
+        }
+        items.forEach((item) => {
+          const rowEl = row.parentElement.querySelector(`tr[data-key=\"${item[keyField]}\"]`);
+          if (rowEl) {
+            rowEl.classList.toggle("row-selected", selectedSet.has(item[keyField]));
+            const cb = rowEl.querySelector(\"input[type='checkbox']\");
+            if (cb) {
+              cb.checked = selectedSet.has(item[keyField]);
+            }
+          }
+        });
+      }
+
+      function handleRowDoubleClick(event, selectedSet, refreshFn, editCallback) {
+        const row = event.target.closest("tr");
+        if (!row || !row.dataset.key) {
+          return;
+        }
+        selectSingle(row.dataset.key, selectedSet);
+        refreshFn();
+        editCallback();
+      }
       document.querySelector("[data-modal-save='map']").addEventListener("click", async () => {
         const symptom = document.getElementById("mapModalSymptom").value.trim();
         const select = document.getElementById("mapModalDiseases");
@@ -1139,6 +1183,48 @@
         }
       });
 
+      document.getElementById("diseaseTable").addEventListener("click", (event) => {
+        handleRowClick(event, state.diseases, state.selected.diseases, "name");
+      });
+      document.getElementById("treatmentTable").addEventListener("click", (event) => {
+        handleRowClick(event, state.treatments, state.selected.treatments, "disease");
+      });
+      document.getElementById("ruleTable").addEventListener("click", (event) => {
+        handleRowClick(event, state.rules, state.selected.rules, "rule_id");
+      });
+      document.getElementById("mapTable").addEventListener("click", (event) => {
+        handleRowClick(event, state.symptomMap, state.selected.maps, "symptom");
+      });
+
+      document.getElementById("diseaseTable").addEventListener("dblclick", (event) => {
+        handleRowDoubleClick(event, state.selected.diseases, () => {
+          renderDiseaseTable(document.getElementById("diseaseFilter").value);
+        }, () => {
+          document.getElementById("diseaseEditBtn").click();
+        });
+      });
+      document.getElementById("treatmentTable").addEventListener("dblclick", (event) => {
+        handleRowDoubleClick(event, state.selected.treatments, () => {
+          renderTreatmentTable(document.getElementById("treatmentFilter").value);
+        }, () => {
+          document.getElementById("treatmentEditBtn").click();
+        });
+      });
+      document.getElementById("ruleTable").addEventListener("dblclick", (event) => {
+        handleRowDoubleClick(event, state.selected.rules, () => {
+          renderRuleTable(document.getElementById("ruleFilter").value);
+        }, () => {
+          document.getElementById("ruleEditBtn").click();
+        });
+      });
+      document.getElementById("mapTable").addEventListener("dblclick", (event) => {
+        handleRowDoubleClick(event, state.selected.maps, () => {
+          renderMapTable(document.getElementById("mapFilter").value);
+        }, () => {
+          document.getElementById("mapEditBtn").click();
+        });
+      });
+
       document.getElementById("refreshDiseases").addEventListener("click", loadDiseases);
       document.getElementById("refreshTreatments").addEventListener("click", loadTreatments);
       document.getElementById("refreshRules").addEventListener("click", loadRules);
@@ -1158,19 +1244,39 @@
       });
 
       document.getElementById("diseaseSelectAll").addEventListener("change", (event) => {
-        toggleSelectAll(event, state.diseases.map((item) => item.name), state.selected.diseases);
+        const keyword = document.getElementById("diseaseFilter").value.trim();
+        const items = state.diseases.filter(
+          (item) =>
+            !keyword || item.name.includes(keyword) || (item.description || "").includes(keyword)
+        );
+        toggleSelectAll(event, items.map((item) => item.name), state.selected.diseases);
         renderDiseaseTable(document.getElementById("diseaseFilter").value);
       });
       document.getElementById("treatmentSelectAll").addEventListener("change", (event) => {
-        toggleSelectAll(event, state.treatments.map((item) => item.disease), state.selected.treatments);
+        const keyword = document.getElementById("treatmentFilter").value.trim();
+        const items = state.treatments.filter((item) => {
+          const combined = `${item.disease || ""} ${item.treatment || ""} ${item.prevention || ""}`;
+          return !keyword || combined.includes(keyword);
+        });
+        toggleSelectAll(event, items.map((item) => item.disease), state.selected.treatments);
         renderTreatmentTable(document.getElementById("treatmentFilter").value);
       });
       document.getElementById("ruleSelectAll").addEventListener("change", (event) => {
-        toggleSelectAll(event, state.rules.map((item) => item.rule_id), state.selected.rules);
+        const keyword = document.getElementById("ruleFilter").value.trim();
+        const items = state.rules.filter((item) => {
+          const combined = `${item.crop_type || ""} ${item.disease || ""} ${item.symptoms || ""} ${item.evidence || ""}`;
+          return !keyword || combined.includes(keyword);
+        });
+        toggleSelectAll(event, items.map((item) => item.rule_id), state.selected.rules);
         renderRuleTable(document.getElementById("ruleFilter").value);
       });
       document.getElementById("mapSelectAll").addEventListener("change", (event) => {
-        toggleSelectAll(event, state.symptomMap.map((item) => item.symptom), state.selected.maps);
+        const keyword = document.getElementById("mapFilter").value.trim();
+        const items = state.symptomMap.filter((item) => {
+          const combined = `${item.symptom || ""} ${(item.diseases || []).join(",")}`;
+          return !keyword || combined.includes(keyword);
+        });
+        toggleSelectAll(event, items.map((item) => item.symptom), state.selected.maps);
         renderMapTable(document.getElementById("mapFilter").value);
       });
 
