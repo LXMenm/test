@@ -170,6 +170,76 @@
     .base-list li:hover {
       background: #f3f4f6;
     }
+    .modal-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.45);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 50;
+    }
+    .modal {
+      background: #ffffff;
+      border-radius: 12px;
+      width: 520px;
+      max-width: 92vw;
+      box-shadow: 0 12px 30px rgba(0, 0, 0, 0.2);
+      padding: 16px 20px 20px;
+      position: relative;
+      animation: fadeIn 0.2s ease-in-out;
+    }
+    .modal h3 {
+      margin: 0 0 16px;
+      font-size: 16px;
+    }
+    .modal-close {
+      position: absolute;
+      right: 12px;
+      top: 10px;
+      border: none;
+      background: transparent;
+      font-size: 18px;
+      cursor: pointer;
+      color: #6b7280;
+    }
+    .modal-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+      margin-top: 16px;
+    }
+    .field-error {
+      color: #b91c1c;
+      font-size: 12px;
+      margin-left: 160px;
+      margin-top: -4px;
+      margin-bottom: 8px;
+    }
+    .confirm-overlay {
+      position: absolute;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.35);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      border-radius: 12px;
+    }
+    .confirm-box {
+      background: #ffffff;
+      border-radius: 10px;
+      padding: 16px;
+      width: 360px;
+      box-shadow: 0 10px 20px rgba(0, 0, 0, 0.2);
+    }
+    .confirm-box p {
+      margin: 0 0 16px;
+      font-size: 14px;
+    }
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(-4px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
   </style>
 </head>
 <body>
@@ -178,7 +248,10 @@
   </header>
   <main>
     <section class="panel" style="max-width: 240px;">
-      <h2>农户列表</h2>
+      <div class="inline" style="justify-content: space-between;">
+        <h2>农户列表</h2>
+        <button id="addFarmerBtn">新增农户</button>
+      </div>
       <ul id="profileList" class="profiles"></ul>
     </section>
     <section class="panel">
@@ -289,6 +362,49 @@
     </section>
   </main>
 
+  <div id="farmerModal" class="modal-overlay">
+    <div class="modal">
+      <button class="modal-close" id="closeFarmerModal">×</button>
+      <h3>新增农户档案</h3>
+      <div class="form-row">
+        <label for="newFarmerId">farmer_id</label>
+        <input id="newFarmerId" class="input" type="text" placeholder="例如 F002" />
+      </div>
+      <div id="newFarmerIdError" class="field-error"></div>
+      <div class="form-row">
+        <label for="newFarmerName">name</label>
+        <input id="newFarmerName" class="input" type="text" placeholder="农户姓名" />
+      </div>
+      <div id="newFarmerNameError" class="field-error"></div>
+      <div class="form-row">
+        <label for="newConfirmLow">confirm_when_low_confidence</label>
+        <input id="newConfirmLow" type="checkbox" checked />
+      </div>
+      <div class="form-row">
+        <label for="newPreferOrganic">prefer_organic</label>
+        <input id="newPreferOrganic" type="checkbox" />
+      </div>
+      <div class="form-row">
+        <label for="newHarvestWindow">harvest_window_days</label>
+        <input id="newHarvestWindow" class="input" type="number" min="0" max="365" />
+      </div>
+      <div id="newHarvestError" class="field-error"></div>
+      <div class="modal-actions">
+        <button id="cancelFarmerBtn">取消</button>
+        <button id="createFarmerBtn">确认创建</button>
+      </div>
+      <div id="confirmExit" class="confirm-overlay">
+        <div class="confirm-box">
+          <p>退出后信息不保存，确定退出吗？</p>
+          <div class="modal-actions">
+            <button id="continueEditBtn">继续编辑</button>
+            <button id="exitModalBtn">退出</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <script>
     const profileList = document.getElementById("profileList");
     const currentId = document.getElementById("currentId");
@@ -324,6 +440,24 @@
 
     let activeId = null;
     let profileData = null;
+    let modalDirty = false;
+
+    const addFarmerBtn = document.getElementById("addFarmerBtn");
+    const farmerModal = document.getElementById("farmerModal");
+    const closeFarmerModalBtn = document.getElementById("closeFarmerModal");
+    const cancelFarmerBtn = document.getElementById("cancelFarmerBtn");
+    const createFarmerBtn = document.getElementById("createFarmerBtn");
+    const newFarmerId = document.getElementById("newFarmerId");
+    const newFarmerName = document.getElementById("newFarmerName");
+    const newConfirmLow = document.getElementById("newConfirmLow");
+    const newPreferOrganic = document.getElementById("newPreferOrganic");
+    const newHarvestWindow = document.getElementById("newHarvestWindow");
+    const newFarmerIdError = document.getElementById("newFarmerIdError");
+    const newFarmerNameError = document.getElementById("newFarmerNameError");
+    const newHarvestError = document.getElementById("newHarvestError");
+    const confirmExit = document.getElementById("confirmExit");
+    const continueEditBtn = document.getElementById("continueEditBtn");
+    const exitModalBtn = document.getElementById("exitModalBtn");
 
     function setStatus(message, isSuccess = false) {
       status.textContent = message;
@@ -344,6 +478,149 @@
         throw new Error(text || `请求失败: ${response.status}`);
       }
       return response.json();
+    }
+
+    function openFarmerModal() {
+      farmerModal.style.display = "flex";
+      modalDirty = false;
+      resetFarmerForm();
+    }
+
+    function closeFarmerModal(force = false) {
+      if (!force && modalDirty) {
+        showExitConfirm();
+        return;
+      }
+      confirmExit.style.display = "none";
+      farmerModal.style.display = "none";
+      resetFarmerForm();
+    }
+
+    function resetFarmerForm() {
+      newFarmerId.value = "";
+      newFarmerName.value = "";
+      newConfirmLow.checked = true;
+      newPreferOrganic.checked = false;
+      newHarvestWindow.value = "";
+      newFarmerIdError.textContent = "";
+      newFarmerNameError.textContent = "";
+      newHarvestError.textContent = "";
+      confirmExit.style.display = "none";
+      modalDirty = false;
+    }
+
+    function markDirty() {
+      modalDirty = true;
+    }
+
+    function showExitConfirm() {
+      confirmExit.style.display = "flex";
+    }
+
+    function hideExitConfirm() {
+      confirmExit.style.display = "none";
+    }
+
+    function validateNewFarmer() {
+      let valid = true;
+      const idValue = newFarmerId.value.trim();
+      const nameValue = newFarmerName.value.trim();
+      const idPattern = /^[A-Za-z0-9_-]{2,20}$/;
+
+      newFarmerIdError.textContent = "";
+      newFarmerNameError.textContent = "";
+      newHarvestError.textContent = "";
+
+      if (!idValue || !idPattern.test(idValue)) {
+        newFarmerIdError.textContent = "ID 必填，格式为 2-20 位字母数字或 _-";
+        valid = false;
+      }
+      if (!nameValue) {
+        newFarmerNameError.textContent = "姓名为必填项";
+        valid = false;
+      }
+      const harvestRaw = newHarvestWindow.value.trim();
+      if (harvestRaw !== "") {
+        const parsed = Number.parseInt(harvestRaw, 10);
+        if (Number.isNaN(parsed) || parsed < 0 || parsed > 365) {
+          newHarvestError.textContent = "采收期必须是 0~365 的整数";
+          valid = false;
+        }
+      }
+      return valid;
+    }
+
+    async function createFarmer() {
+      if (!validateNewFarmer()) {
+        return;
+      }
+      const farmerId = newFarmerId.value.trim();
+      const payload = {
+        farmer_id: farmerId,
+        name: newFarmerName.value.trim(),
+        confirm_when_low_confidence: newConfirmLow.checked,
+        constraints: {
+          prefer_organic: newPreferOrganic.checked,
+          harvest_window_days: newHarvestWindow.value.trim()
+            ? Number.parseInt(newHarvestWindow.value.trim(), 10)
+            : null,
+        },
+      };
+
+      try {
+        let response = await fetch(`/api/profiles`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+
+        if (response.status === 409) {
+          newFarmerIdError.textContent = "农户ID已存在";
+          return;
+        }
+
+        if (!response.ok) {
+          if (response.status === 404 || response.status === 405) {
+            response = await fetch(`/api/profiles/${farmerId}`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ farmer_id: farmerId, name: payload.name }),
+            });
+          }
+        }
+
+        if (!response.ok) {
+          const text = await response.text();
+          throw new Error(text || "创建失败");
+        }
+
+        let profile = null;
+        try {
+          profile = await fetchJson(`/api/profiles/${farmerId}`);
+        } catch (error) {
+          profile = null;
+        }
+        const mergedProfile = {
+          ...(profile || { farmer_id: farmerId }),
+          name: payload.name,
+          confirm_when_low_confidence: payload.confirm_when_low_confidence,
+          constraints: {
+            ...(profile && profile.constraints ? profile.constraints : {}),
+            ...payload.constraints,
+          },
+        };
+        await fetchJson(`/api/profiles/${farmerId}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(mergedProfile),
+        });
+
+        closeFarmerModal(true);
+        await loadProfiles();
+        await selectProfile(farmerId);
+      } catch (error) {
+        setStatus(error.message || "创建农户失败");
+      }
     }
 
     function defaultProfile(farmerId) {
@@ -603,6 +880,30 @@
         setStatus(error.message || "保存失败");
       }
     }
+
+    addFarmerBtn.addEventListener("click", openFarmerModal);
+    closeFarmerModalBtn.addEventListener("click", () => closeFarmerModal());
+    cancelFarmerBtn.addEventListener("click", () => closeFarmerModal());
+    farmerModal.addEventListener("click", (event) => {
+      if (event.target === farmerModal) {
+        closeFarmerModal();
+      }
+    });
+    continueEditBtn.addEventListener("click", () => {
+      hideExitConfirm();
+    });
+    exitModalBtn.addEventListener("click", () => {
+      hideExitConfirm();
+      closeFarmerModal(true);
+    });
+
+    newFarmerId.addEventListener("input", markDirty);
+    newFarmerName.addEventListener("input", markDirty);
+    newConfirmLow.addEventListener("change", markDirty);
+    newPreferOrganic.addEventListener("change", markDirty);
+    newHarvestWindow.addEventListener("input", markDirty);
+
+    createFarmerBtn.addEventListener("click", createFarmer);
 
     addIngredientBtn.addEventListener("click", () => {
       const value = ingredientInput.value.trim();
