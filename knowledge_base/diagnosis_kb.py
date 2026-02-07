@@ -3,6 +3,8 @@
 定义基于规则的番茄病害诊断知识
 """
 
+import uuid
+
 from .kb_store import ensure_kb_files, load_rules, load_symptom_map, save_rules, save_symptom_map
 
 
@@ -118,6 +120,8 @@ class RuleDiagnosisKnowledge:
             self.rules = self._convert_default_rules(default_rules)
             if self.rules:
                 save_rules({"rules": self.rules})
+        if self._ensure_rule_ids():
+            save_rules({"rules": self.rules})
         symptom_data = load_symptom_map()
         if symptom_data.get("symptom_map"):
             self.symptom_map = symptom_data["symptom_map"]
@@ -150,6 +154,7 @@ class RuleDiagnosisKnowledge:
     def add_rule(self, crop_type, symptoms, disease, confidence, evidence):
         """新增规则"""
         rule = {
+            "rule_id": uuid.uuid4().hex,
             "crop_type": crop_type,
             "symptoms": symptoms,
             "disease": disease,
@@ -158,6 +163,22 @@ class RuleDiagnosisKnowledge:
         }
         self.rules.append(rule)
         save_rules({"rules": self.rules})
+        return rule["rule_id"]
+
+    def update_rule(self, rule_id, crop_type, symptoms, disease, confidence, evidence):
+        updated = False
+        for rule in self.rules:
+            if rule.get("rule_id") == rule_id:
+                rule["crop_type"] = crop_type
+                rule["symptoms"] = symptoms
+                rule["disease"] = disease
+                rule["confidence"] = confidence
+                rule["evidence"] = evidence
+                updated = True
+                break
+        if updated:
+            save_rules({"rules": self.rules})
+        return updated
 
     def get_symptom_map(self):
         return self.symptom_map
@@ -209,3 +230,42 @@ class RuleDiagnosisKnowledge:
         if updated:
             save_rules({"rules": self.rules})
         return updated
+
+    def delete_rules(self, rule_ids):
+        remaining = [rule for rule in self.rules if rule.get("rule_id") not in rule_ids]
+        deleted = len(self.rules) - len(remaining)
+        self.rules = remaining
+        if deleted:
+            save_rules({"rules": self.rules})
+        return deleted
+
+    def delete_rules_by_disease(self, disease):
+        remaining = [rule for rule in self.rules if rule.get("disease") != disease]
+        deleted = len(self.rules) - len(remaining)
+        self.rules = remaining
+        if deleted:
+            save_rules({"rules": self.rules})
+        return deleted
+
+    def remove_disease_from_symptom_map(self, disease):
+        removed = 0
+        updated = False
+        for symptom, diseases in list(self.symptom_map.items()):
+            if disease in diseases:
+                self.symptom_map[symptom] = [item for item in diseases if item != disease]
+                removed += 1
+                updated = True
+            if symptom in self.symptom_map and not self.symptom_map[symptom]:
+                self.symptom_map.pop(symptom, None)
+                updated = True
+        if updated:
+            save_symptom_map({"symptom_map": self.symptom_map})
+        return removed
+
+    def _ensure_rule_ids(self):
+        changed = False
+        for rule in self.rules:
+            if not rule.get("rule_id"):
+                rule["rule_id"] = uuid.uuid4().hex
+                changed = True
+        return changed

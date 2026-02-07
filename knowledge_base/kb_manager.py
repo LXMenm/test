@@ -235,10 +235,53 @@ class KnowledgeBaseManager:
         return self.diagnosis_kb.list_rules(crop_type)
 
     def add_rule(self, crop_type, symptoms, disease, confidence, evidence):
-        self.diagnosis_kb.add_rule(crop_type, symptoms, disease, confidence, evidence)
+        return self.diagnosis_kb.add_rule(crop_type, symptoms, disease, confidence, evidence)
+
+    def update_rule(self, rule_id, crop_type, symptoms, disease, confidence, evidence):
+        return self.diagnosis_kb.update_rule(rule_id, crop_type, symptoms, disease, confidence, evidence)
+
+    def delete_rules(self, rule_ids):
+        return self.diagnosis_kb.delete_rules(rule_ids)
+
+    def delete_rules_by_disease(self, disease):
+        return self.diagnosis_kb.delete_rules_by_disease(disease)
 
     def list_symptom_map(self):
         return self.diagnosis_kb.list_symptom_map()
 
     def upsert_symptom_mapping(self, symptom, diseases):
         self.diagnosis_kb.upsert_symptom_mapping(symptom, diseases)
+
+    def remove_disease_from_symptom_map(self, disease):
+        return self.diagnosis_kb.remove_disease_from_symptom_map(disease)
+
+    def delete_diseases(self, names):
+        deleted = 0
+        warnings = []
+        for name in names:
+            if not self.delete_disease(name):
+                continue
+            deleted += 1
+            self.delete_treatment_plan(name)
+            self.delete_rules_by_disease(name)
+            self.remove_disease_from_symptom_map(name)
+        return {"deleted": deleted, "warnings": warnings}
+
+    def delete_treatments(self, diseases):
+        deleted = 0
+        for disease in diseases:
+            if self.delete_treatment_plan(disease):
+                deleted += 1
+        return deleted
+
+    def delete_symptom_map_entries(self, symptoms):
+        deleted = 0
+        for symptom in symptoms:
+            if symptom in self.diagnosis_kb.symptom_map:
+                self.diagnosis_kb.symptom_map.pop(symptom, None)
+                deleted += 1
+        if deleted:
+            from .kb_store import save_symptom_map
+
+            save_symptom_map({"symptom_map": self.diagnosis_kb.symptom_map})
+        return deleted

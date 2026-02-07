@@ -570,15 +570,43 @@ def list_kb_diseases() -> dict:
 
 
 @app.post("/api/kb/diseases")
-def upsert_kb_disease(payload: dict = Body(...)) -> dict[str, bool]:
+def create_kb_disease(payload: dict = Body(...)) -> dict[str, bool]:
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="参数非法")
     name = (payload.get("name") or "").strip()
     description = (payload.get("description") or "").strip()
     if not name or not description:
         raise HTTPException(status_code=400, detail="病害名称与描述不能为空")
+    existing = {item["name"] for item in kb.list_diseases()}
+    if name in existing:
+        raise HTTPException(status_code=409, detail="病害已存在，请使用编辑")
     kb.upsert_disease(name, description)
     return {"ok": True}
+
+
+@app.put("/api/kb/diseases/{name}")
+def update_kb_disease(name: str, payload: dict = Body(...)) -> dict[str, bool]:
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="参数非法")
+    description = (payload.get("description") or "").strip()
+    if not description:
+        raise HTTPException(status_code=400, detail="病害描述不能为空")
+    existing = {item["name"] for item in kb.list_diseases()}
+    if name not in existing:
+        raise HTTPException(status_code=404, detail="病害不存在")
+    kb.upsert_disease(name, description)
+    return {"ok": True}
+
+
+@app.delete("/api/kb/diseases")
+def delete_kb_diseases(payload: dict = Body(...)) -> dict:
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="参数非法")
+    names = payload.get("names")
+    if not isinstance(names, list) or not names:
+        raise HTTPException(status_code=400, detail="病害列表不能为空")
+    result = kb.delete_diseases([str(item).strip() for item in names if str(item).strip()])
+    return {"ok": True, **result}
 
 
 @app.get("/api/kb/treatments")
@@ -587,7 +615,7 @@ def list_kb_treatments() -> dict:
 
 
 @app.post("/api/kb/treatments")
-def upsert_kb_treatments(payload: dict = Body(...)) -> dict[str, bool]:
+def create_kb_treatments(payload: dict = Body(...)) -> dict[str, bool]:
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="参数非法")
     disease = (payload.get("disease") or "").strip()
@@ -595,8 +623,37 @@ def upsert_kb_treatments(payload: dict = Body(...)) -> dict[str, bool]:
     prevention = (payload.get("prevention") or "").strip()
     if not disease or not treatment or not prevention:
         raise HTTPException(status_code=400, detail="病害、治疗与预防不能为空")
+    existing = {item["disease"] for item in kb.list_treatments()}
+    if disease in existing:
+        raise HTTPException(status_code=409, detail="治疗方案已存在，请使用编辑")
     kb.upsert_treatment_plan(disease, treatment, prevention)
     return {"ok": True}
+
+
+@app.put("/api/kb/treatments/{disease}")
+def update_kb_treatments(disease: str, payload: dict = Body(...)) -> dict[str, bool]:
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="参数非法")
+    treatment = (payload.get("treatment") or "").strip()
+    prevention = (payload.get("prevention") or "").strip()
+    if not treatment or not prevention:
+        raise HTTPException(status_code=400, detail="治疗与预防不能为空")
+    existing = {item["disease"] for item in kb.list_treatments()}
+    if disease not in existing:
+        raise HTTPException(status_code=404, detail="治疗方案不存在")
+    kb.upsert_treatment_plan(disease, treatment, prevention)
+    return {"ok": True}
+
+
+@app.delete("/api/kb/treatments")
+def delete_kb_treatments(payload: dict = Body(...)) -> dict:
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="参数非法")
+    diseases = payload.get("diseases")
+    if not isinstance(diseases, list) or not diseases:
+        raise HTTPException(status_code=400, detail="病害列表不能为空")
+    deleted = kb.delete_treatments([str(item).strip() for item in diseases if str(item).strip()])
+    return {"ok": True, "deleted": deleted}
 
 
 @app.get("/api/kb/rules")
@@ -623,7 +680,42 @@ def create_kb_rule(payload: dict = Body(...)) -> dict[str, bool]:
     symptoms_list = [str(item).strip() for item in symptoms if str(item).strip()]
     if not symptoms_list or not disease:
         raise HTTPException(status_code=400, detail="症状与病害不能为空")
-    kb.add_rule(crop_type, symptoms_list, disease, confidence, evidence)
+    rule_id = kb.add_rule(crop_type, symptoms_list, disease, confidence, evidence)
+    return {"ok": True, "rule_id": rule_id}
+
+
+@app.delete("/api/kb/rules")
+def delete_kb_rules(payload: dict = Body(...)) -> dict:
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="参数非法")
+    rule_ids = payload.get("rule_ids")
+    if not isinstance(rule_ids, list) or not rule_ids:
+        raise HTTPException(status_code=400, detail="规则列表不能为空")
+    deleted = kb.delete_rules([str(item).strip() for item in rule_ids if str(item).strip()])
+    return {"ok": True, "deleted": deleted}
+
+
+@app.put("/api/kb/rules/{rule_id}")
+def update_kb_rule(rule_id: str, payload: dict = Body(...)) -> dict[str, bool]:
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="参数非法")
+    crop_type = (payload.get("crop_type") or "").strip() or "番茄"
+    symptoms = payload.get("symptoms")
+    disease = (payload.get("disease") or "").strip()
+    evidence = (payload.get("evidence") or "").strip()
+    try:
+        confidence = float(payload.get("confidence"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="置信度必须为数字") from None
+    if confidence < 0 or confidence > 1:
+        raise HTTPException(status_code=400, detail="置信度需在 0~1 之间")
+    if not isinstance(symptoms, list) or not symptoms:
+        raise HTTPException(status_code=400, detail="症状不能为空")
+    symptoms_list = [str(item).strip() for item in symptoms if str(item).strip()]
+    if not symptoms_list or not disease:
+        raise HTTPException(status_code=400, detail="症状与病害不能为空")
+    if not kb.update_rule(rule_id, crop_type, symptoms_list, disease, confidence, evidence):
+        raise HTTPException(status_code=404, detail="规则不存在")
     return {"ok": True}
 
 
@@ -633,7 +725,7 @@ def list_kb_symptom_map() -> dict:
 
 
 @app.post("/api/kb/symptom-map")
-def upsert_kb_symptom_map(payload: dict = Body(...)) -> dict[str, bool]:
+def create_kb_symptom_map(payload: dict = Body(...)) -> dict[str, bool]:
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="参数非法")
     symptom = (payload.get("symptom") or "").strip()
@@ -643,8 +735,39 @@ def upsert_kb_symptom_map(payload: dict = Body(...)) -> dict[str, bool]:
     disease_list = [str(item).strip() for item in diseases if str(item).strip()]
     if not disease_list:
         raise HTTPException(status_code=400, detail="病害不能为空")
+    existing = {item["symptom"] for item in kb.list_symptom_map()}
+    if symptom in existing:
+        raise HTTPException(status_code=409, detail="症状映射已存在，请使用编辑")
     kb.upsert_symptom_mapping(symptom, disease_list)
     return {"ok": True}
+
+
+@app.put("/api/kb/symptom-map/{symptom}")
+def update_kb_symptom_map(symptom: str, payload: dict = Body(...)) -> dict[str, bool]:
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="参数非法")
+    diseases = payload.get("diseases")
+    if not isinstance(diseases, list) or not diseases:
+        raise HTTPException(status_code=400, detail="病害不能为空")
+    existing = {item["symptom"] for item in kb.list_symptom_map()}
+    if symptom not in existing:
+        raise HTTPException(status_code=404, detail="症状映射不存在")
+    disease_list = [str(item).strip() for item in diseases if str(item).strip()]
+    if not disease_list:
+        raise HTTPException(status_code=400, detail="病害不能为空")
+    kb.upsert_symptom_mapping(symptom, disease_list)
+    return {"ok": True}
+
+
+@app.delete("/api/kb/symptom-map")
+def delete_kb_symptom_map(payload: dict = Body(...)) -> dict:
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="参数非法")
+    symptoms = payload.get("symptoms")
+    if not isinstance(symptoms, list) or not symptoms:
+        raise HTTPException(status_code=400, detail="症状列表不能为空")
+    deleted = kb.delete_symptom_map_entries([str(item).strip() for item in symptoms if str(item).strip()])
+    return {"ok": True, "deleted": deleted}
 
 
 if __name__ == "__main__":
