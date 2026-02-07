@@ -1,0 +1,1142 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>农户档案</title>
+  <style>
+    :root {
+      font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      color: #1f2933;
+      background: #f6f7fb;
+    }
+    body {
+      margin: 0;
+    }
+    header {
+      padding: 16px 24px;
+      background: #ffffff;
+      border-bottom: 1px solid #e5e7eb;
+    }
+    header h1 {
+      margin: 0;
+      font-size: 18px;
+    }
+    main {
+      display: flex;
+      gap: 16px;
+      padding: 20px 24px;
+    }
+    .panel {
+      background: #ffffff;
+      border-radius: 10px;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+      padding: 16px;
+      flex: 1;
+      min-height: 520px;
+    }
+    .panel h2 {
+      margin: 0 0 12px;
+      font-size: 16px;
+    }
+    .profiles {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+    }
+    .profiles li {
+      padding: 8px 10px;
+      border-radius: 6px;
+      cursor: pointer;
+      border: 1px solid transparent;
+      margin-bottom: 6px;
+    }
+    .profiles li.active {
+      background: #e0f2fe;
+      border-color: #bae6fd;
+    }
+    .profiles li:hover {
+      background: #f3f4f6;
+    }
+    .controls {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 12px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    button {
+      border: 1px solid #d1d5db;
+      background: #ffffff;
+      padding: 6px 12px;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+    .status {
+      font-size: 12px;
+      color: #b91c1c;
+    }
+    .status.success {
+      color: #15803d;
+    }
+    .cards {
+      display: grid;
+      gap: 16px;
+    }
+    .card {
+      background: #f9fafb;
+      border-radius: 10px;
+      padding: 16px;
+      border: 1px solid #e5e7eb;
+    }
+    .card h3 {
+      margin: 0 0 12px;
+      font-size: 14px;
+    }
+    .form-row {
+      display: flex;
+      gap: 16px;
+      align-items: center;
+      margin-bottom: 10px;
+    }
+    .form-label {
+      width: 160px;
+      font-size: 13px;
+      color: #374151;
+      flex-shrink: 0;
+    }
+    .form-field {
+      flex: 1;
+    }
+    .muted {
+      color: #6b7280;
+      font-size: 13px;
+    }
+    .input, select, textarea {
+      border: 1px solid #d1d5db;
+      border-radius: 6px;
+      padding: 6px 10px;
+      font-size: 13px;
+      background: #ffffff;
+      width: 100%;
+      box-sizing: border-box;
+    }
+    textarea {
+      min-height: 80px;
+      resize: vertical;
+    }
+    .inline {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+    .tag-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 6px;
+    }
+    .tag {
+      background: #e0f2fe;
+      color: #0369a1;
+      padding: 2px 6px;
+      border-radius: 999px;
+      font-size: 12px;
+      display: inline-flex;
+      gap: 4px;
+      align-items: center;
+    }
+    .tag button {
+      padding: 0 4px;
+      border: none;
+      background: transparent;
+      color: inherit;
+      cursor: pointer;
+      font-size: 12px;
+    }
+    .empty-state {
+      color: #6b7280;
+      font-size: 13px;
+      padding: 8px 0;
+    }
+    .bases-layout {
+      display: grid;
+      grid-template-columns: 180px 1fr;
+      gap: 12px;
+    }
+    .base-list {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+    }
+    .base-list li {
+      padding: 6px 8px;
+      border-radius: 6px;
+      cursor: pointer;
+      margin-bottom: 6px;
+      border: 1px solid transparent;
+    }
+    .base-list li.active {
+      background: #dcfce7;
+      border-color: #bbf7d0;
+    }
+    .base-list li:hover {
+      background: #f3f4f6;
+    }
+    .modal-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.45);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 50;
+    }
+    .modal {
+      background: #ffffff;
+      border-radius: 12px;
+      width: 520px;
+      max-width: 92vw;
+      box-shadow: 0 12px 30px rgba(0, 0, 0, 0.2);
+      padding: 16px 20px 20px;
+      position: relative;
+      animation: fadeIn 0.2s ease-in-out;
+    }
+    .modal h3 {
+      margin: 0 0 16px;
+      font-size: 16px;
+    }
+    .modal-close {
+      position: absolute;
+      right: 12px;
+      top: 10px;
+      border: none;
+      background: transparent;
+      font-size: 18px;
+      cursor: pointer;
+      color: #6b7280;
+    }
+    .modal-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+      margin-top: 16px;
+    }
+    .field-error {
+      color: #b91c1c;
+      font-size: 12px;
+      margin-left: 160px;
+      margin-top: -4px;
+      margin-bottom: 8px;
+    }
+    .confirm-overlay {
+      position: absolute;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.35);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      border-radius: 12px;
+    }
+    .confirm-box {
+      background: #ffffff;
+      border-radius: 10px;
+      padding: 16px;
+      width: 360px;
+      box-shadow: 0 10px 20px rgba(0, 0, 0, 0.2);
+    }
+    .confirm-box p {
+      margin: 0 0 16px;
+      font-size: 14px;
+    }
+    .req {
+      color: #d00;
+      margin-left: 4px;
+      font-weight: 700;
+    }
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(-4px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>农户档案管理</h1>
+  </header>
+  <main>
+    <section class="panel" style="max-width: 240px;">
+      <div class="inline" style="justify-content: space-between;">
+        <h2>农户列表</h2>
+        <button id="addFarmerBtn">新增农户</button>
+      </div>
+      <ul id="profileList" class="profiles"></ul>
+    </section>
+    <section class="panel">
+      <h2 id="currentId">未选择</h2>
+      <div class="controls">
+        <button id="refreshBtn">刷新</button>
+        <button id="saveBtn">保存</button>
+        <button id="deleteBtn" disabled>删除</button>
+        <span id="status" class="status"></span>
+      </div>
+      <div class="cards">
+        <div class="card">
+          <h3>农户基本信息</h3>
+          <div class="form-row">
+            <div class="form-label" data-field="farmer_id"></div>
+            <div class="form-field">
+              <input id="farmer_id" class="input" type="text" readonly />
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-label" data-field="name"></div>
+            <div class="form-field">
+              <input id="name" class="input" type="text" />
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-label" data-field="active_base_id"></div>
+            <div class="form-field">
+              <select id="active_base_id" class="input"></select>
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-label" data-field="confirm_when_low_confidence"></div>
+            <div class="form-field">
+              <input id="confirm_when_low_confidence" type="checkbox" />
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-label" data-field="schema_version"></div>
+            <div class="form-field">
+              <input id="schema_version" class="input" type="text" readonly />
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-label" data-field="updated_at"></div>
+            <div class="form-field">
+              <input id="updated_at" class="input" type="text" readonly disabled />
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>治疗约束（constraints）</h3>
+          <div class="form-row">
+            <div class="form-label" data-field="prefer_organic"></div>
+            <div class="form-field">
+              <input id="prefer_organic" type="checkbox" />
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-label" data-field="harvest_window_days"></div>
+            <div class="form-field">
+              <input id="harvest_window_days" class="input" type="number" min="0" max="365" />
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-label" data-field="banned_ingredients"></div>
+            <div class="form-field">
+              <div class="inline">
+                <input id="banned_ingredients_input" class="input" type="text" placeholder="输入成分" />
+                <button id="addIngredientBtn">添加</button>
+              </div>
+              <div id="bannedIngredients" class="tag-list"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>基地信息（bases）</h3>
+          <div class="bases-layout">
+            <div>
+              <div class="inline" style="margin-bottom: 8px;">
+                <button id="addBaseBtn">新增基地</button>
+                <button id="removeBaseBtn">删除基地</button>
+              </div>
+              <ul id="baseList" class="base-list"></ul>
+            </div>
+            <div>
+              <div id="basesEmpty" class="empty-state">暂无基地，请点击【新增基地】</div>
+              <div id="basesForm">
+                <div class="form-row">
+                  <div class="form-label" data-field="base_id"></div>
+                  <div class="form-field">
+                    <input id="base_id" class="input" type="text" readonly />
+                  </div>
+                </div>
+                <div class="form-row">
+                  <div class="form-label" data-field="base_name"></div>
+                  <div class="form-field">
+                    <input id="base_name" class="input" type="text" />
+                  </div>
+                </div>
+                <div class="form-row">
+                  <div class="form-label" data-field="location"></div>
+                  <div class="form-field">
+                    <input id="location" class="input" type="text" />
+                  </div>
+                </div>
+                <div class="form-row">
+                  <div class="form-label" data-field="province"></div>
+                  <div class="form-field">
+                    <input id="province" class="input" type="text" />
+                  </div>
+                </div>
+                <div class="form-row">
+                  <div class="form-label" data-field="facility"></div>
+                  <div class="form-field">
+                    <input id="facility" class="input" type="text" />
+                  </div>
+                </div>
+                <div class="form-row">
+                  <div class="form-label" data-field="environment"></div>
+                  <div class="form-field">
+                    <input id="environment" class="input" type="text" />
+                  </div>
+                </div>
+                <div class="form-row">
+                  <div class="form-label" data-field="growth_stage"></div>
+                  <div class="form-field">
+                    <input id="growth_stage" class="input" type="text" />
+                  </div>
+                </div>
+                <div class="form-row">
+                  <div class="form-label" data-field="notes"></div>
+                  <div class="form-field">
+                    <textarea id="notes" class="input"></textarea>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <div id="farmerModal" class="modal-overlay">
+    <div class="modal">
+      <button class="modal-close" id="closeFarmerModal">×</button>
+      <h3>新增农户档案</h3>
+      <div id="newFarmerGeneralError" class="field-error"></div>
+      <div class="form-row">
+        <div class="form-label" data-field="farmer_id"></div>
+        <div class="form-field">
+          <div class="muted">系统自动生成</div>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-label" data-field="name" data-req="true"></div>
+        <div class="form-field">
+          <input id="newFarmerName" class="input" type="text" placeholder="农户姓名" />
+        </div>
+      </div>
+      <div id="newFarmerNameError" class="field-error"></div>
+      <div class="form-row">
+        <div class="form-label" data-field="confirm_when_low_confidence"></div>
+        <div class="form-field">
+          <input id="newConfirmLow" type="checkbox" checked />
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-label" data-field="prefer_organic"></div>
+        <div class="form-field">
+          <input id="newPreferOrganic" type="checkbox" />
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-label" data-field="harvest_window_days"></div>
+        <div class="form-field">
+          <input id="newHarvestWindow" class="input" type="number" min="0" max="365" />
+        </div>
+      </div>
+      <div id="newHarvestError" class="field-error"></div>
+      <div class="modal-actions">
+        <button id="cancelFarmerBtn">取消</button>
+        <button id="createFarmerBtn">确认创建</button>
+      </div>
+      <div id="confirmExit" class="confirm-overlay">
+        <div class="confirm-box">
+          <p>退出后信息不保存，确定退出吗？</p>
+          <div class="modal-actions">
+            <button id="continueEditBtn">继续编辑</button>
+            <button id="exitModalBtn">退出</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const profileList = document.getElementById("profileList");
+    const currentId = document.getElementById("currentId");
+    const refreshBtn = document.getElementById("refreshBtn");
+    const saveBtn = document.getElementById("saveBtn");
+    const deleteBtn = document.getElementById("deleteBtn");
+    const status = document.getElementById("status");
+
+    const farmerIdInput = document.getElementById("farmer_id");
+    const nameInput = document.getElementById("name");
+    const activeBaseSelect = document.getElementById("active_base_id");
+    const confirmWhenLowConfidenceInput = document.getElementById("confirm_when_low_confidence");
+    const schemaVersionInput = document.getElementById("schema_version");
+    const updatedAtInput = document.getElementById("updated_at");
+
+    const preferOrganicInput = document.getElementById("prefer_organic");
+    const harvestWindowInput = document.getElementById("harvest_window_days");
+    const ingredientInput = document.getElementById("banned_ingredients_input");
+    const addIngredientBtn = document.getElementById("addIngredientBtn");
+    const bannedIngredients = document.getElementById("bannedIngredients");
+
+    const baseList = document.getElementById("baseList");
+    const addBaseBtn = document.getElementById("addBaseBtn");
+    const removeBaseBtn = document.getElementById("removeBaseBtn");
+    const basesEmpty = document.getElementById("basesEmpty");
+    const basesForm = document.getElementById("basesForm");
+
+    const baseIdInput = document.getElementById("base_id");
+    const baseNameInput = document.getElementById("base_name");
+    const locationInput = document.getElementById("location");
+    const provinceInput = document.getElementById("province");
+    const facilityInput = document.getElementById("facility");
+    const environmentInput = document.getElementById("environment");
+    const growthStageInput = document.getElementById("growth_stage");
+    const notesInput = document.getElementById("notes");
+
+    let activeId = null;
+    let profileData = null;
+    let selectedBaseId = null;
+    let modalDirty = false;
+    const LABELS = {
+      farmer_id: "农户ID",
+      name: "农户姓名",
+      active_base_id: "当前基地",
+      confirm_when_low_confidence: "低置信度需确认",
+      schema_version: "档案版本",
+      updated_at: "更新时间",
+      prefer_organic: "有机/低残留偏好",
+      harvest_window_days: "距离采收期（天）",
+      banned_ingredients: "禁用成分关键词",
+      base_id: "基地ID",
+      base_name: "基地名称",
+      location: "位置/地址",
+      province: "省份",
+      facility: "设施类型",
+      environment: "环境描述",
+      growth_stage: "生长阶段",
+      notes: "备注",
+    };
+
+    const addFarmerBtn = document.getElementById("addFarmerBtn");
+    const farmerModal = document.getElementById("farmerModal");
+    const closeFarmerModalBtn = document.getElementById("closeFarmerModal");
+    const cancelFarmerBtn = document.getElementById("cancelFarmerBtn");
+    const createFarmerBtn = document.getElementById("createFarmerBtn");
+    const newFarmerName = document.getElementById("newFarmerName");
+    const newConfirmLow = document.getElementById("newConfirmLow");
+    const newPreferOrganic = document.getElementById("newPreferOrganic");
+    const newHarvestWindow = document.getElementById("newHarvestWindow");
+    const newFarmerGeneralError = document.getElementById("newFarmerGeneralError");
+    const newFarmerNameError = document.getElementById("newFarmerNameError");
+    const newHarvestError = document.getElementById("newHarvestError");
+    const confirmExit = document.getElementById("confirmExit");
+    const continueEditBtn = document.getElementById("continueEditBtn");
+    const exitModalBtn = document.getElementById("exitModalBtn");
+
+    function setStatus(message, isSuccess = false) {
+      status.textContent = message;
+      status.classList.toggle("success", isSuccess);
+      if (isSuccess && message) {
+        window.clearTimeout(setStatus._timer);
+        setStatus._timer = window.setTimeout(() => {
+          status.textContent = "";
+          status.classList.remove("success");
+        }, 2500);
+      }
+    }
+
+    async function fetchJson(url, options) {
+      const response = await fetch(url, options);
+      if (!response.ok) {
+        const text = await response.text();
+        throw new Error(text || `请求失败: ${response.status}`);
+      }
+      return response.json();
+    }
+
+    function applyLabels() {
+      document.querySelectorAll(".form-label[data-field]").forEach((label) => {
+        const key = label.dataset.field;
+        const text = LABELS[key] || key;
+        const required = label.dataset.req === "true";
+        label.innerHTML = required ? `${text}<span class=\"req\">*</span>` : text;
+      });
+    }
+
+    function clearProfileForm() {
+      profileData = null;
+      activeId = null;
+      selectedBaseId = null;
+      currentId.textContent = "未选择";
+      farmerIdInput.value = "";
+      nameInput.value = "";
+      schemaVersionInput.value = "1.0";
+      updatedAtInput.value = "";
+      confirmWhenLowConfidenceInput.checked = true;
+      activeBaseSelect.innerHTML = "";
+      baseList.innerHTML = "";
+      basesEmpty.style.display = "block";
+      basesForm.style.display = "none";
+      renderBannedIngredients([]);
+      preferOrganicInput.checked = false;
+      harvestWindowInput.value = "";
+      baseIdInput.value = "";
+      baseNameInput.value = "";
+      locationInput.value = "";
+      provinceInput.value = "";
+      facilityInput.value = "";
+      environmentInput.value = "";
+      growthStageInput.value = "";
+      notesInput.value = "";
+      deleteBtn.disabled = true;
+    }
+
+    function openFarmerModal() {
+      farmerModal.style.display = "flex";
+      modalDirty = false;
+      resetFarmerForm();
+    }
+
+    function closeFarmerModal(force = false) {
+      if (!force && modalDirty) {
+        showExitConfirm();
+        return;
+      }
+      confirmExit.style.display = "none";
+      farmerModal.style.display = "none";
+      resetFarmerForm();
+    }
+
+    function resetFarmerForm() {
+      newFarmerName.value = "";
+      newConfirmLow.checked = true;
+      newPreferOrganic.checked = false;
+      newHarvestWindow.value = "";
+      newFarmerGeneralError.textContent = "";
+      newFarmerNameError.textContent = "";
+      newHarvestError.textContent = "";
+      confirmExit.style.display = "none";
+      modalDirty = false;
+    }
+
+    function markDirty() {
+      modalDirty = true;
+    }
+
+    function showExitConfirm() {
+      confirmExit.style.display = "flex";
+    }
+
+    function hideExitConfirm() {
+      confirmExit.style.display = "none";
+    }
+
+    function validateNewFarmer() {
+      let valid = true;
+      const nameValue = newFarmerName.value.trim();
+
+      newFarmerGeneralError.textContent = "";
+      newFarmerNameError.textContent = "";
+      newHarvestError.textContent = "";
+
+      if (!nameValue) {
+        newFarmerNameError.textContent = "姓名为必填项";
+        valid = false;
+      }
+      const harvestRaw = newHarvestWindow.value.trim();
+      if (harvestRaw !== "") {
+        const parsed = Number.parseInt(harvestRaw, 10);
+        if (Number.isNaN(parsed) || parsed < 0 || parsed > 365) {
+          newHarvestError.textContent = "采收期必须是 0~365 的整数";
+          valid = false;
+        }
+      }
+      return valid;
+    }
+
+    async function createFarmer() {
+      if (!validateNewFarmer()) {
+        return;
+      }
+      const payload = {
+        name: newFarmerName.value.trim(),
+        confirm_when_low_confidence: newConfirmLow.checked,
+        constraints: {
+          prefer_organic: newPreferOrganic.checked,
+          harvest_window_days: newHarvestWindow.value.trim()
+            ? Number.parseInt(newHarvestWindow.value.trim(), 10)
+            : null,
+        },
+      };
+
+      try {
+        const response = await fetch(`/api/profiles`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+
+        if (response.status === 409) {
+          let detail = "";
+          try {
+            const data = await response.json();
+            detail = data.detail || "";
+          } catch (error) {
+            detail = await response.text();
+          }
+          newFarmerGeneralError.textContent = detail || "农户ID已满或已存在";
+          return;
+        }
+
+        if (!response.ok) {
+          const text = await response.text();
+          throw new Error(text || "创建失败");
+        }
+
+        const result = await response.json();
+        const farmerId = result.id;
+        if (!farmerId) {
+          throw new Error("创建失败：未返回 farmer_id");
+        }
+
+        const profile = await fetchJson(`/api/profiles/${farmerId}`);
+        const mergedProfile = {
+          ...profile,
+          confirm_when_low_confidence: payload.confirm_when_low_confidence,
+          constraints: {
+            ...(profile.constraints || {}),
+            ...payload.constraints,
+          },
+        };
+        await fetchJson(`/api/profiles/${farmerId}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(mergedProfile),
+        });
+
+        closeFarmerModal(true);
+        await loadProfiles();
+        await selectProfile(farmerId);
+      } catch (error) {
+        newFarmerGeneralError.textContent = error.message || "创建农户失败";
+      }
+    }
+
+    function defaultProfile(farmerId) {
+      return {
+        farmer_id: farmerId,
+        name: "",
+        schema_version: "1.0",
+        updated_at: "",
+        active_base_id: null,
+        confirm_when_low_confidence: true,
+        bases: {},
+        constraints: {
+          banned_ingredients: [],
+          harvest_window_days: null,
+          prefer_organic: false,
+        },
+      };
+    }
+
+    function normalizeProfile(data, farmerId) {
+      const base = defaultProfile(farmerId);
+      const merged = { ...base, ...data };
+      merged.constraints = { ...base.constraints, ...(data.constraints || {}) };
+      merged.bases = data.bases || {};
+      return merged;
+    }
+
+    function renderProfile(profile) {
+      farmerIdInput.value = profile.farmer_id || "";
+      nameInput.value = profile.name || "";
+      schemaVersionInput.value = profile.schema_version || "1.0";
+      updatedAtInput.value = profile.updated_at || "";
+      confirmWhenLowConfidenceInput.checked = Boolean(profile.confirm_when_low_confidence);
+
+      renderBases(profile);
+      renderConstraints(profile.constraints || {});
+    }
+
+    function renderConstraints(constraints) {
+      preferOrganicInput.checked = Boolean(constraints.prefer_organic);
+      harvestWindowInput.value =
+        constraints.harvest_window_days === null || constraints.harvest_window_days === undefined
+          ? ""
+          : constraints.harvest_window_days;
+      renderBannedIngredients(constraints.banned_ingredients || []);
+    }
+
+    function renderBannedIngredients(items) {
+      bannedIngredients.innerHTML = "";
+      items.forEach((item) => {
+        const tag = document.createElement("span");
+        tag.className = "tag";
+        tag.textContent = item;
+        const btn = document.createElement("button");
+        btn.textContent = "×";
+        btn.addEventListener("click", () => {
+          profileData.constraints.banned_ingredients = profileData.constraints.banned_ingredients.filter(
+            (value) => value !== item
+          );
+          renderBannedIngredients(profileData.constraints.banned_ingredients);
+        });
+        tag.appendChild(btn);
+        bannedIngredients.appendChild(tag);
+      });
+    }
+
+    function renderBases(profile) {
+      baseList.innerHTML = "";
+      const baseIds = Object.keys(profile.bases || {});
+      activeBaseSelect.innerHTML = "";
+      if (baseIds.length === 0) {
+        selectedBaseId = null;
+      } else if (!baseIds.includes(selectedBaseId)) {
+        selectedBaseId = profile.active_base_id || baseIds[0] || null;
+      }
+
+      const emptyOption = document.createElement("option");
+      emptyOption.value = "";
+      emptyOption.textContent = "(无)";
+      activeBaseSelect.appendChild(emptyOption);
+
+      baseIds.forEach((baseId) => {
+        const option = document.createElement("option");
+        option.value = baseId;
+        option.textContent = baseId;
+        if (baseId === profile.active_base_id) {
+          option.selected = true;
+        }
+        activeBaseSelect.appendChild(option);
+
+        const li = document.createElement("li");
+        li.textContent = baseId;
+        li.dataset.id = baseId;
+        li.classList.toggle("active", baseId === selectedBaseId);
+        li.addEventListener("click", () => {
+          selectedBaseId = baseId;
+          renderBases(profile);
+          fillBaseForm();
+        });
+        baseList.appendChild(li);
+      });
+
+      const hasBases = baseIds.length > 0;
+      basesEmpty.style.display = hasBases ? "none" : "block";
+      basesForm.style.display = hasBases ? "block" : "none";
+      activeBaseSelect.value = profile.active_base_id || "";
+      fillBaseForm();
+    }
+
+    function fillBaseForm() {
+      const base = (selectedBaseId && profileData.bases[selectedBaseId]) || null;
+      if (!base) {
+        baseIdInput.value = "";
+        baseNameInput.value = "";
+        locationInput.value = "";
+        provinceInput.value = "";
+        facilityInput.value = "";
+        environmentInput.value = "";
+        growthStageInput.value = "";
+        notesInput.value = "";
+        return;
+      }
+      baseIdInput.value = base.base_id || "";
+      baseNameInput.value = base.name || "";
+      locationInput.value = base.location || "";
+      provinceInput.value = base.province || "";
+      facilityInput.value = base.facility || "";
+      environmentInput.value = base.environment || "";
+      growthStageInput.value = base.growth_stage || "";
+      notesInput.value = base.notes || "";
+    }
+
+    function syncBaseForm() {
+      if (!selectedBaseId || !profileData.bases[selectedBaseId]) {
+        return;
+      }
+      const base = profileData.bases[selectedBaseId];
+      base.name = baseNameInput.value.trim();
+      base.location = locationInput.value.trim();
+      base.province = provinceInput.value.trim();
+      base.facility = facilityInput.value.trim();
+      base.environment = environmentInput.value.trim();
+      base.growth_stage = growthStageInput.value.trim();
+      base.notes = notesInput.value.trim();
+    }
+
+    async function loadProfiles() {
+      setStatus("");
+      profileList.innerHTML = "";
+      try {
+        const data = await fetchJson("/api/profiles");
+        const profiles = data.profiles || [];
+        if (profiles.length === 0) {
+          profileList.innerHTML = "<li>暂无档案</li>";
+          clearProfileForm();
+          return;
+        }
+        profiles.forEach((item) => {
+          const li = document.createElement("li");
+          li.textContent = item.id;
+          li.dataset.id = item.id;
+          if (item.id === activeId) {
+            li.classList.add("active");
+          }
+          li.addEventListener("click", () => {
+            selectProfile(item.id);
+          });
+          profileList.appendChild(li);
+        });
+        if (!activeId && profiles[0]) {
+          selectProfile(profiles[0].id);
+        }
+        deleteBtn.disabled = !activeId;
+      } catch (error) {
+        setStatus(error.message || "加载档案失败");
+      }
+    }
+
+    async function selectProfile(farmerId) {
+      activeId = farmerId;
+      currentId.textContent = `当前农户：${farmerId}`;
+      deleteBtn.disabled = !farmerId;
+      Array.from(profileList.children).forEach((li) => {
+        li.classList.toggle("active", li.dataset.id === farmerId);
+      });
+      await loadProfileDetail(farmerId);
+    }
+
+    async function loadProfileDetail(farmerId) {
+      setStatus("");
+      selectedBaseId = null;
+      try {
+        const data = await fetchJson(`/api/profiles/${farmerId}`);
+        profileData = normalizeProfile(data, farmerId);
+        renderProfile(profileData);
+      } catch (error) {
+        profileData = defaultProfile(farmerId);
+        renderProfile(profileData);
+        setStatus(error.message || "读取档案失败");
+      }
+    }
+
+    function validateProfile() {
+      if (!profileData || !profileData.farmer_id) {
+        setStatus("farmer_id 不能为空");
+        return false;
+      }
+      if (profileData.active_base_id && !profileData.bases[profileData.active_base_id]) {
+        setStatus("active_base_id 必须存在于 bases 中");
+        return false;
+      }
+      const harvestValue = profileData.constraints.harvest_window_days;
+      if (harvestValue !== null && (Number.isNaN(harvestValue) || harvestValue < 0 || harvestValue > 365)) {
+        setStatus("harvest_window_days 必须是 0~365 的整数或为空");
+        return false;
+      }
+      return true;
+    }
+
+    function buildPayload() {
+      syncBaseForm();
+      profileData.name = nameInput.value.trim();
+      profileData.confirm_when_low_confidence = confirmWhenLowConfidenceInput.checked;
+      profileData.schema_version = schemaVersionInput.value.trim() || "1.0";
+      profileData.updated_at = updatedAtInput.value.trim() || profileData.updated_at || "";
+      profileData.active_base_id = activeBaseSelect.value || null;
+
+      const harvestRaw = harvestWindowInput.value.trim();
+      profileData.constraints.prefer_organic = preferOrganicInput.checked;
+      profileData.constraints.harvest_window_days =
+        harvestRaw === "" ? null : Number.parseInt(harvestRaw, 10);
+      profileData.constraints.banned_ingredients = profileData.constraints.banned_ingredients || [];
+
+      return {
+        farmer_id: profileData.farmer_id,
+        name: profileData.name,
+        schema_version: profileData.schema_version,
+        updated_at: profileData.updated_at,
+        active_base_id: profileData.active_base_id,
+        confirm_when_low_confidence: profileData.confirm_when_low_confidence,
+        bases: profileData.bases,
+        constraints: profileData.constraints,
+      };
+    }
+
+    async function saveProfile() {
+      if (!profileData) {
+        setStatus("请先选择农户");
+        return;
+      }
+      if (!profileData.farmer_id) {
+        setStatus("farmer_id 不能为空");
+        return;
+      }
+      const payload = buildPayload();
+      if (!validateProfile()) {
+        return;
+      }
+      try {
+        await fetchJson(`/api/profiles/${payload.farmer_id}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        setStatus("保存成功", true);
+        await loadProfileDetail(payload.farmer_id);
+      } catch (error) {
+        setStatus(error.message || "保存失败");
+      }
+    }
+
+    async function deleteProfile() {
+      if (!activeId) {
+        return;
+      }
+      const confirmed = window.confirm("确认删除该农户档案？（删除后不可恢复）");
+      if (!confirmed) {
+        return;
+      }
+      try {
+        await fetchJson(`/api/profiles/${activeId}`, { method: "DELETE" });
+        setStatus("删除成功", true);
+        await loadProfiles();
+        if (activeId) {
+          await selectProfile(activeId);
+        } else {
+          clearProfileForm();
+        }
+      } catch (error) {
+        setStatus(error.message || "删除失败");
+      }
+    }
+
+    addFarmerBtn.addEventListener("click", openFarmerModal);
+    closeFarmerModalBtn.addEventListener("click", () => closeFarmerModal());
+    cancelFarmerBtn.addEventListener("click", () => closeFarmerModal());
+    farmerModal.addEventListener("click", (event) => {
+      if (event.target === farmerModal) {
+        closeFarmerModal();
+      }
+    });
+    continueEditBtn.addEventListener("click", () => {
+      hideExitConfirm();
+    });
+    exitModalBtn.addEventListener("click", () => {
+      hideExitConfirm();
+      closeFarmerModal(true);
+    });
+
+    newFarmerName.addEventListener("input", markDirty);
+    newConfirmLow.addEventListener("change", markDirty);
+    newPreferOrganic.addEventListener("change", markDirty);
+    newHarvestWindow.addEventListener("input", markDirty);
+
+    createFarmerBtn.addEventListener("click", createFarmer);
+
+    addIngredientBtn.addEventListener("click", () => {
+      const value = ingredientInput.value.trim();
+      if (!value) {
+        return;
+      }
+      const list = profileData.constraints.banned_ingredients || [];
+      if (!list.includes(value)) {
+        list.push(value);
+      }
+      profileData.constraints.banned_ingredients = list;
+      ingredientInput.value = "";
+      renderBannedIngredients(list);
+    });
+
+    ingredientInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        addIngredientBtn.click();
+      }
+    });
+
+    addBaseBtn.addEventListener("click", () => {
+      if (!profileData) {
+        return;
+      }
+      const baseId = window.prompt("请输入新的 base_id");
+      if (!baseId) {
+        return;
+      }
+      const trimmed = baseId.trim();
+      if (!trimmed) {
+        return;
+      }
+      if (profileData.bases[trimmed]) {
+        setStatus("base_id 已存在");
+        return;
+      }
+      profileData.bases[trimmed] = { base_id: trimmed };
+      if (!profileData.active_base_id && Object.keys(profileData.bases).length === 1) {
+        profileData.active_base_id = trimmed;
+      }
+      selectedBaseId = trimmed;
+      renderBases(profileData);
+      setStatus("已新增基地", true);
+    });
+
+    removeBaseBtn.addEventListener("click", () => {
+      if (!profileData || !selectedBaseId) {
+        return;
+      }
+      const target = selectedBaseId;
+      delete profileData.bases[target];
+      const remaining = Object.keys(profileData.bases);
+      if (profileData.active_base_id === target) {
+        profileData.active_base_id = remaining[0] || null;
+      }
+      selectedBaseId = remaining[0] || null;
+      renderBases(profileData);
+      setStatus("已删除基地", true);
+    });
+
+    activeBaseSelect.addEventListener("change", () => {
+      if (!profileData) {
+        return;
+      }
+      profileData.active_base_id = activeBaseSelect.value || null;
+      renderBases(profileData);
+    });
+
+    baseNameInput.addEventListener("input", syncBaseForm);
+    locationInput.addEventListener("input", syncBaseForm);
+    provinceInput.addEventListener("input", syncBaseForm);
+    facilityInput.addEventListener("input", syncBaseForm);
+    environmentInput.addEventListener("input", syncBaseForm);
+    growthStageInput.addEventListener("input", syncBaseForm);
+    notesInput.addEventListener("input", syncBaseForm);
+
+    refreshBtn.addEventListener("click", () => {
+      if (activeId) {
+        loadProfileDetail(activeId);
+      } else {
+        loadProfiles();
+      }
+    });
+    saveBtn.addEventListener("click", saveProfile);
+    deleteBtn.addEventListener("click", deleteProfile);
+
+    applyLabels();
+    loadProfiles();
+  </script>
+</body>
+</html>
