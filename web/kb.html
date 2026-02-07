@@ -1,0 +1,635 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>知识库管理</title>
+    <style>
+      body {
+        margin: 0;
+        font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+        background: #f3f4f6;
+        color: #111827;
+      }
+      header {
+        background: #111827;
+        color: #fff;
+        padding: 16px 24px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+      }
+      header h1 {
+        margin: 0;
+        font-size: 18px;
+      }
+      header nav a {
+        color: #d1d5db;
+        margin-left: 12px;
+        text-decoration: none;
+        font-size: 14px;
+      }
+      main {
+        display: grid;
+        grid-template-columns: 220px 1fr;
+        gap: 16px;
+        padding: 16px 24px 32px;
+      }
+      .sidebar {
+        background: #fff;
+        border-radius: 12px;
+        padding: 12px;
+        box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08);
+      }
+      .tab {
+        padding: 10px 12px;
+        border-radius: 8px;
+        cursor: pointer;
+        margin-bottom: 6px;
+        font-size: 14px;
+      }
+      .tab.active {
+        background: #111827;
+        color: #fff;
+      }
+      .panel {
+        background: #fff;
+        border-radius: 12px;
+        padding: 16px;
+        box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08);
+      }
+      .panel h2 {
+        margin: 0 0 12px;
+        font-size: 16px;
+      }
+      .section {
+        display: grid;
+        gap: 12px;
+      }
+      .card {
+        border: 1px solid #e5e7eb;
+        border-radius: 10px;
+        padding: 12px;
+        background: #f9fafb;
+      }
+      .form-row {
+        display: flex;
+        gap: 12px;
+        align-items: center;
+        margin-bottom: 10px;
+      }
+      .form-label {
+        width: 120px;
+        font-size: 13px;
+        color: #374151;
+      }
+      .form-field {
+        flex: 1;
+      }
+      .input, select, textarea {
+        width: 100%;
+        box-sizing: border-box;
+        border: 1px solid #d1d5db;
+        border-radius: 6px;
+        padding: 6px 10px;
+        font-size: 13px;
+        background: #fff;
+      }
+      textarea {
+        min-height: 90px;
+        resize: vertical;
+      }
+      .actions {
+        display: flex;
+        gap: 8px;
+      }
+      button {
+        border: none;
+        background: #111827;
+        color: #fff;
+        padding: 6px 12px;
+        border-radius: 6px;
+        cursor: pointer;
+        font-size: 13px;
+      }
+      button.secondary {
+        background: #e5e7eb;
+        color: #111827;
+      }
+      .status {
+        font-size: 13px;
+        margin-top: 6px;
+      }
+      .status.error {
+        color: #dc2626;
+      }
+      .status.success {
+        color: #15803d;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 13px;
+      }
+      th, td {
+        border-bottom: 1px solid #e5e7eb;
+        padding: 6px 8px;
+        text-align: left;
+      }
+      th {
+        background: #f3f4f6;
+      }
+      .hidden {
+        display: none;
+      }
+      .filter {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+      }
+      .muted {
+        color: #6b7280;
+        font-size: 13px;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>知识库管理</h1>
+      <nav>
+        <a href="/dashboard">Dashboard</a>
+        <a href="/profiles">Profiles</a>
+      </nav>
+    </header>
+    <main>
+      <aside class="sidebar">
+        <div class="tab active" data-tab="diseases">病害及描述</div>
+        <div class="tab" data-tab="treatments">治疗/预防</div>
+        <div class="tab" data-tab="rules">诊断规则</div>
+        <div class="tab" data-tab="symptom-map">症状-病害映射</div>
+      </aside>
+      <section class="panel">
+        <div id="tab-diseases" class="section">
+          <h2>病害及描述</h2>
+          <div class="card">
+            <div class="filter">
+              <input id="diseaseFilter" class="input" type="text" placeholder="搜索病害或描述" />
+              <button id="refreshDiseases" class="secondary">刷新</button>
+            </div>
+            <table>
+              <thead>
+                <tr>
+                  <th>病害</th>
+                  <th>描述</th>
+                </tr>
+              </thead>
+              <tbody id="diseaseTable"></tbody>
+            </table>
+            <div id="diseaseEmpty" class="muted">暂无数据</div>
+          </div>
+          <div class="card">
+            <h3>新增/更新病害</h3>
+            <div class="form-row">
+              <div class="form-label">病害名称</div>
+              <div class="form-field">
+                <input id="diseaseName" class="input" type="text" />
+              </div>
+            </div>
+            <div class="form-row">
+              <div class="form-label">描述</div>
+              <div class="form-field">
+                <textarea id="diseaseDescription" class="input"></textarea>
+              </div>
+            </div>
+            <div class="actions">
+              <button id="saveDisease">保存</button>
+            </div>
+            <div id="diseaseStatus" class="status"></div>
+          </div>
+        </div>
+
+        <div id="tab-treatments" class="section hidden">
+          <h2>治疗/预防</h2>
+          <div class="card">
+            <div class="form-row">
+              <div class="form-label">选择病害</div>
+              <div class="form-field">
+                <select id="treatmentDisease"></select>
+              </div>
+            </div>
+            <div class="muted" id="treatmentDescription"></div>
+            <div class="form-row">
+              <div class="form-label">治疗方案</div>
+              <div class="form-field">
+                <textarea id="treatmentText" class="input"></textarea>
+              </div>
+            </div>
+            <div class="form-row">
+              <div class="form-label">预防建议</div>
+              <div class="form-field">
+                <textarea id="preventionText" class="input"></textarea>
+              </div>
+            </div>
+            <div class="actions">
+              <button id="saveTreatment">保存</button>
+            </div>
+            <div id="treatmentStatus" class="status"></div>
+          </div>
+        </div>
+
+        <div id="tab-rules" class="section hidden">
+          <h2>诊断规则</h2>
+          <div class="card">
+            <div class="filter">
+              <input id="ruleFilter" class="input" type="text" placeholder="搜索作物/症状/病害" />
+              <button id="refreshRules" class="secondary">刷新</button>
+            </div>
+            <table>
+              <thead>
+                <tr>
+                  <th>作物</th>
+                  <th>症状</th>
+                  <th>病害</th>
+                  <th>置信度</th>
+                  <th>依据</th>
+                </tr>
+              </thead>
+              <tbody id="ruleTable"></tbody>
+            </table>
+            <div id="ruleEmpty" class="muted">暂无规则</div>
+          </div>
+          <div class="card">
+            <h3>新增规则</h3>
+            <div class="form-row">
+              <div class="form-label">作物</div>
+              <div class="form-field">
+                <input id="ruleCrop" class="input" type="text" value="番茄" />
+              </div>
+            </div>
+            <div class="form-row">
+              <div class="form-label">症状</div>
+              <div class="form-field">
+                <input id="ruleSymptoms" class="input" type="text" placeholder="用逗号分隔，例如 斑点,发黄" />
+              </div>
+            </div>
+            <div class="form-row">
+              <div class="form-label">病害</div>
+              <div class="form-field">
+                <select id="ruleDisease"></select>
+              </div>
+            </div>
+            <div class="form-row">
+              <div class="form-label">置信度</div>
+              <div class="form-field">
+                <input id="ruleConfidence" class="input" type="number" min="0" max="1" step="0.01" value="0.8" />
+              </div>
+            </div>
+            <div class="form-row">
+              <div class="form-label">依据</div>
+              <div class="form-field">
+                <textarea id="ruleEvidence" class="input"></textarea>
+              </div>
+            </div>
+            <div class="actions">
+              <button id="saveRule">保存</button>
+            </div>
+            <div id="ruleStatus" class="status"></div>
+          </div>
+        </div>
+
+        <div id="tab-symptom-map" class="section hidden">
+          <h2>症状-病害映射</h2>
+          <div class="card">
+            <div class="filter">
+              <input id="mapFilter" class="input" type="text" placeholder="搜索症状或病害" />
+              <button id="refreshMap" class="secondary">刷新</button>
+            </div>
+            <table>
+              <thead>
+                <tr>
+                  <th>症状</th>
+                  <th>病害列表</th>
+                </tr>
+              </thead>
+              <tbody id="mapTable"></tbody>
+            </table>
+            <div id="mapEmpty" class="muted">暂无映射</div>
+          </div>
+          <div class="card">
+            <h3>新增/更新映射</h3>
+            <div class="form-row">
+              <div class="form-label">症状</div>
+              <div class="form-field">
+                <input id="mapSymptom" class="input" type="text" />
+              </div>
+            </div>
+            <div class="form-row">
+              <div class="form-label">病害</div>
+              <div class="form-field">
+                <select id="mapDiseases" class="input" multiple size="6"></select>
+              </div>
+            </div>
+            <div class="actions">
+              <button id="saveMap">保存</button>
+            </div>
+            <div id="mapStatus" class="status"></div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <script>
+      const tabs = document.querySelectorAll(".tab");
+      const panels = {
+        diseases: document.getElementById("tab-diseases"),
+        treatments: document.getElementById("tab-treatments"),
+        rules: document.getElementById("tab-rules"),
+        "symptom-map": document.getElementById("tab-symptom-map"),
+      };
+
+      let diseases = [];
+      let treatments = [];
+      let rules = [];
+      let symptomMap = [];
+
+      function showTab(name) {
+        tabs.forEach((tab) => tab.classList.toggle("active", tab.dataset.tab === name));
+        Object.entries(panels).forEach(([key, panel]) => {
+          panel.classList.toggle("hidden", key !== name);
+        });
+      }
+
+      tabs.forEach((tab) => {
+        tab.addEventListener("click", () => showTab(tab.dataset.tab));
+      });
+
+      async function fetchJson(url, options) {
+        const response = await fetch(url, options);
+        if (!response.ok) {
+          let detail = "";
+          try {
+            const data = await response.json();
+            detail = data.detail || "";
+          } catch (error) {
+            detail = await response.text();
+          }
+          throw new Error(detail || `请求失败: ${response.status}`);
+        }
+        return response.json();
+      }
+
+      function setStatus(element, message, ok = false) {
+        element.textContent = message;
+        element.classList.toggle("success", ok);
+        element.classList.toggle("error", !ok);
+      }
+
+      function renderDiseaseTable(filter = "") {
+        const tbody = document.getElementById("diseaseTable");
+        const empty = document.getElementById("diseaseEmpty");
+        tbody.innerHTML = "";
+        const keyword = filter.trim();
+        const items = diseases.filter(
+          (item) =>
+            !keyword ||
+            item.name.includes(keyword) ||
+            (item.description || "").includes(keyword)
+        );
+        if (items.length === 0) {
+          empty.style.display = "block";
+          return;
+        }
+        empty.style.display = "none";
+        items.forEach((item) => {
+          const row = document.createElement("tr");
+          row.innerHTML = `<td>${item.name}</td><td>${item.description || ""}</td>`;
+          tbody.appendChild(row);
+        });
+      }
+
+      function refreshDiseaseSelects() {
+        const selectIds = ["treatmentDisease", "ruleDisease", "mapDiseases"];
+        selectIds.forEach((id) => {
+          const element = document.getElementById(id);
+          element.innerHTML = "";
+          diseases.forEach((item) => {
+            const option = document.createElement("option");
+            option.value = item.name;
+            option.textContent = item.name;
+            element.appendChild(option);
+          });
+        });
+      }
+
+      async function loadDiseases() {
+        const data = await fetchJson("/api/kb/diseases");
+        diseases = data.items || [];
+        renderDiseaseTable(document.getElementById("diseaseFilter").value);
+        refreshDiseaseSelects();
+      }
+
+      function renderRuleTable(filter = "") {
+        const tbody = document.getElementById("ruleTable");
+        const empty = document.getElementById("ruleEmpty");
+        tbody.innerHTML = "";
+        const keyword = filter.trim();
+        const items = rules.filter((item) => {
+          const combined =
+            `${item.crop_type || ""} ${item.disease || ""} ${item.symptoms || ""} ${item.evidence || ""}`;
+          return !keyword || combined.includes(keyword);
+        });
+        if (items.length === 0) {
+          empty.style.display = "block";
+          return;
+        }
+        empty.style.display = "none";
+        items.forEach((rule) => {
+          const symptomsText = Array.isArray(rule.symptoms) ? rule.symptoms.join(",") : "";
+          const row = document.createElement("tr");
+          row.innerHTML = `
+            <td>${rule.crop_type || ""}</td>
+            <td>${symptomsText}</td>
+            <td>${rule.disease || ""}</td>
+            <td>${rule.confidence ?? ""}</td>
+            <td>${rule.evidence || ""}</td>
+          `;
+          tbody.appendChild(row);
+        });
+      }
+
+      async function loadRules() {
+        const data = await fetchJson("/api/kb/rules");
+        rules = data.items || [];
+        renderRuleTable(document.getElementById("ruleFilter").value);
+      }
+
+      function renderMapTable(filter = "") {
+        const tbody = document.getElementById("mapTable");
+        const empty = document.getElementById("mapEmpty");
+        tbody.innerHTML = "";
+        const keyword = filter.trim();
+        const items = symptomMap.filter((item) => {
+          const combined = `${item.symptom || ""} ${(item.diseases || []).join(",")}`;
+          return !keyword || combined.includes(keyword);
+        });
+        if (items.length === 0) {
+          empty.style.display = "block";
+          return;
+        }
+        empty.style.display = "none";
+        items.forEach((item) => {
+          const row = document.createElement("tr");
+          row.innerHTML = `<td>${item.symptom || ""}</td><td>${(item.diseases || []).join(",")}</td>`;
+          tbody.appendChild(row);
+        });
+      }
+
+      async function loadSymptomMap() {
+        const data = await fetchJson("/api/kb/symptom-map");
+        symptomMap = data.items || [];
+        renderMapTable(document.getElementById("mapFilter").value);
+      }
+
+      async function loadTreatments() {
+        const data = await fetchJson("/api/kb/treatments");
+        treatments = data.items || [];
+      }
+
+      document.getElementById("refreshDiseases").addEventListener("click", loadDiseases);
+      document.getElementById("diseaseFilter").addEventListener("input", (event) => {
+        renderDiseaseTable(event.target.value);
+      });
+
+      document.getElementById("saveDisease").addEventListener("click", async () => {
+        const status = document.getElementById("diseaseStatus");
+        const name = document.getElementById("diseaseName").value.trim();
+        const description = document.getElementById("diseaseDescription").value.trim();
+        if (!name || !description) {
+          setStatus(status, "病害名称和描述不能为空");
+          return;
+        }
+        try {
+          await fetchJson("/api/kb/diseases", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ name, description }),
+          });
+          setStatus(status, "保存成功", true);
+          document.getElementById("diseaseName").value = "";
+          document.getElementById("diseaseDescription").value = "";
+          await loadDiseases();
+        } catch (error) {
+          setStatus(status, error.message || "保存失败");
+        }
+      });
+
+      document.getElementById("treatmentDisease").addEventListener("change", () => {
+        const disease = document.getElementById("treatmentDisease").value;
+        const desc = diseases.find((item) => item.name === disease);
+        document.getElementById("treatmentDescription").textContent = desc ? desc.description : "";
+        const existing = treatments.find((item) => item.disease === disease);
+        document.getElementById("treatmentText").value = existing?.treatment || "";
+        document.getElementById("preventionText").value = existing?.prevention || "";
+      });
+
+      document.getElementById("saveTreatment").addEventListener("click", async () => {
+        const status = document.getElementById("treatmentStatus");
+        const disease = document.getElementById("treatmentDisease").value;
+        const treatment = document.getElementById("treatmentText").value.trim();
+        const prevention = document.getElementById("preventionText").value.trim();
+        if (!disease || !treatment || !prevention) {
+          setStatus(status, "请选择病害并填写治疗与预防");
+          return;
+        }
+        try {
+          await fetchJson("/api/kb/treatments", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ disease, treatment, prevention }),
+          });
+          setStatus(status, "保存成功", true);
+          await loadTreatments();
+        } catch (error) {
+          setStatus(status, error.message || "保存失败");
+        }
+      });
+
+      document.getElementById("refreshRules").addEventListener("click", loadRules);
+      document.getElementById("ruleFilter").addEventListener("input", (event) => {
+        renderRuleTable(event.target.value);
+      });
+
+      document.getElementById("saveRule").addEventListener("click", async () => {
+        const status = document.getElementById("ruleStatus");
+        const cropType = document.getElementById("ruleCrop").value.trim() || "番茄";
+        const symptomsRaw = document.getElementById("ruleSymptoms").value;
+        const disease = document.getElementById("ruleDisease").value;
+        const confidence = Number.parseFloat(document.getElementById("ruleConfidence").value);
+        const evidence = document.getElementById("ruleEvidence").value.trim();
+        const symptoms = symptomsRaw
+          .split(",")
+          .map((item) => item.trim())
+          .filter(Boolean);
+        if (!symptoms.length || !disease || Number.isNaN(confidence)) {
+          setStatus(status, "请填写完整的规则信息");
+          return;
+        }
+        try {
+          await fetchJson("/api/kb/rules", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ crop_type: cropType, symptoms, disease, confidence, evidence }),
+          });
+          setStatus(status, "保存成功", true);
+          document.getElementById("ruleSymptoms").value = "";
+          document.getElementById("ruleEvidence").value = "";
+          await loadRules();
+        } catch (error) {
+          setStatus(status, error.message || "保存失败");
+        }
+      });
+
+      document.getElementById("refreshMap").addEventListener("click", loadSymptomMap);
+      document.getElementById("mapFilter").addEventListener("input", (event) => {
+        renderMapTable(event.target.value);
+      });
+
+      document.getElementById("saveMap").addEventListener("click", async () => {
+        const status = document.getElementById("mapStatus");
+        const symptom = document.getElementById("mapSymptom").value.trim();
+        const select = document.getElementById("mapDiseases");
+        const selected = Array.from(select.selectedOptions).map((option) => option.value);
+        if (!symptom || selected.length === 0) {
+          setStatus(status, "症状和病害不能为空");
+          return;
+        }
+        try {
+          await fetchJson("/api/kb/symptom-map", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ symptom, diseases: selected }),
+          });
+          setStatus(status, "保存成功", true);
+          document.getElementById("mapSymptom").value = "";
+          await loadSymptomMap();
+        } catch (error) {
+          setStatus(status, error.message || "保存失败");
+        }
+      });
+
+      async function init() {
+        try {
+          await loadDiseases();
+          await loadTreatments();
+          await loadRules();
+          await loadSymptomMap();
+          document.getElementById("treatmentDisease").dispatchEvent(new Event("change"));
+        } catch (error) {
+          console.error(error);
+        }
+      }
+
+      init();
+    </script>
+  </body>
+</html>
