@@ -208,12 +208,27 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
     disease_type = None
     disease_confidence = None
     disease_description = None
+    image_top3 = []
+    image_used_fallback = False
     
     # 优先使用图像诊断（如果提供了图像路径）
     if image_path:
         print(f"[番茄病害诊断智能体] 使用图像进行诊断: {image_path}")
         try:
-            disease_type, disease_confidence, _ = diagnosis_engine.diagnose_from_image(image_path)
+            disease_type, disease_confidence, probs_dict = diagnosis_engine.diagnose_from_image(image_path)
+            image_top3 = sorted(probs_dict.items(), key=lambda x: x[1], reverse=True)[:3]
+            state["image_diagnosis"] = {
+                "image_path": image_path,
+                "top1": {"disease": disease_type, "confidence": float(disease_confidence or 0.0)},
+                "top3": [(name, float(prob)) for name, prob in image_top3],
+            }
+
+            if (
+                disease_type == "疑似病害（置信度不足）"
+                or (disease_confidence is not None and disease_confidence < DIAGNOSIS_CONFIDENCE_THRESHOLD)
+            ):
+                image_used_fallback = True
+
             # 获取病害描述
             disease_description = diagnosis_engine._get_disease_description(disease_type, symptoms)
             print(f"[番茄病害诊断智能体] 图像诊断成功")
@@ -221,7 +236,7 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
             print(f"[番茄病害诊断智能体] 图像诊断失败: {e}，使用症状诊断")
     
     # 如果图像诊断失败或没有图像，使用症状诊断
-    if not disease_type:
+    if (not disease_type) or image_used_fallback:
         print("[番茄病害诊断智能体] 使用症状进行诊断")
         try:
             disease_type, disease_confidence, disease_description = diagnosis_engine.diagnose_from_symptoms(
@@ -254,6 +269,15 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
 
     disease_confidence = disease_confidence or 0.0
     message = f"番茄病害诊断智能体：诊断为{disease_type}，置信度={disease_confidence:.2%}"
+    if image_path and state.get("image_diagnosis"):
+        image_top1 = state["image_diagnosis"].get("top1", {})
+        top3_text = ", ".join([f"{name}={prob:.2f}" for name, prob in state["image_diagnosis"].get("top3", [])])
+        message += (
+            f"\n图像诊断证据："
+            f"\n- Image: {image_path}"
+            f"\n- Top1: {image_top1.get('disease')} (conf={float(image_top1.get('confidence', 0.0)):.2f})"
+            f"\n- Top3: {top3_text}"
+        )
     if personalization_context:
         message += "（已参考个性化上下文）"
 

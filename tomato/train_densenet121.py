@@ -4,7 +4,10 @@
 使用PlantVillage番茄数据集进行训练
 """
 
+import argparse
+import json
 import os
+from pathlib import Path
 import tensorflow as tf
 from tensorflow.keras.applications import DenseNet121
 from tensorflow.keras.layers import Dense, GlobalAveragePooling2D
@@ -13,14 +16,32 @@ from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.preprocessing.image import ImageDataGenerator
 import numpy as np
 
+def parse_args():
+    parser = argparse.ArgumentParser(description="DenseNet121番茄病害识别模型训练")
+    parser.add_argument("--epochs", type=int, default=None, help="覆盖训练轮数")
+    parser.add_argument(
+        "--trainable",
+        type=str,
+        default=None,
+        help="是否解冻骨干网络 (true/false)，默认保持原逻辑",
+    )
+    return parser.parse_args()
+
+
 # 配置参数
 IMAGE_SIZE = 224  # DenseNet121默认输入大小
 BATCH_SIZE = 32
 EPOCHS = 50
 LEARNING_RATE = 1e-4
-TRAIN_DIR = 'train'
-VAL_DIR = 'val'
-SAVE_PATH = 'densenet121_tomato_disease_model.h5'
+REPO_ROOT = Path(__file__).resolve().parents[1]
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+TRAIN_DIR = os.path.join(BASE_DIR, "train")
+VAL_DIR = os.path.join(BASE_DIR, "val")
+MODEL_DIR = REPO_ROOT / "models"
+BASE_MODEL_PATH = MODEL_DIR / "densenet121_tomato_disease_model.h5"
+FINE_TUNED_MODEL_PATH = MODEL_DIR / "densenet121_tomato_disease_model_fine_tuned.h5"
+CLASS_NAMES_PATH = REPO_ROOT / "tomato" / "tomato_disease_classes.txt"
+CLASS_INDICES_PATH = REPO_ROOT / "tomato" / "tomato_disease_class_indices.json"
 
 # 数据增强和预处理
 train_datagen = ImageDataGenerator(
@@ -34,6 +55,28 @@ train_datagen = ImageDataGenerator(
 )
 
 val_datagen = ImageDataGenerator(rescale=1./255)
+
+args = parse_args()
+if args.epochs is not None:
+    EPOCHS = args.epochs
+
+if args.trainable is not None:
+    trainable_flag = args.trainable.strip().lower()
+    if trainable_flag not in {"true", "false"}:
+        raise ValueError("--trainable 只接受 true 或 false")
+    backbone_trainable = trainable_flag == "true"
+else:
+    backbone_trainable = False
+
+print("CWD:", os.getcwd())
+print("TRAIN_DIR:", TRAIN_DIR)
+print("VAL_DIR:", VAL_DIR)
+
+if not os.path.isdir(TRAIN_DIR):
+    print(f"训练数据目录不存在: {TRAIN_DIR}")
+    raise SystemExit(1)
+if not os.path.isdir(VAL_DIR):
+    print(f"验证数据目录不存在: {VAL_DIR}")
 
 # 创建数据生成器
 train_generator = train_datagen.flow_from_directory(
@@ -58,17 +101,20 @@ print("类别映射:", class_indices)
 class_names = list(class_indices.keys())
 print("类别名称:", class_names)
 
-# 创建类别名称文件
-with open('tomato_disease_classes.txt', 'w') as f:
+CLASS_NAMES_PATH.parent.mkdir(parents=True, exist_ok=True)
+with open(CLASS_NAMES_PATH, "w", encoding="utf-8") as f:
     for class_name in class_names:
         f.write(f"{class_name}\n")
+
+with open(CLASS_INDICES_PATH, "w", encoding="utf-8") as f:
+    json.dump(class_indices, f, ensure_ascii=False, indent=2)
 
 # 加载预训练的DenseNet121模型（不包括顶层）
 base_model = DenseNet121(weights='imagenet', include_top=False, input_shape=(IMAGE_SIZE, IMAGE_SIZE, 3))
 
 # 冻结基础模型的层
 for layer in base_model.layers:
-    layer.trainable = False
+    layer.trainable = backbone_trainable
 
 # 添加自定义顶层
 x = base_model.output
@@ -102,8 +148,9 @@ history = model.fit(
 )
 
 # 保存模型
-model.save(SAVE_PATH)
-print(f"模型已保存到: {SAVE_PATH}")
+MODEL_DIR.mkdir(parents=True, exist_ok=True)
+model.save(BASE_MODEL_PATH)
+print(f"模型已保存到: {BASE_MODEL_PATH}")
 
 # 评估模型
 loss, accuracy = model.evaluate(val_generator)
@@ -131,9 +178,14 @@ history_fine = model.fit(
 )
 
 # 保存微调后的模型
-model.save(f"{SAVE_PATH.replace('.h5', '_fine_tuned.h5')}")
-print(f"微调后的模型已保存到: {SAVE_PATH.replace('.h5', '_fine_tuned.h5')}")
+model.save(FINE_TUNED_MODEL_PATH)
+print(f"微调后的模型已保存到: {FINE_TUNED_MODEL_PATH}")
 
 # 最终评估
 loss, accuracy = model.evaluate(val_generator)
 print(f"微调后验证集准确率: {accuracy * 100:.2f}%")
+
+print("\n训练完成总结:")
+print(f"- 模型路径: {BASE_MODEL_PATH}")
+print(f"- 类别文件路径: {CLASS_NAMES_PATH}")
+print(f"- 类别前3项: {class_names[:3]}")

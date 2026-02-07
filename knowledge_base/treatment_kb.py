@@ -3,6 +3,8 @@
 定义番茄病害的治疗方案和预防措施
 """
 
+from .kb_store import ensure_kb_files, load_treatments, save_treatments
+
 
 class TreatmentKnowledge:
     """
@@ -10,8 +12,8 @@ class TreatmentKnowledge:
     包含病害的治疗方法和预防措施
     """
     def __init__(self):
-        # 治疗方案知识库
-        self.treatment_plans = {
+        # 治疗方案知识库（内置默认）
+        default_plans = {
             "健康": {
                 "treatment": "番茄目前健康，无需特殊治疗。",
                 "prevention": "1. 继续保持良好的栽培管理 2. 定期巡查，及时发现问题 3. 注意环境控制，避免病害发生"
@@ -49,13 +51,23 @@ class TreatmentKnowledge:
                 "prevention": "1. 加强田间管理，保持植株健康 2. 定期巡查，及时发现问题 3. 注意环境控制，避免病害发生 4. 选用抗病品种"
             }
         }
+        ensure_kb_files()
+        data = load_treatments()
+        if data.get("treatments"):
+            self.treatment_plans = data["treatments"]
+        else:
+            self.treatment_plans = default_plans
+            save_treatments({"treatments": self.treatment_plans})
     
     def get_treatment_plan(self, disease_type):
         """获取指定病害的治疗方案"""
-        return self.treatment_plans.get(disease_type, {
-            "treatment": "建议咨询当地番茄病害防治专家，根据实际情况制定具体治疗方案。",
-            "prevention": "1. 加强田间管理，保持植株健康 2. 定期巡查，及时发现问题 3. 注意环境控制，避免病害发生 4. 选用抗病品种"
-        })
+        return self.treatment_plans.get(
+            disease_type,
+            {
+                "treatment": "暂无方案，请完善知识库",
+                "prevention": "暂无预防建议",
+            },
+        )
     
     def get_treatment(self, disease_type):
         """获取指定病害的治疗方法"""
@@ -71,6 +83,7 @@ class TreatmentKnowledge:
             "treatment": treatment,
             "prevention": prevention
         }
+        save_treatments({"treatments": self.treatment_plans})
     
     def update_treatment_plan(self, disease_type, treatment=None, prevention=None):
         """更新治疗方案"""
@@ -80,6 +93,36 @@ class TreatmentKnowledge:
             
             if prevention is not None:
                 self.treatment_plans[disease_type]["prevention"] = prevention
-            
+            save_treatments({"treatments": self.treatment_plans})
             return True
         return False
+
+    def upsert_treatment_plan(self, disease_type, treatment, prevention):
+        """新增或更新治疗方案"""
+        self.treatment_plans[disease_type] = {
+            "treatment": treatment,
+            "prevention": prevention,
+        }
+        save_treatments({"treatments": self.treatment_plans})
+
+    def delete_treatment_plan(self, disease_type):
+        """删除治疗方案"""
+        if disease_type in self.treatment_plans:
+            self.treatment_plans.pop(disease_type, None)
+            save_treatments({"treatments": self.treatment_plans})
+            return True
+        return False
+
+    def list_treatments(self):
+        """列出治疗方案"""
+        items = []
+        for disease, plan in self.treatment_plans.items():
+            if isinstance(plan, dict):
+                items.append(
+                    {
+                        "disease": disease,
+                        "treatment": plan.get("treatment", ""),
+                        "prevention": plan.get("prevention", ""),
+                    }
+                )
+        return items
