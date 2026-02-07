@@ -71,6 +71,12 @@
       .panel-actions {
         display: flex;
         gap: 8px;
+        align-items: center;
+      }
+      .selection-count {
+        font-size: 12px;
+        color: #6b7280;
+        margin-right: 6px;
       }
       .section {
         display: grid;
@@ -255,6 +261,7 @@
           <div class="panel-header">
             <h2>病害及描述</h2>
             <div class="panel-actions">
+              <span id="diseaseSelectedCount" class="selection-count">已选择 0 条</span>
               <button id="diseaseAddBtn">新增</button>
               <button id="diseaseEditBtn" disabled>编辑</button>
               <button id="diseaseDeleteBtn" disabled>删除所选</button>
@@ -283,6 +290,7 @@
           <div class="panel-header">
             <h2>治疗/预防</h2>
             <div class="panel-actions">
+              <span id="treatmentSelectedCount" class="selection-count">已选择 0 条</span>
               <button id="treatmentAddBtn">新增</button>
               <button id="treatmentEditBtn" disabled>编辑</button>
               <button id="treatmentDeleteBtn" disabled>删除所选</button>
@@ -312,6 +320,7 @@
           <div class="panel-header">
             <h2>诊断规则</h2>
             <div class="panel-actions">
+              <span id="ruleSelectedCount" class="selection-count">已选择 0 条</span>
               <button id="ruleAddBtn">新增</button>
               <button id="ruleEditBtn" disabled>编辑</button>
               <button id="ruleDeleteBtn" disabled>删除所选</button>
@@ -343,6 +352,7 @@
           <div class="panel-header">
             <h2>症状-病害映射</h2>
             <div class="panel-actions">
+              <span id="mapSelectedCount" class="selection-count">已选择 0 条</span>
               <button id="mapAddBtn">新增</button>
               <button id="mapEditBtn" disabled>编辑</button>
               <button id="mapDeleteBtn" disabled>删除所选</button>
@@ -567,6 +577,10 @@
         document.getElementById("ruleDeleteBtn").disabled = state.selected.rules.size === 0;
         document.getElementById("mapEditBtn").disabled = state.selected.maps.size !== 1;
         document.getElementById("mapDeleteBtn").disabled = state.selected.maps.size === 0;
+        document.getElementById("diseaseSelectedCount").textContent = `已选择 ${state.selected.diseases.size} 条`;
+        document.getElementById("treatmentSelectedCount").textContent = `已选择 ${state.selected.treatments.size} 条`;
+        document.getElementById("ruleSelectedCount").textContent = `已选择 ${state.selected.rules.size} 条`;
+        document.getElementById("mapSelectedCount").textContent = `已选择 ${state.selected.maps.size} 条`;
       }
 
       function syncSelection(selectedSet, validIds) {
@@ -606,6 +620,48 @@
         selectedSet.clear();
         selectedSet.add(key);
         updateButtonStates();
+      }
+
+      function getRuleDisplayName(rule) {
+        if (rule.rule_id) {
+          return rule.rule_id;
+        }
+        const crop = rule.crop_type || "";
+        const disease = rule.disease || "";
+        const symptoms = Array.isArray(rule.symptoms) ? rule.symptoms.slice(0, 2).join(",") : "";
+        return `${crop}-${disease}-${symptoms}`.replace(/^-+|-+$/g, "") || "规则";
+      }
+
+      function getDeleteDisplayNames(tabName, selectedSet) {
+        if (tabName === "diseases") {
+          return Array.from(selectedSet);
+        }
+        if (tabName === "treatments") {
+          return Array.from(selectedSet);
+        }
+        if (tabName === "maps") {
+          return Array.from(selectedSet);
+        }
+        if (tabName === "rules") {
+          return Array.from(selectedSet).map((ruleId) => {
+            const rule = state.rules.find((item) => item.rule_id === ruleId) || { rule_id: ruleId };
+            return getRuleDisplayName(rule);
+          });
+        }
+        return [];
+      }
+
+      function buildDeleteConfirmMessage(names) {
+        const total = names.length;
+        const preview = names.slice(0, 5);
+        const lines = [`将删除 ${total} 条记录：`];
+        preview.forEach((name, index) => {
+          lines.push(`${index + 1}) ${name}`);
+        });
+        if (total > preview.length) {
+          lines.push(`... 还有 ${total - preview.length} 条`);
+        }
+        return lines.join("\n");
       }
 
       function renderDiseaseTable(filter = "") {
@@ -895,7 +951,8 @@
         if (!names.length) {
           return;
         }
-        const confirmed = window.confirm(`确认删除所选 ${names.length} 条病害吗？`);
+        const displayNames = getDeleteDisplayNames("diseases", state.selected.diseases);
+        const confirmed = window.confirm(buildDeleteConfirmMessage(displayNames));
         if (!confirmed) {
           return;
         }
@@ -971,7 +1028,8 @@
         if (!diseases.length) {
           return;
         }
-        const confirmed = window.confirm(`确认删除所选 ${diseases.length} 条治疗方案吗？`);
+        const displayNames = getDeleteDisplayNames("treatments", state.selected.treatments);
+        const confirmed = window.confirm(buildDeleteConfirmMessage(displayNames));
         if (!confirmed) {
           return;
         }
@@ -1048,7 +1106,8 @@
         if (!rule_ids.length) {
           return;
         }
-        const confirmed = window.confirm(`确认删除所选 ${rule_ids.length} 条规则吗？`);
+        const displayNames = getDeleteDisplayNames("rules", state.selected.rules);
+        const confirmed = window.confirm(buildDeleteConfirmMessage(displayNames));
         if (!confirmed) {
           return;
         }
@@ -1165,7 +1224,8 @@
         if (!symptoms.length) {
           return;
         }
-        const confirmed = window.confirm(`确认删除所选 ${symptoms.length} 条映射吗？`);
+        const displayNames = getDeleteDisplayNames("maps", state.selected.maps);
+        const confirmed = window.confirm(buildDeleteConfirmMessage(displayNames));
         if (!confirmed) {
           return;
         }
