@@ -556,6 +556,97 @@ def get_profiles_page() -> FileResponse:
     return FileResponse(profiles_path)
 
 
+@app.get("/kb")
+def get_kb_page() -> FileResponse:
+    kb_path = WEB_DIR / "kb.html"
+    if not kb_path.exists():
+        raise HTTPException(status_code=404, detail="kb.html 不存在")
+    return FileResponse(kb_path)
+
+
+@app.get("/api/kb/diseases")
+def list_kb_diseases() -> dict:
+    return {"items": kb.list_diseases()}
+
+
+@app.post("/api/kb/diseases")
+def upsert_kb_disease(payload: dict = Body(...)) -> dict[str, bool]:
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="参数非法")
+    name = (payload.get("name") or "").strip()
+    description = (payload.get("description") or "").strip()
+    if not name or not description:
+        raise HTTPException(status_code=400, detail="病害名称与描述不能为空")
+    kb.upsert_disease(name, description)
+    return {"ok": True}
+
+
+@app.get("/api/kb/treatments")
+def list_kb_treatments() -> dict:
+    return {"items": kb.list_treatments()}
+
+
+@app.post("/api/kb/treatments")
+def upsert_kb_treatments(payload: dict = Body(...)) -> dict[str, bool]:
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="参数非法")
+    disease = (payload.get("disease") or "").strip()
+    treatment = (payload.get("treatment") or "").strip()
+    prevention = (payload.get("prevention") or "").strip()
+    if not disease or not treatment or not prevention:
+        raise HTTPException(status_code=400, detail="病害、治疗与预防不能为空")
+    kb.upsert_treatment_plan(disease, treatment, prevention)
+    return {"ok": True}
+
+
+@app.get("/api/kb/rules")
+def list_kb_rules(crop_type: str | None = None) -> dict:
+    return {"items": kb.list_rules(crop_type)}
+
+
+@app.post("/api/kb/rules")
+def create_kb_rule(payload: dict = Body(...)) -> dict[str, bool]:
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="参数非法")
+    crop_type = (payload.get("crop_type") or "").strip() or "番茄"
+    symptoms = payload.get("symptoms")
+    disease = (payload.get("disease") or "").strip()
+    evidence = (payload.get("evidence") or "").strip()
+    try:
+        confidence = float(payload.get("confidence"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="置信度必须为数字") from None
+    if confidence < 0 or confidence > 1:
+        raise HTTPException(status_code=400, detail="置信度需在 0~1 之间")
+    if not isinstance(symptoms, list) or not symptoms:
+        raise HTTPException(status_code=400, detail="症状不能为空")
+    symptoms_list = [str(item).strip() for item in symptoms if str(item).strip()]
+    if not symptoms_list or not disease:
+        raise HTTPException(status_code=400, detail="症状与病害不能为空")
+    kb.add_rule(crop_type, symptoms_list, disease, confidence, evidence)
+    return {"ok": True}
+
+
+@app.get("/api/kb/symptom-map")
+def list_kb_symptom_map() -> dict:
+    return {"items": kb.list_symptom_map()}
+
+
+@app.post("/api/kb/symptom-map")
+def upsert_kb_symptom_map(payload: dict = Body(...)) -> dict[str, bool]:
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="参数非法")
+    symptom = (payload.get("symptom") or "").strip()
+    diseases = payload.get("diseases")
+    if not symptom or not isinstance(diseases, list) or not diseases:
+        raise HTTPException(status_code=400, detail="症状与病害不能为空")
+    disease_list = [str(item).strip() for item in diseases if str(item).strip()]
+    if not disease_list:
+        raise HTTPException(status_code=400, detail="病害不能为空")
+    kb.upsert_symptom_mapping(symptom, disease_list)
+    return {"ok": True}
+
+
 if __name__ == "__main__":
     # 启动示例：uvicorn app:app --host 0.0.0.0 --port 8000 --reload
     pass

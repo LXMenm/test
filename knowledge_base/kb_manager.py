@@ -50,7 +50,7 @@ class KnowledgeBaseManager:
         Returns:
             list: 可能的病害列表
         """
-        return self.disease_kb.get_possible_diseases_by_symptom(symptom)
+        return self.diagnosis_kb.get_symptom_diseases(symptom)
     
     def rule_diagnosis(self, crop, symptoms):
         """
@@ -70,50 +70,39 @@ class KnowledgeBaseManager:
                 "explanation": "无任何病害症状，植株健康。"
             }
         
-        # 统计每个病害的匹配得分
+        symptoms_set = set(symptoms)
+        matched_rules = [
+            rule
+            for rule in self.diagnosis_kb.list_rules(crop)
+            if set(rule.get("symptoms", [])) <= symptoms_set
+        ]
+        if matched_rules:
+            best_rule = max(matched_rules, key=lambda rule: rule.get("confidence", 0))
+            return {
+                "disease_type": best_rule.get("disease", "未知病害"),
+                "confidence": best_rule.get("confidence", 0.5),
+                "explanation": f"规则命中：{best_rule.get('evidence', '')}",
+            }
+
         disease_scores = {}
-        explanations = {}
-        
         for symptom in symptoms:
-            # 获取该症状下的所有诊断规则
-            symptom_rules = self.diagnosis_kb.get_rules_by_symptom(crop, symptom)
-            
-            for disease, info in symptom_rules.items():
-                confidence = info["confidence"]
-                explanation = info["explanation"]
-                
-                # 累加置信度
-                if disease in disease_scores:
-                    disease_scores[disease] += confidence
-                    explanations[disease].append(explanation)
-                else:
-                    disease_scores[disease] = confidence
-                    explanations[disease] = [explanation]
-        
+            for disease in self.diagnosis_kb.get_symptom_diseases(symptom):
+                disease_scores[disease] = disease_scores.get(disease, 0) + 1
+
         if not disease_scores:
             return {
                 "disease_type": "未知病害",
                 "confidence": 0.5,
-                "explanation": "无法根据提供的症状确定具体病害类型。"
+                "explanation": "无法根据提供的症状确定具体病害类型。",
             }
-        
-        # 计算平均置信度
-        for disease in disease_scores:
-            disease_scores[disease] /= len(symptoms)
-        
-        # 选择置信度最高的病害
+
         best_disease = max(disease_scores, key=disease_scores.get)
-        max_confidence = disease_scores[best_disease]
-        
-        # 合并所有诊断依据
-        merged_explanation = "基于以下症状和规则进行诊断：" + "\n".join(
-            f"- {symptom}：{explanation}" for symptom, explanation in zip(symptoms, explanations[best_disease])
-        )
-        
+        max_confidence = disease_scores[best_disease] / max(len(symptoms), 1)
+        merged_explanation = "基于症状映射进行诊断：" + "，".join(symptoms)
         return {
             "disease_type": best_disease,
             "confidence": max_confidence,
-            "explanation": merged_explanation
+            "explanation": merged_explanation,
         }
     
     def get_treatment_plan(self, disease_name):
@@ -166,20 +155,12 @@ class KnowledgeBaseManager:
         """
         if disease_name in self.disease_kb.disease_classes:
             return False
-        
-        # 添加到病害类别列表
-        self.disease_kb.disease_classes.append(disease_name)
-        
-        # 添加病害描述
-        self.disease_kb.disease_descriptions[disease_name] = description
-        
-        # 添加默认治疗方案
-        self.treatment_kb.add_treatment_plan(
+        self.disease_kb.upsert_disease(disease_name, description)
+        self.treatment_kb.upsert_treatment_plan(
             disease_name,
-            "暂无具体治疗方案，请咨询农业专家。",
-            "暂无具体预防措施，请咨询农业专家。"
+            "暂无方案，请完善知识库",
+            "暂无预防建议",
         )
-        
         return True
     
     def update_treatment(self, disease_name, treatment=None, prevention=None):
@@ -212,8 +193,7 @@ class KnowledgeBaseManager:
         """
         if disease_type not in self.disease_kb.disease_classes:
             return False
-        
-        self.diagnosis_kb.add_diagnosis_rule(crop_type, symptom, disease_type, confidence, explanation)
+        self.diagnosis_kb.add_rule(crop_type, [symptom], disease_type, confidence, explanation)
         return True
     
     def add_symptom_mapping(self, symptom, diseases):
@@ -227,10 +207,38 @@ class KnowledgeBaseManager:
         Returns:
             bool: 添加是否成功
         """
-        # 验证所有病害是否存在
         for disease in diseases:
             if disease not in self.disease_kb.disease_classes:
                 return False
-        
-        self.disease_kb.add_symptom_mapping(symptom, diseases)
+        self.diagnosis_kb.upsert_symptom_mapping(symptom, diseases)
         return True
+
+    def list_diseases(self):
+        return self.disease_kb.list_diseases()
+
+    def upsert_disease(self, name, description):
+        self.disease_kb.upsert_disease(name, description)
+
+    def delete_disease(self, name):
+        return self.disease_kb.delete_disease(name)
+
+    def list_treatments(self):
+        return self.treatment_kb.list_treatments()
+
+    def upsert_treatment_plan(self, disease, treatment, prevention):
+        self.treatment_kb.upsert_treatment_plan(disease, treatment, prevention)
+
+    def delete_treatment_plan(self, disease):
+        return self.treatment_kb.delete_treatment_plan(disease)
+
+    def list_rules(self, crop_type=None):
+        return self.diagnosis_kb.list_rules(crop_type)
+
+    def add_rule(self, crop_type, symptoms, disease, confidence, evidence):
+        self.diagnosis_kb.add_rule(crop_type, symptoms, disease, confidence, evidence)
+
+    def list_symptom_map(self):
+        return self.diagnosis_kb.list_symptom_map()
+
+    def upsert_symptom_mapping(self, symptom, diseases):
+        self.diagnosis_kb.upsert_symptom_mapping(symptom, diseases)
