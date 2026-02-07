@@ -28,7 +28,7 @@ from event_store import (
     geo_points_range,
 )
 from knowledge_base import get_kb_manager
-from personalization.profile_models import TreatmentConstraint
+from personalization.profile_models import FarmerProfile, TreatmentConstraint
 from personalization.profile_rules import filter_treatment_by_constraints
 from personalization.profile_store import get_profile_path, load_profile, list_profile_ids
 
@@ -395,6 +395,32 @@ def list_profiles() -> dict[str, list[dict[str, str]]]:
     return {"profiles": profiles}
 
 
+@app.post("/api/profiles")
+def create_profile(payload: dict = Body(...)) -> dict[str, bool]:
+    farmer_id = payload.get("farmer_id") if isinstance(payload, dict) else None
+    if not farmer_id:
+        raise HTTPException(status_code=400, detail="缺少 farmer_id")
+    path = get_profile_path(farmer_id)
+    if path.exists():
+        raise HTTPException(status_code=409, detail="农户ID已存在")
+
+    profile = FarmerProfile(farmer_id=farmer_id, name=payload.get("name"))
+    if "confirm_when_low_confidence" in payload:
+        profile.confirm_when_low_confidence = bool(payload.get("confirm_when_low_confidence"))
+    if "constraints" in payload and isinstance(payload.get("constraints"), dict):
+        try:
+            profile.constraints = TreatmentConstraint.model_validate(payload["constraints"])
+        except Exception:
+            profile.constraints = TreatmentConstraint()
+    profile.ensure_timestamp()
+    try:
+        with path.open("w", encoding="utf-8") as f:
+            json.dump(profile.model_dump(), f, ensure_ascii=False, indent=2)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"创建档案失败: {exc}") from exc
+    return {"ok": True}
+
+
 @app.get("/api/profiles/{farmer_id}")
 def get_profile(farmer_id: str) -> dict:
     path = get_profile_path(farmer_id)
@@ -415,6 +441,18 @@ def save_profile(farmer_id: str, payload: dict = Body(...)) -> dict[str, bool]:
             json.dump(payload, f, ensure_ascii=False, indent=2)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"保存档案失败: {exc}") from exc
+    return {"ok": True}
+
+
+@app.delete("/api/profiles/{farmer_id}")
+def delete_profile(farmer_id: str) -> dict[str, bool]:
+    path = get_profile_path(farmer_id)
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="档案不存在")
+    try:
+        path.unlink()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"删除档案失败: {exc}") from exc
     return {"ok": True}
 
 

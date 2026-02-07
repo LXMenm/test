@@ -94,15 +94,19 @@
       font-size: 14px;
     }
     .form-row {
-      display: grid;
-      grid-template-columns: 160px 1fr;
-      gap: 8px;
+      display: flex;
+      gap: 16px;
       align-items: center;
-      margin-bottom: 8px;
+      margin-bottom: 10px;
     }
-    .form-row label {
+    .form-label {
+      width: 160px;
       font-size: 13px;
       color: #374151;
+      flex-shrink: 0;
+    }
+    .form-field {
+      flex: 1;
     }
     .input, select, textarea {
       border: 1px solid #d1d5db;
@@ -236,6 +240,11 @@
       margin: 0 0 16px;
       font-size: 14px;
     }
+    .req {
+      color: #d00;
+      margin-left: 4px;
+      font-weight: 700;
+    }
     @keyframes fadeIn {
       from { opacity: 0; transform: translateY(-4px); }
       to { opacity: 1; transform: translateY(0); }
@@ -259,50 +268,67 @@
       <div class="controls">
         <button id="refreshBtn">刷新</button>
         <button id="saveBtn">保存</button>
+        <button id="deleteBtn" disabled>删除</button>
         <span id="status" class="status"></span>
       </div>
       <div class="cards">
         <div class="card">
           <h3>农户基本信息</h3>
           <div class="form-row">
-            <label for="farmer_id">farmer_id</label>
-            <input id="farmer_id" class="input" type="text" readonly />
+            <div class="form-label" data-field="farmer_id"></div>
+            <div class="form-field">
+              <input id="farmer_id" class="input" type="text" readonly />
+            </div>
           </div>
           <div class="form-row">
-            <label for="name">name</label>
-            <input id="name" class="input" type="text" />
+            <div class="form-label" data-field="name"></div>
+            <div class="form-field">
+              <input id="name" class="input" type="text" />
+            </div>
           </div>
           <div class="form-row">
-            <label for="active_base_id">active_base_id</label>
-            <select id="active_base_id" class="input"></select>
+            <div class="form-label" data-field="active_base_id"></div>
+            <div class="form-field">
+              <select id="active_base_id" class="input"></select>
+            </div>
           </div>
           <div class="form-row">
-            <label for="confirm_when_low_confidence">confirm_when_low_confidence</label>
-            <input id="confirm_when_low_confidence" type="checkbox" />
+            <div class="form-label" data-field="confirm_when_low_confidence"></div>
+            <div class="form-field">
+              <input id="confirm_when_low_confidence" type="checkbox" />
+            </div>
           </div>
           <div class="form-row">
-            <label for="schema_version">schema_version</label>
-            <input id="schema_version" class="input" type="text" readonly />
+            <div class="form-label" data-field="schema_version"></div>
+            <div class="form-field">
+              <input id="schema_version" class="input" type="text" readonly />
+            </div>
           </div>
           <div class="form-row">
-            <label for="updated_at">updated_at</label>
-            <input id="updated_at" class="input" type="text" readonly />
+            <div class="form-label" data-field="updated_at"></div>
+            <div class="form-field">
+              <input id="updated_at" class="input" type="text" readonly />
+            </div>
           </div>
         </div>
 
         <div class="card">
           <h3>治疗约束（constraints）</h3>
           <div class="form-row">
-            <label for="prefer_organic">prefer_organic</label>
-            <input id="prefer_organic" type="checkbox" />
+            <div class="form-label" data-field="prefer_organic"></div>
+            <div class="form-field">
+              <input id="prefer_organic" type="checkbox" />
+            </div>
           </div>
           <div class="form-row">
-            <label for="harvest_window_days">harvest_window_days</label>
-            <input id="harvest_window_days" class="input" type="number" min="0" max="365" />
+            <div class="form-label" data-field="harvest_window_days"></div>
+            <div class="form-field">
+              <input id="harvest_window_days" class="input" type="number" min="0" max="365" />
+            </div>
           </div>
           <div class="form-row">
-            <label for="banned_ingredients_input">banned_ingredients</label>
-            <div>
+            <div class="form-label" data-field="banned_ingredients"></div>
+            <div class="form-field">
               <div class="inline">
                 <input id="banned_ingredients_input" class="input" type="text" placeholder="输入成分" />
                 <button id="addIngredientBtn">添加</button>
@@ -324,36 +350,52 @@
             </div>
             <div>
               <div class="form-row">
-                <label for="base_id">base_id</label>
-                <input id="base_id" class="input" type="text" readonly />
+                <div class="form-label" data-field="base_id"></div>
+                <div class="form-field">
+                  <input id="base_id" class="input" type="text" readonly />
+                </div>
               </div>
               <div class="form-row">
-                <label for="base_name">name</label>
-                <input id="base_name" class="input" type="text" />
+                <div class="form-label" data-field="base_name"></div>
+                <div class="form-field">
+                  <input id="base_name" class="input" type="text" />
+                </div>
               </div>
               <div class="form-row">
-                <label for="location">location</label>
-                <input id="location" class="input" type="text" />
+                <div class="form-label" data-field="location"></div>
+                <div class="form-field">
+                  <input id="location" class="input" type="text" />
+                </div>
               </div>
               <div class="form-row">
-                <label for="province">province</label>
-                <input id="province" class="input" type="text" />
+                <div class="form-label" data-field="province"></div>
+                <div class="form-field">
+                  <input id="province" class="input" type="text" />
+                </div>
               </div>
               <div class="form-row">
-                <label for="facility">facility</label>
-                <input id="facility" class="input" type="text" />
+                <div class="form-label" data-field="facility"></div>
+                <div class="form-field">
+                  <input id="facility" class="input" type="text" />
+                </div>
               </div>
               <div class="form-row">
-                <label for="environment">environment</label>
-                <input id="environment" class="input" type="text" />
+                <div class="form-label" data-field="environment"></div>
+                <div class="form-field">
+                  <input id="environment" class="input" type="text" />
+                </div>
               </div>
               <div class="form-row">
-                <label for="growth_stage">growth_stage</label>
-                <input id="growth_stage" class="input" type="text" />
+                <div class="form-label" data-field="growth_stage"></div>
+                <div class="form-field">
+                  <input id="growth_stage" class="input" type="text" />
+                </div>
               </div>
               <div class="form-row">
-                <label for="notes">notes</label>
-                <textarea id="notes" class="input"></textarea>
+                <div class="form-label" data-field="notes"></div>
+                <div class="form-field">
+                  <textarea id="notes" class="input"></textarea>
+                </div>
               </div>
             </div>
           </div>
@@ -367,26 +409,36 @@
       <button class="modal-close" id="closeFarmerModal">×</button>
       <h3>新增农户档案</h3>
       <div class="form-row">
-        <label for="newFarmerId">farmer_id</label>
-        <input id="newFarmerId" class="input" type="text" placeholder="例如 F002" />
+        <div class="form-label" data-field="farmer_id" data-req="true"></div>
+        <div class="form-field">
+          <input id="newFarmerId" class="input" type="text" placeholder="例如 F002" />
+        </div>
       </div>
       <div id="newFarmerIdError" class="field-error"></div>
       <div class="form-row">
-        <label for="newFarmerName">name</label>
-        <input id="newFarmerName" class="input" type="text" placeholder="农户姓名" />
+        <div class="form-label" data-field="name" data-req="true"></div>
+        <div class="form-field">
+          <input id="newFarmerName" class="input" type="text" placeholder="农户姓名" />
+        </div>
       </div>
       <div id="newFarmerNameError" class="field-error"></div>
       <div class="form-row">
-        <label for="newConfirmLow">confirm_when_low_confidence</label>
-        <input id="newConfirmLow" type="checkbox" checked />
+        <div class="form-label" data-field="confirm_when_low_confidence"></div>
+        <div class="form-field">
+          <input id="newConfirmLow" type="checkbox" checked />
+        </div>
       </div>
       <div class="form-row">
-        <label for="newPreferOrganic">prefer_organic</label>
-        <input id="newPreferOrganic" type="checkbox" />
+        <div class="form-label" data-field="prefer_organic"></div>
+        <div class="form-field">
+          <input id="newPreferOrganic" type="checkbox" />
+        </div>
       </div>
       <div class="form-row">
-        <label for="newHarvestWindow">harvest_window_days</label>
-        <input id="newHarvestWindow" class="input" type="number" min="0" max="365" />
+        <div class="form-label" data-field="harvest_window_days"></div>
+        <div class="form-field">
+          <input id="newHarvestWindow" class="input" type="number" min="0" max="365" />
+        </div>
       </div>
       <div id="newHarvestError" class="field-error"></div>
       <div class="modal-actions">
@@ -410,6 +462,7 @@
     const currentId = document.getElementById("currentId");
     const refreshBtn = document.getElementById("refreshBtn");
     const saveBtn = document.getElementById("saveBtn");
+    const deleteBtn = document.getElementById("deleteBtn");
     const status = document.getElementById("status");
 
     const farmerIdInput = document.getElementById("farmer_id");
@@ -441,6 +494,25 @@
     let activeId = null;
     let profileData = null;
     let modalDirty = false;
+    const LABELS = {
+      farmer_id: "农户ID",
+      name: "农户姓名",
+      active_base_id: "当前基地",
+      confirm_when_low_confidence: "低置信度需确认",
+      schema_version: "档案版本",
+      updated_at: "更新时间",
+      prefer_organic: "有机/低残留偏好",
+      harvest_window_days: "距离采收期（天）",
+      banned_ingredients: "禁用成分关键词",
+      base_id: "基地ID",
+      base_name: "基地名称",
+      location: "位置/地址",
+      province: "省份",
+      facility: "设施类型",
+      environment: "环境描述",
+      growth_stage: "生长阶段",
+      notes: "备注",
+    };
 
     const addFarmerBtn = document.getElementById("addFarmerBtn");
     const farmerModal = document.getElementById("farmerModal");
@@ -478,6 +550,40 @@
         throw new Error(text || `请求失败: ${response.status}`);
       }
       return response.json();
+    }
+
+    function applyLabels() {
+      document.querySelectorAll(".form-label[data-field]").forEach((label) => {
+        const key = label.dataset.field;
+        const text = LABELS[key] || key;
+        const required = label.dataset.req === "true";
+        label.innerHTML = required ? `${text}<span class=\"req\">*</span>` : text;
+      });
+    }
+
+    function clearProfileForm() {
+      profileData = null;
+      activeId = null;
+      currentId.textContent = "未选择";
+      farmerIdInput.value = "";
+      nameInput.value = "";
+      schemaVersionInput.value = "1.0";
+      updatedAtInput.value = "";
+      confirmWhenLowConfidenceInput.checked = true;
+      activeBaseSelect.innerHTML = "";
+      baseList.innerHTML = "";
+      renderBannedIngredients([]);
+      preferOrganicInput.checked = false;
+      harvestWindowInput.value = "";
+      baseIdInput.value = "";
+      baseNameInput.value = "";
+      locationInput.value = "";
+      provinceInput.value = "";
+      facilityInput.value = "";
+      environmentInput.value = "";
+      growthStageInput.value = "";
+      notesInput.value = "";
+      deleteBtn.disabled = true;
     }
 
     function openFarmerModal() {
@@ -568,25 +674,15 @@
       };
 
       try {
-        let response = await fetch(`/api/profiles`, {
+        const response = await fetch(`/api/profiles`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload),
         });
 
         if (response.status === 409) {
-          newFarmerIdError.textContent = "农户ID已存在";
+          newFarmerIdError.textContent = "农户ID已存在，请更换";
           return;
-        }
-
-        if (!response.ok) {
-          if (response.status === 404 || response.status === 405) {
-            response = await fetch(`/api/profiles/${farmerId}`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ farmer_id: farmerId, name: payload.name }),
-            });
-          }
         }
 
         if (!response.ok) {
@@ -594,18 +690,12 @@
           throw new Error(text || "创建失败");
         }
 
-        let profile = null;
-        try {
-          profile = await fetchJson(`/api/profiles/${farmerId}`);
-        } catch (error) {
-          profile = null;
-        }
+        const profile = await fetchJson(`/api/profiles/${farmerId}`);
         const mergedProfile = {
-          ...(profile || { farmer_id: farmerId }),
-          name: payload.name,
+          ...profile,
           confirm_when_low_confidence: payload.confirm_when_low_confidence,
           constraints: {
-            ...(profile && profile.constraints ? profile.constraints : {}),
+            ...(profile.constraints || {}),
             ...payload.constraints,
           },
         };
@@ -772,6 +862,7 @@
         const profiles = data.profiles || [];
         if (profiles.length === 0) {
           profileList.innerHTML = "<li>暂无档案</li>";
+          clearProfileForm();
           return;
         }
         profiles.forEach((item) => {
@@ -789,6 +880,7 @@
         if (!activeId && profiles[0]) {
           selectProfile(profiles[0].id);
         }
+        deleteBtn.disabled = !activeId;
       } catch (error) {
         setStatus(error.message || "加载档案失败");
       }
@@ -797,6 +889,7 @@
     async function selectProfile(farmerId) {
       activeId = farmerId;
       currentId.textContent = `当前农户：${farmerId}`;
+      deleteBtn.disabled = !farmerId;
       Array.from(profileList.children).forEach((li) => {
         li.classList.toggle("active", li.dataset.id === farmerId);
       });
@@ -864,6 +957,10 @@
         setStatus("请先选择农户");
         return;
       }
+      if (!profileData.farmer_id) {
+        setStatus("farmer_id 不能为空");
+        return;
+      }
       const payload = buildPayload();
       if (!validateProfile()) {
         return;
@@ -878,6 +975,28 @@
         await loadProfileDetail(payload.farmer_id);
       } catch (error) {
         setStatus(error.message || "保存失败");
+      }
+    }
+
+    async function deleteProfile() {
+      if (!activeId) {
+        return;
+      }
+      const confirmed = window.confirm("确认删除该农户档案？（删除后不可恢复）");
+      if (!confirmed) {
+        return;
+      }
+      try {
+        await fetchJson(`/api/profiles/${activeId}`, { method: "DELETE" });
+        setStatus("删除成功", true);
+        await loadProfiles();
+        if (activeId) {
+          await selectProfile(activeId);
+        } else {
+          clearProfileForm();
+        }
+      } catch (error) {
+        setStatus(error.message || "删除失败");
       }
     }
 
@@ -984,7 +1103,9 @@
       }
     });
     saveBtn.addEventListener("click", saveProfile);
+    deleteBtn.addEventListener("click", deleteProfile);
 
+    applyLabels();
     loadProfiles();
   </script>
 </body>
