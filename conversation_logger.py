@@ -45,6 +45,7 @@ def log_conversation(state: Dict[str, Any], log_dir: str = DEFAULT_LOG_DIR) -> s
         "facility": state.get("facility"),
         "symptoms": state.get("symptoms", []),
         "image_path": state.get("image_path"),
+        "image_diagnosis": state.get("image_diagnosis"),
         "disease_type": state.get("disease_type"),
         "disease_confidence": state.get("disease_confidence"),
         "disease_description": state.get("disease_description"),
@@ -113,6 +114,15 @@ def render_report(limit: int = 5, log_dir: str = DEFAULT_LOG_DIR) -> str:
         prevention_advice = entry.get("prevention_advice") or ""
         prevention_first_line = prevention_advice.split("\n")[0] if prevention_advice else "无"
         lines.append(f"- 预防建议: {prevention_first_line}")
+        image_diagnosis = entry.get("image_diagnosis") or {}
+        if image_diagnosis:
+            top1 = image_diagnosis.get("top1") or {}
+            top3_items = image_diagnosis.get("top3") or []
+            top3_text = ", ".join([f"{name}={float(prob):.2f}" for name, prob in top3_items]) if top3_items else "无"
+            lines.append("【图像诊断证据】")
+            lines.append(f"Image: {image_diagnosis.get('image_path') or entry.get('image_path')}")
+            lines.append(f"Top1: {top1.get('disease')} (conf={float(top1.get('confidence', 0.0)):.2f})")
+            lines.append(f"Top3: {top3_text}")
         lines.append(f"- 消息摘要: {entry.get('messages')[-1] if entry.get('messages') else '无'}")
         lines.append("")
 
