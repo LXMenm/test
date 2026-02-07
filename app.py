@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from datetime import datetime, timezone
 from io import BytesIO
@@ -395,11 +396,31 @@ def list_profiles() -> dict[str, list[dict[str, str]]]:
     return {"profiles": profiles}
 
 
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _generate_farmer_id() -> str | None:
+    existing_ids = set()
+    for farmer_id in list_profile_ids():
+        match = re.match(r"^F(\d{4})$", farmer_id)
+        if match:
+            existing_ids.add(int(match.group(1)))
+    for index in range(1, 1001):
+        if index not in existing_ids:
+            return f"F{index:04d}"
+    return None
+
+
 @app.post("/api/profiles")
-def create_profile(payload: dict = Body(...)) -> dict[str, bool]:
-    farmer_id = payload.get("farmer_id") if isinstance(payload, dict) else None
+def create_profile(payload: dict = Body(...)) -> dict[str, bool | str]:
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="档案内容非法")
+    farmer_id = payload.get("farmer_id")
     if not farmer_id:
-        raise HTTPException(status_code=400, detail="缺少 farmer_id")
+        farmer_id = _generate_farmer_id()
+        if not farmer_id:
+            raise HTTPException(status_code=409, detail="农户ID已满")
     path = get_profile_path(farmer_id)
     if path.exists():
         raise HTTPException(status_code=409, detail="农户ID已存在")
@@ -413,12 +434,13 @@ def create_profile(payload: dict = Body(...)) -> dict[str, bool]:
         except Exception:
             profile.constraints = TreatmentConstraint()
     profile.ensure_timestamp()
+    profile.updated_at = _utc_now_iso()
     try:
         with path.open("w", encoding="utf-8") as f:
             json.dump(profile.model_dump(), f, ensure_ascii=False, indent=2)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"创建档案失败: {exc}") from exc
-    return {"ok": True}
+    return {"ok": True, "id": farmer_id}
 
 
 @app.get("/api/profiles/{farmer_id}")
@@ -436,6 +458,9 @@ def get_profile(farmer_id: str) -> dict:
 @app.post("/api/profiles/{farmer_id}")
 def save_profile(farmer_id: str, payload: dict = Body(...)) -> dict[str, bool]:
     path = get_profile_path(farmer_id)
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="档案内容非法")
+    payload["updated_at"] = _utc_now_iso()
     try:
         with path.open("w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)

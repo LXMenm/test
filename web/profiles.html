@@ -108,6 +108,10 @@
     .form-field {
       flex: 1;
     }
+    .muted {
+      color: #6b7280;
+      font-size: 13px;
+    }
     .input, select, textarea {
       border: 1px solid #d1d5db;
       border-radius: 6px;
@@ -149,6 +153,11 @@
       color: inherit;
       cursor: pointer;
       font-size: 12px;
+    }
+    .empty-state {
+      color: #6b7280;
+      font-size: 13px;
+      padding: 8px 0;
     }
     .bases-layout {
       display: grid;
@@ -307,7 +316,7 @@
           <div class="form-row">
             <div class="form-label" data-field="updated_at"></div>
             <div class="form-field">
-              <input id="updated_at" class="input" type="text" readonly />
+              <input id="updated_at" class="input" type="text" readonly disabled />
             </div>
           </div>
         </div>
@@ -349,52 +358,55 @@
               <ul id="baseList" class="base-list"></ul>
             </div>
             <div>
-              <div class="form-row">
-                <div class="form-label" data-field="base_id"></div>
-                <div class="form-field">
-                  <input id="base_id" class="input" type="text" readonly />
+              <div id="basesEmpty" class="empty-state">暂无基地，请点击【新增基地】</div>
+              <div id="basesForm">
+                <div class="form-row">
+                  <div class="form-label" data-field="base_id"></div>
+                  <div class="form-field">
+                    <input id="base_id" class="input" type="text" readonly />
+                  </div>
                 </div>
-              </div>
-              <div class="form-row">
-                <div class="form-label" data-field="base_name"></div>
-                <div class="form-field">
-                  <input id="base_name" class="input" type="text" />
+                <div class="form-row">
+                  <div class="form-label" data-field="base_name"></div>
+                  <div class="form-field">
+                    <input id="base_name" class="input" type="text" />
+                  </div>
                 </div>
-              </div>
-              <div class="form-row">
-                <div class="form-label" data-field="location"></div>
-                <div class="form-field">
-                  <input id="location" class="input" type="text" />
+                <div class="form-row">
+                  <div class="form-label" data-field="location"></div>
+                  <div class="form-field">
+                    <input id="location" class="input" type="text" />
+                  </div>
                 </div>
-              </div>
-              <div class="form-row">
-                <div class="form-label" data-field="province"></div>
-                <div class="form-field">
-                  <input id="province" class="input" type="text" />
+                <div class="form-row">
+                  <div class="form-label" data-field="province"></div>
+                  <div class="form-field">
+                    <input id="province" class="input" type="text" />
+                  </div>
                 </div>
-              </div>
-              <div class="form-row">
-                <div class="form-label" data-field="facility"></div>
-                <div class="form-field">
-                  <input id="facility" class="input" type="text" />
+                <div class="form-row">
+                  <div class="form-label" data-field="facility"></div>
+                  <div class="form-field">
+                    <input id="facility" class="input" type="text" />
+                  </div>
                 </div>
-              </div>
-              <div class="form-row">
-                <div class="form-label" data-field="environment"></div>
-                <div class="form-field">
-                  <input id="environment" class="input" type="text" />
+                <div class="form-row">
+                  <div class="form-label" data-field="environment"></div>
+                  <div class="form-field">
+                    <input id="environment" class="input" type="text" />
+                  </div>
                 </div>
-              </div>
-              <div class="form-row">
-                <div class="form-label" data-field="growth_stage"></div>
-                <div class="form-field">
-                  <input id="growth_stage" class="input" type="text" />
+                <div class="form-row">
+                  <div class="form-label" data-field="growth_stage"></div>
+                  <div class="form-field">
+                    <input id="growth_stage" class="input" type="text" />
+                  </div>
                 </div>
-              </div>
-              <div class="form-row">
-                <div class="form-label" data-field="notes"></div>
-                <div class="form-field">
-                  <textarea id="notes" class="input"></textarea>
+                <div class="form-row">
+                  <div class="form-label" data-field="notes"></div>
+                  <div class="form-field">
+                    <textarea id="notes" class="input"></textarea>
+                  </div>
                 </div>
               </div>
             </div>
@@ -408,13 +420,13 @@
     <div class="modal">
       <button class="modal-close" id="closeFarmerModal">×</button>
       <h3>新增农户档案</h3>
+      <div id="newFarmerGeneralError" class="field-error"></div>
       <div class="form-row">
-        <div class="form-label" data-field="farmer_id" data-req="true"></div>
+        <div class="form-label" data-field="farmer_id"></div>
         <div class="form-field">
-          <input id="newFarmerId" class="input" type="text" placeholder="例如 F002" />
+          <div class="muted">系统自动生成</div>
         </div>
       </div>
-      <div id="newFarmerIdError" class="field-error"></div>
       <div class="form-row">
         <div class="form-label" data-field="name" data-req="true"></div>
         <div class="form-field">
@@ -481,6 +493,8 @@
     const baseList = document.getElementById("baseList");
     const addBaseBtn = document.getElementById("addBaseBtn");
     const removeBaseBtn = document.getElementById("removeBaseBtn");
+    const basesEmpty = document.getElementById("basesEmpty");
+    const basesForm = document.getElementById("basesForm");
 
     const baseIdInput = document.getElementById("base_id");
     const baseNameInput = document.getElementById("base_name");
@@ -493,6 +507,7 @@
 
     let activeId = null;
     let profileData = null;
+    let selectedBaseId = null;
     let modalDirty = false;
     const LABELS = {
       farmer_id: "农户ID",
@@ -519,12 +534,11 @@
     const closeFarmerModalBtn = document.getElementById("closeFarmerModal");
     const cancelFarmerBtn = document.getElementById("cancelFarmerBtn");
     const createFarmerBtn = document.getElementById("createFarmerBtn");
-    const newFarmerId = document.getElementById("newFarmerId");
     const newFarmerName = document.getElementById("newFarmerName");
     const newConfirmLow = document.getElementById("newConfirmLow");
     const newPreferOrganic = document.getElementById("newPreferOrganic");
     const newHarvestWindow = document.getElementById("newHarvestWindow");
-    const newFarmerIdError = document.getElementById("newFarmerIdError");
+    const newFarmerGeneralError = document.getElementById("newFarmerGeneralError");
     const newFarmerNameError = document.getElementById("newFarmerNameError");
     const newHarvestError = document.getElementById("newHarvestError");
     const confirmExit = document.getElementById("confirmExit");
@@ -564,6 +578,7 @@
     function clearProfileForm() {
       profileData = null;
       activeId = null;
+      selectedBaseId = null;
       currentId.textContent = "未选择";
       farmerIdInput.value = "";
       nameInput.value = "";
@@ -572,6 +587,8 @@
       confirmWhenLowConfidenceInput.checked = true;
       activeBaseSelect.innerHTML = "";
       baseList.innerHTML = "";
+      basesEmpty.style.display = "block";
+      basesForm.style.display = "none";
       renderBannedIngredients([]);
       preferOrganicInput.checked = false;
       harvestWindowInput.value = "";
@@ -603,12 +620,11 @@
     }
 
     function resetFarmerForm() {
-      newFarmerId.value = "";
       newFarmerName.value = "";
       newConfirmLow.checked = true;
       newPreferOrganic.checked = false;
       newHarvestWindow.value = "";
-      newFarmerIdError.textContent = "";
+      newFarmerGeneralError.textContent = "";
       newFarmerNameError.textContent = "";
       newHarvestError.textContent = "";
       confirmExit.style.display = "none";
@@ -629,18 +645,12 @@
 
     function validateNewFarmer() {
       let valid = true;
-      const idValue = newFarmerId.value.trim();
       const nameValue = newFarmerName.value.trim();
-      const idPattern = /^[A-Za-z0-9_-]{2,20}$/;
 
-      newFarmerIdError.textContent = "";
+      newFarmerGeneralError.textContent = "";
       newFarmerNameError.textContent = "";
       newHarvestError.textContent = "";
 
-      if (!idValue || !idPattern.test(idValue)) {
-        newFarmerIdError.textContent = "ID 必填，格式为 2-20 位字母数字或 _-";
-        valid = false;
-      }
       if (!nameValue) {
         newFarmerNameError.textContent = "姓名为必填项";
         valid = false;
@@ -660,9 +670,7 @@
       if (!validateNewFarmer()) {
         return;
       }
-      const farmerId = newFarmerId.value.trim();
       const payload = {
-        farmer_id: farmerId,
         name: newFarmerName.value.trim(),
         confirm_when_low_confidence: newConfirmLow.checked,
         constraints: {
@@ -681,13 +689,26 @@
         });
 
         if (response.status === 409) {
-          newFarmerIdError.textContent = "农户ID已存在，请更换";
+          let detail = "";
+          try {
+            const data = await response.json();
+            detail = data.detail || "";
+          } catch (error) {
+            detail = await response.text();
+          }
+          newFarmerGeneralError.textContent = detail || "农户ID已满或已存在";
           return;
         }
 
         if (!response.ok) {
           const text = await response.text();
           throw new Error(text || "创建失败");
+        }
+
+        const result = await response.json();
+        const farmerId = result.id;
+        if (!farmerId) {
+          throw new Error("创建失败：未返回 farmer_id");
         }
 
         const profile = await fetchJson(`/api/profiles/${farmerId}`);
@@ -709,7 +730,7 @@
         await loadProfiles();
         await selectProfile(farmerId);
       } catch (error) {
-        setStatus(error.message || "创建农户失败");
+        newFarmerGeneralError.textContent = error.message || "创建农户失败";
       }
     }
 
@@ -781,9 +802,10 @@
       baseList.innerHTML = "";
       const baseIds = Object.keys(profile.bases || {});
       activeBaseSelect.innerHTML = "";
-
-      if (!profile.active_base_id && baseIds.length > 0) {
-        profile.active_base_id = baseIds[0];
+      if (baseIds.length === 0) {
+        selectedBaseId = null;
+      } else if (!baseIds.includes(selectedBaseId)) {
+        selectedBaseId = profile.active_base_id || baseIds[0] || null;
       }
 
       const emptyOption = document.createElement("option");
@@ -803,21 +825,24 @@
         const li = document.createElement("li");
         li.textContent = baseId;
         li.dataset.id = baseId;
-        li.classList.toggle("active", baseId === profile.active_base_id);
+        li.classList.toggle("active", baseId === selectedBaseId);
         li.addEventListener("click", () => {
-          profile.active_base_id = baseId;
+          selectedBaseId = baseId;
           renderBases(profile);
           fillBaseForm();
         });
         baseList.appendChild(li);
       });
 
+      const hasBases = baseIds.length > 0;
+      basesEmpty.style.display = hasBases ? "none" : "block";
+      basesForm.style.display = hasBases ? "block" : "none";
+      activeBaseSelect.value = profile.active_base_id || "";
       fillBaseForm();
     }
 
     function fillBaseForm() {
-      const activeBaseId = profileData.active_base_id;
-      const base = (activeBaseId && profileData.bases[activeBaseId]) || null;
+      const base = (selectedBaseId && profileData.bases[selectedBaseId]) || null;
       if (!base) {
         baseIdInput.value = "";
         baseNameInput.value = "";
@@ -840,11 +865,10 @@
     }
 
     function syncBaseForm() {
-      const activeBaseId = profileData.active_base_id;
-      if (!activeBaseId || !profileData.bases[activeBaseId]) {
+      if (!selectedBaseId || !profileData.bases[selectedBaseId]) {
         return;
       }
-      const base = profileData.bases[activeBaseId];
+      const base = profileData.bases[selectedBaseId];
       base.name = baseNameInput.value.trim();
       base.location = locationInput.value.trim();
       base.province = provinceInput.value.trim();
@@ -898,6 +922,7 @@
 
     async function loadProfileDetail(farmerId) {
       setStatus("");
+      selectedBaseId = null;
       try {
         const data = await fetchJson(`/api/profiles/${farmerId}`);
         profileData = normalizeProfile(data, farmerId);
@@ -1016,7 +1041,6 @@
       closeFarmerModal(true);
     });
 
-    newFarmerId.addEventListener("input", markDirty);
     newFarmerName.addEventListener("input", markDirty);
     newConfirmLow.addEventListener("change", markDirty);
     newPreferOrganic.addEventListener("change", markDirty);
@@ -1062,19 +1086,25 @@
         return;
       }
       profileData.bases[trimmed] = { base_id: trimmed };
-      profileData.active_base_id = trimmed;
+      if (!profileData.active_base_id && Object.keys(profileData.bases).length === 1) {
+        profileData.active_base_id = trimmed;
+      }
+      selectedBaseId = trimmed;
       renderBases(profileData);
       setStatus("已新增基地", true);
     });
 
     removeBaseBtn.addEventListener("click", () => {
-      if (!profileData || !profileData.active_base_id) {
+      if (!profileData || !selectedBaseId) {
         return;
       }
-      const target = profileData.active_base_id;
+      const target = selectedBaseId;
       delete profileData.bases[target];
       const remaining = Object.keys(profileData.bases);
-      profileData.active_base_id = remaining[0] || null;
+      if (profileData.active_base_id === target) {
+        profileData.active_base_id = remaining[0] || null;
+      }
+      selectedBaseId = remaining[0] || null;
       renderBases(profileData);
       setStatus("已删除基地", true);
     });
