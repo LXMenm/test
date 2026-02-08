@@ -9,7 +9,8 @@ from agents import (
     reception_agent,
     diagnosis_agent,
     treatment_agent,
-    supervisor_agent
+    supervisor_agent,
+    kb_retrieval_agent,
 )
 
 
@@ -30,6 +31,8 @@ def route_next_step(state: CropDiseaseState) -> str:
         return "reception"
     elif next_action == "diagnosis":
         return "diagnosis"
+    elif next_action == "kb_retrieval":
+        return "kb_retrieval"
     elif next_action == "treatment":
         return "treatment"
     elif next_action == "end":
@@ -47,9 +50,11 @@ def build_graph() -> StateGraph:
     2. 接待智能体 -> 监督智能体
     3. 监督智能体 -> 诊断智能体
     4. 诊断智能体 -> 监督智能体
-    5. 监督智能体 -> 治疗方案智能体
-    6. 治疗方案智能体 -> 监督智能体
-    7. 监督智能体 -> END
+    5. 监督智能体 -> 知识检索智能体
+    6. 知识检索智能体 -> 监督智能体
+    7. 监督智能体 -> 治疗方案智能体
+    8. 治疗方案智能体 -> 监督智能体
+    9. 监督智能体 -> END
 
     Returns:
         编译后的工作流图
@@ -61,6 +66,7 @@ def build_graph() -> StateGraph:
     workflow.add_node("supervisor", supervisor_agent)  # 监督智能体
     workflow.add_node("reception", reception_agent)    # 接待智能体
     workflow.add_node("diagnosis", diagnosis_agent)    # 诊断智能体
+    workflow.add_node("kb_retrieval", kb_retrieval_agent)  # 知识检索智能体
     workflow.add_node("treatment", treatment_agent)    # 治疗方案智能体
 
     # 设置入口点：从监督智能体开始
@@ -73,6 +79,7 @@ def build_graph() -> StateGraph:
         {
             "reception": "reception",    # 如果返回"reception"，转到reception节点
             "diagnosis": "diagnosis",    # 如果返回"diagnosis"，转到diagnosis节点
+            "kb_retrieval": "kb_retrieval",  # 如果返回"kb_retrieval"，转到kb_retrieval节点
             "treatment": "treatment",    # 如果返回"treatment"，转到treatment节点
             END: END                     # 如果返回END，结束流程
         }
@@ -81,6 +88,7 @@ def build_graph() -> StateGraph:
     # 添加边：各个智能体执行完后返回监督智能体
     workflow.add_edge("reception", "supervisor")  # 接待智能体 -> 监督智能体
     workflow.add_edge("diagnosis", "supervisor")  # 诊断智能体 -> 监督智能体
+    workflow.add_edge("kb_retrieval", "supervisor")  # 知识检索智能体 -> 监督智能体
     workflow.add_edge("treatment", "supervisor")  # 治疗方案智能体 -> 监督智能体
 
     # 编译工作流
