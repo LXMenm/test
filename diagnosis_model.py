@@ -10,7 +10,13 @@ from torchvision import transforms
 from PIL import Image
 import numpy as np
 from typing import Dict, Tuple, Optional, List
-from config import DIAGNOSIS_MODEL_TYPE, DIAGNOSIS_MODEL_PATH, USE_GPU, DIAGNOSIS_CONFIDENCE_THRESHOLD
+from config import (
+    DIAGNOSIS_MODEL_TYPE,
+    DIAGNOSIS_MODEL_PATH,
+    DIAGNOSIS_ALLOW_TORCH,
+    USE_GPU,
+    DIAGNOSIS_CONFIDENCE_THRESHOLD,
+)
 import os
 from knowledge_base import get_kb_manager
 
@@ -96,6 +102,7 @@ def create_model(model_type: str = DIAGNOSIS_MODEL_TYPE, num_classes: int = len(
 class DiseaseDiagnosisEngine:
     """病害诊断引擎"""
     _tf_load_announced_paths: set[str] = set()
+    _torch_load_announced_paths: set[str] = set()
     
     def __init__(self, model_type: str = DIAGNOSIS_MODEL_TYPE, model_path: Optional[str] = None):
         if model_path is None:
@@ -109,11 +116,28 @@ class DiseaseDiagnosisEngine:
         self.model = None
         self.transform = None
 
-        if model_path and model_path.endswith((".h5", ".keras")):
+        tf_default_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "models",
+            "densenet121_tomato_disease_model_fine_tuned.h5",
+        )
+        if os.path.exists(tf_default_path):
             self.tf_backend = True
+            self.model_path = tf_default_path
+            self._load_tf_model(tf_default_path)
+        elif model_path and model_path.endswith((".h5", ".keras")) and os.path.exists(model_path):
+            self.tf_backend = True
+            self.model_path = model_path
             self._load_tf_model(model_path)
         else:
-            self._load_torch_model(model_type, model_path)
+            allow_torch = str(DIAGNOSIS_ALLOW_TORCH).lower() in {"1", "true", "yes"}
+            if allow_torch:
+                self._load_torch_model(model_type, model_path)
+            else:
+                print(
+                    "[DiagnosisEngine] backend=none "
+                    "message=TF模型不存在且Torch未启用"
+                )
 
     def _load_tf_model(self, model_path: str) -> None:
         if not os.path.exists(model_path):
@@ -134,7 +158,7 @@ class DiseaseDiagnosisEngine:
             )
         normalized_path = os.path.abspath(model_path)
         if normalized_path not in self._tf_load_announced_paths:
-            print(f"已加载TensorFlow模型: {model_path}")
+            print(f"[DiagnosisEngine] backend=tf model_path={model_path}")
             self._tf_load_announced_paths.add(normalized_path)
 
     def _load_torch_model(self, model_type: str, model_path: Optional[str]) -> None:
@@ -152,6 +176,10 @@ class DiseaseDiagnosisEngine:
 
         self.model.to(self.device)
         self.model.eval()
+        normalized_path = os.path.abspath(model_path) if model_path else "torch:default"
+        if normalized_path not in self._torch_load_announced_paths:
+            print(f"[DiagnosisEngine] backend=torch model_path={model_path}")
+            self._torch_load_announced_paths.add(normalized_path)
 
         # 图像预处理
         self.transform = transforms.Compose([
@@ -228,6 +256,8 @@ class DiseaseDiagnosisEngine:
                 print(f"图像诊断失败: {e}")
                 return "未知病害", 0.0, {}
 
+        if self.model is None:
+            return "模型未加载", 0.0, {}
         try:
             image = Image.open(image_path).convert('RGB')
             image_tensor = self.transform(image).unsqueeze(0).to(self.device)
