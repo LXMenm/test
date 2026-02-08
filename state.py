@@ -111,7 +111,7 @@ def create_initial_state(
         farmer_profile=None,
         personalization_context=None,
         personalization_flags={},
-        trace_id=str(uuid.uuid4()),
+        trace_id=uuid.uuid4().hex,
         trace_events=[],
         kb_snapshot=None,
     )

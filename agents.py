@@ -9,7 +9,7 @@ from knowledge_base import get_kb_manager
 from config import DIAGNOSIS_CONFIDENCE_THRESHOLD
 from personalization.profile_models import FarmerProfile, BaseProfile, TreatmentConstraint
 from personalization.profile_rules import filter_treatment_by_constraints
-from trace_utils import append_trace
+from trace_store import append_trace_event
 from typing import Optional
 import re
 import json
@@ -18,6 +18,27 @@ import os
 
 # 获取知识库管理器实例
 kb_manager = get_kb_manager()
+
+
+def append_trace(
+    state: CropDiseaseState,
+    agent: str,
+    inputs: dict,
+    outputs: dict,
+    decision: dict | str | None = None,
+) -> None:
+    event = {
+        "agent": agent,
+        "inputs": inputs,
+        "outputs": outputs,
+        "step": state.get("current_step"),
+    }
+    if decision is not None:
+        event["decision"] = decision
+    state.setdefault("trace_events", []).append(event)
+    trace_id = state.get("trace_id")
+    if trace_id:
+        append_trace_event(trace_id, dict(event))
 
 
 def reception_agent(state: CropDiseaseState) -> CropDiseaseState:
@@ -766,7 +787,7 @@ def supervisor_agent(state: CropDiseaseState) -> CropDiseaseState:
             "image_path": state.get("image_path"),
         },
         outputs={"next_action": next_action, "is_complete": is_complete},
-        decision=decision_reason,
+        decision={"next_action": next_action, "reason": decision_reason},
     )
 
     return state
