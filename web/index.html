@@ -215,6 +215,11 @@
             <strong>预防建议</strong>
             <div id="treatmentPrevention" class="muted">暂无</div>
           </div>
+          <div id="confirmPanel" class="muted" style="display:none;">
+            <div style="margin-bottom:6px;">补充症状并复诊（逗号分隔）</div>
+            <input id="confirmSymptoms" class="input" type="text" placeholder="例如：发黄, 斑点" />
+            <button id="confirmBtn" class="btn-primary" style="margin-top:8px;" type="button">补充症状并复诊</button>
+          </div>
         </div>
       </div>
 
@@ -222,8 +227,11 @@
         <div class="trace-header">
           <h2>多智能体协作流程</h2>
           <div>
-            <span class="muted">追踪ID：</span>
+            <span class="muted">本次追踪ID：</span>
             <span id="traceId" class="muted">-</span>
+            <span id="previousTraceWrap" class="muted" style="margin-left:8px; display:none;">
+              上次追踪ID：<span id="previousTraceId">-</span>
+            </span>
             <button id="traceRefreshBtn" class="btn-secondary" type="button">刷新</button>
           </div>
         </div>
@@ -249,10 +257,17 @@
     const treatmentPreventionEl = document.getElementById('treatmentPrevention');
     const confidenceWarningEl = document.getElementById('confidenceWarning');
     const traceIdEl = document.getElementById('traceId');
+    const previousTraceWrap = document.getElementById('previousTraceWrap');
+    const previousTraceIdEl = document.getElementById('previousTraceId');
     const traceRefreshBtn = document.getElementById('traceRefreshBtn');
     const traceErrorEl = document.getElementById('traceError');
     const traceListEl = document.getElementById('traceList');
+    const confirmPanelEl = document.getElementById('confirmPanel');
+    const confirmSymptomsEl = document.getElementById('confirmSymptoms');
+    const confirmBtnEl = document.getElementById('confirmBtn');
     let latestTraceId = null;
+    let previousTraceId = null;
+    let latestImageId = null;
 
     function setLoading(loading) {
       submitBtn.disabled = loading;
@@ -267,12 +282,18 @@
       treatmentPreventionEl.textContent = '暂无';
       confidenceWarningEl.style.display = 'none';
       confidenceWarningEl.textContent = '';
+      confirmPanelEl.style.display = 'none';
+      confirmSymptomsEl.value = '';
       previewEl.style.display = 'none';
       previewEl.removeAttribute('src');
       traceIdEl.textContent = '-';
+      previousTraceWrap.style.display = 'none';
+      previousTraceIdEl.textContent = '-';
       traceErrorEl.textContent = '';
       traceListEl.innerHTML = '';
       latestTraceId = null;
+      previousTraceId = null;
+      latestImageId = null;
       traceRefreshBtn.disabled = true;
     }
 
@@ -356,8 +377,10 @@
         if (needsConfirm || (confidencePct !== null && confidencePct < 60)) {
           confidenceWarningEl.textContent = '识别置信度较低，建议补充症状信息以提高准确性。';
           confidenceWarningEl.style.display = 'block';
+          confirmPanelEl.style.display = 'block';
         } else {
           confidenceWarningEl.style.display = 'none';
+          confirmPanelEl.style.display = 'none';
         }
       } catch (err) {
         const msg = err && err.message ? err.message : String(err);
@@ -402,6 +425,7 @@
         if (confidencePct !== null && Number(confidencePct) < 60) {
           confidenceWarningEl.textContent = '识别置信度较低，建议补充症状信息以提高准确性。';
           confidenceWarningEl.style.display = 'block';
+          confirmPanelEl.style.display = 'block';
         }
 
         const top3 = Array.isArray(imageResult.top3) ? imageResult.top3 : [];
@@ -425,10 +449,18 @@
           latestTraceId = data.trace_id;
           traceIdEl.textContent = data.trace_id;
           traceRefreshBtn.disabled = false;
+          if (data.previous_trace_id) {
+            previousTraceId = data.previous_trace_id;
+            previousTraceIdEl.textContent = data.previous_trace_id;
+            previousTraceWrap.style.display = 'inline';
+          }
           fetchTrace(data.trace_id);
         } else {
           traceErrorEl.textContent = '未获取到追踪ID，无法刷新协作流程。';
           traceRefreshBtn.disabled = true;
+        }
+        if (data.image_id) {
+          latestImageId = data.image_id;
         }
       } catch (err) {
         const msg = err && err.message ? err.message : String(err);
@@ -440,6 +472,73 @@
 
     submitBtn.addEventListener('click', runDiagnose);
     traceRefreshBtn.addEventListener('click', () => fetchTrace(latestTraceId));
+    confirmBtnEl.addEventListener('click', async () => {
+      if (!latestImageId) {
+        alert('缺少图片信息，无法复诊');
+        return;
+      }
+      const symptomsInput = confirmSymptomsEl.value || '';
+      const symptomList = symptomsInput
+        .split(',')
+        .map(item => item.trim())
+        .filter(Boolean);
+      try {
+        const resp = await fetch('/api/diagnose-confirm', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            trace_id: latestTraceId,
+            previous_trace_id: previousTraceId,
+            image_id: latestImageId,
+            crop_type: (cropTypeEl.value || '番茄').trim() || '番茄',
+            symptoms: symptomList,
+            growth_stage: growthStageEl.value.trim() || null,
+          }),
+        });
+        const data = await resp.json();
+        if (!resp.ok) {
+          throw new Error(data.detail || `复诊失败: ${resp.status}`);
+        }
+        if (data.trace_id) {
+          latestTraceId = data.trace_id;
+          traceIdEl.textContent = data.trace_id;
+          traceRefreshBtn.disabled = false;
+        }
+        if (data.previous_trace_id) {
+          previousTraceId = data.previous_trace_id;
+          previousTraceIdEl.textContent = data.previous_trace_id;
+          previousTraceWrap.style.display = 'inline';
+        }
+        if (data.image_result) {
+          const imageResult = data.image_result || {};
+          const fallbackDisease = imageResult.disease || '-';
+          const finalDisease = data.final_disease || fallbackDisease;
+          finalDiseaseEl.textContent = finalDisease;
+          const confidencePct = (imageResult.confidence_pct ?? null);
+          confidencePctEl.textContent = confidencePct !== null ? `${Number(confidencePct).toFixed(2)}%` : '-';
+        }
+        if (data.treatment) {
+          treatmentPlanEl.textContent = data.treatment.plan || '暂无';
+          treatmentPreventionEl.textContent = data.treatment.prevention || '暂无';
+        }
+        if (data.need_confirm) {
+          confidenceWarningEl.textContent = data.confirm_message || '识别置信度较低，建议补充症状信息以提高准确性。';
+          confidenceWarningEl.style.display = 'block';
+          confirmPanelEl.style.display = 'block';
+        } else {
+          confidenceWarningEl.style.display = 'none';
+          confirmPanelEl.style.display = 'none';
+        }
+        if (Array.isArray(data.events)) {
+          renderTrace(data.events);
+        } else if (data.trace_id) {
+          fetchTrace(data.trace_id);
+        }
+      } catch (err) {
+        const msg = err && err.message ? err.message : String(err);
+        alert(msg);
+      }
+    });
     traceRefreshBtn.disabled = true;
   </script>
 </body>

@@ -22,4 +22,5 @@ REASON_CN = {
     "low_margin": "置信度差距较小",
     "post_diagnosis": "诊断完成后续流程",
     "need_confirm_but_continue": "需确认但继续生成方案",
+    "retry_with_more_symptoms": "补充症状后复诊",
 }

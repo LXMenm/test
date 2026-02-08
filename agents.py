@@ -11,6 +11,7 @@ from confidence_policy import make_confidence_flags
 from personalization.profile_models import FarmerProfile, BaseProfile, TreatmentConstraint
 from personalization.profile_rules import filter_treatment_by_constraints
 from trace_store import append_trace_event
+from datetime import datetime, timezone
 from typing import Optional
 import re
 import json
@@ -28,16 +29,18 @@ def append_trace(
     outputs: dict,
     decision: dict | str | None = None,
 ) -> None:
+    trace_id = state.get("trace_id")
     event = {
         "agent": agent,
         "inputs": inputs,
         "outputs": outputs,
         "step": state.get("current_step"),
+        "ts": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        "trace_id": trace_id,
     }
     if decision is not None:
         event["decision"] = decision
     state.setdefault("trace_events", []).append(event)
-    trace_id = state.get("trace_id")
     if trace_id:
         append_trace_event(trace_id, dict(event))
 
@@ -826,6 +829,8 @@ def supervisor_agent(state: CropDiseaseState) -> CropDiseaseState:
             decision_reasons.append("low_confidence")
             if state.get("final_disease"):
                 decision_reasons.append("need_confirm_but_continue")
+        if flags.get("need_confirm") and state.get("symptoms"):
+            decision_reasons.append("retry_with_more_symptoms")
         if current_step == "diagnosis_complete":
             decision_reasons.append("post_diagnosis")
         decision_reason = ", ".join(decision_reasons) or message

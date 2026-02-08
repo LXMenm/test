@@ -469,12 +469,17 @@ async def diagnose_image(
 @app.post("/api/diagnose-confirm")
 def diagnose_confirm(payload: dict = Body(...)) -> dict:
     trace_id = payload.get("trace_id")
+    previous_trace_id = payload.get("previous_trace_id")
     image_id = payload.get("image_id")
     crop_type = payload.get("crop_type") or "番茄"
     symptoms = payload.get("symptoms") or []
     growth_stage = payload.get("growth_stage")
-    if not trace_id or not image_id:
-        raise HTTPException(status_code=400, detail="trace_id 与 image_id 不能为空")
+    if not image_id:
+        raise HTTPException(status_code=400, detail="image_id 不能为空")
+    if not trace_id and previous_trace_id:
+        trace_id = uuid.uuid4().hex
+    if not trace_id:
+        trace_id = uuid.uuid4().hex
     if not isinstance(symptoms, list):
         raise HTTPException(status_code=400, detail="symptoms 必须为列表")
 
@@ -498,6 +503,7 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
             "crop_type": crop_type,
             "growth_stage": growth_stage,
             "image_id": image_id,
+            "previous_trace_id": previous_trace_id,
         },
         outputs={},
     )
@@ -529,6 +535,8 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
 
     return {
         "trace_id": trace_id,
+        "previous_trace_id": previous_trace_id,
+        "image_id": image_id,
         "final_disease": state.get("final_disease"),
         "image_result": image_result,
         "need_confirm": need_confirm,
