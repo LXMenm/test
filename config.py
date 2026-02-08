@@ -35,9 +35,31 @@ WENXIN_MODEL = os.getenv("WENXIN_MODEL", "ernie-bot-turbo")
 
 # 诊断模型配置
 DIAGNOSIS_MODEL_TYPE = os.getenv("DIAGNOSIS_MODEL_TYPE", "densenet121")  # densenet121, resnet50, vit
-DIAGNOSIS_MODEL_PATH = os.getenv("DIAGNOSIS_MODEL_PATH", "models/diagnosis_model.pth")
+DIAGNOSIS_MODEL_PATH = os.getenv(
+    "DIAGNOSIS_MODEL_PATH",
+    "models/densenet121_tomato_disease_model_fine_tuned.h5",
+)
 USE_GPU = os.getenv("USE_GPU", "false").lower() == "true"
 
 # 诊断置信度阈值
 DIAGNOSIS_CONFIDENCE_THRESHOLD = float(os.getenv("DIAGNOSIS_CONFIDENCE_THRESHOLD", "0.6"))
 
+
+_DIAGNOSIS_CONFIG_LOGGED = False
+
+
+def log_diagnosis_config() -> None:
+    global _DIAGNOSIS_CONFIG_LOGGED
+    if _DIAGNOSIS_CONFIG_LOGGED:
+        return
+    print(
+        "[Config] "
+        f"DIAGNOSIS_MODEL_PATH={DIAGNOSIS_MODEL_PATH} "
+        f"DIAGNOSIS_MODEL_TYPE={DIAGNOSIS_MODEL_TYPE} "
+        f"USE_GPU={USE_GPU} "
+        f"DIAGNOSIS_CONFIDENCE_THRESHOLD={DIAGNOSIS_CONFIDENCE_THRESHOLD}"
+    )
+    _DIAGNOSIS_CONFIG_LOGGED = True
+
+
+log_diagnosis_config()
