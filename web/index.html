@@ -13,6 +13,12 @@
     #preview { max-width: 380px; max-height: 380px; display: none; }
     ul { margin: 6px 0 10px 20px; }
     pre { white-space: pre-wrap; word-break: break-word; }
+    .warning { background: #fff3cd; border: 1px solid #ffeeba; padding: 10px 12px; border-radius: 6px; margin: 10px 0; color: #7a5d00; display: none; }
+    .trace-panel { margin-top: 20px; border: 1px solid #e0e0e0; padding: 12px; border-radius: 8px; }
+    .trace-list details { margin: 8px 0; }
+    .trace-list summary { cursor: pointer; font-weight: 600; }
+    .trace-meta { font-size: 12px; color: #666; margin-top: 4px; }
+    .trace-error { color: #b00020; }
   </style>
 </head>
 <body>
@@ -50,6 +56,7 @@
     <ul id="top3"></ul>
   </div>
   <div class="row" id="finalDisease"></div>
+  <div class="warning" id="confidenceWarning"></div>
   <div class="row">
     <strong>治疗方案</strong>
     <div id="treatmentPlan">暂无</div>
@@ -60,6 +67,17 @@
   </div>
   <div class="row" id="fallbackInfo"></div>
   <div class="row" id="ruleInfo"></div>
+
+  <div class="trace-panel">
+    <h3>协作流程</h3>
+    <div class="row">
+      <strong>trace_id:</strong>
+      <span id="traceId">-</span>
+      <button id="traceRefreshBtn" type="button">刷新</button>
+    </div>
+    <div class="row trace-error" id="traceError"></div>
+    <div class="trace-list" id="traceList"></div>
+  </div>
 
   <h3>原始 JSON</h3>
   <pre id="rawJson">{}</pre>
@@ -81,6 +99,12 @@
     const fallbackInfoEl = document.getElementById('fallbackInfo');
     const ruleInfoEl = document.getElementById('ruleInfo');
     const rawJsonEl = document.getElementById('rawJson');
+    const confidenceWarningEl = document.getElementById('confidenceWarning');
+    const traceIdEl = document.getElementById('traceId');
+    const traceRefreshBtn = document.getElementById('traceRefreshBtn');
+    const traceErrorEl = document.getElementById('traceError');
+    const traceListEl = document.getElementById('traceList');
+    let latestTraceId = null;
 
     function setLoading(loading) {
       submitBtn.disabled = loading;
@@ -95,8 +119,90 @@
       treatmentPreventionEl.textContent = '暂无';
       fallbackInfoEl.textContent = '';
       ruleInfoEl.textContent = '';
+      confidenceWarningEl.style.display = 'none';
+      confidenceWarningEl.textContent = '';
       previewEl.style.display = 'none';
       previewEl.removeAttribute('src');
+      traceIdEl.textContent = '-';
+      traceErrorEl.textContent = '';
+      traceListEl.innerHTML = '';
+      latestTraceId = null;
+    }
+
+    function shouldShowNeedConfirm(events) {
+      return events.some(evt => {
+        if (evt.agent !== 'diagnosis') return false;
+        const outputs = evt.outputs || {};
+        if (outputs.need_confirm) return true;
+        const reasons = Array.isArray(outputs.fallback_reason) ? outputs.fallback_reason : [];
+        return reasons.includes('low_confidence') || reasons.includes('low_margin');
+      });
+    }
+
+    function renderTrace(events) {
+      traceListEl.innerHTML = '';
+      if (!events.length) {
+        traceListEl.textContent = '暂无 trace 事件';
+        return;
+      }
+      events.forEach(evt => {
+        const details = document.createElement('details');
+        const summary = document.createElement('summary');
+        const agent = evt.agent || '-';
+        const step = evt.step || '-';
+        const ts = evt.ts || '-';
+        let title = `${ts} | ${agent} | ${step}`;
+        if (evt.decision && evt.decision.next_action) {
+          title += ` → ${evt.decision.next_action}`;
+        }
+        summary.textContent = title;
+        details.appendChild(summary);
+
+        const meta = document.createElement('div');
+        meta.className = 'trace-meta';
+        meta.textContent = `trace_id: ${latestTraceId || '-'}`;
+        details.appendChild(meta);
+
+        const pre = document.createElement('pre');
+        pre.textContent = JSON.stringify({
+          inputs: evt.inputs || {},
+          outputs: evt.outputs || {},
+          decision: evt.decision || null,
+        }, null, 2);
+        details.appendChild(pre);
+        traceListEl.appendChild(details);
+      });
+    }
+
+    async function fetchTrace(traceId) {
+      if (!traceId) return;
+      traceErrorEl.textContent = '';
+      try {
+        const resp = await fetch(`/api/traces/${traceId}`);
+        const payload = await resp.json();
+        if (!resp.ok) {
+          throw new Error(payload.detail || `获取 trace 失败: ${resp.status}`);
+        }
+        const events = Array.isArray(payload.events) ? payload.events : [];
+        renderTrace(events);
+        if (shouldShowNeedConfirm(events)) {
+          const confidencePct = (() => {
+            const diag = events.find(evt => evt.agent === 'diagnosis');
+            const outputs = diag && diag.outputs ? diag.outputs : {};
+            const conf = outputs.disease_confidence;
+            if (typeof conf === 'number') {
+              return Math.round(conf * 100);
+            }
+            return null;
+          })();
+          const pctText = confidencePct !== null ? `${confidencePct}%` : '较低';
+          confidenceWarningEl.textContent = `识别置信度较低（${pctText}），建议补充症状/环境信息以提高准确性。`;
+          confidenceWarningEl.style.display = 'block';
+        }
+      } catch (err) {
+        const msg = err && err.message ? err.message : String(err);
+        traceErrorEl.textContent = msg;
+      }
     }
 
     async function runDiagnose() {
@@ -160,6 +266,12 @@
         } else {
           ruleInfoEl.textContent = 'rule_result: 无';
         }
+
+        if (data.trace_id) {
+          latestTraceId = data.trace_id;
+          traceIdEl.textContent = data.trace_id;
+          fetchTrace(data.trace_id);
+        }
       } catch (err) {
         const msg = err && err.message ? err.message : String(err);
         rawJsonEl.textContent = JSON.stringify({ error: msg }, null, 2);
@@ -170,6 +282,7 @@
     }
 
     submitBtn.addEventListener('click', runDiagnose);
+    traceRefreshBtn.addEventListener('click', () => fetchTrace(latestTraceId));
   </script>
 </body>
 </html>

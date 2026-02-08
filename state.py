@@ -3,6 +3,7 @@
 定义整个农作物病害诊治系统的状态结构
 """
 from typing import TypedDict, List, Optional, Annotated, Dict, Any
+import uuid
 import operator
 from personalization.profile_store import load_profile
 from personalization.profile_context import (
@@ -40,6 +41,7 @@ class CropDiseaseState(TypedDict):
     disease_type: Optional[str]  # 病害类型
     disease_confidence: Optional[float]  # 诊断置信度
     disease_description: Optional[str]  # 病害详细描述
+    final_disease: Optional[str]  # 最终病害类型（统一字段）
 
     # 治疗方案
     treatment_plan: Optional[str]  # 具体治疗方案
@@ -65,6 +67,11 @@ class CropDiseaseState(TypedDict):
     farmer_profile: Optional[Dict[str, Any]]
     personalization_context: Optional[str]
     personalization_flags: Dict[str, Any]
+
+    # Trace信息
+    trace_id: str
+    trace_events: List[Dict[str, Any]]
+    kb_snapshot: Optional[Dict[str, Any]]
 
 
 def create_initial_state(
@@ -92,6 +99,7 @@ def create_initial_state(
         disease_type=None,
         disease_confidence=None,
         disease_description=None,
+        final_disease=None,
         treatment_plan=None,
         prevention_advice=None,
         current_step="start",
@@ -105,6 +113,9 @@ def create_initial_state(
         farmer_profile=None,
         personalization_context=None,
         personalization_flags={},
+        trace_id=uuid.uuid4().hex,
+        trace_events=[],
+        kb_snapshot=None,
     )
 
     if farmer_id:
