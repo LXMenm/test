@@ -35,9 +35,35 @@ WENXIN_MODEL = os.getenv("WENXIN_MODEL", "ernie-bot-turbo")
 
 # 诊断模型配置
 DIAGNOSIS_MODEL_TYPE = os.getenv("DIAGNOSIS_MODEL_TYPE", "densenet121")  # densenet121, resnet50, vit
-DIAGNOSIS_MODEL_PATH = os.getenv("DIAGNOSIS_MODEL_PATH", "models/diagnosis_model.pth")
+DEFAULT_DIAGNOSIS_MODEL_PATH = "models/densenet121_tomato_disease_model_fine_tuned.h5"
+DIAGNOSIS_MODEL_PATH = os.getenv("DIAGNOSIS_MODEL_PATH", DEFAULT_DIAGNOSIS_MODEL_PATH)
 USE_GPU = os.getenv("USE_GPU", "false").lower() == "true"
+DIAGNOSIS_ALLOW_TORCH = os.getenv("DIAGNOSIS_ALLOW_TORCH", "0")
 
 # 诊断置信度阈值
 DIAGNOSIS_CONFIDENCE_THRESHOLD = float(os.getenv("DIAGNOSIS_CONFIDENCE_THRESHOLD", "0.6"))
 
+
+_DIAGNOSIS_CONFIG_LOGGED = False
+
+
+def log_resolved_diagnosis_config() -> None:
+    global _DIAGNOSIS_CONFIG_LOGGED
+    if _DIAGNOSIS_CONFIG_LOGGED:
+        return
+    if not os.path.exists(DIAGNOSIS_MODEL_PATH):
+        print(
+            "[ConfigResolved] "
+            "模型文件不存在，请先运行 tomato/train_densenet121.py 生成模型。"
+        )
+    print(
+        "[ConfigResolved] "
+        f"DIAGNOSIS_MODEL_PATH={DIAGNOSIS_MODEL_PATH} "
+        f"DIAGNOSIS_MODEL_TYPE={DIAGNOSIS_MODEL_TYPE} "
+        f"USE_GPU={USE_GPU} "
+        f"DIAGNOSIS_ALLOW_TORCH={DIAGNOSIS_ALLOW_TORCH}"
+    )
+    _DIAGNOSIS_CONFIG_LOGGED = True
+
+
+log_resolved_diagnosis_config()
