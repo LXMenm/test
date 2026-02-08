@@ -555,6 +555,14 @@ def get_trace(trace_id: str) -> dict[str, object]:
     return {"trace_id": trace_id, "events": events}
 
 
+@app.get("/api/trace-events")
+def get_trace_events(trace_id: str | None = None) -> dict[str, object]:
+    if not trace_id:
+        raise HTTPException(status_code=400, detail="trace_id 不能为空")
+    events = list_trace_events(trace_id)
+    return {"trace_id": trace_id, "events": events}
+
+
 def validate_date_str(value: str) -> bool:
     try:
         datetime.strptime(value, "%Y-%m-%d")

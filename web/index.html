@@ -273,6 +273,7 @@
       traceErrorEl.textContent = '';
       traceListEl.innerHTML = '';
       latestTraceId = null;
+      traceRefreshBtn.disabled = true;
     }
 
     function shouldShowNeedConfirm(events) {
@@ -340,7 +341,7 @@
       if (!traceId) return;
       traceErrorEl.textContent = '';
       try {
-        const resp = await fetch(`/api/traces/${traceId}`);
+        const resp = await fetch(`/api/trace-events?trace_id=${encodeURIComponent(traceId)}`);
         const payload = await resp.json();
         if (!resp.ok) {
           throw new Error(payload.detail || `获取 trace 失败: ${resp.status}`);
@@ -423,13 +424,11 @@
         if (data.trace_id) {
           latestTraceId = data.trace_id;
           traceIdEl.textContent = data.trace_id;
+          traceRefreshBtn.disabled = false;
           fetchTrace(data.trace_id);
-        }
-
-        if (data.trace_id) {
-          latestTraceId = data.trace_id;
-          traceIdEl.textContent = data.trace_id;
-          fetchTrace(data.trace_id);
+        } else {
+          traceErrorEl.textContent = '未获取到追踪ID，无法刷新协作流程。';
+          traceRefreshBtn.disabled = true;
         }
       } catch (err) {
         const msg = err && err.message ? err.message : String(err);
@@ -441,6 +440,7 @@
 
     submitBtn.addEventListener('click', runDiagnose);
     traceRefreshBtn.addEventListener('click', () => fetchTrace(latestTraceId));
+    traceRefreshBtn.disabled = true;
   </script>
 </body>
 </html>
