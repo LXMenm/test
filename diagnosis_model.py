@@ -116,16 +116,7 @@ class DiseaseDiagnosisEngine:
         self.model = None
         self.transform = None
 
-        tf_default_path = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)),
-            "models",
-            "densenet121_tomato_disease_model_fine_tuned.h5",
-        )
-        if os.path.exists(tf_default_path):
-            self.tf_backend = True
-            self.model_path = tf_default_path
-            self._load_tf_model(tf_default_path)
-        elif model_path and model_path.endswith((".h5", ".keras")) and os.path.exists(model_path):
+        if model_path and model_path.endswith((".h5", ".keras")) and os.path.exists(model_path):
             self.tf_backend = True
             self.model_path = model_path
             self._load_tf_model(model_path)
