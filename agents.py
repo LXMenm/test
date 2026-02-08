@@ -263,7 +263,6 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
     disease_confidence = None
     disease_description = None
     image_top3 = []
-    image_used_fallback = False
     
     # 优先使用图像诊断（如果提供了图像路径）
     if image_path:
@@ -273,16 +272,21 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
             image_top3 = sorted(probs_dict.items(), key=lambda x: x[1], reverse=True)[:3]
             if disease_type:
                 final_disease = disease_type
+            top1_conf = float(image_top3[0][1]) if image_top3 else float(disease_confidence or 0.0)
+            top2_conf = float(image_top3[1][1]) if len(image_top3) > 1 else None
             state["image_diagnosis"] = {
                 "image_path": image_path,
                 "top1": {"disease": disease_type, "confidence": float(disease_confidence or 0.0)},
                 "top3": [(name, float(prob)) for name, prob in image_top3],
             }
 
-            if disease_confidence is not None and disease_confidence < DIAGNOSIS_CONFIDENCE_THRESHOLD:
-                image_used_fallback = True
+            disease_confidence = top1_conf
+            if top1_conf < DIAGNOSIS_CONFIDENCE_THRESHOLD:
                 flags["need_confirm"] = True
                 flags.setdefault("fallback_reason", []).append("low_confidence")
+            if top2_conf is not None and (top1_conf - top2_conf) < 0.15:
+                flags["need_confirm"] = True
+                flags.setdefault("fallback_reason", []).append("low_margin")
 
             # 获取病害描述
             disease_description = diagnosis_engine._get_disease_description(disease_type, symptoms)
@@ -291,7 +295,7 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
             print(f"[番茄病害诊断智能体] 图像诊断失败: {e}，使用症状诊断")
     
     # 如果图像诊断失败或没有图像，使用症状诊断
-    if (not disease_type) or image_used_fallback:
+    if (not disease_type) and (not image_path or symptoms):
         print("[番茄病害诊断智能体] 使用症状进行诊断")
         try:
             disease_type, disease_confidence, disease_description = diagnosis_engine.diagnose_from_symptoms(
@@ -304,6 +308,23 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
         except Exception as e:
             print(f"诊断模型调用失败: {e}，使用规则匹配")
             # 后备方案：规则匹配
+            disease_type, disease_confidence, disease_description = _rule_based_diagnosis(
+                crop_type, symptoms, priors=priors
+            )
+            if disease_type:
+                final_disease = disease_type
+    elif image_path and flags.get("need_confirm") and symptoms:
+        print("[番茄病害诊断智能体] 低置信度，使用症状进行回退诊断")
+        try:
+            disease_type, disease_confidence, disease_description = diagnosis_engine.diagnose_from_symptoms(
+                crop_type=crop_type,
+                symptoms=symptoms,
+                growth_stage=crop_growth_stage
+            )
+            if disease_type:
+                final_disease = disease_type
+        except Exception as e:
+            print(f"诊断模型调用失败: {e}，使用规则匹配")
             disease_type, disease_confidence, disease_description = _rule_based_diagnosis(
                 crop_type, symptoms, priors=priors
             )
@@ -380,6 +401,7 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
             "disease_confidence": disease_confidence,
             "disease_description": disease_description,
             "image_diagnosis": state.get("image_diagnosis"),
+            "image_top1": (state.get("image_diagnosis") or {}).get("top1"),
             "follow_up_questions": flags.get("follow_up_questions"),
             "need_confirm": flags.get("need_confirm"),
             "fallback_reason": flags.get("fallback_reason"),

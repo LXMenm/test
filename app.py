@@ -366,6 +366,7 @@ async def diagnose_image(
     image_url = f"/uploads/{unique_name}"
 
     trace_id = uuid.uuid4().hex
+    final_state = None
     try:
         query_text = build_trace_query(
             crop_type=crop_type,
@@ -380,6 +381,25 @@ async def diagnose_image(
     except Exception as exc:
         print(f"Warning: failed to build trace events: {exc}")
 
+    if final_state and final_state.get("final_disease"):
+        final_disease = final_state.get("final_disease") or final_disease
+        if final_disease:
+            plan = kb.get_treatment_plan(final_disease)
+            if isinstance(plan, dict) and "treatment" in plan and "prevention" in plan:
+                treatment = TreatmentPlan(
+                    plan=plan["treatment"],
+                    prevention=plan["prevention"],
+                )
+            if farmer_id:
+                _, constraints = load_profile_payload(farmer_id)
+                if constraints:
+                    personalization_applied = True
+                    treatment, filtered, filtered_reasons = apply_personalization_to_treatment(
+                        constraints=constraints,
+                        treatment=treatment,
+                        disease=final_disease,
+                    )
+
     event = {
         "id": uuid.uuid4().hex,
         "ts": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
@@ -392,7 +412,7 @@ async def diagnose_image(
         "fallback_used": fallback_used,
         "fallback_reason": fallback_reasons or None,
         "rule_result": rule_result_dict,
-        "final_disease": final_disease,
+        "final_disease": final_state.get("final_disease") if final_state else final_disease,
         "treatment": treatment_or_none,
         "meta": {
             "farmer_id": farmer_id,
