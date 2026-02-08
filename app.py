@@ -87,6 +87,7 @@ class DiagnoseResponse(BaseModel):
     filtered: bool
     filtered_reasons: list[str]
     trace_id: str
+    need_confirm: bool | None = None
 
 app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
 
@@ -366,6 +367,8 @@ async def diagnose_image(
     image_url = f"/uploads/{unique_name}"
 
     trace_id = uuid.uuid4().hex
+    need_confirm = None
+    trace_fallback_reason: list[str] | None = None
     final_state = None
     try:
         query_text = build_trace_query(
@@ -383,6 +386,9 @@ async def diagnose_image(
 
     if final_state and final_state.get("final_disease"):
         final_disease = final_state.get("final_disease") or final_disease
+        flags = final_state.get("personalization_flags") or {}
+        need_confirm = flags.get("need_confirm")
+        trace_fallback_reason = flags.get("fallback_reason")
         if final_disease:
             plan = kb.get_treatment_plan(final_disease)
             if isinstance(plan, dict) and "treatment" in plan and "prevention" in plan:
@@ -410,9 +416,10 @@ async def diagnose_image(
         "image_url": image_url,
         "image_result": image_result_dict,
         "fallback_used": fallback_used,
-        "fallback_reason": fallback_reasons or None,
+        "fallback_reason": trace_fallback_reason or fallback_reasons or None,
         "rule_result": rule_result_dict,
         "final_disease": final_state.get("final_disease") if final_state else final_disease,
+        "need_confirm": need_confirm,
         "treatment": treatment_or_none,
         "meta": {
             "farmer_id": farmer_id,
@@ -434,7 +441,7 @@ async def diagnose_image(
         image_url=image_url,
         image_result=ImageResult(**image_result_dict),
         fallback_used=fallback_used,
-        fallback_reason=fallback_reasons or None,
+        fallback_reason=trace_fallback_reason or fallback_reasons or None,
         rule_result=rule_result,
         final_disease=final_disease,
         treatment=treatment,
@@ -443,6 +450,7 @@ async def diagnose_image(
         filtered=filtered,
         filtered_reasons=filtered_reasons,
         trace_id=trace_id,
+        need_confirm=need_confirm,
     )
 
 

@@ -7,6 +7,7 @@ from llm_utils import call_llm, extract_json_from_response
 from diagnosis_model import get_diagnosis_engine
 from knowledge_base import get_kb_manager
 from config import DIAGNOSIS_CONFIDENCE_THRESHOLD
+from confidence_policy import make_confidence_flags
 from personalization.profile_models import FarmerProfile, BaseProfile, TreatmentConstraint
 from personalization.profile_rules import filter_treatment_by_constraints
 from trace_store import append_trace_event
@@ -272,21 +273,19 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
             image_top3 = sorted(probs_dict.items(), key=lambda x: x[1], reverse=True)[:3]
             if disease_type:
                 final_disease = disease_type
-            top1_conf = float(image_top3[0][1]) if image_top3 else float(disease_confidence or 0.0)
-            top2_conf = float(image_top3[1][1]) if len(image_top3) > 1 else None
             state["image_diagnosis"] = {
                 "image_path": image_path,
                 "top1": {"disease": disease_type, "confidence": float(disease_confidence or 0.0)},
                 "top3": [(name, float(prob)) for name, prob in image_top3],
             }
 
-            disease_confidence = top1_conf
-            if top1_conf < DIAGNOSIS_CONFIDENCE_THRESHOLD:
+            policy = make_confidence_flags(
+                image_top3, fallback_confidence=float(disease_confidence or 0.0)
+            )
+            disease_confidence = float(policy["top1_confidence"])
+            if policy["need_confirm"]:
                 flags["need_confirm"] = True
-                flags.setdefault("fallback_reason", []).append("low_confidence")
-            if top2_conf is not None and (top1_conf - top2_conf) < 0.15:
-                flags["need_confirm"] = True
-                flags.setdefault("fallback_reason", []).append("low_margin")
+                flags["fallback_reason"] = list(policy["reasons"])
 
             # 获取病害描述
             disease_description = diagnosis_engine._get_disease_description(disease_type, symptoms)
@@ -367,7 +366,9 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
             flags["follow_up_questions"] = follow_ups
             message += f"；建议追问：{'；'.join(follow_ups)}"
         flags["need_confirm"] = True
-        flags.setdefault("fallback_reason", []).append("low_confidence")
+        flags.setdefault("fallback_reason", [])
+        if "low_confidence" not in flags["fallback_reason"]:
+            flags["fallback_reason"].append("low_confidence")
         state["personalization_flags"] = flags
 
     # 更新状态
@@ -796,19 +797,26 @@ def supervisor_agent(state: CropDiseaseState) -> CropDiseaseState:
         next_action, is_complete, message = _rule_based_supervisor(current_step, state, flags)
         decision_reason = message
 
+    decision_reasons = []
     if not decision_reason:
-        hints = []
         if state.get("image_path"):
-            hints.append("has_image")
+            decision_reasons.append("has_image")
         if not state.get("symptoms"):
-            hints.append("symptoms_missing")
+            decision_reasons.append("symptoms_missing")
         if (state.get("disease_confidence") or 0) < DIAGNOSIS_CONFIDENCE_THRESHOLD:
-            hints.append("low_confidence")
+            decision_reasons.append("low_confidence")
             if state.get("final_disease"):
-                hints.append("need_confirm_but_continue")
+                decision_reasons.append("need_confirm_but_continue")
         if current_step == "diagnosis_complete":
-            hints.append("post_diagnosis")
-        decision_reason = ", ".join(hints) or message
+            decision_reasons.append("post_diagnosis")
+        decision_reason = ", ".join(decision_reasons) or message
+    else:
+        if isinstance(decision_reason, str):
+            decision_reasons = [decision_reason]
+        elif isinstance(decision_reason, list):
+            decision_reasons = decision_reason
+        else:
+            decision_reasons = [str(decision_reason)]
 
     # 更新状态
     if current_step == "diagnosis_complete" and state.get("final_disease") and next_action == "end":
@@ -847,7 +855,12 @@ def supervisor_agent(state: CropDiseaseState) -> CropDiseaseState:
             "image_path": state.get("image_path"),
         },
         outputs={"next_action": next_action, "is_complete": is_complete},
-        decision={"next_action": next_action, "reason": decision_reason},
+        decision={
+            "next_action": next_action,
+            "reasons": decision_reasons,
+            "reason_str": decision_reason,
+            "reason": decision_reason,
+        },
     )
 
     return state
