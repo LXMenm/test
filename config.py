@@ -3,6 +3,7 @@
 管理API密钥和模型配置
 """
 import os
+from pathlib import Path
 from typing import Optional
 
 # 尝试加载.env文件
@@ -35,8 +36,34 @@ WENXIN_MODEL = os.getenv("WENXIN_MODEL", "ernie-bot-turbo")
 
 # 诊断模型配置
 DIAGNOSIS_MODEL_TYPE = os.getenv("DIAGNOSIS_MODEL_TYPE", "densenet121")  # densenet121, resnet50, vit
-DEFAULT_DIAGNOSIS_MODEL_PATH = "models/densenet121_tomato_disease_model_fine_tuned.h5"
-DIAGNOSIS_MODEL_PATH = os.getenv("DIAGNOSIS_MODEL_PATH", DEFAULT_DIAGNOSIS_MODEL_PATH)
+PROJECT_ROOT = Path(__file__).resolve().parent
+DEFAULT_TF_MODEL_PATH = PROJECT_ROOT / "models" / "densenet121_tomato_disease_model_fine_tuned.h5"
+_ENV_DIAGNOSIS_MODEL_PATH = os.getenv("DIAGNOSIS_MODEL_PATH")
+if _ENV_DIAGNOSIS_MODEL_PATH:
+    _env_path = Path(_ENV_DIAGNOSIS_MODEL_PATH)
+    if _env_path.exists():
+        DIAGNOSIS_MODEL_PATH = str(_env_path)
+    elif DEFAULT_TF_MODEL_PATH.exists():
+        print(
+            "[ConfigResolved] "
+            f"DIAGNOSIS_MODEL_PATH={_ENV_DIAGNOSIS_MODEL_PATH} 不存在，回退到默认TF模型。"
+        )
+        DIAGNOSIS_MODEL_PATH = str(DEFAULT_TF_MODEL_PATH)
+    else:
+        print(
+            "[ConfigResolved] "
+            f"DIAGNOSIS_MODEL_PATH={_ENV_DIAGNOSIS_MODEL_PATH} 不存在，且默认TF模型缺失。"
+        )
+        DIAGNOSIS_MODEL_PATH = _ENV_DIAGNOSIS_MODEL_PATH
+else:
+    if DEFAULT_TF_MODEL_PATH.exists():
+        DIAGNOSIS_MODEL_PATH = str(DEFAULT_TF_MODEL_PATH)
+    else:
+        DIAGNOSIS_MODEL_PATH = str(DEFAULT_TF_MODEL_PATH)
+        print(
+            "[ConfigResolved] "
+            "默认TF模型不存在，请先运行 tomato/train_densenet121.py 生成模型。"
+        )
 USE_GPU = os.getenv("USE_GPU", "false").lower() == "true"
 DIAGNOSIS_ALLOW_TORCH = os.getenv("DIAGNOSIS_ALLOW_TORCH", "0")
 
