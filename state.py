@@ -41,6 +41,7 @@ class CropDiseaseState(TypedDict):
     disease_type: Optional[str]  # 病害类型
     disease_confidence: Optional[float]  # 诊断置信度
     disease_description: Optional[str]  # 病害详细描述
+    final_disease: Optional[str]  # 最终病害类型（统一字段）
 
     # 治疗方案
     treatment_plan: Optional[str]  # 具体治疗方案
@@ -98,6 +99,7 @@ def create_initial_state(
         disease_type=None,
         disease_confidence=None,
         disease_description=None,
+        final_disease=None,
         treatment_plan=None,
         prevention_advice=None,
         current_step="start",

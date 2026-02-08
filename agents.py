@@ -41,6 +41,21 @@ def append_trace(
         append_trace_event(trace_id, dict(event))
 
 
+def _clean_query_for_symptoms(query: str) -> tuple[str, list[str]]:
+    cleaned = query
+    removed: list[str] = []
+    patterns = [
+        r"(作物类型|作物|crop)\s*[:：]\s*([^\s,，；;]+)",
+        r"(图片路径|图像路径|图片|图像|path)\s*[:：]\s*([^\s,，；;]+)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, cleaned, flags=re.IGNORECASE)
+        if match:
+            removed.append(match.group(0))
+            cleaned = re.sub(pattern, "", cleaned, flags=re.IGNORECASE).strip()
+    return cleaned, removed
+
+
 def reception_agent(state: CropDiseaseState) -> CropDiseaseState:
     """
     番茄病害接待智能体节点（使用大模型API）
@@ -96,6 +111,8 @@ def reception_agent(state: CropDiseaseState) -> CropDiseaseState:
         else:
             image_path = None
     
+    cleaned_query, removed_tokens = _clean_query_for_symptoms(query)
+
     # 使用大模型提取信息（专注于番茄）
     system_prompt = """你是一个专业的番茄病害信息提取助手。请从用户的番茄病害描述中提取以下信息：
 1. 番茄的生长阶段（如：苗期、开花期、结果期等）
@@ -114,7 +131,7 @@ def reception_agent(state: CropDiseaseState) -> CropDiseaseState:
 - 不要添加任何额外的解释或说明"""
 
     try:
-        response = call_llm(query, system_prompt, temperature=0.3)
+        response = call_llm(cleaned_query, system_prompt, temperature=0.3)
         result = extract_json_from_response(response)
         
         if result:
@@ -122,10 +139,10 @@ def reception_agent(state: CropDiseaseState) -> CropDiseaseState:
             symptoms = result.get("symptoms", [])
         else:
             # 如果JSON解析失败，使用规则匹配作为后备
-            _, crop_growth_stage, symptoms = _fallback_extraction(query)
+            _, crop_growth_stage, symptoms = _fallback_extraction(cleaned_query)
     except Exception as e:
         print(f"大模型调用失败，使用规则匹配: {e}")
-        _, crop_growth_stage, symptoms = _fallback_extraction(query)
+        _, crop_growth_stage, symptoms = _fallback_extraction(cleaned_query)
 
     # 强制设置作物类型为番茄
     crop_type = "番茄"
@@ -133,9 +150,9 @@ def reception_agent(state: CropDiseaseState) -> CropDiseaseState:
 
     missing_profile_fields = _find_missing_profile_fields(base_profile)
     
-    # 如果没有提取到症状，使用整个查询作为症状描述
+    # 如果没有提取到症状，保持为空列表
     if not symptoms:
-        symptoms = [query]
+        symptoms = []
 
     message_parts = [
         f"番茄病害接待智能体：作物类型={crop_type}",
@@ -168,13 +185,14 @@ def reception_agent(state: CropDiseaseState) -> CropDiseaseState:
     append_trace(
         state,
         agent="reception",
-        inputs={"user_query": state.get("user_query")},
+        inputs={"user_query": state.get("user_query"), "cleaned_query": cleaned_query},
         outputs={
             "crop_type": crop_type,
             "crop_growth_stage": crop_growth_stage,
             "symptoms": symptoms,
             "image_path": image_path,
             "missing_profile_fields": missing_profile_fields,
+            "removed_tokens": removed_tokens,
         },
     )
 
@@ -241,6 +259,7 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
     # 使用深度学习诊断引擎
     diagnosis_engine = get_diagnosis_engine()
     disease_type = None
+    final_disease = None
     disease_confidence = None
     disease_description = None
     image_top3 = []
@@ -252,17 +271,18 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
         try:
             disease_type, disease_confidence, probs_dict = diagnosis_engine.diagnose_from_image(image_path)
             image_top3 = sorted(probs_dict.items(), key=lambda x: x[1], reverse=True)[:3]
+            if disease_type:
+                final_disease = disease_type
             state["image_diagnosis"] = {
                 "image_path": image_path,
                 "top1": {"disease": disease_type, "confidence": float(disease_confidence or 0.0)},
                 "top3": [(name, float(prob)) for name, prob in image_top3],
             }
 
-            if (
-                disease_type == "疑似病害（置信度不足）"
-                or (disease_confidence is not None and disease_confidence < DIAGNOSIS_CONFIDENCE_THRESHOLD)
-            ):
+            if disease_confidence is not None and disease_confidence < DIAGNOSIS_CONFIDENCE_THRESHOLD:
                 image_used_fallback = True
+                flags["need_confirm"] = True
+                flags.setdefault("fallback_reason", []).append("low_confidence")
 
             # 获取病害描述
             disease_description = diagnosis_engine._get_disease_description(disease_type, symptoms)
@@ -279,12 +299,16 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
                 symptoms=symptoms,
                 growth_stage=crop_growth_stage
             )
+            if disease_type:
+                final_disease = disease_type
         except Exception as e:
             print(f"诊断模型调用失败: {e}，使用规则匹配")
             # 后备方案：规则匹配
             disease_type, disease_confidence, disease_description = _rule_based_diagnosis(
                 crop_type, symptoms, priors=priors
             )
+            if disease_type:
+                final_disease = disease_type
 
     if personalization_context and disease_type:
         personalization_prompt = f"""以下是诊断结果，请结合农户个性化上下文给出补充提示：
@@ -321,9 +345,14 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
         if follow_ups:
             flags["follow_up_questions"] = follow_ups
             message += f"；建议追问：{'；'.join(follow_ups)}"
+        flags["need_confirm"] = True
+        flags.setdefault("fallback_reason", []).append("low_confidence")
         state["personalization_flags"] = flags
 
     # 更新状态
+    if final_disease:
+        disease_type = final_disease
+    state["final_disease"] = final_disease
     state["disease_type"] = disease_type
     state["disease_confidence"] = disease_confidence
     state["disease_description"] = disease_description
@@ -347,10 +376,13 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
         },
         outputs={
             "disease_type": disease_type,
+            "final_disease": final_disease,
             "disease_confidence": disease_confidence,
             "disease_description": disease_description,
             "image_diagnosis": state.get("image_diagnosis"),
             "follow_up_questions": flags.get("follow_up_questions"),
+            "need_confirm": flags.get("need_confirm"),
+            "fallback_reason": flags.get("fallback_reason"),
         },
     )
 
@@ -495,7 +527,7 @@ def treatment_agent(state: CropDiseaseState) -> CropDiseaseState:
     """
     print("\n[番茄病害治疗方案智能体] 正在制定治疗方案...")
 
-    disease_type = state.get("disease_type")
+    disease_type = state.get("final_disease") or state.get("disease_type")
     crop_type = "番茄"  # 确保是番茄
     crop_growth_stage = state.get("crop_growth_stage")
     disease_description = state.get("disease_description", "")
@@ -750,11 +782,17 @@ def supervisor_agent(state: CropDiseaseState) -> CropDiseaseState:
             hints.append("symptoms_missing")
         if (state.get("disease_confidence") or 0) < DIAGNOSIS_CONFIDENCE_THRESHOLD:
             hints.append("low_confidence")
+            if state.get("final_disease"):
+                hints.append("need_confirm_but_continue")
         if current_step == "diagnosis_complete":
             hints.append("post_diagnosis")
         decision_reason = ", ".join(hints) or message
 
     # 更新状态
+    if current_step == "diagnosis_complete" and state.get("final_disease") and next_action == "end":
+        next_action = "kb_retrieval"
+        is_complete = False
+        message = "番茄病害监督智能体：诊断已完成，继续进入知识检索智能体"
     state["next_action"] = next_action
     state["is_complete"] = is_complete
     state["messages"] = [message]
@@ -803,7 +841,7 @@ def kb_retrieval_agent(state: CropDiseaseState) -> CropDiseaseState:
     Returns:
         更新后的状态
     """
-    disease_type = state.get("disease_type")
+    disease_type = state.get("final_disease") or state.get("disease_type")
     kb = get_kb_manager()
     disease_description = kb.get_disease_description(disease_type)
     plan = kb.get_treatment_plan(disease_type)
@@ -834,19 +872,18 @@ def _rule_based_supervisor(current_step: str, state: CropDiseaseState, flags: di
         current_step == "diagnosis_complete"
         and flags.get("confirm_when_low_confidence")
         and disease_confidence < DIAGNOSIS_CONFIDENCE_THRESHOLD
+        and not state.get("final_disease")
     ):
-        return "reception", False, "番茄病害监督智能体：置信度低，根据个性化要求回到接待追问补充信息"
+        return "reception", False, "番茄病害监督智能体：置信度低且无有效诊断，回到接待追问补充信息"
 
     if current_step == "start":
         return "reception", False, "番茄病害监督智能体：开始诊断流程，转发至接待智能体"
     elif current_step == "reception_complete":
         return "diagnosis", False, "番茄病害监督智能体：信息收集完成，转发至诊断智能体"
     elif current_step == "diagnosis_complete":
-        confidence = disease_confidence
-        if confidence > 0.6:
+        if state.get("final_disease"):
             return "kb_retrieval", False, "番茄病害监督智能体：诊断完成，转发至知识检索智能体"
-        else:
-            return "end", True, "番茄病害监督智能体：诊断置信度较低，建议提供更多信息"
+        return "end", True, "番茄病害监督智能体：无法诊断病害，流程结束"
     elif current_step == "kb_retrieval_complete":
         return "treatment", False, "番茄病害监督智能体：知识检索完成，转发至治疗方案智能体"
     elif current_step == "treatment_complete":
