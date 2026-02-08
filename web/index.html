@@ -425,6 +425,12 @@
           traceIdEl.textContent = data.trace_id;
           fetchTrace(data.trace_id);
         }
+
+        if (data.trace_id) {
+          latestTraceId = data.trace_id;
+          traceIdEl.textContent = data.trace_id;
+          fetchTrace(data.trace_id);
+        }
       } catch (err) {
         const msg = err && err.message ? err.message : String(err);
         alert(`诊断失败：${msg}`);
