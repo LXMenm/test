@@ -3,6 +3,7 @@
 定义整个农作物病害诊治系统的状态结构
 """
 from typing import TypedDict, List, Optional, Annotated, Dict, Any
+import uuid
 import operator
 from personalization.profile_store import load_profile
 from personalization.profile_context import (
@@ -66,6 +67,11 @@ class CropDiseaseState(TypedDict):
     personalization_context: Optional[str]
     personalization_flags: Dict[str, Any]
 
+    # Trace信息
+    trace_id: str
+    trace_events: List[Dict[str, Any]]
+    kb_snapshot: Optional[Dict[str, Any]]
+
 
 def create_initial_state(
     user_query: str, farmer_id: Optional[str] = None, base_id: Optional[str] = None
@@ -105,6 +111,9 @@ def create_initial_state(
         farmer_profile=None,
         personalization_context=None,
         personalization_flags={},
+        trace_id=uuid.uuid4().hex,
+        trace_events=[],
+        kb_snapshot=None,
     )
 
     if farmer_id:
