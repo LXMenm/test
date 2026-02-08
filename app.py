@@ -88,6 +88,8 @@ class DiagnoseResponse(BaseModel):
     filtered_reasons: list[str]
     trace_id: str
     need_confirm: bool | None = None
+    final_confidence: float | None = None
+    final_source: str | None = None
 
 app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
 
@@ -369,6 +371,8 @@ async def diagnose_image(
     trace_id = uuid.uuid4().hex
     need_confirm = None
     trace_fallback_reason: list[str] | None = None
+    final_confidence = None
+    final_source = None
     final_state = None
     try:
         query_text = build_trace_query(
@@ -389,6 +393,8 @@ async def diagnose_image(
         flags = final_state.get("personalization_flags") or {}
         need_confirm = flags.get("need_confirm")
         trace_fallback_reason = flags.get("fallback_reason")
+        final_confidence = final_state.get("final_confidence")
+        final_source = final_state.get("final_source")
         if final_disease:
             plan = kb.get_treatment_plan(final_disease)
             if isinstance(plan, dict) and "treatment" in plan and "prevention" in plan:
@@ -420,6 +426,9 @@ async def diagnose_image(
         "rule_result": rule_result_dict,
         "final_disease": final_state.get("final_disease") if final_state else final_disease,
         "need_confirm": need_confirm,
+        "final_confidence": final_confidence,
+        "final_source": final_source,
+        "image_confidence": final_state.get("image_confidence") if final_state else None,
         "treatment": treatment_or_none,
         "meta": {
             "farmer_id": farmer_id,
@@ -451,6 +460,8 @@ async def diagnose_image(
         filtered_reasons=filtered_reasons,
         trace_id=trace_id,
         need_confirm=need_confirm,
+        final_confidence=final_confidence,
+        final_source=final_source,
     )
 
 
@@ -568,7 +579,33 @@ def get_trace_events(trace_id: str | None = None) -> dict[str, object]:
     if not trace_id:
         raise HTTPException(status_code=400, detail="trace_id 不能为空")
     events = list_trace_events(trace_id)
-    return {"trace_id": trace_id, "events": events}
+    from trace_i18n import AGENT_NAME_CN, STEP_NAME_CN, REASON_CN
+    enriched = []
+    for event in events:
+        agent = event.get("agent")
+        step = event.get("step")
+        decision = event.get("decision") or {}
+        reasons = decision.get("reasons") or []
+        if isinstance(reasons, str):
+            reasons = [reasons]
+        reason_cn = [REASON_CN.get(reason, reason) for reason in reasons]
+        enriched_event = dict(event)
+        enriched_event["agent_cn"] = AGENT_NAME_CN.get(agent, agent)
+        enriched_event["step_cn"] = STEP_NAME_CN.get(step, step)
+        if decision:
+            decision = dict(decision)
+            decision["reasons_cn"] = reason_cn
+            enriched_event["decision"] = decision
+        enriched.append(enriched_event)
+    return {
+        "trace_id": trace_id,
+        "events": enriched,
+        "i18n": {
+            "agent_name_cn": AGENT_NAME_CN,
+            "step_name_cn": STEP_NAME_CN,
+            "reason_cn": REASON_CN,
+        },
+    }
 
 
 def validate_date_str(value: str) -> bool:

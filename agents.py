@@ -262,6 +262,9 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
     disease_type = None
     final_disease = None
     disease_confidence = None
+    image_confidence = None
+    final_confidence = None
+    final_source = None
     disease_description = None
     image_top3 = []
     
@@ -282,7 +285,10 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
             policy = make_confidence_flags(
                 image_top3, fallback_confidence=float(disease_confidence or 0.0)
             )
-            disease_confidence = float(policy["top1_confidence"])
+            image_confidence = float(policy["top1_confidence"])
+            disease_confidence = image_confidence
+            final_confidence = image_confidence
+            final_source = "image"
             if policy["need_confirm"]:
                 flags["need_confirm"] = True
                 flags["fallback_reason"] = list(policy["reasons"])
@@ -304,6 +310,8 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
             )
             if disease_type:
                 final_disease = disease_type
+                final_confidence = disease_confidence
+                final_source = "rule"
         except Exception as e:
             print(f"诊断模型调用失败: {e}，使用规则匹配")
             # 后备方案：规则匹配
@@ -312,6 +320,8 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
             )
             if disease_type:
                 final_disease = disease_type
+                final_confidence = disease_confidence
+                final_source = "rule"
     elif image_path and flags.get("need_confirm") and symptoms:
         print("[番茄病害诊断智能体] 低置信度，使用症状进行回退诊断")
         try:
@@ -346,7 +356,10 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
         except Exception:
             pass
 
-    disease_confidence = disease_confidence or 0.0
+    final_confidence = final_confidence if final_confidence is not None else (disease_confidence or 0.0)
+    disease_confidence = final_confidence
+    if final_source is None:
+        final_source = "image" if image_path else "rule"
     message = f"番茄病害诊断智能体：诊断为{disease_type}，置信度={disease_confidence:.2%}"
     if image_path and state.get("image_diagnosis"):
         image_top1 = state["image_diagnosis"].get("top1", {})
@@ -377,6 +390,9 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
     state["final_disease"] = final_disease
     state["disease_type"] = disease_type
     state["disease_confidence"] = disease_confidence
+    state["image_confidence"] = image_confidence
+    state["final_confidence"] = final_confidence
+    state["final_source"] = final_source
     state["disease_description"] = disease_description
     state["current_step"] = "diagnosis_complete"
     state["messages"] = [message]
@@ -400,6 +416,9 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
             "disease_type": disease_type,
             "final_disease": final_disease,
             "disease_confidence": disease_confidence,
+            "image_confidence": image_confidence,
+            "final_confidence": final_confidence,
+            "final_source": final_source,
             "disease_description": disease_description,
             "image_diagnosis": state.get("image_diagnosis"),
             "image_top1": (state.get("image_diagnosis") or {}).get("top1"),
