@@ -32,6 +32,9 @@ from knowledge_base import get_kb_manager
 from personalization.profile_models import FarmerProfile, TreatmentConstraint
 from personalization.profile_rules import filter_treatment_by_constraints
 from personalization.profile_store import get_profile_path, load_profile, list_profile_ids
+from state import create_initial_state
+from trace_store import list_trace_events
+from workflow import build_graph
 
 
 app = FastAPI(title="Tomato Diagnosis API", version="1.0.0")
@@ -83,6 +86,7 @@ class DiagnoseResponse(BaseModel):
     farmer_id: Optional[str]
     filtered: bool
     filtered_reasons: list[str]
+    trace_id: str
 
 app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
 
@@ -205,6 +209,24 @@ def load_profile_payload(farmer_id: str) -> tuple[dict | None, TreatmentConstrai
     except Exception:
         constraints = TreatmentConstraint()
     return payload, constraints
+
+
+def build_trace_query(
+    *,
+    crop_type: str,
+    symptoms_list: list[str],
+    growth_stage: str | None,
+    image_path: str,
+) -> str:
+    parts = []
+    if crop_type:
+        parts.append(f"作物类型：{crop_type}")
+    if growth_stage:
+        parts.append(f"生长阶段：{growth_stage}")
+    if symptoms_list:
+        parts.append(f"症状：{', '.join(symptoms_list)}")
+    parts.append(f"图片路径：{image_path}")
+    return "，".join(parts)
 
 
 @app.post("/api/diagnose-image", response_model=DiagnoseResponse)
@@ -343,9 +365,45 @@ async def diagnose_image(
     treatment_or_none = treatment.model_dump() if treatment else None
     image_url = f"/uploads/{unique_name}"
 
+    trace_id = uuid.uuid4().hex
+    final_state = None
+    try:
+        query_text = build_trace_query(
+            crop_type=crop_type,
+            symptoms_list=symptoms_list,
+            growth_stage=growth_stage,
+            image_path=str(saved_path),
+        )
+        initial_state = create_initial_state(query_text, farmer_id=farmer_id, base_id=base_id)
+        graph = build_graph()
+        final_state = graph.invoke(initial_state)
+        trace_id = final_state.get("trace_id", trace_id)
+    except Exception as exc:
+        print(f"Warning: failed to build trace events: {exc}")
+
+    if final_state and final_state.get("final_disease"):
+        final_disease = final_state.get("final_disease") or final_disease
+        if final_disease:
+            plan = kb.get_treatment_plan(final_disease)
+            if isinstance(plan, dict) and "treatment" in plan and "prevention" in plan:
+                treatment = TreatmentPlan(
+                    plan=plan["treatment"],
+                    prevention=plan["prevention"],
+                )
+            if farmer_id:
+                _, constraints = load_profile_payload(farmer_id)
+                if constraints:
+                    personalization_applied = True
+                    treatment, filtered, filtered_reasons = apply_personalization_to_treatment(
+                        constraints=constraints,
+                        treatment=treatment,
+                        disease=final_disease,
+                    )
+
     event = {
         "id": uuid.uuid4().hex,
         "ts": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        "trace_id": trace_id,
         "crop_type": crop_type,
         "symptoms": symptoms_list,
         "image_id": unique_name,
@@ -354,7 +412,7 @@ async def diagnose_image(
         "fallback_used": fallback_used,
         "fallback_reason": fallback_reasons or None,
         "rule_result": rule_result_dict,
-        "final_disease": final_disease,
+        "final_disease": final_state.get("final_disease") if final_state else final_disease,
         "treatment": treatment_or_none,
         "meta": {
             "farmer_id": farmer_id,
@@ -384,6 +442,7 @@ async def diagnose_image(
         farmer_id=farmer_id,
         filtered=filtered,
         filtered_reasons=filtered_reasons,
+        trace_id=trace_id,
     )
 
 
@@ -488,6 +547,12 @@ def get_events(start: str | None = None, end: str | None = None, limit: int = 50
             raise HTTPException(status_code=400, detail="日期格式应为 YYYY-MM-DD")
         return list_events_range(start, end, limit)
     return list_events(limit)
+
+
+@app.get("/api/traces/{trace_id}")
+def get_trace(trace_id: str) -> dict[str, object]:
+    events = list_trace_events(trace_id)
+    return {"trace_id": trace_id, "events": events}
 
 
 def validate_date_str(value: str) -> bool:
