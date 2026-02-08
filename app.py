@@ -17,6 +17,7 @@ from pydantic import BaseModel
 
 from config import DIAGNOSIS_CONFIDENCE_THRESHOLD
 from diagnosis_model import get_diagnosis_engine
+from agents import append_trace, diagnosis_agent, kb_retrieval_agent, treatment_agent
 from event_store import (
     append_event,
     list_events,
@@ -463,6 +464,81 @@ async def diagnose_image(
         final_confidence=final_confidence,
         final_source=final_source,
     )
+
+
+@app.post("/api/diagnose-confirm")
+def diagnose_confirm(payload: dict = Body(...)) -> dict:
+    trace_id = payload.get("trace_id")
+    image_id = payload.get("image_id")
+    crop_type = payload.get("crop_type") or "番茄"
+    symptoms = payload.get("symptoms") or []
+    growth_stage = payload.get("growth_stage")
+    if not trace_id or not image_id:
+        raise HTTPException(status_code=400, detail="trace_id 与 image_id 不能为空")
+    if not isinstance(symptoms, list):
+        raise HTTPException(status_code=400, detail="symptoms 必须为列表")
+
+    image_path = (UPLOAD_DIR / image_id).resolve()
+    if not image_path.exists():
+        raise HTTPException(status_code=404, detail="图片不存在")
+
+    state = create_initial_state(f"confirm:{image_id}")
+    state["trace_id"] = trace_id
+    state["image_path"] = str(image_path)
+    state["symptoms"] = [str(item).strip() for item in symptoms if str(item).strip()]
+    state["crop_type"] = crop_type
+    state["crop_growth_stage"] = growth_stage
+    state["current_step"] = "start"
+
+    append_trace(
+        state,
+        agent="confirm_input",
+        inputs={
+            "symptoms": state["symptoms"],
+            "crop_type": crop_type,
+            "growth_stage": growth_stage,
+            "image_id": image_id,
+        },
+        outputs={},
+    )
+    state["current_step"] = "confirm_input"
+
+    state = diagnosis_agent(state)
+    state = kb_retrieval_agent(state)
+    state = treatment_agent(state)
+
+    image_diagnosis = state.get("image_diagnosis") or {}
+    image_top1 = image_diagnosis.get("top1") or {}
+    top3 = image_diagnosis.get("top3") or []
+    image_result = {
+        "disease": image_top1.get("disease"),
+        "confidence": float(image_top1.get("confidence") or 0.0),
+        "confidence_pct": round(float(image_top1.get("confidence") or 0.0) * 100, 2),
+        "top3": [
+            {"disease": name, "prob": float(prob), "prob_pct": round(float(prob) * 100, 2)}
+            for name, prob in top3
+        ],
+    }
+    flags = state.get("personalization_flags") or {}
+    need_confirm = bool(flags.get("need_confirm"))
+    confirm_message = None
+    if need_confirm:
+        confirm_message = "置信度较低，建议补充症状或重新拍摄"
+
+    events = list_trace_events(trace_id)
+
+    return {
+        "trace_id": trace_id,
+        "final_disease": state.get("final_disease"),
+        "image_result": image_result,
+        "need_confirm": need_confirm,
+        "confirm_message": confirm_message,
+        "treatment": {
+            "plan": state.get("treatment_plan"),
+            "prevention": state.get("prevention_advice"),
+        },
+        "events": events,
+    }
 
 
 @app.get("/api/profiles")
