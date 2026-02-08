@@ -40,6 +40,7 @@ DIAGNOSIS_MODEL_PATH = os.getenv(
     "models/densenet121_tomato_disease_model_fine_tuned.h5",
 )
 USE_GPU = os.getenv("USE_GPU", "false").lower() == "true"
+DIAGNOSIS_ALLOW_TORCH = os.getenv("DIAGNOSIS_ALLOW_TORCH", "0")
 
 # 诊断置信度阈值
 DIAGNOSIS_CONFIDENCE_THRESHOLD = float(os.getenv("DIAGNOSIS_CONFIDENCE_THRESHOLD", "0.6"))
@@ -57,7 +58,8 @@ def log_diagnosis_config() -> None:
         f"DIAGNOSIS_MODEL_PATH={DIAGNOSIS_MODEL_PATH} "
         f"DIAGNOSIS_MODEL_TYPE={DIAGNOSIS_MODEL_TYPE} "
         f"USE_GPU={USE_GPU} "
-        f"DIAGNOSIS_CONFIDENCE_THRESHOLD={DIAGNOSIS_CONFIDENCE_THRESHOLD}"
+        f"DIAGNOSIS_CONFIDENCE_THRESHOLD={DIAGNOSIS_CONFIDENCE_THRESHOLD} "
+        f"DIAGNOSIS_ALLOW_TORCH={DIAGNOSIS_ALLOW_TORCH}"
     )
     _DIAGNOSIS_CONFIG_LOGGED = True
 
