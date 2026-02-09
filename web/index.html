@@ -3,84 +3,278 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>图像诊断演示页</title>
+  <title>病害图像诊断</title>
   <style>
-    body { font-family: sans-serif; max-width: 920px; margin: 20px auto; padding: 0 12px; }
-    .row { margin: 10px 0; }
-    label { display: inline-block; min-width: 120px; }
-    input[type="text"] { width: 360px; }
-    button { padding: 6px 12px; }
-    #preview { max-width: 380px; max-height: 380px; display: none; }
-    ul { margin: 6px 0 10px 20px; }
-    pre { white-space: pre-wrap; word-break: break-word; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      background: #f3f4f6;
+      color: #111827;
+    }
+    header {
+      background: #111827;
+      color: #fff;
+      padding: 16px 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    header h1 {
+      margin: 0;
+      font-size: 18px;
+    }
+    header nav a {
+      color: #d1d5db;
+      margin-left: 12px;
+      text-decoration: none;
+      font-size: 14px;
+    }
+    main {
+      padding: 20px 24px 36px;
+      display: grid;
+      grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
+      gap: 16px;
+    }
+    .card {
+      background: #fff;
+      border-radius: 12px;
+      padding: 16px;
+      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08);
+    }
+    .card h2 {
+      margin: 0 0 12px;
+      font-size: 16px;
+    }
+    .form-row {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      margin-bottom: 12px;
+    }
+    .form-row label {
+      font-size: 13px;
+      color: #374151;
+    }
+    .input, select {
+      width: 100%;
+      box-sizing: border-box;
+      border: 1px solid #d1d5db;
+      border-radius: 8px;
+      padding: 8px 10px;
+      font-size: 14px;
+      background: #fff;
+    }
+    .actions {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .btn-primary {
+      border: none;
+      background: #111827;
+      color: #fff;
+      padding: 10px 16px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 14px;
+    }
+    .btn-secondary {
+      border: none;
+      background: #e5e7eb;
+      color: #111827;
+      padding: 6px 12px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 13px;
+    }
+    .btn-primary:disabled,
+    .btn-secondary:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    .status {
+      font-size: 13px;
+      color: #6b7280;
+    }
+    .preview {
+      max-width: 100%;
+      max-height: 260px;
+      display: none;
+      border-radius: 10px;
+      border: 1px solid #e5e7eb;
+    }
+    .result-section {
+      display: grid;
+      gap: 10px;
+      font-size: 14px;
+    }
+    .result-section ul {
+      margin: 6px 0 0 16px;
+    }
+    .muted {
+      color: #6b7280;
+    }
+    .warning {
+      background: #fff3cd;
+      border: 1px solid #ffeeba;
+      padding: 10px 12px;
+      border-radius: 8px;
+      color: #7a5d00;
+      display: none;
+    }
+    .trace-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .trace-list {
+      display: grid;
+      gap: 8px;
+      margin-top: 12px;
+    }
+    .trace-item {
+      padding: 10px 12px;
+      border: 1px solid #e5e7eb;
+      border-radius: 10px;
+      background: #f9fafb;
+      font-size: 13px;
+    }
+    .trace-title {
+      font-weight: 600;
+      margin-bottom: 4px;
+    }
+    .trace-meta {
+      color: #6b7280;
+      font-size: 12px;
+    }
+    .trace-error {
+      color: #b00020;
+      font-size: 13px;
+    }
+    @media (max-width: 960px) {
+      main {
+        grid-template-columns: 1fr;
+      }
+    }
   </style>
 </head>
 <body>
-  <h1>病害图像诊断（演示）</h1>
+  <header>
+    <h1>病害图像诊断</h1>
+    <nav>
+      <a href="/">诊断</a>
+      <a href="/kb">知识库管理</a>
+      <a href="/dashboard">数据看板</a>
+    </nav>
+  </header>
 
-  <div class="row">
-    <label for="file">图片文件</label>
-    <input id="file" type="file" accept="image/*" />
-  </div>
-  <div class="row">
-    <label for="symptoms">症状（逗号分隔）</label>
-    <input id="symptoms" type="text" placeholder="例如：斑点,发黄" />
-  </div>
-  <div class="row">
-    <label for="crop_type">crop_type</label>
-    <input id="crop_type" type="text" value="番茄" />
-  </div>
-  <div class="row">
-    <label for="growth_stage">growth_stage</label>
-    <input id="growth_stage" type="text" placeholder="可选，例如：开花期" />
-  </div>
-  <div class="row">
-    <button id="submitBtn">诊断</button>
-    <span id="status"></span>
-  </div>
+  <main>
+    <section class="card">
+      <h2>上传信息</h2>
+      <div class="form-row">
+        <label for="file">图片文件</label>
+        <input id="file" class="input" type="file" accept="image/*" />
+      </div>
+      <div class="form-row">
+        <label for="symptoms">症状（逗号分隔）</label>
+        <input id="symptoms" class="input" type="text" placeholder="例如：斑点, 发黄" />
+      </div>
+      <div class="form-row">
+        <label for="crop_type">作物类型</label>
+        <input id="crop_type" class="input" type="text" value="番茄" />
+      </div>
+      <div class="form-row">
+        <label for="growth_stage">生长阶段（可选）</label>
+        <input id="growth_stage" class="input" type="text" placeholder="例如：开花期" />
+      </div>
+      <div class="form-row">
+        <label for="model_id">识别模型</label>
+        <select id="model_id" class="input"></select>
+      </div>
+      <div class="actions">
+        <button id="submitBtn" class="btn-primary">诊断</button>
+        <span id="status" class="status"></span>
+      </div>
+    </section>
 
-  <hr />
-  <h2>结果展示</h2>
-  <div class="row">
-    <img id="preview" alt="上传图片预览" />
-  </div>
-  <div class="row" id="top1"></div>
-  <div class="row">
-    <strong>Top3</strong>
-    <ul id="top3"></ul>
-  </div>
-  <div class="row" id="finalDisease"></div>
-  <div class="row">
-    <strong>治疗方案</strong>
-    <div id="treatmentPlan">暂无</div>
-  </div>
-  <div class="row">
-    <strong>预防建议</strong>
-    <div id="treatmentPrevention">暂无</div>
-  </div>
-  <div class="row" id="fallbackInfo"></div>
-  <div class="row" id="ruleInfo"></div>
+    <section>
+      <div class="card">
+        <h2>诊断结果</h2>
+        <div class="warning" id="confidenceWarning"></div>
+        <div class="result-section">
+          <img id="preview" class="preview" alt="上传图片预览" />
+          <div><strong>最终病害：</strong><span id="finalDisease">-</span></div>
+          <div><strong>置信度：</strong><span id="confidencePct">-</span></div>
+          <div><strong>使用模型：</strong><span id="modelUsed" class="muted">-</span></div>
+          <div>
+            <strong>Top3</strong>
+            <ul id="top3"></ul>
+          </div>
+          <div>
+            <strong>治疗方案</strong>
+            <div id="treatmentPlan" class="muted">暂无</div>
+          </div>
+          <div>
+            <strong>预防建议</strong>
+            <div id="treatmentPrevention" class="muted">暂无</div>
+          </div>
+          <div id="confirmPanel" class="muted" style="display:none;">
+            <div style="margin-bottom:6px;">补充症状并复诊（逗号分隔）</div>
+            <input id="confirmSymptoms" class="input" type="text" placeholder="例如：发黄, 斑点" />
+            <button id="confirmBtn" class="btn-primary" style="margin-top:8px;" type="button">补充症状并复诊</button>
+          </div>
+        </div>
+      </div>
 
-  <h3>原始 JSON</h3>
-  <pre id="rawJson">{}</pre>
+      <div class="card" style="margin-top:16px;">
+        <div class="trace-header">
+          <h2>多智能体协作流程</h2>
+          <div>
+            <span class="muted">本次追踪ID：</span>
+            <span id="traceId" class="muted">-</span>
+            <span id="previousTraceWrap" class="muted" style="margin-left:8px; display:none;">
+              上次追踪ID：<span id="previousTraceId">-</span>
+            </span>
+            <button id="traceRefreshBtn" class="btn-secondary" type="button">刷新</button>
+          </div>
+        </div>
+        <div class="trace-error" id="traceError"></div>
+        <div class="trace-list" id="traceList"></div>
+      </div>
+    </section>
+  </main>
 
   <script>
     const fileEl = document.getElementById('file');
     const symptomsEl = document.getElementById('symptoms');
     const cropTypeEl = document.getElementById('crop_type');
     const growthStageEl = document.getElementById('growth_stage');
+    const modelIdEl = document.getElementById('model_id');
     const submitBtn = document.getElementById('submitBtn');
     const statusEl = document.getElementById('status');
 
     const previewEl = document.getElementById('preview');
-    const top1El = document.getElementById('top1');
     const top3El = document.getElementById('top3');
     const finalDiseaseEl = document.getElementById('finalDisease');
+    const confidencePctEl = document.getElementById('confidencePct');
+    const modelUsedEl = document.getElementById('modelUsed');
     const treatmentPlanEl = document.getElementById('treatmentPlan');
     const treatmentPreventionEl = document.getElementById('treatmentPrevention');
-    const fallbackInfoEl = document.getElementById('fallbackInfo');
-    const ruleInfoEl = document.getElementById('ruleInfo');
-    const rawJsonEl = document.getElementById('rawJson');
+    const confidenceWarningEl = document.getElementById('confidenceWarning');
+    const traceIdEl = document.getElementById('traceId');
+    const previousTraceWrap = document.getElementById('previousTraceWrap');
+    const previousTraceIdEl = document.getElementById('previousTraceId');
+    const traceRefreshBtn = document.getElementById('traceRefreshBtn');
+    const traceErrorEl = document.getElementById('traceError');
+    const traceListEl = document.getElementById('traceList');
+    const confirmPanelEl = document.getElementById('confirmPanel');
+    const confirmSymptomsEl = document.getElementById('confirmSymptoms');
+    const confirmBtnEl = document.getElementById('confirmBtn');
+    let latestTraceId = null;
+    let previousTraceId = null;
+    let latestImageId = null;
 
     function setLoading(loading) {
       submitBtn.disabled = loading;
@@ -88,15 +282,118 @@
     }
 
     function resetResult() {
-      top1El.textContent = '';
       top3El.innerHTML = '';
-      finalDiseaseEl.textContent = '';
+      finalDiseaseEl.textContent = '-';
+      confidencePctEl.textContent = '-';
+      modelUsedEl.textContent = '-';
       treatmentPlanEl.textContent = '暂无';
       treatmentPreventionEl.textContent = '暂无';
-      fallbackInfoEl.textContent = '';
-      ruleInfoEl.textContent = '';
+      confidenceWarningEl.style.display = 'none';
+      confidenceWarningEl.textContent = '';
+      confirmPanelEl.style.display = 'none';
+      confirmSymptomsEl.value = '';
       previewEl.style.display = 'none';
       previewEl.removeAttribute('src');
+      traceIdEl.textContent = '-';
+      previousTraceWrap.style.display = 'none';
+      previousTraceIdEl.textContent = '-';
+      traceErrorEl.textContent = '';
+      traceListEl.innerHTML = '';
+      latestTraceId = null;
+      previousTraceId = null;
+      latestImageId = null;
+      traceRefreshBtn.disabled = true;
+    }
+
+    function shouldShowNeedConfirm(events) {
+      return events.some(evt => {
+        if (evt.agent !== 'diagnosis') return false;
+        const outputs = evt.outputs || {};
+        if (outputs.need_confirm) return true;
+        const reasons = Array.isArray(outputs.fallback_reason) ? outputs.fallback_reason : [];
+        return reasons.includes('low_confidence') || reasons.includes('low_margin');
+      });
+    }
+
+    function renderTrace(events) {
+      traceListEl.innerHTML = '';
+      if (!events.length) {
+        traceListEl.textContent = '暂无 trace 事件';
+        return;
+      }
+      const agentMap = {
+        supervisor: '监督智能体',
+        reception: '接待智能体',
+        diagnosis: '诊断智能体',
+        kb_retrieval: '知识检索智能体',
+        treatment: '治疗方案智能体',
+      };
+      const stepMap = {
+        start: '开始',
+        reception_complete: '接待完成',
+        diagnosis_complete: '诊断完成',
+        kb_retrieval_complete: '知识检索完成',
+        treatment_complete: '方案生成完成',
+        end: '结束',
+      };
+      const nextActionMap = {
+        reception: '接待',
+        diagnosis: '诊断',
+        kb_retrieval: '知识检索',
+        treatment: '方案生成',
+        end: '结束',
+      };
+      events.forEach(evt => {
+        const item = document.createElement('div');
+        item.className = 'trace-item';
+        const agent = agentMap[evt.agent] || evt.agent || '-';
+        const step = stepMap[evt.step] || evt.step || '-';
+        const ts = evt.ts || '-';
+        const title = document.createElement('div');
+        title.className = 'trace-title';
+        title.textContent = `${ts} | ${agent} | ${step}`;
+        item.appendChild(title);
+
+        if (evt.agent === 'supervisor' && evt.decision) {
+          const nextAction = nextActionMap[evt.decision.next_action] || evt.decision.next_action || '-';
+          const reason = evt.decision.reason || '-';
+          const meta = document.createElement('div');
+          meta.className = 'trace-meta';
+          meta.textContent = `下一步动作：${nextAction}｜决策原因：${reason}`;
+          item.appendChild(meta);
+        }
+        traceListEl.appendChild(item);
+      });
+    }
+
+    async function fetchTrace(traceId) {
+      if (!traceId) return;
+      traceErrorEl.textContent = '';
+      try {
+        const resp = await fetch(`/api/trace-events?trace_id=${encodeURIComponent(traceId)}`);
+        const payload = await resp.json();
+        if (!resp.ok) {
+          throw new Error(payload.detail || `获取 trace 失败: ${resp.status}`);
+        }
+        const events = Array.isArray(payload.events) ? payload.events : [];
+        renderTrace(events);
+        const needsConfirm = shouldShowNeedConfirm(events);
+        const diag = events.find(evt => evt.agent === 'diagnosis');
+        const outputs = diag && diag.outputs ? diag.outputs : {};
+        const conf = outputs.disease_confidence;
+        const confidencePct = typeof conf === 'number' ? Math.round(conf * 100) : null;
+        if (needsConfirm || (confidencePct !== null && confidencePct < 60)) {
+          confidenceWarningEl.textContent = '识别置信度较低，建议补充症状信息以提高准确性。';
+          confidenceWarningEl.style.display = 'block';
+          confirmPanelEl.style.display = 'block';
+        } else {
+          confidenceWarningEl.style.display = 'none';
+          confirmPanelEl.style.display = 'none';
+        }
+      } catch (err) {
+        const msg = err && err.message ? err.message : String(err);
+        traceErrorEl.textContent = msg;
+      }
     }
 
     async function runDiagnose() {
@@ -114,6 +411,7 @@
       fd.append('crop_type', (cropTypeEl.value || '番茄').trim() || '番茄');
       if (symptomsEl.value.trim()) fd.append('symptoms', symptomsEl.value.trim());
       if (growthStageEl.value.trim()) fd.append('growth_stage', growthStageEl.value.trim());
+      if (modelIdEl.value) fd.append('model_id', modelIdEl.value);
 
       try {
         const resp = await fetch('/api/diagnose-image', { method: 'POST', body: fd });
@@ -122,15 +420,28 @@
           throw new Error(data.detail || `请求失败: ${resp.status}`);
         }
 
-        rawJsonEl.textContent = JSON.stringify(data, null, 2);
-
         if (data.image_url) {
           previewEl.src = data.image_url;
           previewEl.style.display = 'block';
         }
 
         const imageResult = data.image_result || {};
-        top1El.textContent = `Top1: ${imageResult.disease || '-'} | confidence_pct: ${imageResult.confidence_pct ?? '-'}%`;
+        const fallbackDisease = imageResult.disease || '-';
+        const finalDisease = data.final_disease || fallbackDisease;
+        finalDiseaseEl.textContent = finalDisease;
+        const confidencePct = (imageResult.confidence_pct ?? null);
+        confidencePctEl.textContent = confidencePct !== null ? `${Number(confidencePct).toFixed(2)}%` : '-';
+        if (data.model_display_name) {
+          const backend = data.model_backend ? ` (${data.model_backend})` : '';
+          modelUsedEl.textContent = `${data.model_display_name}${backend}`;
+        } else {
+          modelUsedEl.textContent = data.model_id || '-';
+        }
+        if (confidencePct !== null && Number(confidencePct) < 60) {
+          confidenceWarningEl.textContent = '识别置信度较低，建议补充症状信息以提高准确性。';
+          confidenceWarningEl.style.display = 'block';
+          confirmPanelEl.style.display = 'block';
+        }
 
         const top3 = Array.isArray(imageResult.top3) ? imageResult.top3 : [];
         top3.forEach(item => {
@@ -144,25 +455,30 @@
           top3El.appendChild(li);
         }
 
-        finalDiseaseEl.textContent = `final_disease: ${data.final_disease || '-'}`;
-
         if (data.treatment) {
           treatmentPlanEl.textContent = data.treatment.plan || '暂无';
           treatmentPreventionEl.textContent = data.treatment.prevention || '暂无';
         }
 
-        const reasons = Array.isArray(data.fallback_reason) ? data.fallback_reason.join(', ') : '无';
-        fallbackInfoEl.textContent = `fallback_used: ${Boolean(data.fallback_used)} | fallback_reason: ${reasons}`;
-
-        if (data.rule_result) {
-          const rr = data.rule_result;
-          ruleInfoEl.textContent = `rule_result: disease=${rr.rule_disease || '-'}, confidence_pct=${rr.rule_confidence_pct ?? '-'}%, description=${rr.rule_description || '-'}`;
+        if (data.trace_id) {
+          latestTraceId = data.trace_id;
+          traceIdEl.textContent = data.trace_id;
+          traceRefreshBtn.disabled = false;
+          if (data.previous_trace_id) {
+            previousTraceId = data.previous_trace_id;
+            previousTraceIdEl.textContent = data.previous_trace_id;
+            previousTraceWrap.style.display = 'inline';
+          }
+          fetchTrace(data.trace_id);
         } else {
-          ruleInfoEl.textContent = 'rule_result: 无';
+          traceErrorEl.textContent = '未获取到追踪ID，无法刷新协作流程。';
+          traceRefreshBtn.disabled = true;
+        }
+        if (data.image_id) {
+          latestImageId = data.image_id;
         }
       } catch (err) {
         const msg = err && err.message ? err.message : String(err);
-        rawJsonEl.textContent = JSON.stringify({ error: msg }, null, 2);
         alert(`诊断失败：${msg}`);
       } finally {
         setLoading(false);
@@ -170,6 +486,119 @@
     }
 
     submitBtn.addEventListener('click', runDiagnose);
+    traceRefreshBtn.addEventListener('click', () => fetchTrace(latestTraceId));
+    confirmBtnEl.addEventListener('click', async () => {
+      if (!latestImageId) {
+        alert('缺少图片信息，无法复诊');
+        return;
+      }
+      const symptomsInput = confirmSymptomsEl.value || '';
+      const symptomList = symptomsInput
+        .split(',')
+        .map(item => item.trim())
+        .filter(Boolean);
+      try {
+        const resp = await fetch('/api/diagnose-confirm', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            trace_id: latestTraceId,
+            previous_trace_id: previousTraceId,
+            image_id: latestImageId,
+            crop_type: (cropTypeEl.value || '番茄').trim() || '番茄',
+            symptoms: symptomList,
+            growth_stage: growthStageEl.value.trim() || null,
+            model_id: modelIdEl.value || null,
+          }),
+        });
+        const data = await resp.json();
+        if (!resp.ok) {
+          throw new Error(data.detail || `复诊失败: ${resp.status}`);
+        }
+        if (data.trace_id) {
+          latestTraceId = data.trace_id;
+          traceIdEl.textContent = data.trace_id;
+          traceRefreshBtn.disabled = false;
+        }
+        if (data.previous_trace_id) {
+          previousTraceId = data.previous_trace_id;
+          previousTraceIdEl.textContent = data.previous_trace_id;
+          previousTraceWrap.style.display = 'inline';
+        }
+        if (data.image_result) {
+          const imageResult = data.image_result || {};
+          const fallbackDisease = imageResult.disease || '-';
+          const finalDisease = data.final_disease || fallbackDisease;
+          finalDiseaseEl.textContent = finalDisease;
+          const confidencePct = (imageResult.confidence_pct ?? null);
+          confidencePctEl.textContent = confidencePct !== null ? `${Number(confidencePct).toFixed(2)}%` : '-';
+        }
+        if (data.model_display_name) {
+          const backend = data.model_backend ? ` (${data.model_backend})` : '';
+          modelUsedEl.textContent = `${data.model_display_name}${backend}`;
+        }
+        if (data.treatment) {
+          treatmentPlanEl.textContent = data.treatment.plan || '暂无';
+          treatmentPreventionEl.textContent = data.treatment.prevention || '暂无';
+        }
+        if (data.need_confirm) {
+          confidenceWarningEl.textContent = data.confirm_message || '识别置信度较低，建议补充症状信息以提高准确性。';
+          confidenceWarningEl.style.display = 'block';
+          confirmPanelEl.style.display = 'block';
+        } else {
+          confidenceWarningEl.style.display = 'none';
+          confirmPanelEl.style.display = 'none';
+        }
+        if (Array.isArray(data.events)) {
+          renderTrace(data.events);
+        } else if (data.trace_id) {
+          fetchTrace(data.trace_id);
+        }
+      } catch (err) {
+        const msg = err && err.message ? err.message : String(err);
+        alert(msg);
+      }
+    });
+    traceRefreshBtn.disabled = true;
+
+    async function loadModels() {
+      try {
+        const resp = await fetch('/api/models');
+        const payload = await resp.json();
+        if (!resp.ok) {
+          throw new Error(payload.detail || '获取模型列表失败');
+        }
+        const models = Array.isArray(payload.models) ? payload.models : [];
+        modelIdEl.innerHTML = '';
+        if (!models.length) {
+          const option = document.createElement('option');
+          option.value = '';
+          option.textContent = '暂无可用模型';
+          modelIdEl.appendChild(option);
+          modelIdEl.disabled = true;
+          return;
+        }
+        models.forEach((model, index) => {
+          const option = document.createElement('option');
+          option.value = model.model_id;
+          option.textContent = `${model.display_name} (${model.backend})`;
+          if (index === 0) {
+            option.selected = true;
+          }
+          modelIdEl.appendChild(option);
+        });
+        modelIdEl.disabled = false;
+      } catch (err) {
+        const option = document.createElement('option');
+        option.value = '';
+        option.textContent = '模型列表加载失败';
+        modelIdEl.innerHTML = '';
+        modelIdEl.appendChild(option);
+        modelIdEl.disabled = true;
+      }
+    }
+
+    loadModels();
   </script>
 </body>
 </html>

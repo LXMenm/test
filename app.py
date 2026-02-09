@@ -15,8 +15,9 @@ from fastapi.staticfiles import StaticFiles
 from PIL import Image
 from pydantic import BaseModel
 
-from config import DIAGNOSIS_CONFIDENCE_THRESHOLD
+from config import DIAGNOSIS_CONFIDENCE_THRESHOLD, DIAGNOSIS_ALLOW_TORCH
 from diagnosis_model import get_diagnosis_engine
+from agents import append_trace, diagnosis_agent, kb_retrieval_agent, treatment_agent
 from event_store import (
     append_event,
     list_events,
@@ -32,6 +33,10 @@ from knowledge_base import get_kb_manager
 from personalization.profile_models import FarmerProfile, TreatmentConstraint
 from personalization.profile_rules import filter_treatment_by_constraints
 from personalization.profile_store import get_profile_path, load_profile, list_profile_ids
+from state import create_initial_state
+from trace_store import list_trace_events
+from model_registry import list_models, resolve_model
+from workflow import build_graph
 
 
 app = FastAPI(title="Tomato Diagnosis API", version="1.0.0")
@@ -83,6 +88,15 @@ class DiagnoseResponse(BaseModel):
     farmer_id: Optional[str]
     filtered: bool
     filtered_reasons: list[str]
+    trace_id: str
+    need_confirm: bool | None = None
+    final_confidence: float | None = None
+    final_source: str | None = None
+    model_id: str | None = None
+    model_display_name: str | None = None
+    model_backend: str | None = None
+    resolved_model_path: str | None = None
+    model_fallback_reason: list[str] | None = None
 
 app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
 
@@ -207,12 +221,31 @@ def load_profile_payload(farmer_id: str) -> tuple[dict | None, TreatmentConstrai
     return payload, constraints
 
 
+def build_trace_query(
+    *,
+    crop_type: str,
+    symptoms_list: list[str],
+    growth_stage: str | None,
+    image_path: str,
+) -> str:
+    parts = []
+    if crop_type:
+        parts.append(f"作物类型：{crop_type}")
+    if growth_stage:
+        parts.append(f"生长阶段：{growth_stage}")
+    if symptoms_list:
+        parts.append(f"症状：{', '.join(symptoms_list)}")
+    parts.append(f"图片路径：{image_path}")
+    return "，".join(parts)
+
+
 @app.post("/api/diagnose-image", response_model=DiagnoseResponse)
 async def diagnose_image(
     file: UploadFile = File(...),
     crop_type: str = Form("番茄"),
     symptoms: str | None = Form(None),
     growth_stage: str | None = Form(None),
+    model_id: str | None = Form(None),
     farmer_id: str | None = Form(None),
     base_id: str | None = Form(None),
     lat: float | None = Form(None),
@@ -248,13 +281,19 @@ async def diagnose_image(
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"读取或保存图片失败: {exc}") from exc
 
-    engine = get_diagnosis_engine()
+    allow_torch = str(DIAGNOSIS_ALLOW_TORCH).lower() in {"1", "true", "yes"}
+    resolved_model, model_fallback_reason = resolve_model(model_id, allow_torch=allow_torch)
+    engine = get_diagnosis_engine(
+        model_path=resolved_model.model_path,
+        backend=resolved_model.backend,
+        allow_torch=allow_torch,
+    )
     disease, conf, probs = engine.diagnose_from_image(str(saved_path))
     disease = disease or "未知病害"
     conf = float(conf or 0.0)
 
-    if disease == "模型未加载":
-        raise HTTPException(status_code=500, detail="模型未加载，请先配置并加载模型")
+    if disease == "模型未部署":
+        raise HTTPException(status_code=500, detail="模型未部署，请先配置并加载模型")
     if probs is None:
         probs = {}
 
@@ -343,18 +382,76 @@ async def diagnose_image(
     treatment_or_none = treatment.model_dump() if treatment else None
     image_url = f"/uploads/{unique_name}"
 
+    trace_id = uuid.uuid4().hex
+    need_confirm = None
+    trace_fallback_reason: list[str] | None = None
+    final_confidence = None
+    final_source = None
+    final_state = None
+    try:
+        query_text = build_trace_query(
+            crop_type=crop_type,
+            symptoms_list=symptoms_list,
+            growth_stage=growth_stage,
+            image_path=str(saved_path),
+        )
+        initial_state = create_initial_state(query_text, farmer_id=farmer_id, base_id=base_id)
+        initial_state["diagnosis_model_id"] = resolved_model.model_id
+        graph = build_graph()
+        final_state = graph.invoke(initial_state)
+        trace_id = final_state.get("trace_id", trace_id)
+    except Exception as exc:
+        print(f"Warning: failed to build trace events: {exc}")
+
+    if final_state and final_state.get("final_disease"):
+        final_disease = final_state.get("final_disease") or final_disease
+        flags = final_state.get("personalization_flags") or {}
+        need_confirm = flags.get("need_confirm")
+        trace_fallback_reason = flags.get("fallback_reason")
+        final_confidence = final_state.get("final_confidence")
+        final_source = final_state.get("final_source")
+        if final_disease:
+            plan = kb.get_treatment_plan(final_disease)
+            if isinstance(plan, dict) and "treatment" in plan and "prevention" in plan:
+                treatment = TreatmentPlan(
+                    plan=plan["treatment"],
+                    prevention=plan["prevention"],
+                )
+            if farmer_id:
+                _, constraints = load_profile_payload(farmer_id)
+                if constraints:
+                    personalization_applied = True
+                    treatment, filtered, filtered_reasons = apply_personalization_to_treatment(
+                        constraints=constraints,
+                        treatment=treatment,
+                        disease=final_disease,
+                    )
+
+    model_meta = (final_state or {}).get("diagnosis_model_meta") or {
+        "model_id": resolved_model.model_id,
+        "model_display_name": resolved_model.display_name,
+        "backend": resolved_model.backend,
+        "resolved_model_path": resolved_model.model_path,
+        "model_fallback_reason": model_fallback_reason,
+    }
+
     event = {
         "id": uuid.uuid4().hex,
         "ts": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        "trace_id": trace_id,
         "crop_type": crop_type,
         "symptoms": symptoms_list,
         "image_id": unique_name,
         "image_url": image_url,
         "image_result": image_result_dict,
         "fallback_used": fallback_used,
-        "fallback_reason": fallback_reasons or None,
+        "fallback_reason": trace_fallback_reason or fallback_reasons or None,
         "rule_result": rule_result_dict,
-        "final_disease": final_disease,
+        "final_disease": final_state.get("final_disease") if final_state else final_disease,
+        "need_confirm": need_confirm,
+        "final_confidence": final_confidence,
+        "final_source": final_source,
+        "image_confidence": final_state.get("image_confidence") if final_state else None,
         "treatment": treatment_or_none,
         "meta": {
             "farmer_id": farmer_id,
@@ -364,6 +461,11 @@ async def diagnose_image(
             "personalization_applied": personalization_applied,
             "filtered": filtered,
             "filtered_reasons": filtered_reasons,
+            "model_id": model_meta.get("model_id"),
+            "model_display_name": model_meta.get("model_display_name"),
+            "model_backend": model_meta.get("backend"),
+            "resolved_model_path": model_meta.get("resolved_model_path"),
+            "model_fallback_reason": model_meta.get("model_fallback_reason"),
         },
     }
     try:
@@ -376,7 +478,7 @@ async def diagnose_image(
         image_url=image_url,
         image_result=ImageResult(**image_result_dict),
         fallback_used=fallback_used,
-        fallback_reason=fallback_reasons or None,
+        fallback_reason=trace_fallback_reason or fallback_reasons or None,
         rule_result=rule_result,
         final_disease=final_disease,
         treatment=treatment,
@@ -384,7 +486,114 @@ async def diagnose_image(
         farmer_id=farmer_id,
         filtered=filtered,
         filtered_reasons=filtered_reasons,
+        trace_id=trace_id,
+        need_confirm=need_confirm,
+        final_confidence=final_confidence,
+        final_source=final_source,
+        model_id=model_meta.get("model_id"),
+        model_display_name=model_meta.get("model_display_name"),
+        model_backend=model_meta.get("backend"),
+        resolved_model_path=model_meta.get("resolved_model_path"),
+        model_fallback_reason=model_meta.get("model_fallback_reason"),
     )
+
+
+@app.post("/api/diagnose-confirm")
+def diagnose_confirm(payload: dict = Body(...)) -> dict:
+    trace_id = payload.get("trace_id")
+    previous_trace_id = payload.get("previous_trace_id")
+    image_id = payload.get("image_id")
+    crop_type = payload.get("crop_type") or "番茄"
+    symptoms = payload.get("symptoms") or []
+    growth_stage = payload.get("growth_stage")
+    model_id = payload.get("model_id")
+    if not image_id:
+        raise HTTPException(status_code=400, detail="image_id 不能为空")
+    if not trace_id and previous_trace_id:
+        trace_id = uuid.uuid4().hex
+    if not trace_id:
+        trace_id = uuid.uuid4().hex
+    if not isinstance(symptoms, list):
+        raise HTTPException(status_code=400, detail="symptoms 必须为列表")
+
+    image_path = (UPLOAD_DIR / image_id).resolve()
+    if not image_path.exists():
+        raise HTTPException(status_code=404, detail="图片不存在")
+
+    state = create_initial_state(f"confirm:{image_id}")
+    state["trace_id"] = trace_id
+    state["image_path"] = str(image_path)
+    state["symptoms"] = [str(item).strip() for item in symptoms if str(item).strip()]
+    state["crop_type"] = crop_type
+    state["crop_growth_stage"] = growth_stage
+    state["diagnosis_model_id"] = model_id
+    state["current_step"] = "start"
+
+    append_trace(
+        state,
+        agent="confirm_input",
+        inputs={
+            "symptoms": state["symptoms"],
+            "crop_type": crop_type,
+            "growth_stage": growth_stage,
+            "image_id": image_id,
+            "previous_trace_id": previous_trace_id,
+            "model_id": model_id,
+        },
+        outputs={},
+    )
+    state["current_step"] = "confirm_input"
+
+    state = diagnosis_agent(state)
+    state = kb_retrieval_agent(state)
+    state = treatment_agent(state)
+
+    image_diagnosis = state.get("image_diagnosis") or {}
+    image_top1 = image_diagnosis.get("top1") or {}
+    top3 = image_diagnosis.get("top3") or []
+    image_result = {
+        "disease": image_top1.get("disease"),
+        "confidence": float(image_top1.get("confidence") or 0.0),
+        "confidence_pct": round(float(image_top1.get("confidence") or 0.0) * 100, 2),
+        "top3": [
+            {"disease": name, "prob": float(prob), "prob_pct": round(float(prob) * 100, 2)}
+            for name, prob in top3
+        ],
+    }
+    flags = state.get("personalization_flags") or {}
+    need_confirm = bool(flags.get("need_confirm"))
+    confirm_message = None
+    if need_confirm:
+        confirm_message = "置信度较低，建议补充症状或重新拍摄"
+
+    events = list_trace_events(trace_id)
+
+    model_meta = state.get("diagnosis_model_meta") or {}
+    return {
+        "trace_id": trace_id,
+        "previous_trace_id": previous_trace_id,
+        "image_id": image_id,
+        "final_disease": state.get("final_disease"),
+        "image_result": image_result,
+        "need_confirm": need_confirm,
+        "confirm_message": confirm_message,
+        "treatment": {
+            "plan": state.get("treatment_plan"),
+            "prevention": state.get("prevention_advice"),
+        },
+        "model_id": model_meta.get("model_id"),
+        "model_display_name": model_meta.get("model_display_name"),
+        "model_backend": model_meta.get("backend"),
+        "resolved_model_path": model_meta.get("resolved_model_path"),
+        "model_fallback_reason": model_meta.get("model_fallback_reason"),
+        "events": events,
+    }
+
+
+@app.get("/api/models")
+def get_models() -> dict[str, object]:
+    allow_torch = str(DIAGNOSIS_ALLOW_TORCH).lower() in {"1", "true", "yes"}
+    return {"models": list_models(allow_torch=allow_torch)}
 
 
 @app.get("/api/profiles")
@@ -488,6 +697,46 @@ def get_events(start: str | None = None, end: str | None = None, limit: int = 50
             raise HTTPException(status_code=400, detail="日期格式应为 YYYY-MM-DD")
         return list_events_range(start, end, limit)
     return list_events(limit)
+
+
+@app.get("/api/traces/{trace_id}")
+def get_trace(trace_id: str) -> dict[str, object]:
+    events = list_trace_events(trace_id)
+    return {"trace_id": trace_id, "events": events}
+
+
+@app.get("/api/trace-events")
+def get_trace_events(trace_id: str | None = None) -> dict[str, object]:
+    if not trace_id:
+        raise HTTPException(status_code=400, detail="trace_id 不能为空")
+    events = list_trace_events(trace_id)
+    from trace_i18n import AGENT_NAME_CN, STEP_NAME_CN, REASON_CN
+    enriched = []
+    for event in events:
+        agent = event.get("agent")
+        step = event.get("step")
+        decision = event.get("decision") or {}
+        reasons = decision.get("reasons") or []
+        if isinstance(reasons, str):
+            reasons = [reasons]
+        reason_cn = [REASON_CN.get(reason, reason) for reason in reasons]
+        enriched_event = dict(event)
+        enriched_event["agent_cn"] = AGENT_NAME_CN.get(agent, agent)
+        enriched_event["step_cn"] = STEP_NAME_CN.get(step, step)
+        if decision:
+            decision = dict(decision)
+            decision["reasons_cn"] = reason_cn
+            enriched_event["decision"] = decision
+        enriched.append(enriched_event)
+    return {
+        "trace_id": trace_id,
+        "events": enriched,
+        "i18n": {
+            "agent_name_cn": AGENT_NAME_CN,
+            "step_name_cn": STEP_NAME_CN,
+            "reason_cn": REASON_CN,
+        },
+    }
 
 
 def validate_date_str(value: str) -> bool:
