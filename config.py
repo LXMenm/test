@@ -36,34 +36,80 @@ WENXIN_MODEL = os.getenv("WENXIN_MODEL", "ernie-bot-turbo")
 
 # 诊断模型配置
 DIAGNOSIS_MODEL_TYPE = os.getenv("DIAGNOSIS_MODEL_TYPE", "densenet121")  # densenet121, resnet50, vit
+DIAGNOSIS_BACKEND = os.getenv("DIAGNOSIS_BACKEND", "tf").lower()
+if DIAGNOSIS_BACKEND not in {"tf", "torch", "auto"}:
+    print(
+        "[ConfigResolved] "
+        f"DIAGNOSIS_BACKEND={DIAGNOSIS_BACKEND} 不合法，回退到 tf。"
+    )
+    DIAGNOSIS_BACKEND = "tf"
 PROJECT_ROOT = Path(__file__).resolve().parent
 DEFAULT_TF_MODEL_PATH = PROJECT_ROOT / "models" / "densenet121_tomato_disease_model_fine_tuned.h5"
 _ENV_DIAGNOSIS_MODEL_PATH = os.getenv("DIAGNOSIS_MODEL_PATH")
-if _ENV_DIAGNOSIS_MODEL_PATH:
-    _env_path = Path(_ENV_DIAGNOSIS_MODEL_PATH)
-    if _env_path.exists():
-        DIAGNOSIS_MODEL_PATH = str(_env_path)
-    elif DEFAULT_TF_MODEL_PATH.exists():
-        print(
-            "[ConfigResolved] "
-            f"DIAGNOSIS_MODEL_PATH={_ENV_DIAGNOSIS_MODEL_PATH} 不存在，回退到默认TF模型。"
-        )
-        DIAGNOSIS_MODEL_PATH = str(DEFAULT_TF_MODEL_PATH)
-    else:
-        print(
-            "[ConfigResolved] "
-            f"DIAGNOSIS_MODEL_PATH={_ENV_DIAGNOSIS_MODEL_PATH} 不存在，且默认TF模型缺失。"
-        )
-        DIAGNOSIS_MODEL_PATH = _ENV_DIAGNOSIS_MODEL_PATH
-else:
-    if DEFAULT_TF_MODEL_PATH.exists():
-        DIAGNOSIS_MODEL_PATH = str(DEFAULT_TF_MODEL_PATH)
-    else:
-        DIAGNOSIS_MODEL_PATH = str(DEFAULT_TF_MODEL_PATH)
+
+
+def _resolve_diagnosis_model_path() -> str:
+    env_path = Path(_ENV_DIAGNOSIS_MODEL_PATH) if _ENV_DIAGNOSIS_MODEL_PATH else None
+    env_exists = env_path.exists() if env_path else False
+    env_is_tf = env_path.suffix.lower() in {".h5", ".keras"} if env_path else False
+    default_exists = DEFAULT_TF_MODEL_PATH.exists()
+
+    if DIAGNOSIS_BACKEND == "tf":
+        if env_exists and env_is_tf:
+            return str(env_path)
+        if env_exists and not env_is_tf:
+            print(
+                "[ConfigResolved] "
+                f"DIAGNOSIS_MODEL_PATH={_ENV_DIAGNOSIS_MODEL_PATH} 不是TF模型，回退默认TF模型。"
+            )
+        if default_exists:
+            return str(DEFAULT_TF_MODEL_PATH)
+        if env_path:
+            print(
+                "[ConfigResolved] "
+                f"DIAGNOSIS_MODEL_PATH={_ENV_DIAGNOSIS_MODEL_PATH} 不存在，且默认TF模型缺失。"
+            )
+            return str(env_path)
         print(
             "[ConfigResolved] "
             "默认TF模型不存在，请先运行 tomato/train_densenet121.py 生成模型。"
         )
+        return str(DEFAULT_TF_MODEL_PATH)
+
+    if DIAGNOSIS_BACKEND == "torch":
+        if env_path:
+            if not env_exists:
+                print(
+                    "[ConfigResolved] "
+                    f"DIAGNOSIS_MODEL_PATH={_ENV_DIAGNOSIS_MODEL_PATH} 不存在，Torch 将尝试使用默认权重。"
+                )
+            return str(env_path)
+        print(
+            "[ConfigResolved] "
+            "DIAGNOSIS_BACKEND=torch 但未设置 DIAGNOSIS_MODEL_PATH。"
+        )
+        return ""
+
+    if default_exists:
+        return str(DEFAULT_TF_MODEL_PATH)
+    if env_exists and env_is_tf:
+        return str(env_path)
+    if env_path and not env_exists:
+        print(
+            "[ConfigResolved] "
+            f"DIAGNOSIS_MODEL_PATH={_ENV_DIAGNOSIS_MODEL_PATH} 不存在，且默认TF模型缺失。"
+        )
+        return str(env_path)
+    if env_path:
+        return str(env_path)
+    print(
+        "[ConfigResolved] "
+        "默认TF模型不存在，请先运行 tomato/train_densenet121.py 生成模型。"
+    )
+    return str(DEFAULT_TF_MODEL_PATH)
+
+
+DIAGNOSIS_MODEL_PATH = _resolve_diagnosis_model_path()
 USE_GPU = os.getenv("USE_GPU", "false").lower() == "true"
 DIAGNOSIS_ALLOW_TORCH = os.getenv("DIAGNOSIS_ALLOW_TORCH", "0")
 
@@ -87,6 +133,7 @@ def log_resolved_diagnosis_config() -> None:
         "[ConfigResolved] "
         f"DIAGNOSIS_MODEL_PATH={DIAGNOSIS_MODEL_PATH} "
         f"DIAGNOSIS_MODEL_TYPE={DIAGNOSIS_MODEL_TYPE} "
+        f"DIAGNOSIS_BACKEND={DIAGNOSIS_BACKEND} "
         f"USE_GPU={USE_GPU} "
         f"DIAGNOSIS_ALLOW_TORCH={DIAGNOSIS_ALLOW_TORCH}"
     )

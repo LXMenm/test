@@ -8,7 +8,12 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from diagnosis_model import get_diagnosis_engine
-from config import DIAGNOSIS_ALLOW_TORCH, DIAGNOSIS_MODEL_PATH, DEFAULT_TF_MODEL_PATH
+from config import (
+    DEFAULT_TF_MODEL_PATH,
+    DIAGNOSIS_ALLOW_TORCH,
+    DIAGNOSIS_BACKEND,
+    DIAGNOSIS_MODEL_PATH,
+)
 
 
 def main() -> None:
@@ -31,6 +36,7 @@ def main() -> None:
     print(f"RESOLVED_DIAGNOSIS_MODEL_PATH={DIAGNOSIS_MODEL_PATH} exists={resolved_exists}")
 
     print(f"DIAGNOSIS_MODEL_PATH={DIAGNOSIS_MODEL_PATH}")
+    print(f"DIAGNOSIS_BACKEND={DIAGNOSIS_BACKEND}")
     print(f"DIAGNOSIS_ALLOW_TORCH={DIAGNOSIS_ALLOW_TORCH}")
     print(f"tf_backend={tf_backend}")
     print(f"tf_model_loaded={tf_loaded}")

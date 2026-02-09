@@ -14,6 +14,7 @@ from config import (
     DIAGNOSIS_MODEL_TYPE,
     DIAGNOSIS_MODEL_PATH,
     DIAGNOSIS_ALLOW_TORCH,
+    DIAGNOSIS_BACKEND,
     USE_GPU,
     DIAGNOSIS_CONFIDENCE_THRESHOLD,
 )
@@ -116,19 +117,49 @@ class DiseaseDiagnosisEngine:
         self.model = None
         self.transform = None
 
-        if model_path and model_path.endswith((".h5", ".keras")) and os.path.exists(model_path):
-            self.tf_backend = True
-            self.model_path = model_path
-            self._load_tf_model(model_path)
-        else:
-            allow_torch = str(DIAGNOSIS_ALLOW_TORCH).lower() in {"1", "true", "yes"}
+        backend = (DIAGNOSIS_BACKEND or "tf").lower()
+        if backend not in {"tf", "torch", "auto"}:
+            backend = "tf"
+        allow_torch = str(DIAGNOSIS_ALLOW_TORCH).lower() in {"1", "true", "yes"}
+        tf_candidate = (
+            bool(model_path)
+            and model_path.endswith((".h5", ".keras"))
+            and os.path.exists(model_path)
+        )
+
+        if backend == "tf":
+            if tf_candidate:
+                self.tf_backend = True
+                self.model_path = model_path
+                self._load_tf_model(model_path)
+            else:
+                print(
+                    "[DiagnosisEngine] backend=none "
+                    "message=TF模型不存在"
+                )
+            return
+
+        if backend == "torch":
             if allow_torch:
                 self._load_torch_model(model_type, model_path)
             else:
                 print(
                     "[DiagnosisEngine] backend=none "
-                    "message=TF模型不存在且Torch未启用"
+                    "message=Torch未启用"
                 )
+            return
+
+        if tf_candidate:
+            self.tf_backend = True
+            self.model_path = model_path
+            self._load_tf_model(model_path)
+        elif allow_torch:
+            self._load_torch_model(model_type, model_path)
+        else:
+            print(
+                "[DiagnosisEngine] backend=none "
+                "message=TF模型不存在且Torch未启用"
+            )
 
     def _load_tf_model(self, model_path: str) -> None:
         if not os.path.exists(model_path):
@@ -219,7 +250,7 @@ class DiseaseDiagnosisEngine:
         """
         if self.tf_backend:
             if not self.tf_model:
-                return "模型未加载", 0.0, {}
+                return "模型未部署", 0.0, {}
             try:
                 from tensorflow.keras.preprocessing.image import load_img, img_to_array
             except ImportError as exc:
@@ -248,7 +279,7 @@ class DiseaseDiagnosisEngine:
                 return "未知病害", 0.0, {}
 
         if self.model is None:
-            return "模型未加载", 0.0, {}
+            return "模型未部署", 0.0, {}
         try:
             image = Image.open(image_path).convert('RGB')
             image_tensor = self.transform(image).unsqueeze(0).to(self.device)
@@ -337,17 +368,24 @@ class DiseaseDiagnosisEngine:
 # 全局诊断引擎实例
 _diagnosis_engine: Optional[DiseaseDiagnosisEngine] = None
 _diagnosis_engine_model_path: Optional[str] = None
+_diagnosis_engine_backend: Optional[str] = None
 
 
 def get_diagnosis_engine() -> DiseaseDiagnosisEngine:
     """获取诊断引擎单例"""
-    global _diagnosis_engine, _diagnosis_engine_model_path
+    global _diagnosis_engine, _diagnosis_engine_model_path, _diagnosis_engine_backend
     resolved_model_path = DIAGNOSIS_MODEL_PATH
+    resolved_backend = DIAGNOSIS_BACKEND
     if _diagnosis_engine is None:
         _diagnosis_engine = DiseaseDiagnosisEngine(model_path=DIAGNOSIS_MODEL_PATH)
         _diagnosis_engine_model_path = resolved_model_path
-    elif _diagnosis_engine_model_path != resolved_model_path:
+        _diagnosis_engine_backend = resolved_backend
+    elif (
+        _diagnosis_engine_model_path != resolved_model_path
+        or _diagnosis_engine_backend != resolved_backend
+    ):
         # 配置路径变更时才重建，避免重复加载
         _diagnosis_engine = DiseaseDiagnosisEngine(model_path=DIAGNOSIS_MODEL_PATH)
         _diagnosis_engine_model_path = resolved_model_path
+        _diagnosis_engine_backend = resolved_backend
     return _diagnosis_engine
