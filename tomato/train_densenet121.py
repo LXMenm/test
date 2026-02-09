@@ -25,6 +25,18 @@ def parse_args():
         default=None,
         help="是否解冻骨干网络 (true/false)，默认保持原逻辑",
     )
+    parser.add_argument(
+        "--output_name",
+        type=str,
+        default=None,
+        help="微调模型输出文件名（写入 models/ 目录）",
+    )
+    parser.add_argument(
+        "--output_path",
+        type=str,
+        default=None,
+        help="微调模型输出绝对路径（优先级高于 output_name）",
+    )
     return parser.parse_args()
 
 
@@ -67,6 +79,11 @@ if args.trainable is not None:
     backbone_trainable = trainable_flag == "true"
 else:
     backbone_trainable = False
+
+if args.output_path:
+    FINE_TUNED_MODEL_PATH = Path(args.output_path)
+elif args.output_name:
+    FINE_TUNED_MODEL_PATH = MODEL_DIR / args.output_name
 
 print("CWD:", os.getcwd())
 print("TRAIN_DIR:", TRAIN_DIR)
@@ -178,6 +195,7 @@ history_fine = model.fit(
 )
 
 # 保存微调后的模型
+FINE_TUNED_MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
 model.save(FINE_TUNED_MODEL_PATH)
 print(f"微调后的模型已保存到: {FINE_TUNED_MODEL_PATH}")
 

@@ -35,6 +35,13 @@ _MODEL_REGISTRY: list[ModelConfig] = [
         enabled=True,
     ),
     ModelConfig(
+        model_id="tf_light_v1",
+        display_name="轻量模型V1",
+        backend="tf",
+        model_path=_resolve_path("models/densenet121_tomato_disease_model_light_v1.h5"),
+        enabled=True,
+    ),
+    ModelConfig(
         model_id="torch_debug",
         display_name="Torch对比模型",
         backend="torch",
@@ -47,6 +54,10 @@ _MODEL_REGISTRY: list[ModelConfig] = [
 def _iter_registry() -> Iterable[ModelConfig]:
     for model in _MODEL_REGISTRY:
         yield model
+
+
+def list_all_models() -> list[ModelConfig]:
+    return list(_iter_registry())
 
 
 def list_models(*, allow_torch: bool) -> list[dict[str, object]]:
