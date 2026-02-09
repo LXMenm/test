@@ -6,13 +6,14 @@ from state import CropDiseaseState
 from llm_utils import call_llm, extract_json_from_response
 from diagnosis_model import get_diagnosis_engine
 from knowledge_base import get_kb_manager
-from config import DIAGNOSIS_CONFIDENCE_THRESHOLD
+from config import DIAGNOSIS_CONFIDENCE_THRESHOLD, DIAGNOSIS_ALLOW_TORCH
 from confidence_policy import make_confidence_flags
 from personalization.profile_models import FarmerProfile, BaseProfile, TreatmentConstraint
 from personalization.profile_rules import filter_treatment_by_constraints
 from trace_store import append_trace_event
 from datetime import datetime, timezone
 from typing import Optional
+from model_registry import resolve_model
 import re
 import json
 import os
@@ -261,7 +262,14 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
     personalization_context = state.get("personalization_context")
     
     # 使用深度学习诊断引擎
-    diagnosis_engine = get_diagnosis_engine()
+    allow_torch = str(DIAGNOSIS_ALLOW_TORCH).lower() in {"1", "true", "yes"}
+    resolved_model, fallback_reasons = resolve_model(state.get("diagnosis_model_id"), allow_torch=allow_torch)
+    state["diagnosis_model_id"] = resolved_model.model_id
+    diagnosis_engine = get_diagnosis_engine(
+        model_path=resolved_model.model_path,
+        backend=resolved_model.backend,
+        allow_torch=allow_torch,
+    )
     disease_type = None
     final_disease = None
     disease_confidence = None
@@ -270,6 +278,14 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
     final_source = None
     disease_description = None
     image_top3 = []
+    model_meta = {
+        "model_id": resolved_model.model_id,
+        "model_display_name": resolved_model.display_name,
+        "backend": resolved_model.backend,
+        "resolved_model_path": resolved_model.model_path,
+        "model_fallback_reason": fallback_reasons,
+    }
+    state["diagnosis_model_meta"] = model_meta
     
     # 优先使用图像诊断（如果提供了图像路径）
     if image_path:
@@ -428,6 +444,11 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
             "follow_up_questions": flags.get("follow_up_questions"),
             "need_confirm": flags.get("need_confirm"),
             "fallback_reason": flags.get("fallback_reason"),
+            "model_id": model_meta["model_id"],
+            "model_display_name": model_meta["model_display_name"],
+            "backend": model_meta["backend"],
+            "resolved_model_path": model_meta["resolved_model_path"],
+            "model_fallback_reason": model_meta["model_fallback_reason"],
         },
     )
 
@@ -884,6 +905,7 @@ def supervisor_agent(state: CropDiseaseState) -> CropDiseaseState:
             "reasons": decision_reasons,
             "reason_str": decision_reason,
             "reason": decision_reason,
+            "model_info": state.get("diagnosis_model_meta"),
         },
     )
 

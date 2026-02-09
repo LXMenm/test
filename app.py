@@ -15,7 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from PIL import Image
 from pydantic import BaseModel
 
-from config import DIAGNOSIS_CONFIDENCE_THRESHOLD
+from config import DIAGNOSIS_CONFIDENCE_THRESHOLD, DIAGNOSIS_ALLOW_TORCH
 from diagnosis_model import get_diagnosis_engine
 from agents import append_trace, diagnosis_agent, kb_retrieval_agent, treatment_agent
 from event_store import (
@@ -35,6 +35,7 @@ from personalization.profile_rules import filter_treatment_by_constraints
 from personalization.profile_store import get_profile_path, load_profile, list_profile_ids
 from state import create_initial_state
 from trace_store import list_trace_events
+from model_registry import list_models, resolve_model
 from workflow import build_graph
 
 
@@ -91,6 +92,11 @@ class DiagnoseResponse(BaseModel):
     need_confirm: bool | None = None
     final_confidence: float | None = None
     final_source: str | None = None
+    model_id: str | None = None
+    model_display_name: str | None = None
+    model_backend: str | None = None
+    resolved_model_path: str | None = None
+    model_fallback_reason: list[str] | None = None
 
 app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
 
@@ -239,6 +245,7 @@ async def diagnose_image(
     crop_type: str = Form("番茄"),
     symptoms: str | None = Form(None),
     growth_stage: str | None = Form(None),
+    model_id: str | None = Form(None),
     farmer_id: str | None = Form(None),
     base_id: str | None = Form(None),
     lat: float | None = Form(None),
@@ -274,13 +281,19 @@ async def diagnose_image(
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"读取或保存图片失败: {exc}") from exc
 
-    engine = get_diagnosis_engine()
+    allow_torch = str(DIAGNOSIS_ALLOW_TORCH).lower() in {"1", "true", "yes"}
+    resolved_model, model_fallback_reason = resolve_model(model_id, allow_torch=allow_torch)
+    engine = get_diagnosis_engine(
+        model_path=resolved_model.model_path,
+        backend=resolved_model.backend,
+        allow_torch=allow_torch,
+    )
     disease, conf, probs = engine.diagnose_from_image(str(saved_path))
     disease = disease or "未知病害"
     conf = float(conf or 0.0)
 
-    if disease == "模型未加载":
-        raise HTTPException(status_code=500, detail="模型未加载，请先配置并加载模型")
+    if disease == "模型未部署":
+        raise HTTPException(status_code=500, detail="模型未部署，请先配置并加载模型")
     if probs is None:
         probs = {}
 
@@ -383,6 +396,7 @@ async def diagnose_image(
             image_path=str(saved_path),
         )
         initial_state = create_initial_state(query_text, farmer_id=farmer_id, base_id=base_id)
+        initial_state["diagnosis_model_id"] = resolved_model.model_id
         graph = build_graph()
         final_state = graph.invoke(initial_state)
         trace_id = final_state.get("trace_id", trace_id)
@@ -413,6 +427,14 @@ async def diagnose_image(
                         disease=final_disease,
                     )
 
+    model_meta = (final_state or {}).get("diagnosis_model_meta") or {
+        "model_id": resolved_model.model_id,
+        "model_display_name": resolved_model.display_name,
+        "backend": resolved_model.backend,
+        "resolved_model_path": resolved_model.model_path,
+        "model_fallback_reason": model_fallback_reason,
+    }
+
     event = {
         "id": uuid.uuid4().hex,
         "ts": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
@@ -439,6 +461,11 @@ async def diagnose_image(
             "personalization_applied": personalization_applied,
             "filtered": filtered,
             "filtered_reasons": filtered_reasons,
+            "model_id": model_meta.get("model_id"),
+            "model_display_name": model_meta.get("model_display_name"),
+            "model_backend": model_meta.get("backend"),
+            "resolved_model_path": model_meta.get("resolved_model_path"),
+            "model_fallback_reason": model_meta.get("model_fallback_reason"),
         },
     }
     try:
@@ -463,6 +490,11 @@ async def diagnose_image(
         need_confirm=need_confirm,
         final_confidence=final_confidence,
         final_source=final_source,
+        model_id=model_meta.get("model_id"),
+        model_display_name=model_meta.get("model_display_name"),
+        model_backend=model_meta.get("backend"),
+        resolved_model_path=model_meta.get("resolved_model_path"),
+        model_fallback_reason=model_meta.get("model_fallback_reason"),
     )
 
 
@@ -474,6 +506,7 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
     crop_type = payload.get("crop_type") or "番茄"
     symptoms = payload.get("symptoms") or []
     growth_stage = payload.get("growth_stage")
+    model_id = payload.get("model_id")
     if not image_id:
         raise HTTPException(status_code=400, detail="image_id 不能为空")
     if not trace_id and previous_trace_id:
@@ -493,6 +526,7 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
     state["symptoms"] = [str(item).strip() for item in symptoms if str(item).strip()]
     state["crop_type"] = crop_type
     state["crop_growth_stage"] = growth_stage
+    state["diagnosis_model_id"] = model_id
     state["current_step"] = "start"
 
     append_trace(
@@ -504,6 +538,7 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
             "growth_stage": growth_stage,
             "image_id": image_id,
             "previous_trace_id": previous_trace_id,
+            "model_id": model_id,
         },
         outputs={},
     )
@@ -533,6 +568,7 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
 
     events = list_trace_events(trace_id)
 
+    model_meta = state.get("diagnosis_model_meta") or {}
     return {
         "trace_id": trace_id,
         "previous_trace_id": previous_trace_id,
@@ -545,8 +581,19 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
             "plan": state.get("treatment_plan"),
             "prevention": state.get("prevention_advice"),
         },
+        "model_id": model_meta.get("model_id"),
+        "model_display_name": model_meta.get("model_display_name"),
+        "model_backend": model_meta.get("backend"),
+        "resolved_model_path": model_meta.get("resolved_model_path"),
+        "model_fallback_reason": model_meta.get("model_fallback_reason"),
         "events": events,
     }
+
+
+@app.get("/api/models")
+def get_models() -> dict[str, object]:
+    allow_torch = str(DIAGNOSIS_ALLOW_TORCH).lower() in {"1", "true", "yes"}
+    return {"models": list_models(allow_torch=allow_torch)}
 
 
 @app.get("/api/profiles")

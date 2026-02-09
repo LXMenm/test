@@ -189,6 +189,10 @@
         <label for="growth_stage">生长阶段（可选）</label>
         <input id="growth_stage" class="input" type="text" placeholder="例如：开花期" />
       </div>
+      <div class="form-row">
+        <label for="model_id">识别模型</label>
+        <select id="model_id" class="input"></select>
+      </div>
       <div class="actions">
         <button id="submitBtn" class="btn-primary">诊断</button>
         <span id="status" class="status"></span>
@@ -203,6 +207,7 @@
           <img id="preview" class="preview" alt="上传图片预览" />
           <div><strong>最终病害：</strong><span id="finalDisease">-</span></div>
           <div><strong>置信度：</strong><span id="confidencePct">-</span></div>
+          <div><strong>使用模型：</strong><span id="modelUsed" class="muted">-</span></div>
           <div>
             <strong>Top3</strong>
             <ul id="top3"></ul>
@@ -246,6 +251,7 @@
     const symptomsEl = document.getElementById('symptoms');
     const cropTypeEl = document.getElementById('crop_type');
     const growthStageEl = document.getElementById('growth_stage');
+    const modelIdEl = document.getElementById('model_id');
     const submitBtn = document.getElementById('submitBtn');
     const statusEl = document.getElementById('status');
 
@@ -253,6 +259,7 @@
     const top3El = document.getElementById('top3');
     const finalDiseaseEl = document.getElementById('finalDisease');
     const confidencePctEl = document.getElementById('confidencePct');
+    const modelUsedEl = document.getElementById('modelUsed');
     const treatmentPlanEl = document.getElementById('treatmentPlan');
     const treatmentPreventionEl = document.getElementById('treatmentPrevention');
     const confidenceWarningEl = document.getElementById('confidenceWarning');
@@ -278,6 +285,7 @@
       top3El.innerHTML = '';
       finalDiseaseEl.textContent = '-';
       confidencePctEl.textContent = '-';
+      modelUsedEl.textContent = '-';
       treatmentPlanEl.textContent = '暂无';
       treatmentPreventionEl.textContent = '暂无';
       confidenceWarningEl.style.display = 'none';
@@ -403,6 +411,7 @@
       fd.append('crop_type', (cropTypeEl.value || '番茄').trim() || '番茄');
       if (symptomsEl.value.trim()) fd.append('symptoms', symptomsEl.value.trim());
       if (growthStageEl.value.trim()) fd.append('growth_stage', growthStageEl.value.trim());
+      if (modelIdEl.value) fd.append('model_id', modelIdEl.value);
 
       try {
         const resp = await fetch('/api/diagnose-image', { method: 'POST', body: fd });
@@ -422,6 +431,12 @@
         finalDiseaseEl.textContent = finalDisease;
         const confidencePct = (imageResult.confidence_pct ?? null);
         confidencePctEl.textContent = confidencePct !== null ? `${Number(confidencePct).toFixed(2)}%` : '-';
+        if (data.model_display_name) {
+          const backend = data.model_backend ? ` (${data.model_backend})` : '';
+          modelUsedEl.textContent = `${data.model_display_name}${backend}`;
+        } else {
+          modelUsedEl.textContent = data.model_id || '-';
+        }
         if (confidencePct !== null && Number(confidencePct) < 60) {
           confidenceWarningEl.textContent = '识别置信度较低，建议补充症状信息以提高准确性。';
           confidenceWarningEl.style.display = 'block';
@@ -493,6 +508,7 @@
             crop_type: (cropTypeEl.value || '番茄').trim() || '番茄',
             symptoms: symptomList,
             growth_stage: growthStageEl.value.trim() || null,
+            model_id: modelIdEl.value || null,
           }),
         });
         const data = await resp.json();
@@ -517,6 +533,10 @@
           const confidencePct = (imageResult.confidence_pct ?? null);
           confidencePctEl.textContent = confidencePct !== null ? `${Number(confidencePct).toFixed(2)}%` : '-';
         }
+        if (data.model_display_name) {
+          const backend = data.model_backend ? ` (${data.model_backend})` : '';
+          modelUsedEl.textContent = `${data.model_display_name}${backend}`;
+        }
         if (data.treatment) {
           treatmentPlanEl.textContent = data.treatment.plan || '暂无';
           treatmentPreventionEl.textContent = data.treatment.prevention || '暂无';
@@ -540,6 +560,45 @@
       }
     });
     traceRefreshBtn.disabled = true;
+
+    async function loadModels() {
+      try {
+        const resp = await fetch('/api/models');
+        const payload = await resp.json();
+        if (!resp.ok) {
+          throw new Error(payload.detail || '获取模型列表失败');
+        }
+        const models = Array.isArray(payload.models) ? payload.models : [];
+        modelIdEl.innerHTML = '';
+        if (!models.length) {
+          const option = document.createElement('option');
+          option.value = '';
+          option.textContent = '暂无可用模型';
+          modelIdEl.appendChild(option);
+          modelIdEl.disabled = true;
+          return;
+        }
+        models.forEach((model, index) => {
+          const option = document.createElement('option');
+          option.value = model.model_id;
+          option.textContent = `${model.display_name} (${model.backend})`;
+          if (index === 0) {
+            option.selected = true;
+          }
+          modelIdEl.appendChild(option);
+        });
+        modelIdEl.disabled = false;
+      } catch (err) {
+        const option = document.createElement('option');
+        option.value = '';
+        option.textContent = '模型列表加载失败';
+        modelIdEl.innerHTML = '';
+        modelIdEl.appendChild(option);
+        modelIdEl.disabled = true;
+      }
+    }
+
+    loadModels();
   </script>
 </body>
 </html>

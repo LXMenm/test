@@ -105,7 +105,13 @@ class DiseaseDiagnosisEngine:
     _tf_load_announced_paths: set[str] = set()
     _torch_load_announced_paths: set[str] = set()
     
-    def __init__(self, model_type: str = DIAGNOSIS_MODEL_TYPE, model_path: Optional[str] = None):
+    def __init__(
+        self,
+        model_type: str = DIAGNOSIS_MODEL_TYPE,
+        model_path: Optional[str] = None,
+        backend: Optional[str] = None,
+        allow_torch: Optional[bool] = None,
+    ):
         if model_path is None:
             model_path = DIAGNOSIS_MODEL_PATH
         self.model_path = model_path
@@ -117,10 +123,12 @@ class DiseaseDiagnosisEngine:
         self.model = None
         self.transform = None
 
-        backend = (DIAGNOSIS_BACKEND or "tf").lower()
+        backend_value = backend if backend is not None else DIAGNOSIS_BACKEND
+        backend = (backend_value or "tf").lower()
         if backend not in {"tf", "torch", "auto"}:
             backend = "tf"
-        allow_torch = str(DIAGNOSIS_ALLOW_TORCH).lower() in {"1", "true", "yes"}
+        if allow_torch is None:
+            allow_torch = str(DIAGNOSIS_ALLOW_TORCH).lower() in {"1", "true", "yes"}
         tf_candidate = (
             bool(model_path)
             and model_path.endswith((".h5", ".keras"))
@@ -369,23 +377,41 @@ class DiseaseDiagnosisEngine:
 _diagnosis_engine: Optional[DiseaseDiagnosisEngine] = None
 _diagnosis_engine_model_path: Optional[str] = None
 _diagnosis_engine_backend: Optional[str] = None
+_diagnosis_engine_allow_torch: Optional[bool] = None
 
 
-def get_diagnosis_engine() -> DiseaseDiagnosisEngine:
+def get_diagnosis_engine(
+    model_path: Optional[str] = None,
+    backend: Optional[str] = None,
+    allow_torch: Optional[bool] = None,
+) -> DiseaseDiagnosisEngine:
     """获取诊断引擎单例"""
     global _diagnosis_engine, _diagnosis_engine_model_path, _diagnosis_engine_backend
-    resolved_model_path = DIAGNOSIS_MODEL_PATH
-    resolved_backend = DIAGNOSIS_BACKEND
+    global _diagnosis_engine_allow_torch
+    resolved_model_path = model_path or DIAGNOSIS_MODEL_PATH
+    resolved_backend = backend or DIAGNOSIS_BACKEND
+    resolved_allow_torch = allow_torch
     if _diagnosis_engine is None:
-        _diagnosis_engine = DiseaseDiagnosisEngine(model_path=DIAGNOSIS_MODEL_PATH)
+        _diagnosis_engine = DiseaseDiagnosisEngine(
+            model_path=resolved_model_path,
+            backend=resolved_backend,
+            allow_torch=allow_torch,
+        )
         _diagnosis_engine_model_path = resolved_model_path
         _diagnosis_engine_backend = resolved_backend
+        _diagnosis_engine_allow_torch = resolved_allow_torch
     elif (
         _diagnosis_engine_model_path != resolved_model_path
         or _diagnosis_engine_backend != resolved_backend
+        or _diagnosis_engine_allow_torch != resolved_allow_torch
     ):
         # 配置路径变更时才重建，避免重复加载
-        _diagnosis_engine = DiseaseDiagnosisEngine(model_path=DIAGNOSIS_MODEL_PATH)
+        _diagnosis_engine = DiseaseDiagnosisEngine(
+            model_path=resolved_model_path,
+            backend=resolved_backend,
+            allow_torch=allow_torch,
+        )
         _diagnosis_engine_model_path = resolved_model_path
         _diagnosis_engine_backend = resolved_backend
+        _diagnosis_engine_allow_torch = resolved_allow_torch
     return _diagnosis_engine

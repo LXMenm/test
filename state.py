@@ -45,6 +45,8 @@ class CropDiseaseState(TypedDict):
     image_confidence: Optional[float]  # 图像模型top1置信度
     final_confidence: Optional[float]  # 最终结论置信度
     final_source: Optional[str]  # 最终结论来源
+    diagnosis_model_id: Optional[str]  # 用户选择的模型ID
+    diagnosis_model_meta: Optional[Dict[str, Any]]  # 最终使用模型信息
 
     # 治疗方案
     treatment_plan: Optional[str]  # 具体治疗方案
@@ -106,6 +108,8 @@ def create_initial_state(
         image_confidence=None,
         final_confidence=None,
         final_source=None,
+        diagnosis_model_id=None,
+        diagnosis_model_meta=None,
         treatment_plan=None,
         prevention_advice=None,
         current_step="start",
