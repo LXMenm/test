@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import uuid
@@ -10,7 +11,7 @@ from typing import Optional
 
 from fastapi import Body, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from PIL import Image
 from pydantic import BaseModel
@@ -34,7 +35,7 @@ from personalization.profile_models import FarmerProfile, TreatmentConstraint
 from personalization.profile_rules import filter_treatment_by_constraints
 from personalization.profile_store import get_profile_path, load_profile, list_profile_ids
 from state import create_initial_state
-from trace_store import list_trace_events
+from trace_store import list_trace_events, subscribe as subscribe_trace, unsubscribe as unsubscribe_trace, emit_trace_event
 from model_registry import list_models, resolve_model
 from workflow import build_graph
 
@@ -111,6 +112,38 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+NODE_MESSAGE_CN = {
+    "ParseInput": "解析输入参数",
+    "DiagnosisAgent": "进行图像/症状诊断",
+    "ConfidenceGate": "评估置信度并决定回退",
+    "PersonalizationAgent": "应用个性化约束",
+    "KBRetrievalAgent": "检索知识库与方案",
+    "PrescriptionAgent": "生成治疗与预防建议",
+    "ValidatorAgent": "校验结果完整性",
+    "Persist": "落盘诊断与追踪事件",
+    "Final": "返回最终结果",
+}
+
+
+def emit_node_event(
+    trace_id: str,
+    *,
+    node: str,
+    status: str,
+    message: str | None = None,
+    payload: dict | None = None,
+) -> dict:
+    return emit_trace_event(
+        trace_id,
+        {
+            "node": node,
+            "status": status,
+            "message": message or NODE_MESSAGE_CN.get(node, node),
+            "payload": payload or {},
+        },
+    )
 
 
 def cleanup_old_uploads(max_age_hours: int = 24) -> None:
@@ -251,12 +284,18 @@ async def diagnose_image(
     lat: float | None = Form(None),
     lon: float | None = Form(None),
 ) -> DiagnoseResponse:
+    trace_id = uuid.uuid4().hex
+    emit_node_event(trace_id, node="ParseInput", status="start", message="开始解析上传请求")
     if not file.filename:
+        emit_node_event(trace_id, node="ParseInput", status="error", message="文件名为空")
+        emit_node_event(trace_id, node="Final", status="error", message="请求解析失败")
         raise HTTPException(status_code=400, detail="文件名为空")
 
     suffix = Path(file.filename).suffix.lower()
     content_type = (file.content_type or "").lower()
     if suffix not in IMAGE_EXTS and not content_type.startswith("image/"):
+        emit_node_event(trace_id, node="ParseInput", status="error", message="上传文件类型不支持")
+        emit_node_event(trace_id, node="Final", status="error", message="请求解析失败")
         raise HTTPException(status_code=400, detail="仅支持图片文件上传")
 
     unique_name = f"{uuid.uuid4().hex}{suffix or '.jpg'}"
@@ -276,12 +315,18 @@ async def diagnose_image(
 
         saved_path.write_bytes(data)
         cleanup_old_uploads()
+        emit_node_event(trace_id, node="ParseInput", status="end", message="输入解析完成", payload={"image_path": str(saved_path)})
     except HTTPException:
+        emit_node_event(trace_id, node="ParseInput", status="error", message="输入解析失败")
+        emit_node_event(trace_id, node="Final", status="error", message="请求解析失败")
         raise
     except Exception as exc:
+        emit_node_event(trace_id, node="ParseInput", status="error", message=f"读取或保存失败: {exc}")
+        emit_node_event(trace_id, node="Final", status="error", message="请求解析失败")
         raise HTTPException(status_code=400, detail=f"读取或保存图片失败: {exc}") from exc
 
     allow_torch = str(DIAGNOSIS_ALLOW_TORCH).lower() in {"1", "true", "yes"}
+    emit_node_event(trace_id, node="DiagnosisAgent", status="start", message="正在进行图像诊断")
     resolved_model, model_fallback_reason = resolve_model(model_id, allow_torch=allow_torch)
     engine = get_diagnosis_engine(
         model_path=resolved_model.model_path,
@@ -293,6 +338,8 @@ async def diagnose_image(
     conf = float(conf or 0.0)
 
     if disease == "模型未部署":
+        emit_node_event(trace_id, node="DiagnosisAgent", status="error", message="模型未部署")
+        emit_node_event(trace_id, node="Final", status="error", message="诊断失败")
         raise HTTPException(status_code=500, detail="模型未部署，请先配置并加载模型")
     if probs is None:
         probs = {}
@@ -312,6 +359,8 @@ async def diagnose_image(
     top2_conf = float(top3_pairs[1][1]) if len(top3_pairs) > 1 else None
 
     fallback_reasons: list[str] = []
+    emit_node_event(trace_id, node="DiagnosisAgent", status="end", message="图像诊断完成", payload={"disease": disease, "confidence": conf})
+    emit_node_event(trace_id, node="ConfidenceGate", status="start", message="评估置信度")
     if top1_conf < DIAGNOSIS_CONFIDENCE_THRESHOLD:
         fallback_reasons.append("low_confidence")
     if top2_conf is not None and (top1_conf - top2_conf) < TOP_MARGIN:
@@ -331,6 +380,7 @@ async def diagnose_image(
                 growth_stage=growth_stage,
             )
             fallback_used = True
+            emit_node_event(trace_id, node="ConfidenceGate", status="end", message="触发症状回退", payload={"reasons": fallback_reasons})
             rule_result = RuleResult(
                 rule_disease=rule_disease,
                 rule_confidence=float(rule_confidence),
@@ -345,12 +395,17 @@ async def diagnose_image(
                 rule_description=f"症状回退诊断失败: {exc}",
             )
             fallback_used = True
+            emit_node_event(trace_id, node="ConfidenceGate", status="error", message=f"症状回退失败: {exc}")
+
+    if not (fallback_condition and symptoms_list):
+        emit_node_event(trace_id, node="ConfidenceGate", status="end", message="无需回退", payload={"reasons": fallback_reasons})
 
     final_disease = disease
     if fallback_used and rule_result and rule_result.rule_disease:
         final_disease = rule_result.rule_disease
 
     treatment: TreatmentPlan | None = None
+    emit_node_event(trace_id, node="KBRetrievalAgent", status="start", message="检索知识库方案")
     if final_disease:
         plan = kb.get_treatment_plan(final_disease)
         if isinstance(plan, dict) and "treatment" in plan and "prevention" in plan:
@@ -358,10 +413,12 @@ async def diagnose_image(
                 plan=plan["treatment"],
                 prevention=plan["prevention"],
             )
+    emit_node_event(trace_id, node="KBRetrievalAgent", status="end", message="知识库检索完成", payload={"final_disease": final_disease})
 
     personalization_applied = False
     filtered = False
     filtered_reasons: list[str] = []
+    emit_node_event(trace_id, node="PersonalizationAgent", status="start", message="应用个性化约束")
     if farmer_id:
         _, constraints = load_profile_payload(farmer_id)
         if constraints:
@@ -371,6 +428,7 @@ async def diagnose_image(
                 treatment=treatment,
                 disease=final_disease,
             )
+    emit_node_event(trace_id, node="PersonalizationAgent", status="end", message="个性化处理完成" if farmer_id else "未提供个性化档案，跳过")
 
     image_result_dict = {
         "disease": disease,
@@ -382,7 +440,9 @@ async def diagnose_image(
     treatment_or_none = treatment.model_dump() if treatment else None
     image_url = f"/uploads/{unique_name}"
 
-    trace_id = uuid.uuid4().hex
+    emit_node_event(trace_id, node="PrescriptionAgent", status="start", message="生成处置建议")
+    emit_node_event(trace_id, node="PrescriptionAgent", status="end", message="处置建议准备完成")
+    emit_node_event(trace_id, node="ValidatorAgent", status="start", message="校验结果")
     need_confirm = None
     trace_fallback_reason: list[str] | None = None
     final_confidence = None
@@ -400,8 +460,10 @@ async def diagnose_image(
         graph = build_graph()
         final_state = graph.invoke(initial_state)
         trace_id = final_state.get("trace_id", trace_id)
+        emit_node_event(trace_id, node="ValidatorAgent", status="end", message="校验完成")
     except Exception as exc:
         print(f"Warning: failed to build trace events: {exc}")
+        emit_node_event(trace_id, node="ValidatorAgent", status="error", message=f"校验失败: {exc}")
 
     if final_state and final_state.get("final_disease"):
         final_disease = final_state.get("final_disease") or final_disease
@@ -418,6 +480,7 @@ async def diagnose_image(
                     prevention=plan["prevention"],
                 )
             if farmer_id:
+                emit_node_event(trace_id, node="PersonalizationAgent", status="start", message="应用个性化约束")
                 _, constraints = load_profile_payload(farmer_id)
                 if constraints:
                     personalization_applied = True
@@ -426,6 +489,7 @@ async def diagnose_image(
                         treatment=treatment,
                         disease=final_disease,
                     )
+                emit_node_event(trace_id, node="PersonalizationAgent", status="end", message="个性化处理完成")
 
     model_meta = (final_state or {}).get("diagnosis_model_meta") or {
         "model_id": resolved_model.model_id,
@@ -468,10 +532,15 @@ async def diagnose_image(
             "model_fallback_reason": model_meta.get("model_fallback_reason"),
         },
     }
+    emit_node_event(trace_id, node="Persist", status="start", message="写入事件日志")
     try:
         append_event(event)
+        emit_node_event(trace_id, node="Persist", status="end", message="事件落盘完成")
     except Exception as exc:
         print(f"Warning: failed to append event: {exc}")
+        emit_node_event(trace_id, node="Persist", status="error", message=f"事件落盘失败: {exc}")
+
+    emit_node_event(trace_id, node="Final", status="end", message="诊断流程完成", payload={"final_disease": final_disease})
 
     return DiagnoseResponse(
         image_id=unique_name,
@@ -703,6 +772,25 @@ def get_events(start: str | None = None, end: str | None = None, limit: int = 50
 def get_trace(trace_id: str) -> dict[str, object]:
     events = list_trace_events(trace_id)
     return {"trace_id": trace_id, "events": events}
+
+
+@app.get("/api/traces/{trace_id}/stream")
+async def stream_trace(trace_id: str):
+    async def event_generator():
+        queue = subscribe_trace(trace_id)
+        try:
+            history = list_trace_events(trace_id)
+            for event in history:
+                yield f"event: trace\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
+            while True:
+                event = await queue.get()
+                yield f"event: trace\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
+                if event.get("node") == "Final" and event.get("status") in {"end", "error"}:
+                    break
+        finally:
+            unsubscribe_trace(trace_id, queue)
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
 @app.get("/api/trace-events")
