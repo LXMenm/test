@@ -158,6 +158,19 @@
         grid-template-columns: 1fr;
       }
     }
+
+    .stepper { display: grid; gap: 8px; margin-bottom: 12px; }
+    .step-item { display:flex; align-items:center; justify-content:space-between; border:1px solid #e5e7eb; border-radius:8px; padding:8px 10px; font-size:13px; background:#f9fafb; }
+    .step-item .badge { font-size:12px; padding:2px 8px; border-radius:999px; background:#e5e7eb; color:#374151; }
+    .step-item.running { border-color:#3b82f6; background:#eff6ff; }
+    .step-item.running .badge { background:#3b82f6; color:#fff; }
+    .step-item.done { border-color:#10b981; background:#ecfdf5; }
+    .step-item.done .badge { background:#10b981; color:#fff; }
+    .step-item.error { border-color:#ef4444; background:#fef2f2; }
+    .step-item.error .badge { background:#ef4444; color:#fff; }
+    .live-log { border:1px solid #e5e7eb; border-radius:10px; background:#0f172a; color:#e2e8f0; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:12px; padding:8px; height:180px; overflow:auto; }
+    .live-log-line { margin: 0 0 4px; white-space: pre-wrap; }
+
   </style>
 </head>
 <body>
@@ -241,6 +254,8 @@
           </div>
         </div>
         <div class="trace-error" id="traceError"></div>
+        <div class="stepper" id="stepper"></div>
+        <div class="live-log" id="liveLog"></div>
         <div class="trace-list" id="traceList"></div>
       </div>
     </section>
@@ -269,12 +284,38 @@
     const traceRefreshBtn = document.getElementById('traceRefreshBtn');
     const traceErrorEl = document.getElementById('traceError');
     const traceListEl = document.getElementById('traceList');
+    const stepperEl = document.getElementById('stepper');
+    const liveLogEl = document.getElementById('liveLog');
     const confirmPanelEl = document.getElementById('confirmPanel');
     const confirmSymptomsEl = document.getElementById('confirmSymptoms');
     const confirmBtnEl = document.getElementById('confirmBtn');
     let latestTraceId = null;
     let previousTraceId = null;
     let latestImageId = null;
+    let traceSource = null;
+    const FLOW_STEPS = [
+      'ParseInput',
+      'DiagnosisAgent',
+      'ConfidenceGate',
+      'PersonalizationAgent',
+      'KBRetrievalAgent',
+      'PrescriptionAgent',
+      'ValidatorAgent',
+      'Persist',
+      'Final',
+    ];
+    const STEP_LABELS = {
+      ParseInput: 'ParseInput 解析输入',
+      DiagnosisAgent: 'DiagnosisAgent 诊断',
+      ConfidenceGate: 'ConfidenceGate 置信门控',
+      PersonalizationAgent: 'PersonalizationAgent 个性化',
+      KBRetrievalAgent: 'KBRetrievalAgent 知识检索',
+      PrescriptionAgent: 'PrescriptionAgent 处置建议',
+      ValidatorAgent: 'ValidatorAgent 校验',
+      Persist: 'Persist 落盘',
+      Final: 'Final 完成',
+    };
+    const stepState = Object.fromEntries(FLOW_STEPS.map((name) => [name, 'waiting']));
 
     function setLoading(loading) {
       submitBtn.disabled = loading;
@@ -303,6 +344,8 @@
       previousTraceId = null;
       latestImageId = null;
       traceRefreshBtn.disabled = true;
+      closeTraceStream();
+      resetStepper();
     }
 
     function shouldShowNeedConfirm(events) {
@@ -313,6 +356,80 @@
         const reasons = Array.isArray(outputs.fallback_reason) ? outputs.fallback_reason : [];
         return reasons.includes('low_confidence') || reasons.includes('low_margin');
       });
+    }
+
+    function resetStepper() {
+      FLOW_STEPS.forEach((name) => { stepState[name] = 'waiting'; });
+      renderStepper();
+      liveLogEl.innerHTML = '';
+    }
+
+    function renderStepper() {
+      stepperEl.innerHTML = '';
+      FLOW_STEPS.forEach((name) => {
+        const row = document.createElement('div');
+        row.className = `step-item ${stepState[name] || 'waiting'}`;
+        const label = document.createElement('span');
+        label.textContent = STEP_LABELS[name] || name;
+        const badge = document.createElement('span');
+        badge.className = 'badge';
+        badge.textContent = stepState[name] || 'waiting';
+        row.appendChild(label);
+        row.appendChild(badge);
+        stepperEl.appendChild(row);
+      });
+    }
+
+    function appendLiveLog(event) {
+      const ts = event.ts || new Date().toISOString();
+      const node = event.node || event.agent || 'Trace';
+      const message = event.message || event.step || '';
+      const line = document.createElement('div');
+      line.className = 'live-log-line';
+      line.textContent = `[${ts}] [${node}] ${message}`;
+      liveLogEl.appendChild(line);
+      liveLogEl.scrollTop = liveLogEl.scrollHeight;
+    }
+
+    function applyTraceEvent(event) {
+      const node = event.node;
+      const status = event.status;
+      if (node && FLOW_STEPS.includes(node)) {
+        if (status === 'start') stepState[node] = 'running';
+        else if (status === 'end') stepState[node] = 'done';
+        else if (status === 'error') stepState[node] = 'error';
+        renderStepper();
+      }
+      appendLiveLog(event);
+      if (node === 'Final' && (status === 'end' || status === 'error')) {
+        closeTraceStream();
+      }
+    }
+
+    function closeTraceStream() {
+      if (traceSource) {
+        traceSource.close();
+        traceSource = null;
+      }
+    }
+
+    function openTraceStream(traceId) {
+      closeTraceStream();
+      if (!traceId) return;
+      const es = new EventSource(`/api/traces/${encodeURIComponent(traceId)}/stream`);
+      traceSource = es;
+      es.addEventListener('trace', (evt) => {
+        try {
+          const payload = JSON.parse(evt.data || '{}');
+          applyTraceEvent(payload);
+        } catch (err) {
+          // noop
+        }
+      });
+      es.onerror = () => {
+        // 网络断开或服务端结束时关闭
+        closeTraceStream();
+      };
     }
 
     function renderTrace(events) {
@@ -469,10 +586,13 @@
             previousTraceIdEl.textContent = data.previous_trace_id;
             previousTraceWrap.style.display = 'inline';
           }
+          openTraceStream(data.trace_id);
           fetchTrace(data.trace_id);
         } else {
           traceErrorEl.textContent = '未获取到追踪ID，无法刷新协作流程。';
           traceRefreshBtn.disabled = true;
+          closeTraceStream();
+          resetStepper();
         }
         if (data.image_id) {
           latestImageId = data.image_id;
@@ -552,6 +672,7 @@
         if (Array.isArray(data.events)) {
           renderTrace(data.events);
         } else if (data.trace_id) {
+          openTraceStream(data.trace_id);
           fetchTrace(data.trace_id);
         }
       } catch (err) {
@@ -598,6 +719,7 @@
       }
     }
 
+    renderStepper();
     loadModels();
   </script>
 </body>
