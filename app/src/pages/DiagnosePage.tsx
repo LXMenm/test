@@ -1,5 +1,5 @@
-import { useState, useRef, useEffect } from 'react';
-import { Upload, Send, RefreshCw, AlertCircle, CheckCircle, Loader2, Image as ImageIcon } from 'lucide-react';
+import { useState, useRef } from 'react';
+import { Upload, Send, RefreshCw, AlertCircle, CheckCircle, Loader2, Image as ImageIcon, ChevronDown, ChevronUp } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -8,15 +8,16 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
 import { cn } from '@/lib/utils';
+import { AgentWorkflowPanel } from '@/components/AgentWorkflowPanel';
 
 interface DiagnosisResult {
   image_url: string;
   final_disease: string;
-  confidence: number;
+  displayConfidencePct: number | null;
   model_display_name: string;
   top3: Array<{ disease: string; confidence: number }>;
-  treatment: string;
-  prevention: string;
+  treatment: unknown;
+  prevention: unknown;
   trace_id: string;
 }
 
@@ -38,17 +39,14 @@ export function DiagnosePage() {
   const [result, setResult] = useState<DiagnosisResult | null>(null);
   const [traceEvents, setTraceEvents] = useState<TraceEvent[]>([]);
   const [traceId, setTraceId] = useState('');
+  const [imageId, setImageId] = useState('');
+  const [confirmMode, setConfirmMode] = useState(false);
+  const [confirmChoice, setConfirmChoice] = useState('other');
+  const [confirmSymptoms, setConfirmSymptoms] = useState('');
+  const [confirmSubmitting, setConfirmSubmitting] = useState(false);
+  const [showRawTrace, setShowRawTrace] = useState(false);
+  const [diagnosisStartTime, setDiagnosisStartTime] = useState<number | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const traceSourceRef = useRef<EventSource | null>(null);
-
-  // Cleanup EventSource on unmount
-  useEffect(() => {
-    return () => {
-      if (traceSourceRef.current) {
-        traceSourceRef.current.close();
-      }
-    };
-  }, []);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const selectedFile = e.target.files?.[0];
@@ -62,38 +60,86 @@ export function DiagnosePage() {
     }
   };
 
-  const openTraceStream = (tid: string) => {
-    if (traceSourceRef.current) {
-      traceSourceRef.current.close();
+
+
+
+
+  const toNumber = (value: unknown): number | null => {
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    if (typeof value === 'string' && value.trim()) {
+      const parsed = Number(value);
+      if (Number.isFinite(parsed)) return parsed;
     }
-    
-    const es = new EventSource(`/api/traces/${encodeURIComponent(tid)}/stream`);
-    traceSourceRef.current = es;
-    
-    es.addEventListener('trace', (evt) => {
-      const payload = JSON.parse(evt.data || '{}');
-      if (payload.node && payload.status) {
-        setTraceEvents(prev => [...prev, {
-          timestamp: new Date().toISOString(),
-          agent: payload.node,
-          status: payload.status,
-          message: payload.message
-        }]);
-      }
-    });
-    
-    es.onerror = () => {
-      es.close();
-    };
+    return null;
   };
+
+  const resolveDisplayConfidencePct = (payload: any): number | null => {
+    const finalConfidence = toNumber(payload?.final_confidence);
+    if (finalConfidence !== null) {
+      return finalConfidence <= 1 ? finalConfidence * 100 : finalConfidence;
+    }
+
+    const imageConfidencePct = toNumber(payload?.image_result?.confidence_pct);
+    if (imageConfidencePct !== null) {
+      return imageConfidencePct;
+    }
+
+    const imageConfidence = toNumber(payload?.image_result?.confidence);
+    if (imageConfidence !== null) {
+      return imageConfidence * 100;
+    }
+
+    return null;
+  };
+
+
+
+  const normalizeTop3 = (payload: any): Array<{ disease: string; confidence: number }> => {
+    const rawTop3 = payload?.image_result?.top3 ?? payload?.top3 ?? [];
+    if (!Array.isArray(rawTop3)) return [];
+    return rawTop3
+      .map((item: any) => {
+        const disease = typeof item?.disease === 'string' ? item.disease : '';
+        const pctFromProb = toNumber(item?.prob) !== null ? (toNumber(item?.prob) as number) * 100 : null;
+        const confidence =
+          toNumber(item?.confidence) ??
+          toNumber(item?.confidence_pct) ??
+          toNumber(item?.prob_pct) ??
+          pctFromProb ??
+          0;
+        return { disease, confidence };
+      })
+      .filter((item) => item.disease);
+  };
+
+  const shouldEnterConfirmMode = (payload: any): boolean => {
+    if (payload?.need_confirm === true) return true;
+    const reasons = Array.isArray(payload?.fallback_reason) ? payload.fallback_reason : [];
+    return reasons.includes('low_confidence') || reasons.includes('low_margin');
+  };
+
+  const buildResultFromPayload = (payload: any): DiagnosisResult => ({
+    image_url: payload?.image_url || '',
+    final_disease: payload?.final_disease || payload?.image_result?.disease || '未知',
+    displayConfidencePct: resolveDisplayConfidencePct(payload),
+    model_display_name: payload?.model_display_name || payload?.model_id || '-',
+    top3: normalizeTop3(payload),
+    treatment: payload?.treatment,
+    prevention: payload?.prevention ?? payload?.treatment?.prevention,
+    trace_id: payload?.trace_id || '',
+  });
 
   const handleSubmit = async () => {
     if (!file) return;
-    
+
     setLoading(true);
     setResult(null);
     setTraceEvents([]);
-    
+    setConfirmMode(false);
+    setConfirmChoice('other');
+    setConfirmSymptoms('');
+    setDiagnosisStartTime(Date.now());
+
     try {
       const fd = new FormData();
       fd.append('file', file);
@@ -101,35 +147,120 @@ export function DiagnosePage() {
       if (symptoms.trim()) fd.append('symptoms', symptoms.trim());
       if (growthStage.trim()) fd.append('growth_stage', growthStage.trim());
       if (modelId) fd.append('model_id', modelId);
-      
+
       const resp = await fetch('/api/diagnose-image', {
         method: 'POST',
         body: fd
       });
-      
       const data = await resp.json();
-      
+      if (!resp.ok) {
+        throw new Error(data?.detail || `诊断失败: ${resp.status}`);
+      }
+
       if (data.trace_id) {
         setTraceId(data.trace_id);
-        openTraceStream(data.trace_id);
       }
-      
-      setResult({
-        image_url: data.image_url,
-        final_disease: data.final_disease,
-        confidence: data.confidence,
-        model_display_name: data.model_display_name,
-        top3: data.top3 || [],
-        treatment: data.treatment,
-        prevention: data.prevention,
-        trace_id: data.trace_id
-      });
+      if (data.image_id) {
+        setImageId(data.image_id);
+      }
+
+      const normalizedResult = buildResultFromPayload(data);
+      setResult(normalizedResult);
+
+      if (shouldEnterConfirmMode(data)) {
+        setConfirmMode(true);
+        const defaultChoice = normalizedResult.top3[0]?.disease || 'other';
+        setConfirmChoice(defaultChoice);
+      }
     } catch (error) {
       console.error('Diagnosis failed:', error);
     } finally {
       setLoading(false);
     }
   };
+
+  const handleConfirmSubmit = async () => {
+    if (!traceId || !imageId) return;
+    setConfirmSubmitting(true);
+    try {
+      const additionalSymptoms = confirmSymptoms
+        .split(',')
+        .map((item) => item.trim())
+        .filter(Boolean);
+      const symptomsForConfirm = confirmChoice !== 'other'
+        ? [confirmChoice, ...additionalSymptoms]
+        : additionalSymptoms;
+
+      const resp = await fetch('/api/diagnose-confirm', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          trace_id: traceId,
+          image_id: imageId,
+          crop_type: cropType || '番茄',
+          symptoms: symptomsForConfirm,
+          growth_stage: growthStage || null,
+          model_id: modelId || null,
+          choice: confirmChoice,
+          notes: confirmSymptoms || null,
+        }),
+      });
+      const data = await resp.json();
+      if (!resp.ok) {
+        throw new Error(data?.detail || `确认失败: ${resp.status}`);
+      }
+
+      if (data.trace_id) {
+        setTraceId(data.trace_id);
+      }
+
+      const mergedPayload = {
+        ...data,
+        image_url: result?.image_url || '',
+        prevention: data?.treatment?.prevention,
+      };
+      setResult(buildResultFromPayload(mergedPayload));
+      setConfirmMode(false);
+    } catch (error) {
+      console.error('Confirm diagnose failed:', error);
+    } finally {
+      setConfirmSubmitting(false);
+    }
+  };
+
+  const renderRichValue = (value: unknown) => {
+    if (value === null || value === undefined) return null;
+    if (typeof value === 'string') {
+      return <div className="whitespace-pre-wrap">{value}</div>;
+    }
+    if (typeof value === 'object') {
+      const data = value as Record<string, unknown>;
+      const plan = data.plan;
+      const prevention = data.prevention;
+      if (typeof plan === 'string' || typeof prevention === 'string') {
+        return (
+          <div className="space-y-3">
+            {typeof plan === 'string' && plan.trim() && (
+              <div>
+                <div className="text-[#c8f7c5] text-xs mb-1">处方/方案</div>
+                <div className="whitespace-pre-wrap">{plan}</div>
+              </div>
+            )}
+            {typeof prevention === 'string' && prevention.trim() && (
+              <div>
+                <div className="text-[#c8f7c5] text-xs mb-1">预防/管理</div>
+                <div className="whitespace-pre-wrap">{prevention}</div>
+              </div>
+            )}
+          </div>
+        );
+      }
+      return <pre className="whitespace-pre-wrap break-words">{JSON.stringify(value, null, 2)}</pre>;
+    }
+    return <div className="whitespace-pre-wrap">{String(value)}</div>;
+  };
+
+  const renderTreatment = (t: unknown) => renderRichValue(t);
 
   const refreshTrace = async () => {
     if (!traceId) return;
@@ -306,7 +437,7 @@ export function DiagnosePage() {
                     </div>
                     <div className="bg-white/5 rounded-xl p-4">
                       <p className="text-white/60 text-sm mb-1">置信度</p>
-                      <p className="text-xl font-bold text-[#c8f7c5]">{result.confidence?.toFixed(2)}%</p>
+                      <p className="text-xl font-bold text-[#c8f7c5]">{result.displayConfidencePct !== null ? `${result.displayConfidencePct.toFixed(2)}%` : "—"}</p>
                     </div>
                     <div className="bg-white/5 rounded-xl p-4">
                       <p className="text-white/60 text-sm mb-1">使用模型</p>
@@ -338,6 +469,56 @@ export function DiagnosePage() {
                     </div>
                   )}
 
+
+                  {confirmMode && (
+                    <div className="bg-[#c8f7c5]/10 border border-[#c8f7c5]/30 rounded-xl p-4 space-y-4">
+                      <h4 className="text-[#c8f7c5] font-medium">二次诊断 / 确认入口</h4>
+                      <div className="space-y-2">
+                        <Label className="text-white/80">候选病害选择</Label>
+                        {(Array.isArray(result.top3) ? result.top3 : []).map((item) => (
+                          <label key={item.disease} className="flex items-center gap-2 text-sm text-white/80 cursor-pointer">
+                            <input
+                              type="radio"
+                              name="confirmDisease"
+                              value={item.disease}
+                              checked={confirmChoice === item.disease}
+                              onChange={(e) => setConfirmChoice(e.target.value)}
+                            />
+                            <span>{item.disease}</span>
+                          </label>
+                        ))}
+                        <label className="flex items-center gap-2 text-sm text-white/80 cursor-pointer">
+                          <input
+                            type="radio"
+                            name="confirmDisease"
+                            value="other"
+                            checked={confirmChoice === 'other'}
+                            onChange={(e) => setConfirmChoice(e.target.value)}
+                          />
+                          <span>仍不确定 / 其他</span>
+                        </label>
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label className="text-white/80">补充症状（可选，逗号分隔）</Label>
+                        <Input
+                          value={confirmSymptoms}
+                          onChange={(e) => setConfirmSymptoms(e.target.value)}
+                          placeholder="例如：叶片卷曲, 发黄"
+                          className="bg-white/5 border-white/20 text-white placeholder:text-white/40"
+                        />
+                      </div>
+
+                      <Button
+                        onClick={handleConfirmSubmit}
+                        disabled={confirmSubmitting || !traceId || !imageId}
+                        className="bg-[#c8f7c5] text-black hover:bg-[#b8e7b5]"
+                      >
+                        {confirmSubmitting ? '提交中...' : '提交确认'}
+                      </Button>
+                    </div>
+                  )}
+
                   <Separator className="bg-white/10" />
 
                   {/* Treatment */}
@@ -348,7 +529,7 @@ export function DiagnosePage() {
                         治疗方案
                       </h4>
                       <div className="bg-white/5 rounded-xl p-4 text-white/80 text-sm leading-relaxed whitespace-pre-line">
-                        {result.treatment}
+                        {renderTreatment(result.treatment)}
                       </div>
                     </div>
                   )}
@@ -358,7 +539,7 @@ export function DiagnosePage() {
                     <div>
                       <h4 className="text-white/80 font-medium mb-2">预防建议</h4>
                       <div className="bg-white/5 rounded-xl p-4 text-white/80 text-sm leading-relaxed whitespace-pre-line">
-                        {result.prevention}
+                        {renderRichValue(result.prevention)}
                       </div>
                     </div>
                   )}
@@ -393,18 +574,36 @@ export function DiagnosePage() {
                 </div>
               )}
             </CardHeader>
-            <CardContent>
-              {traceEvents.length > 0 ? (
+            <CardContent className="space-y-4">
+              <AgentWorkflowPanel
+                traceId={traceId || undefined}
+                confidencePct={result?.displayConfidencePct ?? undefined}
+              />
+
+              <div className="flex items-center justify-between">
+                <p className="text-xs text-white/50">调试事件流（开发排查）</p>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setShowRawTrace((prev) => !prev)}
+                  className="text-white/70 hover:bg-white/10"
+                >
+                  {showRawTrace ? <ChevronUp className="w-4 h-4 mr-1" /> : <ChevronDown className="w-4 h-4 mr-1" />}
+                  {showRawTrace ? '收起事件' : '展开事件'}
+                </Button>
+              </div>
+
+              {showRawTrace && (traceEvents.length > 0 ? (
                 <div className="space-y-3 max-h-80 overflow-y-auto">
                   {traceEvents.map((event, idx) => (
                     <div 
-                      key={idx}
+                      key={`${event.timestamp}-${idx}`}
                       className="flex items-start gap-3 p-3 rounded-lg bg-white/5 animate-slideIn"
-                      style={{ animationDelay: `${idx * 50}ms` }}
+                      style={{ animationDelay: `${idx * 30}ms` }}
                     >
                       <div className={cn(
                         "w-2 h-2 rounded-full mt-2 flex-shrink-0",
-                        event.status === '完成' || event.status === 'done' 
+                        event.status === '完成' || event.status === 'done' || event.status === 'completed'
                           ? "bg-green-400" 
                           : event.status === '错误' || event.status === 'error'
                           ? "bg-red-400"
@@ -430,8 +629,12 @@ export function DiagnosePage() {
               ) : (
                 <div className="text-center py-8 text-white/40">
                   <RefreshCw className="w-10 h-10 mx-auto mb-3 opacity-50" />
-                  <p className="text-sm">诊断流程追踪将在此显示</p>
+                  <p className="text-sm">暂未收到追踪事件，面板将使用模拟进度降级展示</p>
                 </div>
+              ))}
+
+              {diagnosisStartTime && (
+                <p className="text-xs text-white/40">诊断启动时间：{new Date(diagnosisStartTime).toLocaleTimeString()}</p>
               )}
             </CardContent>
           </Card>
