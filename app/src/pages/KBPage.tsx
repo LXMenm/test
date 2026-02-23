@@ -71,14 +71,24 @@ export function KBPage() {
   const [editingRule, setEditingRule] = useState<Rule | null>(null);
   const [editingSymptomMap, setEditingSymptomMap] = useState<SymptomMap | null>(null);
 
+  const fetchDiseases = async () => {
+    try {
+      const resp = await fetch('/api/kb/diseases');
+      const data = await resp.json();
+      setDiseases(data.items || []);
+    } catch (error) {
+      console.error('Failed to fetch diseases:', error);
+    }
+  };
+
   const fetchData = async (tab: TabType) => {
     setLoading(true);
     try {
       let endpoint = '';
       switch (tab) {
         case 'diseases':
-          endpoint = '/api/kb/diseases';
-          break;
+          await fetchDiseases();
+          return;
         case 'treatments':
           endpoint = '/api/kb/treatments';
           break;
@@ -115,6 +125,11 @@ export function KBPage() {
   };
 
   useEffect(() => {
+    if (activeTab === 'diseases') {
+      fetchData(activeTab);
+      return;
+    }
+    fetchDiseases();
     fetchData(activeTab);
   }, [activeTab]);
 
@@ -131,7 +146,7 @@ export function KBPage() {
       });
       
       if (resp.ok) {
-        fetchData('diseases');
+        fetchDiseases();
         setShowDiseaseDialog(false);
         setEditingDisease(null);
       }
@@ -150,7 +165,7 @@ export function KBPage() {
       
       if (resp.ok) {
         setSelectedDiseases([]);
-        fetchData('diseases');
+        fetchDiseases();
       }
     } catch (error) {
       console.error('Failed to delete diseases:', error);
@@ -738,12 +753,19 @@ export function KBPage() {
             <div className="space-y-4 py-4">
               <div className="space-y-2">
                 <Label>病害</Label>
-                <Input
+                <select
                   value={editingTreatment.disease}
                   onChange={(e) => setEditingTreatment({ ...editingTreatment, disease: e.target.value })}
                   disabled={treatments.find(t => t.disease === editingTreatment.disease) !== undefined}
-                  className="bg-white/5 border-white/20 text-white focus:border-[#c8f7c5]"
-                />
+                  className="w-full bg-white/5 border border-white/20 rounded-lg px-3 py-2 text-white focus:border-[#c8f7c5] outline-none"
+                >
+                  <option value="" className="bg-[#1a1a1a]">请选择病害</option>
+                  {diseases.map((disease) => (
+                    <option key={disease.name} value={disease.name} className="bg-[#1a1a1a]">
+                      {disease.name}
+                    </option>
+                  ))}
+                </select>
               </div>
               <div className="space-y-2">
                 <Label>治疗方案</Label>
@@ -811,11 +833,18 @@ export function KBPage() {
               </div>
               <div className="space-y-2">
                 <Label>病害</Label>
-                <Input
+                <select
                   value={editingRule.disease}
                   onChange={(e) => setEditingRule({ ...editingRule, disease: e.target.value })}
-                  className="bg-white/5 border-white/20 text-white focus:border-[#c8f7c5]"
-                />
+                  className="w-full bg-white/5 border border-white/20 rounded-lg px-3 py-2 text-white focus:border-[#c8f7c5] outline-none"
+                >
+                  <option value="" className="bg-[#1a1a1a]">请选择病害</option>
+                  {diseases.map((disease) => (
+                    <option key={disease.name} value={disease.name} className="bg-[#1a1a1a]">
+                      {disease.name}
+                    </option>
+                  ))}
+                </select>
               </div>
               <div className="space-y-2">
                 <Label>置信度 (0-1)</Label>
@@ -877,13 +906,30 @@ export function KBPage() {
                 />
               </div>
               <div className="space-y-2">
-                <Label>关联病害（逗号分隔）</Label>
-                <Input
-                  value={editingSymptomMap.diseases.join(', ')}
-                  onChange={(e) => setEditingSymptomMap({ ...editingSymptomMap, diseases: e.target.value.split(',').map(s => s.trim()).filter(Boolean) })}
-                  placeholder="例如：早疫病, 晚疫病"
-                  className="bg-white/5 border-white/20 text-white focus:border-[#c8f7c5]"
-                />
+                <Label>关联病害（可多选）</Label>
+                <div className="max-h-44 overflow-y-auto rounded-lg border border-white/20 bg-white/5 p-3 space-y-2">
+                  {diseases.map((disease) => {
+                    const checked = editingSymptomMap.diseases.includes(disease.name);
+                    return (
+                      <label key={disease.name} className="flex items-center gap-2 text-sm text-white/80 cursor-pointer">
+                        <Checkbox
+                          checked={checked}
+                          onCheckedChange={(v) => {
+                            const nextDiseases = v
+                              ? [...editingSymptomMap.diseases, disease.name]
+                              : editingSymptomMap.diseases.filter((item) => item !== disease.name);
+                            setEditingSymptomMap({ ...editingSymptomMap, diseases: nextDiseases });
+                          }}
+                          className="border-white/30"
+                        />
+                        <span>{disease.name}</span>
+                      </label>
+                    );
+                  })}
+                  {diseases.length === 0 && (
+                    <p className="text-sm text-white/50">暂无病害，请先在“病害及描述”中新增病害。</p>
+                  )}
+                </div>
               </div>
             </div>
           )}
