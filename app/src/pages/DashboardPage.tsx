@@ -74,12 +74,19 @@ export function DashboardPage() {
       console.log('[Dashboard] /api/stats/disease response:', statsData);
       console.log('[Dashboard] /api/events response:', eventsData);
 
-      const statsList = statsData.items ?? statsData.stats ?? statsData.data ?? [];
-      const eventsList = eventsData.events ?? eventsData.items ?? eventsData.data ?? [];
+      const statsList = Array.isArray(statsData)
+        ? statsData
+        : statsData.items ?? statsData.stats ?? statsData.data ?? [];
+      const eventsList = Array.isArray(eventsData)
+        ? eventsData
+        : eventsData.events ?? eventsData.items ?? eventsData.data ?? [];
 
-      setStats(Array.isArray(statsList) ? statsList : []);
-      setEvents(Array.isArray(eventsList) ? eventsList : []);
-      setSelectedEvent((Array.isArray(eventsList) && eventsList.length > 0) ? eventsList[0] : null);
+      const safeStats = Array.isArray(statsList) ? statsList : [];
+      const safeEvents = Array.isArray(eventsList) ? eventsList : [];
+
+      setStats(safeStats);
+      setEvents(safeEvents);
+      setSelectedEvent(safeEvents.length > 0 ? safeEvents[0] : null);
     } catch (error) {
       console.error('Failed to fetch dashboard data:', error);
       setStats([]);
