@@ -70,6 +70,20 @@ export function KBPage() {
   const [editingTreatment, setEditingTreatment] = useState<Treatment | null>(null);
   const [editingRule, setEditingRule] = useState<Rule | null>(null);
   const [editingSymptomMap, setEditingSymptomMap] = useState<SymptomMap | null>(null);
+  const [diseaseDialogMode, setDiseaseDialogMode] = useState<'create' | 'edit'>('create');
+  const [symptomDialogMode, setSymptomDialogMode] = useState<'create' | 'edit'>('create');
+  const [editingDiseaseOriginalName, setEditingDiseaseOriginalName] = useState('');
+  const [editingSymptomOriginalName, setEditingSymptomOriginalName] = useState('');
+
+  const fetchDiseases = async () => {
+    try {
+      const resp = await fetch('/api/kb/diseases');
+      const data = await resp.json();
+      setDiseases(data.items || []);
+    } catch (error) {
+      console.error('Failed to fetch diseases:', error);
+    }
+  };
 
   const fetchData = async (tab: TabType) => {
     setLoading(true);
@@ -77,8 +91,8 @@ export function KBPage() {
       let endpoint = '';
       switch (tab) {
         case 'diseases':
-          endpoint = '/api/kb/diseases';
-          break;
+          await fetchDiseases();
+          return;
         case 'treatments':
           endpoint = '/api/kb/treatments';
           break;
@@ -115,25 +129,34 @@ export function KBPage() {
   };
 
   useEffect(() => {
+    if (activeTab === 'diseases') {
+      fetchData(activeTab);
+      return;
+    }
+    fetchDiseases();
     fetchData(activeTab);
   }, [activeTab]);
 
   // CRUD operations
   const saveDisease = async () => {
     if (!editingDisease) return;
-    
-    const isNew = !diseases.find(d => d.name === editingDisease.name);
+
+    const isNew = diseaseDialogMode === 'create';
+    const targetName = isNew ? editingDisease.name : editingDiseaseOriginalName;
     try {
-      const resp = await fetch(`/api/kb/diseases${isNew ? '' : '/' + encodeURIComponent(editingDisease.name)}`, {
+      const resp = await fetch(`/api/kb/diseases${isNew ? '' : '/' + encodeURIComponent(targetName)}`, {
         method: isNew ? 'POST' : 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(editingDisease)
       });
       
       if (resp.ok) {
-        fetchData('diseases');
+        fetchDiseases();
         setShowDiseaseDialog(false);
         setEditingDisease(null);
+        setEditingDiseaseOriginalName('');
+      } else if (resp.status === 409) {
+        alert('病害已存在');
       }
     } catch (error) {
       console.error('Failed to save disease:', error);
@@ -150,7 +173,7 @@ export function KBPage() {
       
       if (resp.ok) {
         setSelectedDiseases([]);
-        fetchData('diseases');
+        fetchDiseases();
       }
     } catch (error) {
       console.error('Failed to delete diseases:', error);
@@ -235,10 +258,11 @@ export function KBPage() {
 
   const saveSymptomMap = async () => {
     if (!editingSymptomMap) return;
-    
-    const isNew = !symptomMaps.find(s => s.symptom === editingSymptomMap.symptom);
+
+    const isNew = symptomDialogMode === 'create';
+    const targetSymptom = isNew ? editingSymptomMap.symptom : editingSymptomOriginalName;
     try {
-      const resp = await fetch(`/api/kb/symptom-map${isNew ? '' : '/' + encodeURIComponent(editingSymptomMap.symptom)}`, {
+      const resp = await fetch(`/api/kb/symptom-map${isNew ? '' : '/' + encodeURIComponent(targetSymptom)}`, {
         method: isNew ? 'POST' : 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(editingSymptomMap)
@@ -248,6 +272,9 @@ export function KBPage() {
         fetchData('symptom-map');
         setShowSymptomMapDialog(false);
         setEditingSymptomMap(null);
+        setEditingSymptomOriginalName('');
+      } else if (resp.status === 409) {
+        alert('症状已存在');
       }
     } catch (error) {
       console.error('Failed to save symptom map:', error);
@@ -342,7 +369,12 @@ export function KBPage() {
               </CardTitle>
               <div className="flex gap-2">
                 <Button
-                  onClick={() => { setEditingDisease({ name: '', description: '' }); setShowDiseaseDialog(true); }}
+                  onClick={() => {
+                    setDiseaseDialogMode('create');
+                    setEditingDiseaseOriginalName('');
+                    setEditingDisease({ name: '', description: '' });
+                    setShowDiseaseDialog(true);
+                  }}
                   className="bg-[#c8f7c5] text-black hover:bg-[#b8e7b5]"
                 >
                   <Plus className="w-4 h-4 mr-1" />
@@ -405,7 +437,12 @@ export function KBPage() {
                           <td className="p-3 text-white/70">{disease.description}</td>
                           <td className="p-3 text-right">
                             <Button
-                              onClick={() => { setEditingDisease(disease); setShowDiseaseDialog(true); }}
+                              onClick={() => {
+                                setDiseaseDialogMode('edit');
+                                setEditingDiseaseOriginalName(disease.name);
+                                setEditingDisease(disease);
+                                setShowDiseaseDialog(true);
+                              }}
                               variant="ghost"
                               size="sm"
                               className="text-[#c8f7c5] hover:bg-[#c8f7c5]/10"
@@ -612,7 +649,12 @@ export function KBPage() {
               </CardTitle>
               <div className="flex gap-2">
                 <Button
-                  onClick={() => { setEditingSymptomMap({ symptom: '', diseases: [] }); setShowSymptomMapDialog(true); }}
+                  onClick={() => {
+                    setSymptomDialogMode('create');
+                    setEditingSymptomOriginalName('');
+                    setEditingSymptomMap({ symptom: '', diseases: [] });
+                    setShowSymptomMapDialog(true);
+                  }}
                   className="bg-[#c8f7c5] text-black hover:bg-[#b8e7b5]"
                 >
                   <Plus className="w-4 h-4 mr-1" />
@@ -664,7 +706,12 @@ export function KBPage() {
                         </div>
                       </div>
                       <Button
-                        onClick={() => { setEditingSymptomMap(map); setShowSymptomMapDialog(true); }}
+                        onClick={() => {
+                          setSymptomDialogMode('edit');
+                          setEditingSymptomOriginalName(map.symptom);
+                          setEditingSymptomMap(map);
+                          setShowSymptomMapDialog(true);
+                        }}
                         variant="ghost"
                         size="sm"
                         className="text-[#c8f7c5] hover:bg-[#c8f7c5]/10"
@@ -684,7 +731,7 @@ export function KBPage() {
       <Dialog open={showDiseaseDialog} onOpenChange={setShowDiseaseDialog}>
         <DialogContent className="bg-[#1a1a1a] border-white/20 text-white max-w-lg">
           <DialogHeader>
-            <DialogTitle>{editingDisease && diseases.find(d => d.name === editingDisease.name) ? '编辑病害' : '新增病害'}</DialogTitle>
+            <DialogTitle>{diseaseDialogMode === 'edit' ? '编辑病害' : '新增病害'}</DialogTitle>
           </DialogHeader>
           {editingDisease && (
             <div className="space-y-4 py-4">
@@ -693,7 +740,7 @@ export function KBPage() {
                 <Input
                   value={editingDisease.name}
                   onChange={(e) => setEditingDisease({ ...editingDisease, name: e.target.value })}
-                  disabled={diseases.find(d => d.name === editingDisease.name) !== undefined}
+                  disabled={diseaseDialogMode === 'edit'}
                   className="bg-white/5 border-white/20 text-white focus:border-[#c8f7c5]"
                 />
               </div>
@@ -738,12 +785,19 @@ export function KBPage() {
             <div className="space-y-4 py-4">
               <div className="space-y-2">
                 <Label>病害</Label>
-                <Input
+                <select
                   value={editingTreatment.disease}
                   onChange={(e) => setEditingTreatment({ ...editingTreatment, disease: e.target.value })}
                   disabled={treatments.find(t => t.disease === editingTreatment.disease) !== undefined}
-                  className="bg-white/5 border-white/20 text-white focus:border-[#c8f7c5]"
-                />
+                  className="w-full bg-white/5 border border-white/20 rounded-lg px-3 py-2 text-white focus:border-[#c8f7c5] outline-none"
+                >
+                  <option value="" className="bg-[#1a1a1a]">请选择病害</option>
+                  {diseases.map((disease) => (
+                    <option key={disease.name} value={disease.name} className="bg-[#1a1a1a]">
+                      {disease.name}
+                    </option>
+                  ))}
+                </select>
               </div>
               <div className="space-y-2">
                 <Label>治疗方案</Label>
@@ -811,11 +865,18 @@ export function KBPage() {
               </div>
               <div className="space-y-2">
                 <Label>病害</Label>
-                <Input
+                <select
                   value={editingRule.disease}
                   onChange={(e) => setEditingRule({ ...editingRule, disease: e.target.value })}
-                  className="bg-white/5 border-white/20 text-white focus:border-[#c8f7c5]"
-                />
+                  className="w-full bg-white/5 border border-white/20 rounded-lg px-3 py-2 text-white focus:border-[#c8f7c5] outline-none"
+                >
+                  <option value="" className="bg-[#1a1a1a]">请选择病害</option>
+                  {diseases.map((disease) => (
+                    <option key={disease.name} value={disease.name} className="bg-[#1a1a1a]">
+                      {disease.name}
+                    </option>
+                  ))}
+                </select>
               </div>
               <div className="space-y-2">
                 <Label>置信度 (0-1)</Label>
@@ -863,7 +924,7 @@ export function KBPage() {
       <Dialog open={showSymptomMapDialog} onOpenChange={setShowSymptomMapDialog}>
         <DialogContent className="bg-[#1a1a1a] border-white/20 text-white max-w-lg">
           <DialogHeader>
-            <DialogTitle>{editingSymptomMap && symptomMaps.find(s => s.symptom === editingSymptomMap.symptom) ? '编辑映射' : '新增映射'}</DialogTitle>
+            <DialogTitle>{symptomDialogMode === 'edit' ? '编辑映射' : '新增映射'}</DialogTitle>
           </DialogHeader>
           {editingSymptomMap && (
             <div className="space-y-4 py-4">
@@ -872,18 +933,35 @@ export function KBPage() {
                 <Input
                   value={editingSymptomMap.symptom}
                   onChange={(e) => setEditingSymptomMap({ ...editingSymptomMap, symptom: e.target.value })}
-                  disabled={symptomMaps.find(s => s.symptom === editingSymptomMap.symptom) !== undefined}
+                  disabled={symptomDialogMode === 'edit'}
                   className="bg-white/5 border-white/20 text-white focus:border-[#c8f7c5]"
                 />
               </div>
               <div className="space-y-2">
-                <Label>关联病害（逗号分隔）</Label>
-                <Input
-                  value={editingSymptomMap.diseases.join(', ')}
-                  onChange={(e) => setEditingSymptomMap({ ...editingSymptomMap, diseases: e.target.value.split(',').map(s => s.trim()).filter(Boolean) })}
-                  placeholder="例如：早疫病, 晚疫病"
-                  className="bg-white/5 border-white/20 text-white focus:border-[#c8f7c5]"
-                />
+                <Label>关联病害（可多选）</Label>
+                <div className="max-h-44 overflow-y-auto rounded-lg border border-white/20 bg-white/5 p-3 space-y-2">
+                  {diseases.map((disease) => {
+                    const checked = editingSymptomMap.diseases.includes(disease.name);
+                    return (
+                      <label key={disease.name} className="flex items-center gap-2 text-sm text-white/80 cursor-pointer">
+                        <Checkbox
+                          checked={checked}
+                          onCheckedChange={(v) => {
+                            const nextDiseases = v
+                              ? [...editingSymptomMap.diseases, disease.name]
+                              : editingSymptomMap.diseases.filter((item) => item !== disease.name);
+                            setEditingSymptomMap({ ...editingSymptomMap, diseases: nextDiseases });
+                          }}
+                          className="border-white/30"
+                        />
+                        <span>{disease.name}</span>
+                      </label>
+                    );
+                  })}
+                  {diseases.length === 0 && (
+                    <p className="text-sm text-white/50">暂无病害，请先在“病害及描述”中新增病害。</p>
+                  )}
+                </div>
               </div>
             </div>
           )}
