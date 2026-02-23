@@ -62,19 +62,6 @@ export function DiagnosePage() {
 
 
 
-  const handleIncomingTracePayload = (payload: any) => {
-    if (!payload?.node || !payload?.status) return;
-    setTraceEvents((prev) => [
-      ...prev,
-      {
-        timestamp: payload.ts || new Date().toISOString(),
-        agent: payload.node,
-        status: payload.status,
-        message: payload.message,
-      },
-    ]);
-  };
-
 
 
   const toNumber = (value: unknown): number | null => {
@@ -591,8 +578,6 @@ export function DiagnosePage() {
               <AgentWorkflowPanel
                 traceId={traceId || undefined}
                 lastConfidencePct={result?.displayConfidencePct ?? undefined}
-                traceEvents={traceEvents}
-                onTraceEvent={handleIncomingTracePayload}
               />
 
               <div className="flex items-center justify-between">
