@@ -17,7 +17,7 @@ interface DiagnosisEvent {
   final_disease: string;
   confidence: number;
   image_result?: string;
-  treatment?: string;
+  treatment?: unknown;
   top3?: Array<{ disease: string; confidence: number }>;
 }
 
@@ -37,6 +37,38 @@ function isValidDateString(value: string): boolean {
   const parsed = new Date(`${value}T00:00:00`);
   if (Number.isNaN(parsed.getTime())) return false;
   return formatDate(parsed) === value;
+}
+
+function renderTreatment(value: unknown) {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'string') {
+    return <div className="whitespace-pre-wrap">{value}</div>;
+  }
+  if (typeof value === 'object') {
+    const data = value as Record<string, unknown>;
+    const plan = data.plan;
+    const prevention = data.prevention;
+    if (typeof plan === 'string' || typeof prevention === 'string') {
+      return (
+        <div className="space-y-3">
+          {typeof plan === 'string' && plan.trim() && (
+            <div>
+              <div className="text-[#c8f7c5] text-xs mb-1">处方/方案</div>
+              <div className="whitespace-pre-wrap">{plan}</div>
+            </div>
+          )}
+          {typeof prevention === 'string' && prevention.trim() && (
+            <div>
+              <div className="text-[#c8f7c5] text-xs mb-1">预防/管理</div>
+              <div className="whitespace-pre-wrap">{prevention}</div>
+            </div>
+          )}
+        </div>
+      );
+    }
+    return <pre className="whitespace-pre-wrap break-words">{JSON.stringify(value, null, 2)}</pre>;
+  }
+  return <div className="whitespace-pre-wrap">{String(value)}</div>;
 }
 
 export function DashboardPage() {
@@ -76,12 +108,19 @@ export function DashboardPage() {
 
       const statsList = Array.isArray(statsData)
         ? statsData
-        : statsData.items ?? statsData.stats ?? statsData.data ?? [];
+        : (statsData && typeof statsData === 'object')
+          ? (statsData.items ?? statsData.stats ?? statsData.data ?? Object.entries(statsData).map(([name, count]) => ({ name, count })))
+          : [];
       const eventsList = Array.isArray(eventsData)
         ? eventsData
-        : eventsData.events ?? eventsData.items ?? eventsData.data ?? [];
+        : eventsData?.events ?? eventsData?.items ?? eventsData?.data ?? [];
 
-      const safeStats = Array.isArray(statsList) ? statsList : [];
+      const safeStats = Array.isArray(statsList)
+        ? statsList.map((item: any) => ({
+            disease: item?.disease ?? item?.name ?? '-',
+            count: Number(item?.count ?? 0),
+          }))
+        : [];
       const safeEvents = Array.isArray(eventsList) ? eventsList : [];
 
       setStats(safeStats);
@@ -299,7 +338,7 @@ export function DashboardPage() {
                     <div>
                       <p className="text-white/60 text-xs mb-2">治疗方案</p>
                       <div className="bg-white/5 rounded-lg p-3 text-white/80 text-sm max-h-32 overflow-y-auto">
-                        {selectedEvent.treatment}
+                        {renderTreatment(selectedEvent.treatment)}
                       </div>
                     </div>
                   )}
