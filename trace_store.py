@@ -10,6 +10,8 @@ import os
 import threading
 from typing import Any, Dict, List
 
+from trace_catalog import NODE_TO_AGENT
+
 
 _EVENTS_DIR = os.path.join(".cache", "events")
 _TRACE_PATH = os.path.join(_EVENTS_DIR, "trace_events.jsonl")
@@ -48,6 +50,20 @@ def _normalize_event(trace_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
     if "ts" not in normalized:
         normalized["ts"] = _now_iso()
     normalized["trace_id"] = trace_id
+
+    node = normalized.get("node") or normalized.get("agent")
+    payload = normalized.get("payload")
+    if payload is None:
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {"value": payload}
+    agent_id = normalized.get("agent_id") or payload.get("agent_id")
+    if not agent_id and isinstance(node, str):
+        agent_id = NODE_TO_AGENT.get(node)
+    if agent_id:
+        normalized["agent_id"] = agent_id
+        payload["agent_id"] = agent_id
+    normalized["payload"] = payload
     with _LOCK:
         if "seq" not in normalized:
             _SEQ[trace_id] += 1

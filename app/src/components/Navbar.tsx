@@ -8,6 +8,13 @@ interface NavbarProps {
   onPageChange: (page: Page) => void;
 }
 
+const PAGE_TO_PATH: Record<Page, string> = {
+  diagnose: '/',
+  dashboard: '/dashboard',
+  profiles: '/profiles',
+  kb: '/kb',
+};
+
 const navItems: { id: Page; label: string; icon: React.ElementType }[] = [
   { id: 'diagnose', label: '诊断', icon: Stethoscope },
   { id: 'kb', label: '知识库管理', icon: BookOpen },
@@ -16,6 +23,14 @@ const navItems: { id: Page; label: string; icon: React.ElementType }[] = [
 ];
 
 export function Navbar({ currentPage, onPageChange }: NavbarProps) {
+  const handlePageChange = (page: Page) => {
+    onPageChange(page);
+    const targetPath = PAGE_TO_PATH[page];
+    if (window.location.pathname !== targetPath) {
+      window.history.pushState(null, '', targetPath);
+    }
+  };
+
   return (
     <nav className="fixed top-0 left-0 right-0 z-50 bg-[#c8f7c5]/95 backdrop-blur-md border-b border-white/10">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
@@ -39,7 +54,7 @@ export function Navbar({ currentPage, onPageChange }: NavbarProps) {
               return (
                 <button
                   key={item.id}
-                  onClick={() => onPageChange(item.id)}
+                  onClick={() => handlePageChange(item.id)}
                   className={cn(
                     "flex items-center gap-2 px-4 py-2 rounded-full text-sm font-medium transition-all duration-300",
                     isActive
@@ -75,7 +90,7 @@ export function Navbar({ currentPage, onPageChange }: NavbarProps) {
             return (
               <button
                 key={item.id}
-                onClick={() => onPageChange(item.id)}
+                onClick={() => handlePageChange(item.id)}
                 className={cn(
                   "flex items-center gap-3 w-full px-4 py-3 rounded-xl text-sm font-medium transition-all duration-300",
                   isActive
