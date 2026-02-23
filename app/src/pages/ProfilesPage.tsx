@@ -11,6 +11,17 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Separator } from '@/components/ui/separator';
 import { cn } from '@/lib/utils';
 
+interface FarmerBase {
+  base_id: string;
+  name: string;
+  location: string;
+  province: string;
+  facility_type: string;
+  environment: string;
+  growth_stage: string;
+  notes: string;
+}
+
 interface FarmerProfile {
   farmer_id: string;
   name: string;
@@ -23,17 +34,87 @@ interface FarmerProfile {
     harvest_window_days: number;
     banned_ingredients: string[];
   };
-  bases: Array<{
-    base_id: string;
-    name: string;
-    location: string;
-    province: string;
-    facility_type: string;
-    environment: string;
-    growth_stage: string;
-    notes: string;
-  }>;
+  bases: FarmerBase[];
 }
+
+const toSafeString = (value: unknown, fallback = ''): string => {
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  return fallback;
+};
+
+const toSafeNumber = (value: unknown, fallback = 0): number => {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string') {
+    const n = Number(value);
+    if (Number.isFinite(n)) return n;
+  }
+  return fallback;
+};
+
+const normalizeBase = (baseId: string, base: any): FarmerBase => ({
+  base_id: toSafeString(base?.base_id, baseId),
+  name: toSafeString(base?.name),
+  location: toSafeString(base?.location),
+  province: toSafeString(base?.province),
+  facility_type: toSafeString(base?.facility_type ?? base?.facility),
+  environment: toSafeString(base?.environment),
+  growth_stage: toSafeString(base?.growth_stage),
+  notes: toSafeString(base?.notes),
+});
+
+const normalizeProfile = (raw: any): FarmerProfile => {
+  const rawBases = raw?.bases;
+  const basesArray: FarmerBase[] = Array.isArray(rawBases)
+    ? rawBases.map((base: any, idx) => normalizeBase(toSafeString(base?.base_id, `B${idx + 1}`), base))
+    : rawBases && typeof rawBases === 'object'
+    ? Object.entries(rawBases).map(([baseId, base]) => normalizeBase(baseId, base))
+    : [];
+
+  const rawConstraints = raw?.constraints && typeof raw?.constraints === 'object' ? raw.constraints : {};
+  const rawBanned = (rawConstraints as any).banned_ingredients;
+
+  return {
+    farmer_id: toSafeString(raw?.farmer_id),
+    name: toSafeString(raw?.name),
+    active_base_id: toSafeString(raw?.active_base_id),
+    confirm_when_low_confidence: Boolean(raw?.confirm_when_low_confidence),
+    schema_version: toSafeString(raw?.schema_version, '1.0'),
+    updated_at: toSafeString(raw?.updated_at),
+    constraints: {
+      prefer_organic: Boolean((rawConstraints as any).prefer_organic),
+      harvest_window_days: toSafeNumber((rawConstraints as any).harvest_window_days, 0),
+      banned_ingredients: Array.isArray(rawBanned)
+        ? rawBanned.map((item: unknown) => toSafeString(item)).filter(Boolean)
+        : [],
+    },
+    bases: basesArray,
+  };
+};
+
+const normalizeProfileList = (raw: any): FarmerProfile[] => {
+  if (!Array.isArray(raw)) return [];
+  return raw.map((item: any) => {
+    if (item && typeof item === 'object' && ('farmer_id' in item || 'name' in item)) {
+      return normalizeProfile(item);
+    }
+    const farmerId = toSafeString(item?.id);
+    return {
+      farmer_id: farmerId,
+      name: farmerId || '未命名农户',
+      active_base_id: '',
+      confirm_when_low_confidence: true,
+      schema_version: '1.0',
+      updated_at: '',
+      constraints: {
+        prefer_organic: false,
+        harvest_window_days: 0,
+        banned_ingredients: [],
+      },
+      bases: [],
+    };
+  });
+};
 
 export function ProfilesPage() {
   const [profiles, setProfiles] = useState<FarmerProfile[]>([]);
@@ -45,53 +126,78 @@ export function ProfilesPage() {
   const [newIngredient, setNewIngredient] = useState('');
   const [showAddBaseDialog, setShowAddBaseDialog] = useState(false);
   const [newBaseId, setNewBaseId] = useState('');
+  const [errorMessage, setErrorMessage] = useState('');
+
+  const parseJsonOrThrow = async (resp: Response) => {
+    let payload: any = null;
+    try {
+      payload = await resp.json();
+    } catch {
+      // noop
+    }
+    if (!resp.ok) {
+      const detail = payload?.detail || payload?.message || `请求失败：${resp.status}`;
+      throw new Error(detail);
+    }
+    return payload;
+  };
 
   const fetchProfiles = async () => {
     setLoading(true);
+    setErrorMessage('');
     try {
       const resp = await fetch('/api/profiles');
-      const data = await resp.json();
-      setProfiles(data.profiles || []);
+      const data = await parseJsonOrThrow(resp);
+      setProfiles(normalizeProfileList(data?.profiles));
     } catch (error) {
+      const msg = error instanceof Error ? error.message : '加载农户列表失败';
+      setErrorMessage(msg);
       console.error('Failed to fetch profiles:', error);
+      setProfiles([]);
     } finally {
       setLoading(false);
     }
   };
 
   const fetchProfileDetail = async (farmerId: string) => {
+    setErrorMessage('');
     try {
       const resp = await fetch(`/api/profiles/${farmerId}`);
-      const data = await resp.json();
-      setSelectedProfile(data);
-      setEditedProfile(JSON.parse(JSON.stringify(data)));
+      const data = await parseJsonOrThrow(resp);
+      const normalized = normalizeProfile(data);
+      setSelectedProfile(normalized);
+      setEditedProfile(JSON.parse(JSON.stringify(normalized)));
     } catch (error) {
+      const msg = error instanceof Error ? error.message : '加载农户详情失败';
+      setErrorMessage(msg);
       console.error('Failed to fetch profile detail:', error);
     }
   };
 
   const saveProfile = async () => {
     if (!editedProfile) return;
-    
+
+    setErrorMessage('');
     try {
       const resp = await fetch(`/api/profiles/${editedProfile.farmer_id}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(editedProfile)
       });
-      
-      if (resp.ok) {
-        fetchProfiles();
-        setSelectedProfile(editedProfile);
-      }
+      await parseJsonOrThrow(resp);
+      fetchProfiles();
+      setSelectedProfile(editedProfile);
     } catch (error) {
+      const msg = error instanceof Error ? error.message : '保存农户失败';
+      setErrorMessage(msg);
       console.error('Failed to save profile:', error);
     }
   };
 
   const createProfile = async () => {
     if (!newProfileName.trim()) return;
-    
+
+    setErrorMessage('');
     try {
       const resp = await fetch('/api/profiles', {
         method: 'POST',
@@ -106,45 +212,54 @@ export function ProfilesPage() {
           }
         })
       });
-      
-      const data = await resp.json();
-      if (data.id) {
+
+      const data = await parseJsonOrThrow(resp);
+      if (data?.id) {
         fetchProfiles();
         fetchProfileDetail(data.id);
         setShowAddDialog(false);
         setNewProfileName('');
       }
     } catch (error) {
+      const msg = error instanceof Error ? error.message : '创建农户失败';
+      setErrorMessage(msg);
       console.error('Failed to create profile:', error);
     }
   };
 
   const deleteProfile = async () => {
     if (!selectedProfile) return;
-    
+
+    setErrorMessage('');
     try {
       const resp = await fetch(`/api/profiles/${selectedProfile.farmer_id}`, {
         method: 'DELETE'
       });
-      
-      if (resp.ok) {
-        setSelectedProfile(null);
-        setEditedProfile(null);
-        fetchProfiles();
-      }
+
+      await parseJsonOrThrow(resp);
+      setSelectedProfile(null);
+      setEditedProfile(null);
+      fetchProfiles();
     } catch (error) {
+      const msg = error instanceof Error ? error.message : '删除农户失败';
+      setErrorMessage(msg);
       console.error('Failed to delete profile:', error);
     }
   };
 
   const addIngredient = () => {
     if (!newIngredient.trim() || !editedProfile) return;
-    
+
     setEditedProfile({
       ...editedProfile,
       constraints: {
         ...editedProfile.constraints,
-        banned_ingredients: [...editedProfile.constraints.banned_ingredients, newIngredient.trim()]
+        banned_ingredients: [
+          ...(Array.isArray(editedProfile.constraints.banned_ingredients)
+            ? editedProfile.constraints.banned_ingredients
+            : []),
+          newIngredient.trim(),
+        ]
       }
     });
     setNewIngredient('');
@@ -152,22 +267,25 @@ export function ProfilesPage() {
 
   const removeIngredient = (idx: number) => {
     if (!editedProfile) return;
-    
+
     setEditedProfile({
       ...editedProfile,
       constraints: {
         ...editedProfile.constraints,
-        banned_ingredients: editedProfile.constraints.banned_ingredients.filter((_, i) => i !== idx)
+        banned_ingredients: (Array.isArray(editedProfile.constraints.banned_ingredients)
+          ? editedProfile.constraints.banned_ingredients
+          : []
+        ).filter((_, i) => i !== idx)
       }
     });
   };
 
   const addBase = () => {
     if (!newBaseId.trim() || !editedProfile) return;
-    
+
     setEditedProfile({
       ...editedProfile,
-      bases: [...editedProfile.bases, {
+      bases: [...(Array.isArray(editedProfile.bases) ? editedProfile.bases : []), {
         base_id: newBaseId,
         name: '',
         location: '',
@@ -184,10 +302,10 @@ export function ProfilesPage() {
 
   const removeBase = (idx: number) => {
     if (!editedProfile) return;
-    
+
     setEditedProfile({
       ...editedProfile,
-      bases: editedProfile.bases.filter((_, i) => i !== idx)
+      bases: (Array.isArray(editedProfile.bases) ? editedProfile.bases : []).filter((_, i) => i !== idx)
     });
   };
 
@@ -214,6 +332,14 @@ export function ProfilesPage() {
         </Button>
       </div>
 
+      {errorMessage && (
+        <Card className="border-red-500/30 bg-red-500/10">
+          <CardContent className="pt-6 text-red-300 text-sm">
+            {errorMessage}
+          </CardContent>
+        </Card>
+      )}
+
       <div className="grid lg:grid-cols-4 gap-6">
         {/* Profile List */}
         <Card className="glass-card lg:col-span-1">
@@ -229,30 +355,30 @@ export function ProfilesPage() {
               disabled={loading}
               className="text-white/60 hover:text-white"
             >
-              <RefreshCw className={cn("w-4 h-4", loading && "animate-spin")} />
+              <RefreshCw className={cn('w-4 h-4', loading && 'animate-spin')} />
             </Button>
           </CardHeader>
           <CardContent>
             <div className="space-y-2">
-              {profiles.map((profile) => (
+              {(Array.isArray(profiles) ? profiles : []).map((profile) => (
                 <div
-                  key={profile.farmer_id}
+                  key={profile.farmer_id || profile.name}
                   onClick={() => fetchProfileDetail(profile.farmer_id)}
                   className={cn(
-                    "p-3 rounded-xl cursor-pointer transition-all duration-300",
+                    'p-3 rounded-xl cursor-pointer transition-all duration-300',
                     selectedProfile?.farmer_id === profile.farmer_id
-                      ? "bg-[#c8f7c5]/20 border border-[#c8f7c5]/50"
-                      : "bg-white/5 hover:bg-white/10 border border-transparent"
+                      ? 'bg-[#c8f7c5]/20 border border-[#c8f7c5]/50'
+                      : 'bg-white/5 hover:bg-white/10 border border-transparent'
                   )}
                 >
                   <div className="flex items-center gap-2">
                     <div className="w-8 h-8 bg-[#c8f7c5]/20 rounded-full flex items-center justify-center">
                       <span className="text-[#c8f7c5] text-xs font-bold">
-                        {profile.name.charAt(0)}
+                        {(profile.name || profile.farmer_id || '?').charAt(0)}
                       </span>
                     </div>
                     <div>
-                      <p className="text-white font-medium">{profile.name}</p>
+                      <p className="text-white font-medium">{profile.name || profile.farmer_id || '未命名农户'}</p>
                       <p className="text-white/40 text-xs">{profile.farmer_id}</p>
                     </div>
                   </div>
@@ -333,14 +459,14 @@ export function ProfilesPage() {
                     <div className="space-y-2">
                       <Label className="text-white/60">当前基地</Label>
                       <Select
-                        value={editedProfile.active_base_id}
+                        value={editedProfile.active_base_id || ''}
                         onValueChange={(v) => setEditedProfile({ ...editedProfile, active_base_id: v })}
                       >
                         <SelectTrigger className="bg-white/5 border-white/20 text-white">
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent className="bg-[#1a1a1a] border-white/20">
-                          {editedProfile.bases.map((base) => (
+                          {(Array.isArray(editedProfile.bases) ? editedProfile.bases : []).map((base) => (
                             <SelectItem key={base.base_id} value={base.base_id}>
                               {base.name || base.base_id}
                             </SelectItem>
@@ -406,7 +532,7 @@ export function ProfilesPage() {
                           placeholder="输入成分"
                           value={newIngredient}
                           onChange={(e) => setNewIngredient(e.target.value)}
-                          onKeyPress={(e) => e.key === 'Enter' && addIngredient()}
+                          onKeyDown={(e) => e.key === 'Enter' && addIngredient()}
                           className="bg-white/5 border-white/20 text-white focus:border-[#c8f7c5]"
                         />
                         <Button
@@ -418,7 +544,10 @@ export function ProfilesPage() {
                         </Button>
                       </div>
                       <div className="flex flex-wrap gap-2 mt-2">
-                        {editedProfile.constraints.banned_ingredients.map((ing, idx) => (
+                        {(Array.isArray(editedProfile.constraints.banned_ingredients)
+                          ? editedProfile.constraints.banned_ingredients
+                          : []
+                        ).map((ing, idx) => (
                           <Badge
                             key={idx}
                             variant="outline"
@@ -453,8 +582,8 @@ export function ProfilesPage() {
                         新增基地
                       </Button>
                     </div>
-                    
-                    {editedProfile.bases.map((base, idx) => (
+
+                    {(Array.isArray(editedProfile.bases) ? editedProfile.bases : []).map((base, idx) => (
                       <div key={base.base_id} className="bg-white/5 rounded-xl p-4 space-y-3">
                         <div className="flex items-center justify-between">
                           <Badge className="bg-[#c8f7c5]/20 text-[#c8f7c5]">{base.base_id}</Badge>
@@ -543,7 +672,7 @@ export function ProfilesPage() {
                         </div>
                       </div>
                     ))}
-                    
+
                     {editedProfile.bases.length === 0 && (
                       <div className="text-center py-6 text-white/40">
                         <MapPin className="w-8 h-8 mx-auto mb-2 opacity-50" />
