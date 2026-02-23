@@ -149,6 +149,8 @@ export function KBPage() {
         fetchDiseases();
         setShowDiseaseDialog(false);
         setEditingDisease(null);
+      } else if (resp.status === 409) {
+        alert('病害已存在');
       }
     } catch (error) {
       console.error('Failed to save disease:', error);

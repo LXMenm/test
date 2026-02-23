@@ -934,7 +934,7 @@ def create_kb_disease(payload: dict = Body(...)) -> dict[str, bool]:
         raise HTTPException(status_code=400, detail="病害名称与描述不能为空")
     existing = {item["name"] for item in kb.list_diseases()}
     if name in existing:
-        raise HTTPException(status_code=409, detail="病害已存在，请使用编辑")
+        raise HTTPException(status_code=409, detail="病害已存在，请使用更新功能")
     kb.upsert_disease(name, description)
     return {"ok": True}
 
