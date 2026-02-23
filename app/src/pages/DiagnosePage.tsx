@@ -38,6 +38,11 @@ export function DiagnosePage() {
   const [result, setResult] = useState<DiagnosisResult | null>(null);
   const [traceEvents, setTraceEvents] = useState<TraceEvent[]>([]);
   const [traceId, setTraceId] = useState('');
+  const [imageId, setImageId] = useState('');
+  const [confirmMode, setConfirmMode] = useState(false);
+  const [confirmChoice, setConfirmChoice] = useState('other');
+  const [confirmSymptoms, setConfirmSymptoms] = useState('');
+  const [confirmSubmitting, setConfirmSubmitting] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const traceSourceRef = useRef<EventSource | null>(null);
 
@@ -116,13 +121,53 @@ export function DiagnosePage() {
     return null;
   };
 
+
+
+  const normalizeTop3 = (payload: any): Array<{ disease: string; confidence: number }> => {
+    const rawTop3 = payload?.image_result?.top3 ?? payload?.top3 ?? [];
+    if (!Array.isArray(rawTop3)) return [];
+    return rawTop3
+      .map((item: any) => {
+        const disease = typeof item?.disease === 'string' ? item.disease : '';
+        const pctFromProb = toNumber(item?.prob) !== null ? (toNumber(item?.prob) as number) * 100 : null;
+        const confidence =
+          toNumber(item?.confidence) ??
+          toNumber(item?.confidence_pct) ??
+          toNumber(item?.prob_pct) ??
+          pctFromProb ??
+          0;
+        return { disease, confidence };
+      })
+      .filter((item) => item.disease);
+  };
+
+  const shouldEnterConfirmMode = (payload: any): boolean => {
+    if (payload?.need_confirm === true) return true;
+    const reasons = Array.isArray(payload?.fallback_reason) ? payload.fallback_reason : [];
+    return reasons.includes('low_confidence') || reasons.includes('low_margin');
+  };
+
+  const buildResultFromPayload = (payload: any): DiagnosisResult => ({
+    image_url: payload?.image_url || '',
+    final_disease: payload?.final_disease || payload?.image_result?.disease || '未知',
+    displayConfidencePct: resolveDisplayConfidencePct(payload),
+    model_display_name: payload?.model_display_name || payload?.model_id || '-',
+    top3: normalizeTop3(payload),
+    treatment: payload?.treatment,
+    prevention: payload?.prevention ?? payload?.treatment?.prevention,
+    trace_id: payload?.trace_id || '',
+  });
+
   const handleSubmit = async () => {
     if (!file) return;
-    
+
     setLoading(true);
     setResult(null);
     setTraceEvents([]);
-    
+    setConfirmMode(false);
+    setConfirmChoice('other');
+    setConfirmSymptoms('');
+
     try {
       const fd = new FormData();
       fd.append('file', file);
@@ -130,29 +175,32 @@ export function DiagnosePage() {
       if (symptoms.trim()) fd.append('symptoms', symptoms.trim());
       if (growthStage.trim()) fd.append('growth_stage', growthStage.trim());
       if (modelId) fd.append('model_id', modelId);
-      
+
       const resp = await fetch('/api/diagnose-image', {
         method: 'POST',
         body: fd
       });
-      
       const data = await resp.json();
-      
+      if (!resp.ok) {
+        throw new Error(data?.detail || `诊断失败: ${resp.status}`);
+      }
+
       if (data.trace_id) {
         setTraceId(data.trace_id);
         openTraceStream(data.trace_id);
       }
-      
-      setResult({
-        image_url: data.image_url,
-        final_disease: data.final_disease,
-        displayConfidencePct: resolveDisplayConfidencePct(data),
-        model_display_name: data.model_display_name,
-        top3: data.top3 || [],
-        treatment: data.treatment,
-        prevention: data.prevention,
-        trace_id: data.trace_id
-      });
+      if (data.image_id) {
+        setImageId(data.image_id);
+      }
+
+      const normalizedResult = buildResultFromPayload(data);
+      setResult(normalizedResult);
+
+      if (shouldEnterConfirmMode(data)) {
+        setConfirmMode(true);
+        const defaultChoice = normalizedResult.top3[0]?.disease || 'other';
+        setConfirmChoice(defaultChoice);
+      }
     } catch (error) {
       console.error('Diagnosis failed:', error);
     } finally {
@@ -160,7 +208,55 @@ export function DiagnosePage() {
     }
   };
 
+  const handleConfirmSubmit = async () => {
+    if (!traceId || !imageId) return;
+    setConfirmSubmitting(true);
+    try {
+      const additionalSymptoms = confirmSymptoms
+        .split(',')
+        .map((item) => item.trim())
+        .filter(Boolean);
+      const symptomsForConfirm = confirmChoice !== 'other'
+        ? [confirmChoice, ...additionalSymptoms]
+        : additionalSymptoms;
 
+      const resp = await fetch('/api/diagnose-confirm', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          trace_id: traceId,
+          image_id: imageId,
+          crop_type: cropType || '番茄',
+          symptoms: symptomsForConfirm,
+          growth_stage: growthStage || null,
+          model_id: modelId || null,
+          choice: confirmChoice,
+          notes: confirmSymptoms || null,
+        }),
+      });
+      const data = await resp.json();
+      if (!resp.ok) {
+        throw new Error(data?.detail || `确认失败: ${resp.status}`);
+      }
+
+      if (data.trace_id) {
+        setTraceId(data.trace_id);
+        openTraceStream(data.trace_id);
+      }
+
+      const mergedPayload = {
+        ...data,
+        image_url: result?.image_url || '',
+        prevention: data?.treatment?.prevention,
+      };
+      setResult(buildResultFromPayload(mergedPayload));
+      setConfirmMode(false);
+    } catch (error) {
+      console.error('Confirm diagnose failed:', error);
+    } finally {
+      setConfirmSubmitting(false);
+    }
+  };
 
   const renderRichValue = (value: unknown) => {
     if (value === null || value === undefined) return null;
@@ -400,6 +496,56 @@ export function DiagnosePage() {
                           </div>
                         ))}
                       </div>
+                    </div>
+                  )}
+
+
+                  {confirmMode && (
+                    <div className="bg-[#c8f7c5]/10 border border-[#c8f7c5]/30 rounded-xl p-4 space-y-4">
+                      <h4 className="text-[#c8f7c5] font-medium">二次诊断 / 确认入口</h4>
+                      <div className="space-y-2">
+                        <Label className="text-white/80">候选病害选择</Label>
+                        {(Array.isArray(result.top3) ? result.top3 : []).map((item) => (
+                          <label key={item.disease} className="flex items-center gap-2 text-sm text-white/80 cursor-pointer">
+                            <input
+                              type="radio"
+                              name="confirmDisease"
+                              value={item.disease}
+                              checked={confirmChoice === item.disease}
+                              onChange={(e) => setConfirmChoice(e.target.value)}
+                            />
+                            <span>{item.disease}</span>
+                          </label>
+                        ))}
+                        <label className="flex items-center gap-2 text-sm text-white/80 cursor-pointer">
+                          <input
+                            type="radio"
+                            name="confirmDisease"
+                            value="other"
+                            checked={confirmChoice === 'other'}
+                            onChange={(e) => setConfirmChoice(e.target.value)}
+                          />
+                          <span>仍不确定 / 其他</span>
+                        </label>
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label className="text-white/80">补充症状（可选，逗号分隔）</Label>
+                        <Input
+                          value={confirmSymptoms}
+                          onChange={(e) => setConfirmSymptoms(e.target.value)}
+                          placeholder="例如：叶片卷曲, 发黄"
+                          className="bg-white/5 border-white/20 text-white placeholder:text-white/40"
+                        />
+                      </div>
+
+                      <Button
+                        onClick={handleConfirmSubmit}
+                        disabled={confirmSubmitting || !traceId || !imageId}
+                        className="bg-[#c8f7c5] text-black hover:bg-[#b8e7b5]"
+                      >
+                        {confirmSubmitting ? '提交中...' : '提交确认'}
+                      </Button>
                     </div>
                   )}
 
