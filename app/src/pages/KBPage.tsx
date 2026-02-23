@@ -85,6 +85,16 @@ export function KBPage() {
     }
   };
 
+  const fetchDiseases = async () => {
+    try {
+      const resp = await fetch('/api/kb/diseases');
+      const data = await resp.json();
+      setDiseases(data.items || []);
+    } catch (error) {
+      console.error('Failed to fetch diseases:', error);
+    }
+  };
+
   const fetchData = async (tab: TabType) => {
     setLoading(true);
     try {
