@@ -105,6 +105,20 @@ const clamp = (v: number, min: number, max: number) => Math.max(min, Math.min(ma
 
 const softProgress = (elapsedMs: number) => clamp(Math.round((elapsedMs / 8000) * 90), 5, 90);
 
+const formatDuration = (ms: number): string => {
+  if (!Number.isFinite(ms) || ms <= 0) return '0.00s';
+  if (ms < 1000) return `${(ms / 1000).toFixed(2)}s`;
+
+  const seconds = ms / 1000;
+  if (seconds >= 60) {
+    const minutes = Math.floor(seconds / 60);
+    const remainSeconds = seconds - minutes * 60;
+    return `${minutes}m${remainSeconds.toFixed(1)}s`;
+  }
+
+  return `${seconds.toFixed(2)}s`;
+};
+
 const normalizeMessage = (rawMessage: unknown, fallback: string) => {
   const m = String(rawMessage || '').trim();
   if (!m || m.toLowerCase() === 'start') return fallback;
@@ -346,7 +360,8 @@ export function AgentWorkflowPanel({ traceId, confidencePct }: AgentWorkflowPane
         ? softProgress(Math.max(0, elapsed))
         : row.progress;
       const progress = row.status === 'running' ? Math.max(row.progress, soft) : row.progress;
-      const duration = formatDuration(row.startTs, row.endTs, nowMs);
+      const durationMs = row.startTs ? Math.max(0, (row.endTs ?? nowMs) - row.startTs) : 0;
+      const duration = formatDuration(durationMs ?? 0);
       return { ...def, ...row, progress, duration };
     });
   }, [rows, nowMs, workflowDone]);
@@ -445,14 +460,14 @@ export function AgentWorkflowPanel({ traceId, confidencePct }: AgentWorkflowPane
                       </div>
                       <div className="text-xs text-white/50 flex items-center gap-1">
                         <Timer className="w-3 h-3" />
-                        {row.duration
+                        {row.startTs
                           ? row.status === 'completed'
-                            ? `✓ 完成 (${row.duration}s)`
+                            ? `✓ 完成 (${row.duration})`
                             : row.status === 'running'
-                              ? `进行中 (${row.duration}s)`
+                              ? `进行中 (${row.duration})`
                               : row.status === 'error'
-                                ? `中断 (${row.duration}s)`
-                                : ''
+                                ? `中断 (${row.duration})`
+                                : row.duration
                           : '等待执行'}
                       </div>
                     </div>
@@ -497,7 +512,7 @@ export function AgentWorkflowPanel({ traceId, confidencePct }: AgentWorkflowPane
           <div className="h-full bg-[#4ade80] transition-all duration-500 progress-shine" style={{ width: `${totalProgress}%` }} />
         </div>
         <p className="text-xs text-white/50 mt-2">
-          总耗时：{formatDuration(overallStart, overallEnd, nowMs) ?? '0.00'}s {workflowDone ? '· 已结束' : ''}
+          总耗时：{formatDuration((overallStart ? Math.max(0, (overallEnd ?? nowMs) - overallStart) : 0) ?? 0)} {workflowDone ? '· 已结束' : ''}
         </p>
       </div>
     </div>
