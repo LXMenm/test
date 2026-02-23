@@ -139,10 +139,25 @@ const mapToFixedAgent = (agentId: string | undefined, node: string | undefined):
   return 'supervisor';
 };
 
+const compareEvents = (a: WorkflowEvent, b: WorkflowEvent): number => {
+  const aHasSeq = typeof a.seq === 'number' && Number.isFinite(a.seq);
+  const bHasSeq = typeof b.seq === 'number' && Number.isFinite(b.seq);
+  if (aHasSeq && bHasSeq) return (a.seq as number) - (b.seq as number);
+
+  const aTs = parseTsMs(a.ts) ?? Number.MAX_SAFE_INTEGER;
+  const bTs = parseTsMs(b.ts) ?? Number.MAX_SAFE_INTEGER;
+  if (aTs !== bTs) return aTs - bTs;
+
+  if (aHasSeq && !bHasSeq) return -1;
+  if (!aHasSeq && bHasSeq) return 1;
+  return 0;
+};
+
 export function AgentWorkflowPanel({ traceId, confidencePct }: AgentWorkflowPanelProps) {
   const [rows, setRows] = useState<Record<FixedAgentId, AgentRowState>>(buildInitialState());
   const [connectionState, setConnectionState] = useState<'idle' | 'connecting' | 'connected' | 'disconnected'>('idle');
   const [connectionHint, setConnectionHint] = useState('');
+  const [replayedCount, setReplayedCount] = useState(0);
   const [nowMs, setNowMs] = useState(Date.now());
   const [workflowDone, setWorkflowDone] = useState(false);
   const [diagnosisConfidencePct, setDiagnosisConfidencePct] = useState<number | undefined>(undefined);
@@ -153,6 +168,7 @@ export function AgentWorkflowPanel({ traceId, confidencePct }: AgentWorkflowPane
   const seenSeqRef = useRef<Set<number>>(new Set());
   const lastSeqRef = useRef(-1);
   const workflowDoneRef = useRef(false);
+  const replayedCountRef = useRef(0);
 
   useEffect(() => {
     if (typeof confidencePct === 'number' && Number.isFinite(confidencePct)) {
@@ -188,6 +204,19 @@ export function AgentWorkflowPanel({ traceId, confidencePct }: AgentWorkflowPane
       pollRef.current = null;
     }
     clearTicker();
+  };
+
+  const normalizeEvent = (evt: any): WorkflowEvent => {
+    const payload = evt?.payload && typeof evt.payload === 'object' ? evt.payload : {};
+    return {
+      seq: evt?.seq,
+      ts: evt?.ts || evt?.timestamp,
+      node: evt?.node || evt?.agent,
+      agent_id: evt?.agent_id || payload?.agent_id,
+      status: evt?.status || evt?.step,
+      message: evt?.message,
+      payload,
+    };
   };
 
   const handleEvent = (evt: WorkflowEvent) => {
@@ -289,6 +318,8 @@ export function AgentWorkflowPanel({ traceId, confidencePct }: AgentWorkflowPane
       setRows(buildInitialState());
       setConnectionState('idle');
       setConnectionHint('');
+      setReplayedCount(0);
+      replayedCountRef.current = 0;
       setWorkflowDone(false);
       workflowDoneRef.current = false;
       seenSeqRef.current.clear();
@@ -299,57 +330,134 @@ export function AgentWorkflowPanel({ traceId, confidencePct }: AgentWorkflowPane
     clearExternal();
     setRows(buildInitialState());
     setConnectionState('connecting');
-    setConnectionHint('正在连接追踪流...');
+    setConnectionHint('正在回放历史事件...');
+    setReplayedCount(0);
+    replayedCountRef.current = 0;
     setWorkflowDone(false);
     workflowDoneRef.current = false;
     seenSeqRef.current.clear();
     lastSeqRef.current = -1;
 
-    const es = new EventSource(`/api/traces/${encodeURIComponent(traceId)}/stream`);
-    esRef.current = es;
+    let cancelled = false;
 
-    es.addEventListener('trace', (e) => {
-      const payload = JSON.parse(e.data || '{}') as WorkflowEvent;
-      handleEvent(payload);
-      setConnectionState('connected');
-      setConnectionHint('SSE 实时连接中');
-    });
+    const openStream = () => {
+      if (cancelled || workflowDoneRef.current) return;
 
-    es.onerror = () => {
-      setConnectionState('disconnected');
-      setConnectionHint('连接已断开，尝试轮询补齐...');
-      clearTicker();
-      es.close();
+      const es = new EventSource(`/api/traces/${encodeURIComponent(traceId)}/stream`);
+      esRef.current = es;
 
-      pollRef.current = setInterval(async () => {
-        if (workflowDoneRef.current) return;
-        try {
-          const resp = await fetch(`/api/trace-events?trace_id=${encodeURIComponent(traceId)}`);
-          if (!resp.ok) return;
-          const data = await resp.json();
-          const list = Array.isArray(data?.events) ? data.events : [];
-          list.forEach((evt: any) => {
-            handleEvent({
-              seq: evt?.seq,
-              ts: evt?.ts || evt?.timestamp,
-              node: evt?.node || evt?.agent,
-              agent_id: evt?.agent_id || evt?.payload?.agent_id,
-              status: evt?.status || evt?.step,
-              message: evt?.message,
-              payload: evt?.payload || {},
-            });
-          });
-        } catch {
-          // ignore polling failures
+      es.addEventListener('trace', (e) => {
+        const payload = normalizeEvent(JSON.parse(e.data || '{}'));
+        const seq = payload.seq;
+        if (typeof seq === 'number' && Number.isFinite(seq) && seq <= lastSeqRef.current) {
+          return;
         }
-      }, 2000);
+        handleEvent(payload);
+        setConnectionState('connected');
+        setConnectionHint(`已回放 ${replayedCountRef.current} 条事件 + 实时连接中`);
+      });
+
+      es.onerror = () => {
+        setConnectionState('disconnected');
+        setConnectionHint('连接已断开，尝试轮询补齐...');
+        clearTicker();
+        es.close();
+
+        pollRef.current = setInterval(async () => {
+          if (workflowDoneRef.current) return;
+          try {
+            const resp = await fetch(`/api/trace-events?trace_id=${encodeURIComponent(traceId)}`);
+            if (!resp.ok) return;
+            const data = await resp.json();
+            const list = Array.isArray(data?.events) ? data.events : [];
+            list
+              .map((eventLike) => normalizeEvent(eventLike))
+              .sort(compareEvents)
+              .forEach((evt) => {
+                const seq = evt.seq;
+                if (typeof seq === 'number' && Number.isFinite(seq) && seq <= lastSeqRef.current) {
+                  return;
+                }
+                handleEvent(evt);
+              });
+          } catch {
+            // ignore polling failures
+          }
+        }, 2000);
+      };
     };
 
-    return () => clearExternal();
+    const replayThenConnect = async () => {
+      try {
+        const resp = await fetch(`/api/trace-events?trace_id=${encodeURIComponent(traceId)}`);
+        if (!resp.ok) {
+          setConnectionHint('历史回放失败，直接连接实时流...');
+          openStream();
+          return;
+        }
+        const data = await resp.json();
+        const list = Array.isArray(data?.events) ? data.events : [];
+        const sorted = list
+          .map((eventLike) => normalizeEvent(eventLike))
+          .sort(compareEvents);
+
+        if (cancelled) return;
+
+        sorted.forEach((evt) => handleEvent(evt));
+
+        const maxSeq = sorted.reduce((max, evt) => {
+          if (typeof evt.seq === 'number' && Number.isFinite(evt.seq)) {
+            return Math.max(max, evt.seq);
+          }
+          return max;
+        }, -1);
+        lastSeqRef.current = Math.max(lastSeqRef.current, maxSeq);
+        setReplayedCount(sorted.length);
+        replayedCountRef.current = sorted.length;
+
+        if (workflowDoneRef.current) {
+          setConnectionState('disconnected');
+          setConnectionHint(`已回放 ${sorted.length} 条事件，流程已结束`);
+          return;
+        }
+
+        setConnectionHint(`已回放 ${sorted.length} 条事件，正在连接实时流...`);
+        openStream();
+      } catch {
+        if (cancelled) return;
+        setConnectionHint('历史回放异常，直接连接实时流...');
+        openStream();
+      }
+    };
+
+    replayThenConnect();
+
+    return () => {
+      cancelled = true;
+      clearExternal();
+    };
   }, [traceId]);
 
   useEffect(() => {
-    if (workflowDone) clearTicker();
+    if (workflowDone) {
+      clearTicker();
+      if (esRef.current) {
+        esRef.current.close();
+        esRef.current = null;
+      }
+      setRows((prev) => {
+        if (prev.supervisor.status !== 'running') return prev;
+        const next = { ...prev };
+        next.supervisor = {
+          ...next.supervisor,
+          status: 'completed',
+          progress: 100,
+          endTs: next.supervisor.endTs ?? Date.now(),
+          lastMessage: next.supervisor.lastMessage || 'supervisor 执行完成',
+        };
+        return next;
+      });
+    }
   }, [workflowDone]);
 
   const renderedRows = useMemo(() => {
@@ -390,6 +498,7 @@ export function AgentWorkflowPanel({ traceId, confidencePct }: AgentWorkflowPane
           {connectionState === 'connected' ? 'SSE 已连接' : connectionState === 'connecting' ? 'SSE 连接中' : connectionState === 'disconnected' ? 'SSE 已断开' : '等待 trace'}
         </Badge>
         {connectionHint && <span className="text-xs text-white/50">{connectionHint}</span>}
+        {replayedCount > 0 && <span className="text-xs text-[#c8f7c5]/70">已回放 {replayedCount} 条</span>}
         {typeof diagnosisConfidencePct === 'number' && (
           <Badge className="bg-[#c8f7c5]/20 text-[#c8f7c5] border border-[#c8f7c5]/30">
             诊断置信度 {diagnosisConfidencePct.toFixed(2)}%
