@@ -1,5 +1,5 @@
-import { useState, useRef, useEffect } from 'react';
-import { Upload, Send, RefreshCw, AlertCircle, CheckCircle, Loader2, Image as ImageIcon } from 'lucide-react';
+import { useState, useRef } from 'react';
+import { Upload, Send, RefreshCw, AlertCircle, CheckCircle, Loader2, Image as ImageIcon, ChevronDown, ChevronUp } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -8,6 +8,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
 import { cn } from '@/lib/utils';
+import { AgentWorkflowPanel } from '@/components/AgentWorkflowPanel';
 
 interface DiagnosisResult {
   image_url: string;
@@ -43,17 +44,9 @@ export function DiagnosePage() {
   const [confirmChoice, setConfirmChoice] = useState('other');
   const [confirmSymptoms, setConfirmSymptoms] = useState('');
   const [confirmSubmitting, setConfirmSubmitting] = useState(false);
+  const [showRawTrace, setShowRawTrace] = useState(false);
+  const [diagnosisStartTime, setDiagnosisStartTime] = useState<number | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const traceSourceRef = useRef<EventSource | null>(null);
-
-  // Cleanup EventSource on unmount
-  useEffect(() => {
-    return () => {
-      if (traceSourceRef.current) {
-        traceSourceRef.current.close();
-      }
-    };
-  }, []);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const selectedFile = e.target.files?.[0];
@@ -67,30 +60,21 @@ export function DiagnosePage() {
     }
   };
 
-  const openTraceStream = (tid: string) => {
-    if (traceSourceRef.current) {
-      traceSourceRef.current.close();
-    }
-    
-    const es = new EventSource(`/api/traces/${encodeURIComponent(tid)}/stream`);
-    traceSourceRef.current = es;
-    
-    es.addEventListener('trace', (evt) => {
-      const payload = JSON.parse(evt.data || '{}');
-      if (payload.node && payload.status) {
-        setTraceEvents(prev => [...prev, {
-          timestamp: new Date().toISOString(),
-          agent: payload.node,
-          status: payload.status,
-          message: payload.message
-        }]);
-      }
-    });
-    
-    es.onerror = () => {
-      es.close();
-    };
+
+
+  const handleIncomingTracePayload = (payload: any) => {
+    if (!payload?.node || !payload?.status) return;
+    setTraceEvents((prev) => [
+      ...prev,
+      {
+        timestamp: payload.ts || new Date().toISOString(),
+        agent: payload.node,
+        status: payload.status,
+        message: payload.message,
+      },
+    ]);
   };
+
 
 
   const toNumber = (value: unknown): number | null => {
@@ -167,6 +151,7 @@ export function DiagnosePage() {
     setConfirmMode(false);
     setConfirmChoice('other');
     setConfirmSymptoms('');
+    setDiagnosisStartTime(Date.now());
 
     try {
       const fd = new FormData();
@@ -187,7 +172,6 @@ export function DiagnosePage() {
 
       if (data.trace_id) {
         setTraceId(data.trace_id);
-        openTraceStream(data.trace_id);
       }
       if (data.image_id) {
         setImageId(data.image_id);
@@ -241,7 +225,6 @@ export function DiagnosePage() {
 
       if (data.trace_id) {
         setTraceId(data.trace_id);
-        openTraceStream(data.trace_id);
       }
 
       const mergedPayload = {
@@ -604,18 +587,38 @@ export function DiagnosePage() {
                 </div>
               )}
             </CardHeader>
-            <CardContent>
-              {traceEvents.length > 0 ? (
+            <CardContent className="space-y-4">
+              <AgentWorkflowPanel
+                traceId={traceId || undefined}
+                lastConfidencePct={result?.displayConfidencePct ?? undefined}
+                traceEvents={traceEvents}
+                onTraceEvent={handleIncomingTracePayload}
+              />
+
+              <div className="flex items-center justify-between">
+                <p className="text-xs text-white/50">调试事件流（开发排查）</p>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setShowRawTrace((prev) => !prev)}
+                  className="text-white/70 hover:bg-white/10"
+                >
+                  {showRawTrace ? <ChevronUp className="w-4 h-4 mr-1" /> : <ChevronDown className="w-4 h-4 mr-1" />}
+                  {showRawTrace ? '收起事件' : '展开事件'}
+                </Button>
+              </div>
+
+              {showRawTrace && (traceEvents.length > 0 ? (
                 <div className="space-y-3 max-h-80 overflow-y-auto">
                   {traceEvents.map((event, idx) => (
                     <div 
-                      key={idx}
+                      key={`${event.timestamp}-${idx}`}
                       className="flex items-start gap-3 p-3 rounded-lg bg-white/5 animate-slideIn"
-                      style={{ animationDelay: `${idx * 50}ms` }}
+                      style={{ animationDelay: `${idx * 30}ms` }}
                     >
                       <div className={cn(
                         "w-2 h-2 rounded-full mt-2 flex-shrink-0",
-                        event.status === '完成' || event.status === 'done' 
+                        event.status === '完成' || event.status === 'done' || event.status === 'completed'
                           ? "bg-green-400" 
                           : event.status === '错误' || event.status === 'error'
                           ? "bg-red-400"
@@ -641,8 +644,12 @@ export function DiagnosePage() {
               ) : (
                 <div className="text-center py-8 text-white/40">
                   <RefreshCw className="w-10 h-10 mx-auto mb-3 opacity-50" />
-                  <p className="text-sm">诊断流程追踪将在此显示</p>
+                  <p className="text-sm">暂未收到追踪事件，面板将使用模拟进度降级展示</p>
                 </div>
+              ))}
+
+              {diagnosisStartTime && (
+                <p className="text-xs text-white/40">诊断启动时间：{new Date(diagnosisStartTime).toLocaleTimeString()}</p>
               )}
             </CardContent>
           </Card>
