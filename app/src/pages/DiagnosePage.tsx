@@ -12,7 +12,7 @@ import { cn } from '@/lib/utils';
 interface DiagnosisResult {
   image_url: string;
   final_disease: string;
-  confidence: number;
+  displayConfidencePct: number | null;
   model_display_name: string;
   top3: Array<{ disease: string; confidence: number }>;
   treatment: unknown;
@@ -87,6 +87,35 @@ export function DiagnosePage() {
     };
   };
 
+
+  const toNumber = (value: unknown): number | null => {
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    if (typeof value === 'string' && value.trim()) {
+      const parsed = Number(value);
+      if (Number.isFinite(parsed)) return parsed;
+    }
+    return null;
+  };
+
+  const resolveDisplayConfidencePct = (payload: any): number | null => {
+    const finalConfidence = toNumber(payload?.final_confidence);
+    if (finalConfidence !== null) {
+      return finalConfidence <= 1 ? finalConfidence * 100 : finalConfidence;
+    }
+
+    const imageConfidencePct = toNumber(payload?.image_result?.confidence_pct);
+    if (imageConfidencePct !== null) {
+      return imageConfidencePct;
+    }
+
+    const imageConfidence = toNumber(payload?.image_result?.confidence);
+    if (imageConfidence !== null) {
+      return imageConfidence * 100;
+    }
+
+    return null;
+  };
+
   const handleSubmit = async () => {
     if (!file) return;
     
@@ -117,7 +146,7 @@ export function DiagnosePage() {
       setResult({
         image_url: data.image_url,
         final_disease: data.final_disease,
-        confidence: data.confidence,
+        displayConfidencePct: resolveDisplayConfidencePct(data),
         model_display_name: data.model_display_name,
         top3: data.top3 || [],
         treatment: data.treatment,
@@ -342,7 +371,7 @@ export function DiagnosePage() {
                     </div>
                     <div className="bg-white/5 rounded-xl p-4">
                       <p className="text-white/60 text-sm mb-1">置信度</p>
-                      <p className="text-xl font-bold text-[#c8f7c5]">{result.confidence?.toFixed(2)}%</p>
+                      <p className="text-xl font-bold text-[#c8f7c5]">{result.displayConfidencePct !== null ? `${result.displayConfidencePct.toFixed(2)}%` : "—"}</p>
                     </div>
                     <div className="bg-white/5 rounded-xl p-4">
                       <p className="text-white/60 text-sm mb-1">使用模型</p>
