@@ -21,9 +21,28 @@ interface DiagnosisEvent {
   top3?: Array<{ disease: string; confidence: number }>;
 }
 
+function formatDate(date: Date): string {
+  return date.toISOString().split('T')[0];
+}
+
+function getDefaultDateRange(days: number = 7): { start: string; end: string } {
+  const end = new Date();
+  const start = new Date();
+  start.setDate(end.getDate() - (days - 1));
+  return { start: formatDate(start), end: formatDate(end) };
+}
+
+function isValidDateString(value: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const parsed = new Date(`${value}T00:00:00`);
+  if (Number.isNaN(parsed.getTime())) return false;
+  return formatDate(parsed) === value;
+}
+
 export function DashboardPage() {
-  const [startDate, setStartDate] = useState('2026-02-06');
-  const [endDate, setEndDate] = useState('2026-02-09');
+  const defaultRange = getDefaultDateRange(7);
+  const [startDate, setStartDate] = useState(defaultRange.start);
+  const [endDate, setEndDate] = useState(defaultRange.end);
   const [stats, setStats] = useState<DiseaseStat[]>([]);
   const [events, setEvents] = useState<DiagnosisEvent[]>([]);
   const [selectedEvent, setSelectedEvent] = useState<DiagnosisEvent | null>(null);
@@ -31,19 +50,41 @@ export function DashboardPage() {
 
   const fetchData = async () => {
     setLoading(true);
+
+    let safeStart = startDate;
+    let safeEnd = endDate;
+    const fallbackRange = getDefaultDateRange(7);
+
+    if (!isValidDateString(safeStart) || !isValidDateString(safeEnd) || safeStart > safeEnd) {
+      safeStart = fallbackRange.start;
+      safeEnd = fallbackRange.end;
+      setStartDate(safeStart);
+      setEndDate(safeEnd);
+    }
+
     try {
       const [statsResp, eventsResp] = await Promise.all([
-        fetch(`/api/stats/disease?start=${startDate}&end=${endDate}`),
-        fetch(`/api/events?start=${startDate}&end=${endDate}&limit=50`)
+        fetch(`/api/stats/disease?start=${safeStart}&end=${safeEnd}`),
+        fetch(`/api/events?start=${safeStart}&end=${safeEnd}&limit=50`)
       ]);
-      
+
       const statsData = await statsResp.json();
       const eventsData = await eventsResp.json();
-      
-      setStats(statsData.stats || []);
-      setEvents(eventsData.events || []);
+
+      console.log('[Dashboard] /api/stats/disease response:', statsData);
+      console.log('[Dashboard] /api/events response:', eventsData);
+
+      const statsList = statsData.items ?? statsData.stats ?? statsData.data ?? [];
+      const eventsList = eventsData.events ?? eventsData.items ?? eventsData.data ?? [];
+
+      setStats(Array.isArray(statsList) ? statsList : []);
+      setEvents(Array.isArray(eventsList) ? eventsList : []);
+      setSelectedEvent((Array.isArray(eventsList) && eventsList.length > 0) ? eventsList[0] : null);
     } catch (error) {
       console.error('Failed to fetch dashboard data:', error);
+      setStats([]);
+      setEvents([]);
+      setSelectedEvent(null);
     } finally {
       setLoading(false);
     }
@@ -58,9 +99,9 @@ export function DashboardPage() {
   const setQuickRange = (days: number) => {
     const end = new Date();
     const start = new Date();
-    start.setDate(end.getDate() - days);
-    setEndDate(end.toISOString().split('T')[0]);
-    setStartDate(start.toISOString().split('T')[0]);
+    start.setDate(end.getDate() - (days - 1));
+    setEndDate(formatDate(end));
+    setStartDate(formatDate(start));
   };
 
   return (
@@ -73,7 +114,7 @@ export function DashboardPage() {
           </h1>
           <p className="text-white/60 mt-1">查看病害诊断统计与历史记录</p>
         </div>
-        
+
         {/* Date Range Controls */}
         <div className="flex items-center gap-2 flex-wrap">
           <div className="flex items-center gap-2 bg-white/5 rounded-lg p-1">
@@ -142,7 +183,7 @@ export function DashboardPage() {
               {stats.length === 0 && (
                 <div className="text-center py-8 text-white/40">
                   <BarChart3 className="w-10 h-10 mx-auto mb-2 opacity-50" />
-                  <p className="text-sm">暂无统计数据</p>
+                  <p className="text-sm">暂无数据（请先完成一次诊断或调整日期范围）</p>
                 </div>
               )}
             </div>
@@ -174,12 +215,12 @@ export function DashboardPage() {
                     <span className="text-white/40 text-xs font-mono">
                       {new Date(event.timestamp).toLocaleString()}
                     </span>
-                    <Badge 
-                      variant="outline" 
+                    <Badge
+                      variant="outline"
                       className={cn(
                         "text-xs",
-                        event.confidence >= 80 
-                          ? "border-green-400 text-green-400" 
+                        event.confidence >= 80
+                          ? "border-green-400 text-green-400"
                           : event.confidence >= 50
                           ? "border-yellow-400 text-yellow-400"
                           : "border-red-400 text-red-400"
@@ -194,7 +235,7 @@ export function DashboardPage() {
               {events.length === 0 && (
                 <div className="text-center py-8 text-white/40">
                   <Calendar className="w-10 h-10 mx-auto mb-2 opacity-50" />
-                  <p className="text-sm">暂无诊断记录</p>
+                  <p className="text-sm">暂无数据（请先完成一次诊断或调整日期范围）</p>
                 </div>
               )}
             </div>
@@ -221,18 +262,18 @@ export function DashboardPage() {
                     />
                   </div>
                 )}
-                
+
                 <div className="space-y-3">
                   <div className="bg-white/5 rounded-lg p-3">
                     <p className="text-white/60 text-xs mb-1">最终病害</p>
                     <p className="text-lg font-bold text-[#c8f7c5]">{selectedEvent.final_disease}</p>
                   </div>
-                  
+
                   <div className="bg-white/5 rounded-lg p-3">
                     <p className="text-white/60 text-xs mb-1">置信度</p>
                     <p className="text-lg font-bold text-white">{selectedEvent.confidence?.toFixed(2)}%</p>
                   </div>
-                  
+
                   {selectedEvent.top3 && selectedEvent.top3.length > 0 && (
                     <div>
                       <p className="text-white/60 text-xs mb-2">Top 3</p>
@@ -246,7 +287,7 @@ export function DashboardPage() {
                       </div>
                     </div>
                   )}
-                  
+
                   {selectedEvent.treatment && (
                     <div>
                       <p className="text-white/60 text-xs mb-2">治疗方案</p>
