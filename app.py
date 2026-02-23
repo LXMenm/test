@@ -11,7 +11,7 @@ from typing import Optional
 
 from fastapi import Body, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, PlainTextResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from PIL import Image
 from pydantic import BaseModel
@@ -45,8 +45,8 @@ kb = get_kb_manager()
 UPLOAD_DIR = Path(".cache/uploads")
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
-WEB_DIR = Path("web")
-WEB_DIR.mkdir(parents=True, exist_ok=True)
+FRONTEND_DIST = Path("app/dist")
+LEGACY_WEB_DIR = Path("web")
 MAX_UPLOAD_MB = 8
 TOP_MARGIN = 0.15
 
@@ -99,7 +99,10 @@ class DiagnoseResponse(BaseModel):
     resolved_model_path: str | None = None
     model_fallback_reason: list[str] | None = None
 
-app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
+if (FRONTEND_DIST / "assets").exists():
+    app.mount("/assets", StaticFiles(directory=FRONTEND_DIST / "assets"), name="assets")
+if LEGACY_WEB_DIR.exists():
+    app.mount("/legacy", StaticFiles(directory=LEGACY_WEB_DIR), name="legacy")
 
 app.add_middleware(
     CORSMiddleware,
@@ -161,9 +164,19 @@ def cleanup_old_uploads(max_age_hours: int = 24) -> None:
             continue
 
 
+def serve_frontend_index() -> Response:
+    index_path = FRONTEND_DIST / "index.html"
+    if index_path.exists():
+        return FileResponse(index_path)
+    return PlainTextResponse(
+        "前端构建产物不存在，请先执行：cd app && npm run build",
+        status_code=503,
+    )
+
+
 @app.get("/")
-def index() -> FileResponse:
-    return FileResponse(WEB_DIR / "index.html")
+def index() -> Response:
+    return serve_frontend_index()
 
 
 @app.get("/health")
@@ -774,6 +787,18 @@ def get_trace(trace_id: str) -> dict[str, object]:
     return {"trace_id": trace_id, "events": events}
 
 
+def _to_stream_event(trace_id: str, event: dict) -> dict:
+    return {
+        "trace_id": event.get("trace_id") or trace_id,
+        "ts": event.get("ts"),
+        "seq": event.get("seq"),
+        "node": event.get("node") or event.get("agent") or "Trace",
+        "status": event.get("status") or event.get("step") or "info",
+        "message": event.get("message") or event.get("step") or "",
+        "payload": event.get("payload") or {},
+    }
+
+
 @app.get("/api/traces/{trace_id}/stream")
 async def stream_trace(trace_id: str):
     async def event_generator():
@@ -781,11 +806,13 @@ async def stream_trace(trace_id: str):
         try:
             history = list_trace_events(trace_id)
             for event in history:
-                yield f"event: trace\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
+                stream_event = _to_stream_event(trace_id, event)
+                yield f"event: trace\ndata: {json.dumps(stream_event, ensure_ascii=False)}\n\n"
             while True:
                 event = await queue.get()
-                yield f"event: trace\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
-                if event.get("node") == "Final" and event.get("status") in {"end", "error"}:
+                stream_event = _to_stream_event(trace_id, event)
+                yield f"event: trace\ndata: {json.dumps(stream_event, ensure_ascii=False)}\n\n"
+                if stream_event.get("node") == "Final" and stream_event.get("status") in {"end", "error"}:
                     break
         finally:
             unsubscribe_trace(trace_id, queue)
@@ -878,27 +905,18 @@ def get_geo_stats(
 
 
 @app.get("/dashboard")
-def get_dashboard() -> FileResponse:
-    dashboard_path = WEB_DIR / "dashboard.html"
-    if not dashboard_path.exists():
-        raise HTTPException(status_code=404, detail="dashboard.html 不存在")
-    return FileResponse(dashboard_path)
+def get_dashboard() -> Response:
+    return serve_frontend_index()
 
 
 @app.get("/profiles")
-def get_profiles_page() -> FileResponse:
-    profiles_path = WEB_DIR / "profiles.html"
-    if not profiles_path.exists():
-        raise HTTPException(status_code=404, detail="profiles.html 不存在")
-    return FileResponse(profiles_path)
+def get_profiles_page() -> Response:
+    return serve_frontend_index()
 
 
 @app.get("/kb")
-def get_kb_page() -> FileResponse:
-    kb_path = WEB_DIR / "kb.html"
-    if not kb_path.exists():
-        raise HTTPException(status_code=404, detail="kb.html 不存在")
-    return FileResponse(kb_path)
+def get_kb_page() -> Response:
+    return serve_frontend_index()
 
 
 @app.get("/api/kb/diseases")
