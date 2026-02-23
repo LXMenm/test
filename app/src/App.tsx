@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Navbar } from './components/Navbar';
 import { DiagnosePage } from './pages/DiagnosePage';
 import { DashboardPage } from './pages/DashboardPage';
@@ -7,8 +7,30 @@ import { KBPage } from './pages/KBPage';
 
 type Page = 'diagnose' | 'dashboard' | 'profiles' | 'kb';
 
+const PATH_TO_PAGE: Record<string, Page> = {
+  '/': 'diagnose',
+  '/dashboard': 'dashboard',
+  '/profiles': 'profiles',
+  '/kb': 'kb',
+};
+
+function getPageFromPath(pathname: string): Page {
+  return PATH_TO_PAGE[pathname] ?? 'diagnose';
+}
+
 function App() {
-  const [currentPage, setCurrentPage] = useState<Page>('diagnose');
+  const [currentPage, setCurrentPage] = useState<Page>(() => getPageFromPath(window.location.pathname));
+
+  useEffect(() => {
+    const handlePopState = () => {
+      setCurrentPage(getPageFromPath(window.location.pathname));
+    };
+
+    window.addEventListener('popstate', handlePopState);
+    return () => {
+      window.removeEventListener('popstate', handlePopState);
+    };
+  }, []);
 
   const renderPage = () => {
     switch (currentPage) {
