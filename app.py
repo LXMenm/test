@@ -787,6 +787,18 @@ def get_trace(trace_id: str) -> dict[str, object]:
     return {"trace_id": trace_id, "events": events}
 
 
+def _to_stream_event(trace_id: str, event: dict) -> dict:
+    return {
+        "trace_id": event.get("trace_id") or trace_id,
+        "ts": event.get("ts"),
+        "seq": event.get("seq"),
+        "node": event.get("node") or event.get("agent") or "Trace",
+        "status": event.get("status") or event.get("step") or "info",
+        "message": event.get("message") or event.get("step") or "",
+        "payload": event.get("payload") or {},
+    }
+
+
 @app.get("/api/traces/{trace_id}/stream")
 async def stream_trace(trace_id: str):
     async def event_generator():
@@ -794,11 +806,13 @@ async def stream_trace(trace_id: str):
         try:
             history = list_trace_events(trace_id)
             for event in history:
-                yield f"event: trace\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
+                stream_event = _to_stream_event(trace_id, event)
+                yield f"event: trace\ndata: {json.dumps(stream_event, ensure_ascii=False)}\n\n"
             while True:
                 event = await queue.get()
-                yield f"event: trace\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
-                if event.get("node") == "Final" and event.get("status") in {"end", "error"}:
+                stream_event = _to_stream_event(trace_id, event)
+                yield f"event: trace\ndata: {json.dumps(stream_event, ensure_ascii=False)}\n\n"
+                if stream_event.get("node") == "Final" and stream_event.get("status") in {"end", "error"}:
                     break
         finally:
             unsubscribe_trace(trace_id, queue)
