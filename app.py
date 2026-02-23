@@ -11,7 +11,7 @@ from typing import Optional
 
 from fastapi import Body, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
+from fastapi.responses import FileResponse, PlainTextResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from PIL import Image
 from pydantic import BaseModel
@@ -164,7 +164,7 @@ def cleanup_old_uploads(max_age_hours: int = 24) -> None:
             continue
 
 
-def serve_frontend_index() -> FileResponse | PlainTextResponse:
+def serve_frontend_index() -> Response:
     index_path = FRONTEND_DIST / "index.html"
     if index_path.exists():
         return FileResponse(index_path)
@@ -175,7 +175,7 @@ def serve_frontend_index() -> FileResponse | PlainTextResponse:
 
 
 @app.get("/")
-def index() -> FileResponse | PlainTextResponse:
+def index() -> Response:
     return serve_frontend_index()
 
 
@@ -905,17 +905,17 @@ def get_geo_stats(
 
 
 @app.get("/dashboard")
-def get_dashboard() -> FileResponse | PlainTextResponse:
+def get_dashboard() -> Response:
     return serve_frontend_index()
 
 
 @app.get("/profiles")
-def get_profiles_page() -> FileResponse | PlainTextResponse:
+def get_profiles_page() -> Response:
     return serve_frontend_index()
 
 
 @app.get("/kb")
-def get_kb_page() -> FileResponse | PlainTextResponse:
+def get_kb_page() -> Response:
     return serve_frontend_index()
 
 
