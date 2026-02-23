@@ -15,8 +15,8 @@ interface DiagnosisResult {
   confidence: number;
   model_display_name: string;
   top3: Array<{ disease: string; confidence: number }>;
-  treatment: string;
-  prevention: string;
+  treatment: unknown;
+  prevention: unknown;
   trace_id: string;
 }
 
@@ -130,6 +130,42 @@ export function DiagnosePage() {
       setLoading(false);
     }
   };
+
+
+
+  const renderRichValue = (value: unknown) => {
+    if (value === null || value === undefined) return null;
+    if (typeof value === 'string') {
+      return <div className="whitespace-pre-wrap">{value}</div>;
+    }
+    if (typeof value === 'object') {
+      const data = value as Record<string, unknown>;
+      const plan = data.plan;
+      const prevention = data.prevention;
+      if (typeof plan === 'string' || typeof prevention === 'string') {
+        return (
+          <div className="space-y-3">
+            {typeof plan === 'string' && plan.trim() && (
+              <div>
+                <div className="text-[#c8f7c5] text-xs mb-1">处方/方案</div>
+                <div className="whitespace-pre-wrap">{plan}</div>
+              </div>
+            )}
+            {typeof prevention === 'string' && prevention.trim() && (
+              <div>
+                <div className="text-[#c8f7c5] text-xs mb-1">预防/管理</div>
+                <div className="whitespace-pre-wrap">{prevention}</div>
+              </div>
+            )}
+          </div>
+        );
+      }
+      return <pre className="whitespace-pre-wrap break-words">{JSON.stringify(value, null, 2)}</pre>;
+    }
+    return <div className="whitespace-pre-wrap">{String(value)}</div>;
+  };
+
+  const renderTreatment = (t: unknown) => renderRichValue(t);
 
   const refreshTrace = async () => {
     if (!traceId) return;
@@ -348,7 +384,7 @@ export function DiagnosePage() {
                         治疗方案
                       </h4>
                       <div className="bg-white/5 rounded-xl p-4 text-white/80 text-sm leading-relaxed whitespace-pre-line">
-                        {result.treatment}
+                        {renderTreatment(result.treatment)}
                       </div>
                     </div>
                   )}
@@ -358,7 +394,7 @@ export function DiagnosePage() {
                     <div>
                       <h4 className="text-white/80 font-medium mb-2">预防建议</h4>
                       <div className="bg-white/5 rounded-xl p-4 text-white/80 text-sm leading-relaxed whitespace-pre-line">
-                        {result.prevention}
+                        {renderRichValue(result.prevention)}
                       </div>
                     </div>
                   )}
