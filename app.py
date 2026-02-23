@@ -38,6 +38,7 @@ from state import create_initial_state
 from trace_store import list_trace_events, subscribe as subscribe_trace, unsubscribe as unsubscribe_trace, emit_trace_event
 from model_registry import list_models, resolve_model
 from workflow import build_graph
+from trace_catalog import AGENTS_CATALOG, NODE_TO_AGENT
 
 
 app = FastAPI(title="Tomato Diagnosis API", version="1.0.0")
@@ -781,6 +782,12 @@ def get_events(start: str | None = None, end: str | None = None, limit: int = 50
     return list_events(limit)
 
 
+
+
+@app.get("/api/agents")
+def list_agents_catalog() -> dict[str, object]:
+    return {"agents": AGENTS_CATALOG, "node_to_agent": NODE_TO_AGENT}
+
 @app.get("/api/traces/{trace_id}")
 def get_trace(trace_id: str) -> dict[str, object]:
     events = list_trace_events(trace_id)
@@ -788,14 +795,22 @@ def get_trace(trace_id: str) -> dict[str, object]:
 
 
 def _to_stream_event(trace_id: str, event: dict) -> dict:
+    node = event.get("node") or event.get("agent") or "Trace"
+    payload = event.get("payload") or {}
+    if not isinstance(payload, dict):
+        payload = {"value": payload}
+    agent_id = event.get("agent_id") or payload.get("agent_id") or NODE_TO_AGENT.get(node)
+    if agent_id:
+        payload = {**payload, "agent_id": agent_id}
     return {
         "trace_id": event.get("trace_id") or trace_id,
         "ts": event.get("ts"),
         "seq": event.get("seq"),
-        "node": event.get("node") or event.get("agent") or "Trace",
+        "node": node,
+        "agent_id": agent_id,
         "status": event.get("status") or event.get("step") or "info",
         "message": event.get("message") or event.get("step") or "",
-        "payload": event.get("payload") or {},
+        "payload": payload,
     }
 
 
