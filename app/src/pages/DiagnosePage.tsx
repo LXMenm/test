@@ -577,7 +577,7 @@ export function DiagnosePage() {
             <CardContent className="space-y-4">
               <AgentWorkflowPanel
                 traceId={traceId || undefined}
-                lastConfidencePct={result?.displayConfidencePct ?? undefined}
+                confidencePct={result?.displayConfidencePct ?? undefined}
               />
 
               <div className="flex items-center justify-between">
