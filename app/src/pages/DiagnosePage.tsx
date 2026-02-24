@@ -15,7 +15,8 @@ interface DiagnosisResult {
   final_disease: string;
   displayConfidencePct: number | null;
   model_display_name: string;
-  top3: Array<{ disease: string; confidence: number }>;
+  top3: unknown;
+  image_result?: unknown;
   treatment: unknown;
   prevention: unknown;
   trace_id: string;
@@ -40,7 +41,7 @@ export function DiagnosePage() {
   const [traceEvents, setTraceEvents] = useState<TraceEvent[]>([]);
   const [traceId, setTraceId] = useState('');
   const [imageId, setImageId] = useState('');
-  const [confirmMode, setConfirmMode] = useState(false);
+  const [confirmMode, setConfirmMode] = useState<boolean>(false);
   const [confirmChoice, setConfirmChoice] = useState('other');
   const [confirmSymptoms, setConfirmSymptoms] = useState('');
   const [confirmSubmitting, setConfirmSubmitting] = useState(false);
@@ -73,18 +74,22 @@ export function DiagnosePage() {
     return null;
   };
 
-  const resolveDisplayConfidencePct = (payload: any): number | null => {
+  const resolveDisplayConfidencePct = (payload: Record<string, unknown>): number | null => {
     const finalConfidence = toNumber(payload?.final_confidence);
     if (finalConfidence !== null) {
       return finalConfidence <= 1 ? finalConfidence * 100 : finalConfidence;
     }
 
-    const imageConfidencePct = toNumber(payload?.image_result?.confidence_pct);
+    const imageResult = payload.image_result && typeof payload.image_result === 'object'
+      ? payload.image_result as Record<string, unknown>
+      : {};
+
+    const imageConfidencePct = toNumber(imageResult.confidence_pct);
     if (imageConfidencePct !== null) {
       return imageConfidencePct;
     }
 
-    const imageConfidence = toNumber(payload?.image_result?.confidence);
+    const imageConfidence = toNumber(imageResult.confidence);
     if (imageConfidence !== null) {
       return imageConfidence * 100;
     }
@@ -94,39 +99,30 @@ export function DiagnosePage() {
 
 
 
-  const normalizeTop3 = (payload: any): Array<{ disease: string; confidence: number }> => {
-    const rawTop3 = payload?.image_result?.top3 ?? payload?.top3 ?? [];
-    if (!Array.isArray(rawTop3)) return [];
-    return rawTop3
-      .map((item: any) => {
-        const disease = typeof item?.disease === 'string' ? item.disease : '';
-        const pctFromProb = toNumber(item?.prob) !== null ? (toNumber(item?.prob) as number) * 100 : null;
-        const confidence =
-          toNumber(item?.confidence) ??
-          toNumber(item?.confidence_pct) ??
-          toNumber(item?.prob_pct) ??
-          pctFromProb ??
-          0;
-        return { disease, confidence };
-      })
-      .filter((item) => item.disease);
-  };
-
-  const shouldEnterConfirmMode = (payload: any): boolean => {
-    if (payload?.need_confirm === true) return true;
-    const reasons = Array.isArray(payload?.fallback_reason) ? payload.fallback_reason : [];
+  const shouldEnterConfirmMode = (payload: Record<string, unknown>): boolean => {
+    if (payload.need_confirm === true) return true;
+    const reasons = Array.isArray(payload.fallback_reason) ? payload.fallback_reason : [];
     return reasons.includes('low_confidence') || reasons.includes('low_margin');
   };
 
-  const buildResultFromPayload = (payload: any): DiagnosisResult => ({
-    image_url: payload?.image_url || '',
-    final_disease: payload?.final_disease || payload?.image_result?.disease || '未知',
+  const buildResultFromPayload = (payload: Record<string, unknown>): DiagnosisResult => ({
+    image_url: typeof payload.image_url === 'string' ? payload.image_url : '',
+    final_disease: typeof payload.final_disease === 'string'
+      ? payload.final_disease
+      : (payload.image_result && typeof payload.image_result === 'object' && typeof (payload.image_result as Record<string, unknown>).disease === 'string'
+        ? String((payload.image_result as Record<string, unknown>).disease)
+        : '未知'),
     displayConfidencePct: resolveDisplayConfidencePct(payload),
-    model_display_name: payload?.model_display_name || payload?.model_id || '-',
-    top3: normalizeTop3(payload),
+    model_display_name: typeof payload.model_display_name === 'string'
+      ? payload.model_display_name
+      : (typeof payload.model_id === 'string' ? payload.model_id : '-'),
+    top3: payload.top3 ?? ((payload.image_result && typeof payload.image_result === 'object')
+      ? (payload.image_result as Record<string, unknown>).top3
+      : undefined),
+    image_result: payload.image_result,
     treatment: payload?.treatment,
-    prevention: payload?.prevention ?? payload?.treatment?.prevention,
-    trace_id: payload?.trace_id || '',
+    prevention: payload?.prevention ?? ((payload.treatment && typeof payload.treatment === 'object') ? (payload.treatment as Record<string, unknown>).prevention : undefined),
+    trace_id: typeof payload.trace_id === 'string' ? payload.trace_id : '',
   });
 
   const handleSubmit = async () => {
@@ -167,9 +163,11 @@ export function DiagnosePage() {
       const normalizedResult = buildResultFromPayload(data);
       setResult(normalizedResult);
 
-      if (shouldEnterConfirmMode(data)) {
-        setConfirmMode(true);
-        const defaultChoice = normalizedResult.top3[0]?.disease || 'other';
+      const needsConfirm = shouldEnterConfirmMode(data);
+      if (needsConfirm) {
+        setConfirmMode(Boolean(needsConfirm));
+        const initialTop3 = normalizeTop3(normalizedResult.top3);
+        const defaultChoice = initialTop3[0]?.[0] || 'other';
         setConfirmChoice(defaultChoice);
       }
     } catch (error) {
@@ -261,6 +259,16 @@ export function DiagnosePage() {
   };
 
   const renderTreatment = (t: unknown) => renderRichValue(t);
+  const normalizeTop3 = (v: unknown): Array<[string, number]> => {
+    if (!Array.isArray(v)) return [];
+    return v
+      .map((it) => Array.isArray(it) && typeof it[0] === 'string' ? [it[0], Number(it[1])] as [string, number] : null)
+      .filter(Boolean) as Array<[string, number]>;
+  };
+  const imageResult = result?.image_result && typeof result.image_result === 'object'
+    ? result.image_result as Record<string, unknown>
+    : undefined;
+  const top3 = normalizeTop3(result?.top3 ?? imageResult?.top3);
 
   const refreshTrace = async () => {
     if (!traceId) return;
@@ -269,12 +277,15 @@ export function DiagnosePage() {
       const resp = await fetch(`/api/trace-events?trace_id=${encodeURIComponent(traceId)}`);
       const data = await resp.json();
       if (data.events) {
-        setTraceEvents(data.events.map((evt: any) => ({
-          timestamp: evt.timestamp || new Date().toISOString(),
-          agent: evt.agent || evt.node,
-          status: evt.status,
-          message: evt.message
-        })));
+        setTraceEvents(data.events.map((evt: unknown) => {
+          const event = evt && typeof evt === 'object' ? evt as Record<string, unknown> : {};
+          return {
+            timestamp: typeof event.timestamp === 'string' ? event.timestamp : new Date().toISOString(),
+            agent: typeof event.agent === 'string' ? event.agent : String(event.node ?? ''),
+            status: typeof event.status === 'string' ? event.status : '',
+            message: typeof event.message === 'string' ? event.message : undefined,
+          };
+        }));
       }
     } catch (error) {
       console.error('Failed to fetch trace events:', error);
@@ -446,11 +457,11 @@ export function DiagnosePage() {
                   </div>
 
                   {/* Top 3 */}
-                  {result.top3 && result.top3.length > 0 && (
+                  {top3.length > 0 ? (
                     <div>
                       <h4 className="text-white/80 font-medium mb-3">Top 3 识别结果</h4>
                       <div className="space-y-2">
-                        {result.top3.map((item, idx) => (
+                        {top3.map((item, idx) => (
                           <div key={idx} className="flex items-center gap-3">
                             <Badge 
                               variant={idx === 0 ? "default" : "outline"}
@@ -461,30 +472,30 @@ export function DiagnosePage() {
                             >
                               #{idx + 1}
                             </Badge>
-                            <span className="text-white flex-1">{item.disease}</span>
-                            <span className="text-[#c8f7c5] font-mono">{item.confidence?.toFixed(2)}%</span>
+                            <span className="text-white flex-1">{item[0]}</span>
+                            <span className="text-[#c8f7c5] font-mono">{item[1].toFixed(2)}%</span>
                           </div>
                         ))}
                       </div>
                     </div>
-                  )}
+                  ) : null}
 
 
-                  {confirmMode && (
+                  {confirmMode ? (
                     <div className="bg-[#c8f7c5]/10 border border-[#c8f7c5]/30 rounded-xl p-4 space-y-4">
                       <h4 className="text-[#c8f7c5] font-medium">二次诊断 / 确认入口</h4>
                       <div className="space-y-2">
                         <Label className="text-white/80">候选病害选择</Label>
-                        {(Array.isArray(result.top3) ? result.top3 : []).map((item) => (
-                          <label key={item.disease} className="flex items-center gap-2 text-sm text-white/80 cursor-pointer">
+                        {top3.map((item) => (
+                          <label key={item[0]} className="flex items-center gap-2 text-sm text-white/80 cursor-pointer">
                             <input
                               type="radio"
                               name="confirmDisease"
-                              value={item.disease}
-                              checked={confirmChoice === item.disease}
+                              value={item[0]}
+                              checked={confirmChoice === item[0]}
                               onChange={(e) => setConfirmChoice(e.target.value)}
                             />
-                            <span>{item.disease}</span>
+                            <span>{item[0]}</span>
                           </label>
                         ))}
                         <label className="flex items-center gap-2 text-sm text-white/80 cursor-pointer">
@@ -517,7 +528,7 @@ export function DiagnosePage() {
                         {confirmSubmitting ? '提交中...' : '提交确认'}
                       </Button>
                     </div>
-                  )}
+                  ) : null}
 
                   <Separator className="bg-white/10" />
 
