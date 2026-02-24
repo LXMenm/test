@@ -1,6 +1,5 @@
 import { useState, useRef } from 'react';
 import type { ChangeEvent } from 'react';
-import type { ReactNode } from 'react';
 import { Upload, Send, RefreshCw, AlertCircle, CheckCircle, Loader2, Image as ImageIcon, ChevronDown, ChevronUp } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -30,6 +29,8 @@ interface TraceEvent {
   status: string;
   message?: string;
 }
+
+type Top3Item = [string, number];
 
 export function DiagnosePage() {
   const [file, setFile] = useState<File | null>(null);
@@ -257,93 +258,16 @@ export function DiagnosePage() {
   };
 
   const renderTreatment = (t: unknown) => renderRichValue(t);
-  const normalizeTop3 = (v: unknown): Array<[string, number]> => {
+  const normalizeTop3 = (v: unknown): Top3Item[] => {
     if (!Array.isArray(v)) return [];
     return v
-      .map((it) => Array.isArray(it) && typeof it[0] === 'string' ? [it[0], Number(it[1])] as [string, number] : null)
-      .filter(Boolean) as Array<[string, number]>;
+      .map((it) => Array.isArray(it) && typeof it[0] === 'string' ? [it[0], Number(it[1])] as Top3Item : null)
+      .filter(Boolean) as Top3Item[];
   };
   const imageResult = result?.image_result && typeof result.image_result === 'object'
     ? result.image_result as Record<string, unknown>
     : undefined;
   const top3 = normalizeTop3(result?.top3 ?? imageResult?.top3);
-  const renderTop3Block: () => ReactNode = () => {
-    if (top3.length === 0) return null;
-    return (
-      <div>
-        <h4 className="text-white/80 font-medium mb-3">Top 3 识别结果</h4>
-        <div className="space-y-2">
-          {top3.map((item, idx) => (
-            <div key={idx} className="flex items-center gap-3">
-              <Badge
-                variant={idx === 0 ? 'default' : 'outline'}
-                className={cn(
-                  'min-w-[3rem] text-center',
-                  idx === 0 ? 'bg-[#c8f7c5] text-black' : 'border-white/30 text-white',
-                )}
-              >
-                #{idx + 1}
-              </Badge>
-              <span className="text-white flex-1">{String(item[0])}</span>
-              <span className="text-[#c8f7c5] font-mono">{Number(item[1]).toFixed(2)}%</span>
-            </div>
-          ))}
-        </div>
-      </div>
-    );
-  };
-
-  const renderConfirmBlock: () => ReactNode = () => {
-    if (!confirmMode) return null;
-    return (
-      <div className="bg-[#c8f7c5]/10 border border-[#c8f7c5]/30 rounded-xl p-4 space-y-4">
-        <h4 className="text-[#c8f7c5] font-medium">二次诊断 / 确认入口</h4>
-        <div className="space-y-2">
-          <Label className="text-white/80">候选病害选择</Label>
-          {top3.map((item) => (
-            <label key={item[0]} className="flex items-center gap-2 text-sm text-white/80 cursor-pointer">
-              <input
-                type="radio"
-                name="confirmDisease"
-                value={item[0]}
-                checked={confirmChoice === item[0]}
-                onChange={(e) => setConfirmChoice(e.target.value)}
-              />
-              <span>{String(item[0])}</span>
-            </label>
-          ))}
-          <label className="flex items-center gap-2 text-sm text-white/80 cursor-pointer">
-            <input
-              type="radio"
-              name="confirmDisease"
-              value="other"
-              checked={confirmChoice === 'other'}
-              onChange={(e) => setConfirmChoice(e.target.value)}
-            />
-            <span>仍不确定 / 其他</span>
-          </label>
-        </div>
-
-        <div className="space-y-2">
-          <Label className="text-white/80">补充症状（可选，逗号分隔）</Label>
-          <Input
-            value={confirmSymptoms}
-            onChange={(e) => setConfirmSymptoms(e.target.value)}
-            placeholder="例如：叶片卷曲, 发黄"
-            className="bg-white/5 border-white/20 text-white placeholder:text-white/40"
-          />
-        </div>
-
-        <Button
-          onClick={handleConfirmSubmit}
-          disabled={confirmSubmitting || !traceId || !imageId}
-          className="bg-[#c8f7c5] text-black hover:bg-[#b8e7b5]"
-        >
-          {confirmSubmitting ? '提交中...' : '提交确认'}
-        </Button>
-      </div>
-    );
-  };
 
   const refreshTrace = async () => {
     if (!traceId) return;
@@ -532,9 +456,20 @@ export function DiagnosePage() {
                   </div>
 
                   {/* Top 3 */}
-                  {renderTop3Block() as ReactNode}
+                  <Top3Panel top3={top3} />
 
-                  {renderConfirmBlock() as ReactNode}
+                  <ConfirmPanel
+                    visible={confirmMode}
+                    top3={top3}
+                    confirmChoice={confirmChoice}
+                    setConfirmChoice={setConfirmChoice}
+                    confirmSymptoms={confirmSymptoms}
+                    setConfirmSymptoms={setConfirmSymptoms}
+                    confirmSubmitting={confirmSubmitting}
+                    traceId={traceId}
+                    imageId={imageId}
+                    onSubmit={handleConfirmSubmit}
+                  />
 
                   <Separator className="bg-white/10" />
 
@@ -657,6 +592,110 @@ export function DiagnosePage() {
           </Card>
         </div>
       </div>
+    </div>
+  );
+}
+
+function Top3Panel({ top3 }: { top3: Top3Item[] }) {
+  if (top3.length === 0) return null;
+
+  return (
+    <div>
+      <h4 className="text-white/80 font-medium mb-3">Top 3 识别结果</h4>
+      <div className="space-y-2">
+        {top3.map((item, idx) => (
+          <div key={idx} className="flex items-center gap-3">
+            <Badge
+              variant={idx === 0 ? 'default' : 'outline'}
+              className={cn(
+                'min-w-[3rem] text-center',
+                idx === 0 ? 'bg-[#c8f7c5] text-black' : 'border-white/30 text-white',
+              )}
+            >
+              #{idx + 1}
+            </Badge>
+            <span className="text-white flex-1">{String(item[0])}</span>
+            <span className="text-[#c8f7c5] font-mono">{(Number(item[1]) * 100).toFixed(2)}%</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ConfirmPanel(props: {
+  visible: boolean;
+  top3: Top3Item[];
+  confirmChoice: string;
+  setConfirmChoice: (v: string) => void;
+  confirmSymptoms: string;
+  setConfirmSymptoms: (v: string) => void;
+  confirmSubmitting: boolean;
+  traceId: string;
+  imageId: string;
+  onSubmit: () => void;
+}) {
+  const {
+    visible,
+    top3,
+    confirmChoice,
+    setConfirmChoice,
+    confirmSymptoms,
+    setConfirmSymptoms,
+    confirmSubmitting,
+    traceId,
+    imageId,
+    onSubmit,
+  } = props;
+
+  if (!visible) return null;
+
+  return (
+    <div className="bg-[#c8f7c5]/10 border border-[#c8f7c5]/30 rounded-xl p-4 space-y-4">
+      <h4 className="text-[#c8f7c5] font-medium">二次诊断 / 确认入口</h4>
+      <div className="space-y-2">
+        <Label className="text-white/80">候选病害选择</Label>
+        {top3.map((item) => (
+          <label key={item[0]} className="flex items-center gap-2 text-sm text-white/80 cursor-pointer">
+            <input
+              type="radio"
+              name="confirmDisease"
+              value={item[0]}
+              checked={confirmChoice === item[0]}
+              onChange={(e) => setConfirmChoice(e.target.value)}
+            />
+            <span>{String(item[0])}</span>
+          </label>
+        ))}
+        <label className="flex items-center gap-2 text-sm text-white/80 cursor-pointer">
+          <input
+            type="radio"
+            name="confirmDisease"
+            value="other"
+            checked={confirmChoice === 'other'}
+            onChange={(e) => setConfirmChoice(e.target.value)}
+          />
+          <span>仍不确定 / 其他</span>
+        </label>
+      </div>
+
+      <div className="space-y-2">
+        <Label className="text-white/80">补充症状（可选，逗号分隔）</Label>
+        <Input
+          value={confirmSymptoms}
+          onChange={(e) => setConfirmSymptoms(e.target.value)}
+          placeholder="例如：叶片卷曲, 发黄"
+          className="bg-white/5 border-white/20 text-white placeholder:text-white/40"
+        />
+      </div>
+
+      <Button
+        onClick={onSubmit}
+        disabled={confirmSubmitting || !traceId || !imageId}
+        className="bg-[#c8f7c5] text-black hover:bg-[#b8e7b5]"
+      >
+        {confirmSubmitting ? '提交中...' : '提交确认'}
+      </Button>
     </div>
   );
 }
