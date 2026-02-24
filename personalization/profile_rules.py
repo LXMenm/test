@@ -43,3 +43,72 @@ def filter_treatment_by_constraints(
     if notes:
         filtered = f"{filtered}\n\n【个性化约束说明】\n" + "\n".join(notes)
     return filtered, dropped
+
+
+CHEMICAL_KEYWORDS = ["百菌清", "代森锰锌", "嘧菌酯", "戊唑醇", "苯醚甲环唑"]
+
+
+def apply_personalization_to_treatment(
+    plan: str,
+    prevention: str,
+    flags: Optional[Dict] = None,
+) -> Tuple[str, str, Dict[str, object]]:
+    """将个性化约束应用到治疗方案文案。"""
+    flags = flags or {}
+    reasons: List[str] = []
+    filtered_components: List[str] = []
+    prefer_organic = bool(flags.get("prefer_organic"))
+    banned_ingredients = [str(item).strip() for item in (flags.get("banned_ingredients") or []) if str(item).strip()]
+    harvest_window_days = flags.get("harvest_window_days")
+
+    lines = [*(plan or "").splitlines(), *(prevention or "").splitlines()]
+    plan_lines: List[str] = []
+    prevention_lines: List[str] = []
+
+    for index, line in enumerate(lines):
+        normalized = line.lower()
+        hit_components: List[str] = []
+        if prefer_organic:
+            hit_components.extend([kw for kw in CHEMICAL_KEYWORDS if kw and kw.lower() in normalized])
+        hit_components.extend([kw for kw in banned_ingredients if kw and kw.lower() in normalized])
+
+        if hit_components:
+            filtered_components.extend(hit_components)
+            replacement = "请使用替代方案/咨询当地农技"
+            if index < len((plan or "").splitlines()):
+                plan_lines.append(replacement)
+            else:
+                prevention_lines.append(replacement)
+            continue
+
+        if index < len((plan or "").splitlines()):
+            plan_lines.append(line)
+        else:
+            prevention_lines.append(line)
+
+    if prefer_organic:
+        reasons.append("偏好有机/低残留：过滤化学农药")
+    if banned_ingredients:
+        reasons.append(f"禁用成分：{', '.join(sorted(set(banned_ingredients)))}")
+
+    top_notice = "⚠️ 临近采收，优先低残留/物理措施，谨慎用药"
+    try:
+        harvest_days_value = int(harvest_window_days)
+    except Exception:
+        harvest_days_value = None
+    if harvest_days_value is not None and harvest_days_value <= 7:
+        if top_notice not in plan_lines:
+            plan_lines.insert(0, top_notice)
+        reasons.append("距采收较近：降低残留风险")
+
+    filtered_components = sorted(set(filtered_components))
+    filtered = bool(filtered_components)
+    outputs: Dict[str, object] = {
+        "personalization_applied": bool(reasons or filtered),
+        "filtered": filtered,
+        "filtered_reasons": reasons,
+        "filtered_components": filtered_components,
+    }
+    return "\n".join([line for line in plan_lines if line.strip()]).strip(), "\n".join(
+        [line for line in prevention_lines if line.strip()]
+    ).strip(), outputs
