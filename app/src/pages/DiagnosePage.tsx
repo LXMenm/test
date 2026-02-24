@@ -258,12 +258,6 @@ export function DiagnosePage() {
   };
 
   const renderTreatment = (t: unknown) => renderRichValue(t);
-  const isReactNodeLike = (value: unknown): value is ReactNode => {
-    if (value === null || value === undefined) return true;
-    if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return true;
-    if (Array.isArray(value)) return true;
-    return typeof value === 'object' && value !== null && 'type' in value;
-  };
   const normalizeTop3 = (v: unknown): Top3Item[] => {
     if (!Array.isArray(v)) return [];
     return v
@@ -275,9 +269,8 @@ export function DiagnosePage() {
     : undefined;
   const top3 = normalizeTop3(result?.top3 ?? imageResult?.top3);
 
-  const top3PanelNodeRaw: unknown = createElement(Top3Panel, { top3 });
-  const top3PanelNode: ReactNode = isReactNodeLike(top3PanelNodeRaw) ? top3PanelNodeRaw : null;
-  const confirmPanelNodeRaw: unknown = createElement(ConfirmPanel, {
+  const top3PanelNode: ReactNode = createElement(Top3Panel, { top3 });
+  const confirmPanelNode: ReactNode = createElement(ConfirmPanel, {
     visible: confirmMode,
     top3,
     confirmChoice,
@@ -289,7 +282,6 @@ export function DiagnosePage() {
     imageId,
     onSubmit: handleConfirmSubmit,
   });
-  const confirmPanelNode: ReactNode = isReactNodeLike(confirmPanelNodeRaw) ? confirmPanelNodeRaw : null;
 
   const refreshTrace = async () => {
     if (!traceId) return;
