@@ -1,5 +1,5 @@
-import { useState, useRef } from 'react';
-import type { ChangeEvent } from 'react';
+import { useState, useRef, createElement } from 'react';
+import type { ChangeEvent, JSX } from 'react';
 import { Upload, Send, RefreshCw, AlertCircle, CheckCircle, Loader2, Image as ImageIcon, ChevronDown, ChevronUp } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -269,6 +269,20 @@ export function DiagnosePage() {
     : undefined;
   const top3 = normalizeTop3(result?.top3 ?? imageResult?.top3);
 
+  const top3PanelNode: any = createElement(Top3Panel, { top3 });
+  const confirmPanelNode: any = createElement(ConfirmPanel, {
+    visible: confirmMode,
+    top3,
+    confirmChoice,
+    setConfirmChoice,
+    confirmSymptoms,
+    setConfirmSymptoms,
+    confirmSubmitting,
+    traceId,
+    imageId,
+    onSubmit: handleConfirmSubmit,
+  });
+
   const refreshTrace = async () => {
     if (!traceId) return;
     
@@ -456,20 +470,9 @@ export function DiagnosePage() {
                   </div>
 
                   {/* Top 3 */}
-                  <Top3Panel top3={top3} />
+                  {top3PanelNode}
 
-                  <ConfirmPanel
-                    visible={confirmMode}
-                    top3={top3}
-                    confirmChoice={confirmChoice}
-                    setConfirmChoice={setConfirmChoice}
-                    confirmSymptoms={confirmSymptoms}
-                    setConfirmSymptoms={setConfirmSymptoms}
-                    confirmSubmitting={confirmSubmitting}
-                    traceId={traceId}
-                    imageId={imageId}
-                    onSubmit={handleConfirmSubmit}
-                  />
+                  {confirmPanelNode}
 
                   <Separator className="bg-white/10" />
 
@@ -596,7 +599,7 @@ export function DiagnosePage() {
   );
 }
 
-function Top3Panel({ top3 }: { top3: Top3Item[] }) {
+const Top3Panel: ({ top3 }: { top3: Top3Item[] }) => JSX.Element | null = ({ top3 }) => {
   if (top3.length === 0) return null;
 
   return (
@@ -621,9 +624,9 @@ function Top3Panel({ top3 }: { top3: Top3Item[] }) {
       </div>
     </div>
   );
-}
+};
 
-function ConfirmPanel(props: {
+const ConfirmPanel: (props: {
   visible: boolean;
   top3: Top3Item[];
   confirmChoice: string;
@@ -634,7 +637,7 @@ function ConfirmPanel(props: {
   traceId: string;
   imageId: string;
   onSubmit: () => void;
-}) {
+}) => JSX.Element | null = (props) => {
   const {
     visible,
     top3,
@@ -698,4 +701,4 @@ function ConfirmPanel(props: {
       </Button>
     </div>
   );
-}
+};
