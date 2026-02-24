@@ -255,7 +255,10 @@ const extractHighlights = (agentId: FixedAgentId, events: NormalizedEvent[]): st
       ?? (isRecord(inputs) ? inputs['image_path'] : undefined)
       ?? (isRecord(outputs) ? outputs['image_path'] : undefined);
     const missing = toArray(isRecord(outputs) ? outputs['missing_profile_fields'] : undefined);
-    const symptoms = isRecord(inputs) ? inputs['symptoms'] : undefined;
+    const symptoms = (isRecord(outputs) ? outputs['symptoms'] : undefined)
+      ?? (isRecord(inputs) ? inputs['symptoms'] : undefined)
+      ?? (isRecord(inputs) ? inputs['cleaned_query'] : undefined)
+      ?? (isRecord(inputs) ? inputs['user_query'] : undefined);
     const symptomCount = Array.isArray(symptoms)
       ? symptoms.length
       : typeof symptoms === 'string'
