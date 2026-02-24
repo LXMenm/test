@@ -46,7 +46,7 @@ kb = get_kb_manager()
 UPLOAD_DIR = Path(".cache/uploads")
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
-FRONTEND_DIST = Path("app/dist")
+FRONTEND_DIR = Path("app/dist")
 LEGACY_WEB_DIR = Path("web")
 MAX_UPLOAD_MB = 8
 TOP_MARGIN = 0.15
@@ -100,8 +100,18 @@ class DiagnoseResponse(BaseModel):
     resolved_model_path: str | None = None
     model_fallback_reason: list[str] | None = None
 
-if (FRONTEND_DIST / "assets").exists():
-    app.mount("/assets", StaticFiles(directory=FRONTEND_DIST / "assets"), name="assets")
+
+class SPAStaticFiles(StaticFiles):
+    async def get_response(self, path: str, scope):
+        response = await super().get_response(path, scope)
+        if response.status_code != 404:
+            return response
+
+        if path.startswith("api/") or path.startswith("uploads/"):
+            return response
+
+        return await super().get_response("index.html", scope)
+
 if LEGACY_WEB_DIR.exists():
     app.mount("/legacy", StaticFiles(directory=LEGACY_WEB_DIR), name="legacy")
 
@@ -166,7 +176,7 @@ def cleanup_old_uploads(max_age_hours: int = 24) -> None:
 
 
 def serve_frontend_index() -> Response:
-    index_path = FRONTEND_DIST / "index.html"
+    index_path = FRONTEND_DIR / "index.html"
     if index_path.exists():
         return FileResponse(index_path)
     return PlainTextResponse(
@@ -177,6 +187,22 @@ def serve_frontend_index() -> Response:
 
 @app.get("/")
 def index() -> Response:
+    return serve_frontend_index()
+
+
+def serve_frontend_path(path: str) -> Response:
+    safe_path = Path(path)
+    if safe_path.is_absolute() or ".." in safe_path.parts:
+        return serve_frontend_index()
+
+    target = (FRONTEND_DIR / safe_path).resolve()
+    frontend_root = FRONTEND_DIR.resolve()
+    if not str(target).startswith(str(frontend_root)):
+        return serve_frontend_index()
+
+    if target.exists() and target.is_file():
+        return FileResponse(target)
+
     return serve_frontend_index()
 
 
@@ -1138,6 +1164,10 @@ def delete_kb_symptom_map(payload: dict = Body(...)) -> dict:
         raise HTTPException(status_code=400, detail="症状列表不能为空")
     deleted = kb.delete_symptom_map_entries([str(item).strip() for item in symptoms if str(item).strip()])
     return {"ok": True, "deleted": deleted}
+
+
+if FRONTEND_DIR.exists():
+    app.mount("/", SPAStaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")
 
 
 if __name__ == "__main__":
