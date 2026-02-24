@@ -1,5 +1,5 @@
 import { useState, useRef, createElement } from 'react';
-import type { ChangeEvent, JSX } from 'react';
+import type { ChangeEvent, JSX, ReactNode } from 'react';
 import { Upload, Send, RefreshCw, AlertCircle, CheckCircle, Loader2, Image as ImageIcon, ChevronDown, ChevronUp } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -269,8 +269,8 @@ export function DiagnosePage() {
     : undefined;
   const top3 = normalizeTop3(result?.top3 ?? imageResult?.top3);
 
-  const top3PanelNode: any = createElement(Top3Panel, { top3 });
-  const confirmPanelNode: any = createElement(ConfirmPanel, {
+  const top3PanelNode: ReactNode = createElement(Top3Panel, { top3 });
+  const confirmPanelNode: ReactNode = createElement(ConfirmPanel, {
     visible: confirmMode,
     top3,
     confirmChoice,
@@ -531,6 +531,7 @@ export function DiagnosePage() {
             </CardHeader>
             <CardContent className="space-y-4">
               <AgentWorkflowPanel
+                key={traceId || 'idle'}
                 traceId={traceId || undefined}
                 confidencePct={result?.displayConfidencePct ?? undefined}
               />

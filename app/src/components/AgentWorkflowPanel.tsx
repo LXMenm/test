@@ -336,7 +336,7 @@ export function AgentWorkflowPanel({ traceId, confidencePct }: AgentWorkflowPane
   const [replayedCount, setReplayedCount] = useState(0);
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [workflowDone, setWorkflowDone] = useState(false);
-  const [diagnosisConfidencePct, setDiagnosisConfidencePct] = useState<number | undefined>(undefined);
+  const [diagnosisConfidencePctFromEvents, setDiagnosisConfidencePctFromEvents] = useState<number | undefined>(undefined);
   const [debugOpen, setDebugOpen] = useState<Record<FixedAgentId, boolean>>({
     supervisor: false,
     reception: false,
@@ -361,11 +361,9 @@ export function AgentWorkflowPanel({ traceId, confidencePct }: AgentWorkflowPane
     final: [],
   });
 
-  useEffect(() => {
-    if (typeof confidencePct === 'number' && Number.isFinite(confidencePct)) {
-      setDiagnosisConfidencePct(confidencePct);
-    }
-  }, [confidencePct]);
+  const displayConfidencePct = (typeof confidencePct === 'number' && Number.isFinite(confidencePct))
+    ? confidencePct
+    : diagnosisConfidencePctFromEvents;
 
   const clearTicker = () => {
     if (tickerRef.current) {
@@ -437,7 +435,7 @@ export function AgentWorkflowPanel({ traceId, confidencePct }: AgentWorkflowPane
         ?? (isRecord(outputs) ? outputs['confidence'] : undefined),
       );
       if (Number.isFinite(rawConfidence)) {
-        setDiagnosisConfidencePct(rawConfidence <= 1 ? rawConfidence * 100 : rawConfidence);
+        setDiagnosisConfidencePctFromEvents(rawConfidence <= 1 ? rawConfidence * 100 : rawConfidence);
       }
     }
 
@@ -525,12 +523,7 @@ export function AgentWorkflowPanel({ traceId, confidencePct }: AgentWorkflowPane
   useEffect(() => {
     if (!traceId) {
       clearExternal();
-      setRows(buildInitialState());
-      setConnectionState('idle');
-      setConnectionHint('');
-      setReplayedCount(0);
       replayedCountRef.current = 0;
-      setWorkflowDone(false);
       workflowDoneRef.current = false;
       lastSeqRef.current = -1;
       finalTsRef.current = undefined;
@@ -546,12 +539,7 @@ export function AgentWorkflowPanel({ traceId, confidencePct }: AgentWorkflowPane
     }
 
     clearExternal();
-    setRows(buildInitialState());
-    setConnectionState('connecting');
-    setConnectionHint('正在回放历史事件...');
-    setReplayedCount(0);
     replayedCountRef.current = 0;
-    setWorkflowDone(false);
     workflowDoneRef.current = false;
     lastSeqRef.current = -1;
     finalTsRef.current = undefined;
@@ -594,6 +582,10 @@ export function AgentWorkflowPanel({ traceId, confidencePct }: AgentWorkflowPane
     };
 
     const replayThenConnect = async () => {
+      setConnectionState('connecting');
+      setConnectionHint('正在回放历史事件...');
+      setReplayedCount(0);
+      setWorkflowDone(false);
       try {
         const response = await fetch(`/api/trace-events?trace_id=${encodeURIComponent(traceId)}`);
         if (!response.ok) {
@@ -699,9 +691,9 @@ export function AgentWorkflowPanel({ traceId, confidencePct }: AgentWorkflowPane
         </Badge>
         {connectionHint && <span className="text-xs text-white/50">{connectionHint}</span>}
         {replayedCount > 0 && <span className="text-xs text-[#c8f7c5]/70">已回放 {replayedCount} 条</span>}
-        {typeof diagnosisConfidencePct === 'number' && (
+        {typeof displayConfidencePct === 'number' && (
           <Badge className="bg-[#c8f7c5]/20 text-[#c8f7c5] border border-[#c8f7c5]/30">
-            诊断置信度 {diagnosisConfidencePct.toFixed(2)}%
+            诊断置信度 {displayConfidencePct.toFixed(2)}%
           </Badge>
         )}
         {workflowDone && (
