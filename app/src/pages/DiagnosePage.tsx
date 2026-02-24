@@ -1,4 +1,4 @@
-import { useState, useRef, createElement } from 'react';
+import { useState, useRef } from 'react';
 import type { ChangeEvent, JSX } from 'react';
 import { Upload, Send, RefreshCw, AlertCircle, CheckCircle, Loader2, Image as ImageIcon, ChevronDown, ChevronUp } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -225,7 +225,7 @@ export function DiagnosePage() {
     }
   };
 
-  const renderRichValue = (value: unknown) => {
+  const renderRichValue = (value: unknown): JSX.Element | null => {
     if (value === null || value === undefined) return null;
     if (typeof value === 'string') {
       return <div className="whitespace-pre-wrap">{value}</div>;
@@ -257,7 +257,7 @@ export function DiagnosePage() {
     return <div className="whitespace-pre-wrap">{String(value)}</div>;
   };
 
-  const renderTreatment = (t: unknown) => renderRichValue(t);
+  const renderTreatment = (t: unknown): JSX.Element | null => renderRichValue(t);
   const normalizeTop3 = (v: unknown): Top3Item[] => {
     if (!Array.isArray(v)) return [];
     return v
@@ -267,21 +267,7 @@ export function DiagnosePage() {
   const imageResult = result?.image_result && typeof result.image_result === 'object'
     ? result.image_result as Record<string, unknown>
     : undefined;
-  const top3 = normalizeTop3(result?.top3 ?? imageResult?.top3);
-
-  const top3PanelNode: any = createElement(Top3Panel, { top3 });
-  const confirmPanelNode: any = createElement(ConfirmPanel, {
-    visible: confirmMode,
-    top3,
-    confirmChoice,
-    setConfirmChoice,
-    confirmSymptoms,
-    setConfirmSymptoms,
-    confirmSubmitting,
-    traceId,
-    imageId,
-    onSubmit: handleConfirmSubmit,
-  });
+  const top3: Top3Item[] = normalizeTop3(result?.top3 ?? imageResult?.top3);
 
   const refreshTrace = async () => {
     if (!traceId) return;
@@ -398,12 +384,12 @@ export function DiagnosePage() {
             <div className="space-y-2">
               <Label className="text-white/80">识别模型</Label>
               <Select value={modelId} onValueChange={setModelId}>
-                <SelectTrigger className="bg-white/5 border-white/20 text-white">
-                  <SelectValue />
+                <SelectTrigger className="bg-white/5 border-white/20 text-white placeholder:text-white/60">
+                  <SelectValue className="text-white placeholder:text-white/60" />
                 </SelectTrigger>
                 <SelectContent className="bg-[#1a1a1a] border-white/20">
-                  <SelectItem value="default">默认高精度模型 (tf)</SelectItem>
-                  <SelectItem value="lightweight">轻量模型V1 (tf)</SelectItem>
+                  <SelectItem value="default" className="text-white focus:bg-[#c8f7c5] focus:text-black">默认高精度模型 (tf)</SelectItem>
+                  <SelectItem value="lightweight" className="text-white focus:bg-[#c8f7c5] focus:text-black">轻量模型V1 (tf)</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -469,15 +455,82 @@ export function DiagnosePage() {
                     </div>
                   </div>
 
-                  {/* Top 3 */}
-                  {top3PanelNode}
+                  {top3.length > 0 ? (
+                    <div>
+                      <h4 className="text-white/80 font-medium mb-3">Top 3 识别结果</h4>
+                      <div className="space-y-2">
+                        {top3.map((item, idx) => (
+                          <div key={idx} className="flex items-center gap-3">
+                            <Badge
+                              variant={idx === 0 ? 'default' : 'outline'}
+                              className={cn(
+                                'min-w-[3rem] text-center',
+                                idx === 0 ? 'bg-[#c8f7c5] text-black' : 'border-white/30 text-white',
+                              )}
+                            >
+                              #{idx + 1}
+                            </Badge>
+                            <span className="text-white flex-1">{String(item[0])}</span>
+                            <span className="text-[#c8f7c5] font-mono">{(Number(item[1]) * 100).toFixed(2)}%</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
 
-                  {confirmPanelNode}
+                  {confirmMode ? (
+                    <div className="bg-[#c8f7c5]/10 border border-[#c8f7c5]/30 rounded-xl p-4 space-y-4">
+                      <h4 className="text-[#c8f7c5] font-medium">二次诊断 / 确认入口</h4>
+                      <div className="space-y-2">
+                        <Label className="text-white/80">候选病害选择</Label>
+                        {top3.map((item) => (
+                          <label key={item[0]} className="flex items-center gap-2 text-sm text-white/80 cursor-pointer">
+                            <input
+                              type="radio"
+                              name="confirmDisease"
+                              value={item[0]}
+                              checked={confirmChoice === item[0]}
+                              onChange={(e) => setConfirmChoice(e.target.value)}
+                            />
+                            <span>{String(item[0])}</span>
+                          </label>
+                        ))}
+                        <label className="flex items-center gap-2 text-sm text-white/80 cursor-pointer">
+                          <input
+                            type="radio"
+                            name="confirmDisease"
+                            value="other"
+                            checked={confirmChoice === 'other'}
+                            onChange={(e) => setConfirmChoice(e.target.value)}
+                          />
+                          <span>仍不确定 / 其他</span>
+                        </label>
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label className="text-white/80">补充症状（可选，逗号分隔）</Label>
+                        <Input
+                          value={confirmSymptoms}
+                          onChange={(e) => setConfirmSymptoms(e.target.value)}
+                          placeholder="例如：叶片卷曲, 发黄"
+                          className="bg-white/5 border-white/20 text-white placeholder:text-white/40"
+                        />
+                      </div>
+
+                      <Button
+                        onClick={handleConfirmSubmit}
+                        disabled={confirmSubmitting || !traceId || !imageId}
+                        className="bg-[#c8f7c5] text-black hover:bg-[#b8e7b5]"
+                      >
+                        {confirmSubmitting ? '提交中...' : '提交确认'}
+                      </Button>
+                    </div>
+                  ) : null}
 
                   <Separator className="bg-white/10" />
 
                   {/* Treatment */}
-                  {result.treatment && (
+                  {Boolean(result.treatment) && (
                     <div>
                       <h4 className="text-white/80 font-medium mb-2 flex items-center gap-2">
                         <AlertCircle className="w-4 h-4 text-[#c8f7c5]" />
@@ -490,7 +543,7 @@ export function DiagnosePage() {
                   )}
 
                   {/* Prevention */}
-                  {result.prevention && (
+                  {Boolean(result.prevention) && (
                     <div>
                       <h4 className="text-white/80 font-medium mb-2">预防建议</h4>
                       <div className="bg-white/5 rounded-xl p-4 text-white/80 text-sm leading-relaxed whitespace-pre-line">
@@ -531,6 +584,7 @@ export function DiagnosePage() {
             </CardHeader>
             <CardContent className="space-y-4">
               <AgentWorkflowPanel
+                key={traceId || 'idle'}
                 traceId={traceId || undefined}
                 confidencePct={result?.displayConfidencePct ?? undefined}
               />
@@ -598,107 +652,3 @@ export function DiagnosePage() {
     </div>
   );
 }
-
-const Top3Panel: ({ top3 }: { top3: Top3Item[] }) => JSX.Element | null = ({ top3 }) => {
-  if (top3.length === 0) return null;
-
-  return (
-    <div>
-      <h4 className="text-white/80 font-medium mb-3">Top 3 识别结果</h4>
-      <div className="space-y-2">
-        {top3.map((item, idx) => (
-          <div key={idx} className="flex items-center gap-3">
-            <Badge
-              variant={idx === 0 ? 'default' : 'outline'}
-              className={cn(
-                'min-w-[3rem] text-center',
-                idx === 0 ? 'bg-[#c8f7c5] text-black' : 'border-white/30 text-white',
-              )}
-            >
-              #{idx + 1}
-            </Badge>
-            <span className="text-white flex-1">{String(item[0])}</span>
-            <span className="text-[#c8f7c5] font-mono">{(Number(item[1]) * 100).toFixed(2)}%</span>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-};
-
-const ConfirmPanel: (props: {
-  visible: boolean;
-  top3: Top3Item[];
-  confirmChoice: string;
-  setConfirmChoice: (v: string) => void;
-  confirmSymptoms: string;
-  setConfirmSymptoms: (v: string) => void;
-  confirmSubmitting: boolean;
-  traceId: string;
-  imageId: string;
-  onSubmit: () => void;
-}) => JSX.Element | null = (props) => {
-  const {
-    visible,
-    top3,
-    confirmChoice,
-    setConfirmChoice,
-    confirmSymptoms,
-    setConfirmSymptoms,
-    confirmSubmitting,
-    traceId,
-    imageId,
-    onSubmit,
-  } = props;
-
-  if (!visible) return null;
-
-  return (
-    <div className="bg-[#c8f7c5]/10 border border-[#c8f7c5]/30 rounded-xl p-4 space-y-4">
-      <h4 className="text-[#c8f7c5] font-medium">二次诊断 / 确认入口</h4>
-      <div className="space-y-2">
-        <Label className="text-white/80">候选病害选择</Label>
-        {top3.map((item) => (
-          <label key={item[0]} className="flex items-center gap-2 text-sm text-white/80 cursor-pointer">
-            <input
-              type="radio"
-              name="confirmDisease"
-              value={item[0]}
-              checked={confirmChoice === item[0]}
-              onChange={(e) => setConfirmChoice(e.target.value)}
-            />
-            <span>{String(item[0])}</span>
-          </label>
-        ))}
-        <label className="flex items-center gap-2 text-sm text-white/80 cursor-pointer">
-          <input
-            type="radio"
-            name="confirmDisease"
-            value="other"
-            checked={confirmChoice === 'other'}
-            onChange={(e) => setConfirmChoice(e.target.value)}
-          />
-          <span>仍不确定 / 其他</span>
-        </label>
-      </div>
-
-      <div className="space-y-2">
-        <Label className="text-white/80">补充症状（可选，逗号分隔）</Label>
-        <Input
-          value={confirmSymptoms}
-          onChange={(e) => setConfirmSymptoms(e.target.value)}
-          placeholder="例如：叶片卷曲, 发黄"
-          className="bg-white/5 border-white/20 text-white placeholder:text-white/40"
-        />
-      </div>
-
-      <Button
-        onClick={onSubmit}
-        disabled={confirmSubmitting || !traceId || !imageId}
-        className="bg-[#c8f7c5] text-black hover:bg-[#b8e7b5]"
-      >
-        {confirmSubmitting ? '提交中...' : '提交确认'}
-      </Button>
-    </div>
-  );
-};
