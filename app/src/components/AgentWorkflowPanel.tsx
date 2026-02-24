@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-<<<<<<< codex/analyze-repository-structure-and-routes-ruuczy
   AlertTriangle,
   BadgeCheck,
   BookOpen,
@@ -15,26 +14,12 @@ import {
   Signal,
   Stethoscope,
   Timer,
-=======
-  Bot,
-  Headset,
-  Stethoscope,
-  BookOpen,
-  Pill,
-  Flag,
-  CheckCircle2,
-  AlertTriangle,
-  Loader2,
-  Signal,
-  Timer,
-  BadgeCheck,
->>>>>>> main
 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
+import type { LucideIcon } from 'lucide-react';
 
 type AgentStatus = 'pending' | 'running' | 'completed' | 'error';
-<<<<<<< codex/analyze-repository-structure-and-routes-ruuczy
 type FixedAgentId = 'supervisor' | 'reception' | 'diagnosis' | 'kb_retrieval' | 'treatment' | 'final';
 
 interface AgentWorkflowPanelProps {
@@ -53,10 +38,10 @@ interface RawTraceEvent {
   node?: string;
   status?: string;
   message?: string;
-  payload?: Record<string, any>;
-  inputs?: Record<string, any>;
-  outputs?: Record<string, any>;
-  decision?: Record<string, any>;
+  payload?: Record<string, unknown>;
+  inputs?: Record<string, unknown>;
+  outputs?: Record<string, unknown>;
+  decision?: Record<string, unknown>;
 }
 
 interface NormalizedEvent {
@@ -67,27 +52,14 @@ interface NormalizedEvent {
   nodeName: string;
   status: AgentStatus | 'info';
   message: string;
-  data: Record<string, any>;
-=======
-
-type FixedAgentId = 'supervisor' | 'reception' | 'diagnosis' | 'kb_retrieval' | 'treatment' | 'final';
-
-interface WorkflowEvent {
-  seq?: number;
-  ts?: string;
-  node?: string;
-  agent_id?: string;
-  status?: string;
-  message?: string;
-  payload?: Record<string, any>;
->>>>>>> main
+  data: Record<string, unknown>;
 }
 
 interface AgentRowDef {
   id: FixedAgentId;
   name: string;
   description: string;
-  icon: any;
+  icon: LucideIcon;
 }
 
 interface AgentRowState {
@@ -98,15 +70,7 @@ interface AgentRowState {
   progress: number;
   lastMessage: string;
   steps: Array<{ seq?: number; node: string; message: string }>;
-<<<<<<< codex/analyze-repository-structure-and-routes-ruuczy
   highlights: string[];
-=======
-}
-
-interface AgentWorkflowPanelProps {
-  traceId?: string;
-  confidencePct?: number;
->>>>>>> main
 }
 
 const FIXED_AGENTS: AgentRowDef[] = [
@@ -128,10 +92,7 @@ const MERGE_MAP: Record<string, FixedAgentId> = {
   prescription: 'treatment',
   validator: 'treatment',
   persist: 'treatment',
-<<<<<<< codex/analyze-repository-structure-and-routes-ruuczy
   final: 'final',
-=======
->>>>>>> main
 };
 
 const buildInitialState = (): Record<FixedAgentId, AgentRowState> => {
@@ -142,27 +103,12 @@ const buildInitialState = (): Record<FixedAgentId, AgentRowState> => {
       progress: 0,
       lastMessage: row.description,
       steps: [],
-<<<<<<< codex/analyze-repository-structure-and-routes-ruuczy
       highlights: [],
-=======
->>>>>>> main
     };
     return acc;
   }, {} as Record<FixedAgentId, AgentRowState>);
 };
 
-<<<<<<< codex/analyze-repository-structure-and-routes-ruuczy
-=======
-const normalizeStatus = (status: unknown): 'start' | 'progress' | 'completed' | 'error' | 'info' => {
-  const text = String(status || '').toLowerCase();
-  if (['start', 'started', 'begin', 'running', '执行中', '开始'].includes(text)) return 'start';
-  if (['progress', 'processing', '进行中'].includes(text)) return 'progress';
-  if (['end', 'done', 'completed', 'finish', '结束', '完成'].includes(text)) return 'completed';
-  if (['error', 'failed', '错误', 'fail'].includes(text)) return 'error';
-  return 'info';
-};
-
->>>>>>> main
 const parseTsMs = (ts?: string): number | undefined => {
   if (!ts) return undefined;
   const ms = Date.parse(ts);
@@ -187,14 +133,13 @@ const formatDuration = (ms: number): string => {
   return `${seconds.toFixed(2)}s`;
 };
 
-<<<<<<< codex/analyze-repository-structure-and-routes-ruuczy
 const shortText = (value: unknown, max = 80): string => {
   const raw = String(value ?? '').trim();
   if (!raw) return '';
   return raw.length <= max ? raw : `${raw.slice(0, max)}...`;
 };
 
-const toArray = (value: unknown): any[] => (Array.isArray(value) ? value : []);
+const toArray = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
 
 const normalizeStatus = (status: unknown): AgentStatus | 'info' => {
   const text = String(status || '').toLowerCase();
@@ -203,12 +148,6 @@ const normalizeStatus = (status: unknown): AgentStatus | 'info' => {
   if (['end', 'done', 'completed', 'finish', '结束', '完成'].includes(text)) return 'completed';
   if (['error', 'failed', '错误', 'fail'].includes(text)) return 'error';
   return 'info';
-=======
-const normalizeMessage = (rawMessage: unknown, fallback: string) => {
-  const m = String(rawMessage || '').trim();
-  if (!m || m.toLowerCase() === 'start') return fallback;
-  return m;
->>>>>>> main
 };
 
 const mapToFixedAgent = (agentId: string | undefined, node: string | undefined): FixedAgentId => {
@@ -225,11 +164,7 @@ const mapToFixedAgent = (agentId: string | undefined, node: string | undefined):
   return 'supervisor';
 };
 
-<<<<<<< codex/analyze-repository-structure-and-routes-ruuczy
 const compareEvents = (a: RawTraceEvent, b: RawTraceEvent): number => {
-=======
-const compareEvents = (a: WorkflowEvent, b: WorkflowEvent): number => {
->>>>>>> main
   const aHasSeq = typeof a.seq === 'number' && Number.isFinite(a.seq);
   const bHasSeq = typeof b.seq === 'number' && Number.isFinite(b.seq);
   if (aHasSeq && bHasSeq) return (a.seq as number) - (b.seq as number);
@@ -243,7 +178,6 @@ const compareEvents = (a: WorkflowEvent, b: WorkflowEvent): number => {
   return 0;
 };
 
-<<<<<<< codex/analyze-repository-structure-and-routes-ruuczy
 const normalizeEvent = (raw: RawTraceEvent): NormalizedEvent => {
   const ts = raw.ts;
   const tsMs = parseTsMs(ts);
@@ -338,7 +272,12 @@ const extractHighlights = (agentId: FixedAgentId, events: NormalizedEvent[]): st
       : undefined;
     const top3 = toArray(outputs?.top3 || outputs?.image_result?.top3)
       .slice(0, 3)
-      .map((item: any) => `${item?.disease || item?.name || '-'}:${Number(item?.confidence_pct ?? (Number(item?.confidence) * 100)).toFixed(1)}%`);
+      .map((item) => {
+        const obj = item && typeof item === 'object' ? item as Record<string, unknown> : {};
+        const disease = String(obj.disease ?? obj.name ?? '-');
+        const confidencePct = Number(obj.confidence_pct ?? (Number(obj.confidence) * 100));
+        return `${disease}:${confidencePct.toFixed(1)}%`;
+      });
 
     if (modelId || backend) lines.push(`模型：${modelId || '-'} / ${backend || '-'}`);
     if (path) lines.push(`路径：${shortText(path, 54)}`);
@@ -382,17 +321,14 @@ const extractHighlights = (agentId: FixedAgentId, events: NormalizedEvent[]): st
   return lines.filter(Boolean).slice(0, 6);
 };
 
-=======
->>>>>>> main
 export function AgentWorkflowPanel({ traceId, confidencePct }: AgentWorkflowPanelProps) {
   const [rows, setRows] = useState<Record<FixedAgentId, AgentRowState>>(buildInitialState());
   const [connectionState, setConnectionState] = useState<'idle' | 'connecting' | 'connected' | 'disconnected'>('idle');
   const [connectionHint, setConnectionHint] = useState('');
   const [replayedCount, setReplayedCount] = useState(0);
-  const [nowMs, setNowMs] = useState(Date.now());
+  const [nowMs, setNowMs] = useState(() => Date.now());
   const [workflowDone, setWorkflowDone] = useState(false);
   const [diagnosisConfidencePct, setDiagnosisConfidencePct] = useState<number | undefined>(undefined);
-<<<<<<< codex/analyze-repository-structure-and-routes-ruuczy
   const [debugOpen, setDebugOpen] = useState<Record<FixedAgentId, boolean>>({
     supervisor: false,
     reception: false,
@@ -416,16 +352,6 @@ export function AgentWorkflowPanel({ traceId, confidencePct }: AgentWorkflowPane
     treatment: [],
     final: [],
   });
-=======
-
-  const esRef = useRef<EventSource | null>(null);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const tickerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const seenSeqRef = useRef<Set<number>>(new Set());
-  const lastSeqRef = useRef(-1);
-  const workflowDoneRef = useRef(false);
-  const replayedCountRef = useRef(0);
->>>>>>> main
 
   useEffect(() => {
     if (typeof confidencePct === 'number' && Number.isFinite(confidencePct)) {
@@ -440,7 +366,6 @@ export function AgentWorkflowPanel({ traceId, confidencePct }: AgentWorkflowPane
     }
   };
 
-<<<<<<< codex/analyze-repository-structure-and-routes-ruuczy
   const closeStream = () => {
     if (esRef.current) {
       esRef.current.close();
@@ -455,10 +380,6 @@ export function AgentWorkflowPanel({ traceId, confidencePct }: AgentWorkflowPane
 
   const maybeStartTicker = (snapshot: Record<FixedAgentId, AgentRowState>, done: boolean) => {
     const hasRunning = FIXED_AGENTS.some((agent) => snapshot[agent.id].status === 'running');
-=======
-  const updateTicker = (snapshot: Record<FixedAgentId, AgentRowState>, done: boolean) => {
-    const hasRunning = FIXED_AGENTS.some((a) => snapshot[a.id].status === 'running');
->>>>>>> main
     if (!done && hasRunning) {
       if (!tickerRef.current) {
         tickerRef.current = setInterval(() => setNowMs(Date.now()), 100);
@@ -468,7 +389,6 @@ export function AgentWorkflowPanel({ traceId, confidencePct }: AgentWorkflowPane
     }
   };
 
-<<<<<<< codex/analyze-repository-structure-and-routes-ruuczy
   const completeSupervisorOnDone = (doneTs?: number) => {
     setRows((prev) => {
       if (prev.supervisor.status !== 'running') return prev;
@@ -501,69 +421,11 @@ export function AgentWorkflowPanel({ traceId, confidencePct }: AgentWorkflowPane
 
     if (agentId === 'diagnosis') {
       const rawConfidence = Number(event.data?.confidence_pct ?? event.data?.confidence ?? event.data?.outputs?.confidence_pct ?? event.data?.outputs?.confidence);
-=======
-  const clearExternal = () => {
-    if (esRef.current) {
-      esRef.current.close();
-      esRef.current = null;
-    }
-    if (pollRef.current) {
-      clearInterval(pollRef.current);
-      pollRef.current = null;
-    }
-    clearTicker();
-  };
-
-  const normalizeEvent = (evt: any): WorkflowEvent => {
-    const payload = evt?.payload && typeof evt.payload === 'object' ? evt.payload : {};
-    return {
-      seq: evt?.seq,
-      ts: evt?.ts || evt?.timestamp,
-      node: evt?.node || evt?.agent,
-      agent_id: evt?.agent_id || payload?.agent_id,
-      status: evt?.status || evt?.step,
-      message: evt?.message,
-      payload,
-    };
-  };
-
-  const handleEvent = (evt: WorkflowEvent) => {
-    if (workflowDoneRef.current) return;
-
-    const seqRaw = evt.seq;
-    if (typeof seqRaw === 'number' && Number.isFinite(seqRaw)) {
-      if (seenSeqRef.current.has(seqRaw)) return;
-      if (seqRaw < lastSeqRef.current) return;
-      seenSeqRef.current.add(seqRaw);
-      lastSeqRef.current = seqRaw;
-    }
-
-    const nodeName = String(evt.node || '').trim();
-    const statusNorm = normalizeStatus(evt.status);
-    if (!nodeName || statusNorm === 'info') return;
-
-    const payload = evt.payload && typeof evt.payload === 'object' ? evt.payload : {};
-    const mappedAgent = mapToFixedAgent(String(evt.agent_id || payload.agent_id || ''), nodeName);
-
-    const tsMs = parseTsMs(evt.ts);
-    const fallbackMessage = statusNorm === 'start'
-      ? `开始执行 ${mappedAgent}`
-      : statusNorm === 'progress'
-        ? `${mappedAgent} 进行中`
-        : statusNorm === 'completed'
-          ? `${mappedAgent} 执行完成`
-          : `${mappedAgent} 执行错误`;
-    const message = normalizeMessage(evt.message ?? payload.message, fallbackMessage);
-
-    if (mappedAgent === 'diagnosis') {
-      const rawConfidence = Number(payload.confidence_pct ?? payload.confidence);
->>>>>>> main
       if (Number.isFinite(rawConfidence)) {
         setDiagnosisConfidencePct(rawConfidence <= 1 ? rawConfidence * 100 : rawConfidence);
       }
     }
 
-<<<<<<< codex/analyze-repository-structure-and-routes-ruuczy
     let markDone = false;
     setRows((prev) => {
       const next = { ...prev };
@@ -577,13 +439,6 @@ export function AgentWorkflowPanel({ traceId, confidencePct }: AgentWorkflowPane
       const message = shortText(event.message || fallbackMessage, 140) || fallbackMessage;
 
       current.steps = [...current.steps, { seq: event.seq, node: event.nodeName, message }]
-=======
-    setRows((prev) => {
-      const next = { ...prev };
-      const current = { ...next[mappedAgent] };
-
-      current.steps = [...current.steps, { seq: seqRaw, node: nodeName, message }]
->>>>>>> main
         .sort((a, b) => {
           const sa = typeof a.seq === 'number' ? a.seq : Number.MAX_SAFE_INTEGER;
           const sb = typeof b.seq === 'number' ? b.seq : Number.MAX_SAFE_INTEGER;
@@ -591,7 +446,6 @@ export function AgentWorkflowPanel({ traceId, confidencePct }: AgentWorkflowPane
         })
         .slice(-3);
       current.lastMessage = message;
-<<<<<<< codex/analyze-repository-structure-and-routes-ruuczy
       current.highlights = extractHighlights(agentId, eventHistoryRef.current[agentId]);
 
       if (event.status === 'running') {
@@ -619,42 +473,10 @@ export function AgentWorkflowPanel({ traceId, confidencePct }: AgentWorkflowPane
         if (typeof event.tsMs === 'number') {
           current.startTs = current.startTs ?? event.tsMs;
           current.endTs = event.tsMs;
-=======
-
-      if (statusNorm === 'start') {
-        current.status = 'running';
-        if (typeof tsMs === 'number') current.startTs = current.startTs ?? tsMs;
-        current.progress = Math.max(current.progress, 5);
-      } else if (statusNorm === 'progress') {
-        current.status = current.status === 'pending' ? 'running' : current.status;
-        if (typeof tsMs === 'number') current.startTs = current.startTs ?? tsMs;
-        const explicit = Number(payload.progress ?? evt.payload?.progress);
-        if (Number.isFinite(explicit)) {
-          current.progress = clamp(explicit, 0, 90);
-        } else {
-          if (typeof tsMs === 'number' && typeof current.startTs === 'number') {
-            const elapsed = Math.max(0, tsMs - current.startTs);
-            current.progress = Math.max(current.progress, softProgress(elapsed));
-          }
-        }
-      } else if (statusNorm === 'completed') {
-        current.status = 'completed';
-        if (typeof tsMs === 'number') {
-          current.startTs = current.startTs ?? tsMs;
-          current.endTs = tsMs;
-        }
-        current.progress = 100;
-      } else if (statusNorm === 'error') {
-        current.status = 'error';
-        if (typeof tsMs === 'number') {
-          current.startTs = current.startTs ?? tsMs;
-          current.endTs = tsMs;
->>>>>>> main
         }
         current.progress = 100;
       }
 
-<<<<<<< codex/analyze-repository-structure-and-routes-ruuczy
       next[agentId] = current;
 
       const finalDone = agentId === 'final' && event.status === 'completed';
@@ -678,19 +500,6 @@ export function AgentWorkflowPanel({ traceId, confidencePct }: AgentWorkflowPane
     }
 
     return true;
-=======
-      next[mappedAgent] = current;
-
-      const done = (mappedAgent === 'final' && statusNorm === 'completed') ||
-        (nodeName.toLowerCase() === 'final' && statusNorm === 'completed');
-      if (done) {
-        workflowDoneRef.current = true;
-        setWorkflowDone(true);
-      }
-      updateTicker(next, workflowDoneRef.current);
-      return next;
-    });
->>>>>>> main
   };
 
   useEffect(() => {
@@ -703,7 +512,6 @@ export function AgentWorkflowPanel({ traceId, confidencePct }: AgentWorkflowPane
       replayedCountRef.current = 0;
       setWorkflowDone(false);
       workflowDoneRef.current = false;
-<<<<<<< codex/analyze-repository-structure-and-routes-ruuczy
       lastSeqRef.current = -1;
       finalTsRef.current = undefined;
       eventHistoryRef.current = {
@@ -714,10 +522,6 @@ export function AgentWorkflowPanel({ traceId, confidencePct }: AgentWorkflowPane
         treatment: [],
         final: [],
       };
-=======
-      seenSeqRef.current.clear();
-      lastSeqRef.current = -1;
->>>>>>> main
       return;
     }
 
@@ -729,7 +533,6 @@ export function AgentWorkflowPanel({ traceId, confidencePct }: AgentWorkflowPane
     replayedCountRef.current = 0;
     setWorkflowDone(false);
     workflowDoneRef.current = false;
-<<<<<<< codex/analyze-repository-structure-and-routes-ruuczy
     lastSeqRef.current = -1;
     finalTsRef.current = undefined;
     eventHistoryRef.current = {
@@ -740,10 +543,6 @@ export function AgentWorkflowPanel({ traceId, confidencePct }: AgentWorkflowPane
       treatment: [],
       final: [],
     };
-=======
-    seenSeqRef.current.clear();
-    lastSeqRef.current = -1;
->>>>>>> main
 
     let cancelled = false;
 
@@ -753,7 +552,6 @@ export function AgentWorkflowPanel({ traceId, confidencePct }: AgentWorkflowPane
       const es = new EventSource(`/api/traces/${encodeURIComponent(traceId)}/stream`);
       esRef.current = es;
 
-<<<<<<< codex/analyze-repository-structure-and-routes-ruuczy
       es.addEventListener('trace', (messageEvent) => {
         if (cancelled || workflowDoneRef.current) return;
         const raw = JSON.parse(messageEvent.data || '{}') as RawTraceEvent;
@@ -763,59 +561,20 @@ export function AgentWorkflowPanel({ traceId, confidencePct }: AgentWorkflowPane
           return;
         }
         applyNormalizedEvent(normalized);
-=======
-      es.addEventListener('trace', (e) => {
-        const payload = normalizeEvent(JSON.parse(e.data || '{}'));
-        const seq = payload.seq;
-        if (typeof seq === 'number' && Number.isFinite(seq) && seq <= lastSeqRef.current) {
-          return;
-        }
-        handleEvent(payload);
->>>>>>> main
         setConnectionState('connected');
         setConnectionHint(`已回放 ${replayedCountRef.current} 条事件 + 实时连接中`);
       });
 
       es.onerror = () => {
-<<<<<<< codex/analyze-repository-structure-and-routes-ruuczy
         if (cancelled || workflowDoneRef.current) return;
         setConnectionState('disconnected');
         setConnectionHint(`实时连接断开（已回放 ${replayedCountRef.current} 条）`);
         closeStream();
-=======
-        setConnectionState('disconnected');
-        setConnectionHint('连接已断开，尝试轮询补齐...');
-        clearTicker();
-        es.close();
-
-        pollRef.current = setInterval(async () => {
-          if (workflowDoneRef.current) return;
-          try {
-            const resp = await fetch(`/api/trace-events?trace_id=${encodeURIComponent(traceId)}`);
-            if (!resp.ok) return;
-            const data = await resp.json();
-            const list = Array.isArray(data?.events) ? data.events : [];
-            list
-              .map((eventLike) => normalizeEvent(eventLike))
-              .sort(compareEvents)
-              .forEach((evt) => {
-                const seq = evt.seq;
-                if (typeof seq === 'number' && Number.isFinite(seq) && seq <= lastSeqRef.current) {
-                  return;
-                }
-                handleEvent(evt);
-              });
-          } catch {
-            // ignore polling failures
-          }
-        }, 2000);
->>>>>>> main
       };
     };
 
     const replayThenConnect = async () => {
       try {
-<<<<<<< codex/analyze-repository-structure-and-routes-ruuczy
         const response = await fetch(`/api/trace-events?trace_id=${encodeURIComponent(traceId)}`);
         if (!response.ok) {
           setConnectionHint('历史回放失败，尝试直接连接实时流...');
@@ -855,46 +614,6 @@ export function AgentWorkflowPanel({ traceId, confidencePct }: AgentWorkflowPane
         if (cancelled) return;
         setConnectionState('disconnected');
         setConnectionHint('历史回放异常，实时连接未建立');
-=======
-        const resp = await fetch(`/api/trace-events?trace_id=${encodeURIComponent(traceId)}`);
-        if (!resp.ok) {
-          setConnectionHint('历史回放失败，直接连接实时流...');
-          openStream();
-          return;
-        }
-        const data = await resp.json();
-        const list = Array.isArray(data?.events) ? data.events : [];
-        const sorted = list
-          .map((eventLike) => normalizeEvent(eventLike))
-          .sort(compareEvents);
-
-        if (cancelled) return;
-
-        sorted.forEach((evt) => handleEvent(evt));
-
-        const maxSeq = sorted.reduce((max, evt) => {
-          if (typeof evt.seq === 'number' && Number.isFinite(evt.seq)) {
-            return Math.max(max, evt.seq);
-          }
-          return max;
-        }, -1);
-        lastSeqRef.current = Math.max(lastSeqRef.current, maxSeq);
-        setReplayedCount(sorted.length);
-        replayedCountRef.current = sorted.length;
-
-        if (workflowDoneRef.current) {
-          setConnectionState('disconnected');
-          setConnectionHint(`已回放 ${sorted.length} 条事件，流程已结束`);
-          return;
-        }
-
-        setConnectionHint(`已回放 ${sorted.length} 条事件，正在连接实时流...`);
-        openStream();
-      } catch {
-        if (cancelled) return;
-        setConnectionHint('历史回放异常，直接连接实时流...');
-        openStream();
->>>>>>> main
       }
     };
 
@@ -909,34 +628,14 @@ export function AgentWorkflowPanel({ traceId, confidencePct }: AgentWorkflowPane
   useEffect(() => {
     if (workflowDone) {
       clearTicker();
-<<<<<<< codex/analyze-repository-structure-and-routes-ruuczy
       closeStream();
       completeSupervisorOnDone(finalTsRef.current);
-=======
-      if (esRef.current) {
-        esRef.current.close();
-        esRef.current = null;
-      }
-      setRows((prev) => {
-        if (prev.supervisor.status !== 'running') return prev;
-        const next = { ...prev };
-        next.supervisor = {
-          ...next.supervisor,
-          status: 'completed',
-          progress: 100,
-          endTs: next.supervisor.endTs ?? Date.now(),
-          lastMessage: next.supervisor.lastMessage || 'supervisor 执行完成',
-        };
-        return next;
-      });
->>>>>>> main
     }
   }, [workflowDone]);
 
   const renderedRows = useMemo(() => {
     return FIXED_AGENTS.map((def) => {
       const row = rows[def.id];
-<<<<<<< codex/analyze-repository-structure-and-routes-ruuczy
       const elapsedMs = row.startTs ? Math.max(0, (row.endTs ?? nowMs) - row.startTs) : 0;
       const progress = row.status === 'running' && !workflowDone
         ? Math.max(row.progress, softProgress(elapsedMs))
@@ -956,36 +655,12 @@ export function AgentWorkflowPanel({ traceId, confidencePct }: AgentWorkflowPane
 
   const overallStart = useMemo(() => {
     const starts = renderedRows.map((row) => row.startTs).filter(Boolean) as number[];
-=======
-      const elapsed = row.startTs ? (row.endTs ?? nowMs) - row.startTs : 0;
-      const soft = row.status === 'running' && !workflowDone && row.progress < 90
-        ? softProgress(Math.max(0, elapsed))
-        : row.progress;
-      const progress = row.status === 'running' ? Math.max(row.progress, soft) : row.progress;
-      const durationMs = row.startTs ? Math.max(0, (row.endTs ?? nowMs) - row.startTs) : 0;
-      const duration = formatDuration(durationMs ?? 0);
-      return { ...def, ...row, progress, duration };
-    });
-  }, [rows, nowMs, workflowDone]);
-
-  const totalProgress = useMemo(() => {
-    const sum = renderedRows.reduce((acc, row) => acc + row.progress, 0);
-    return Math.round(sum / renderedRows.length);
-  }, [renderedRows]);
-
-  const overallStart = useMemo(() => {
-    const starts = renderedRows.map((r) => r.startTs).filter(Boolean) as number[];
->>>>>>> main
     return starts.length ? Math.min(...starts) : undefined;
   }, [renderedRows]);
 
   const overallEnd = useMemo(() => {
     if (!workflowDone) return undefined;
-<<<<<<< codex/analyze-repository-structure-and-routes-ruuczy
     const ends = renderedRows.map((row) => row.endTs).filter(Boolean) as number[];
-=======
-    const ends = renderedRows.map((r) => r.endTs).filter(Boolean) as number[];
->>>>>>> main
     return ends.length ? Math.max(...ends) : undefined;
   }, [renderedRows, workflowDone]);
 
@@ -994,7 +669,6 @@ export function AgentWorkflowPanel({ traceId, confidencePct }: AgentWorkflowPane
       <div className="flex flex-wrap items-center gap-2">
         <Badge variant="outline" className="border-[#c8f7c5]/50 text-[#c8f7c5]">
           <Signal className="w-3 h-3 mr-1" />
-<<<<<<< codex/analyze-repository-structure-and-routes-ruuczy
           {connectionState === 'connected'
             ? 'SSE 已连接'
             : connectionState === 'connecting'
@@ -1002,9 +676,6 @@ export function AgentWorkflowPanel({ traceId, confidencePct }: AgentWorkflowPane
               : connectionState === 'disconnected'
                 ? 'SSE 已断开'
                 : '等待 trace'}
-=======
-          {connectionState === 'connected' ? 'SSE 已连接' : connectionState === 'connecting' ? 'SSE 连接中' : connectionState === 'disconnected' ? 'SSE 已断开' : '等待 trace'}
->>>>>>> main
         </Badge>
         {connectionHint && <span className="text-xs text-white/50">{connectionHint}</span>}
         {replayedCount > 0 && <span className="text-xs text-[#c8f7c5]/70">已回放 {replayedCount} 条</span>}
@@ -1094,7 +765,6 @@ export function AgentWorkflowPanel({ traceId, confidencePct }: AgentWorkflowPane
                       {row.lastMessage || row.description}
                     </p>
 
-<<<<<<< codex/analyze-repository-structure-and-routes-ruuczy
                     <div className="mt-3 rounded-md bg-black/25 border border-white/10 p-2">
                       <p className="text-xs text-[#c8f7c5] mb-1">关键步骤</p>
                       {row.highlights.length ? (
@@ -1132,18 +802,6 @@ export function AgentWorkflowPanel({ traceId, confidencePct }: AgentWorkflowPane
                       </div>
                     )}
 
-=======
-                    <div className="mt-2 space-y-1">
-                      {row.steps.map((step, i) => (
-                        <div key={`${step.seq ?? 'na'}-${i}`} className="text-xs text-white/50">
-                          <span className="text-white/70">{step.node}</span>
-                          <span className="mx-1">·</span>
-                          <span>{step.message}</span>
-                        </div>
-                      ))}
-                    </div>
-
->>>>>>> main
                     <div className="mt-3 h-2 rounded-full bg-white/10 overflow-hidden">
                       <div
                         className="h-full rounded-full transition-all duration-500 progress-shine"
@@ -1164,11 +822,7 @@ export function AgentWorkflowPanel({ traceId, confidencePct }: AgentWorkflowPane
       <div className="bg-white/5 border border-white/10 rounded-xl p-4">
         <div className="flex items-center justify-between text-sm mb-2">
           <span className="text-white/70">总体进度</span>
-<<<<<<< codex/analyze-repository-structure-and-routes-ruuczy
           <span className="text-[#c8f7c5] font-mono">{completedCount}/6</span>
-=======
-          <span className="text-[#c8f7c5] font-mono">{totalProgress}%</span>
->>>>>>> main
         </div>
         <div className="h-2 rounded-full bg-white/10 overflow-hidden">
           <div className="h-full bg-[#4ade80] transition-all duration-500 progress-shine" style={{ width: `${totalProgress}%` }} />

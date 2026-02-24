@@ -116,10 +116,15 @@ export function DashboardPage() {
         : eventsData?.events ?? eventsData?.items ?? eventsData?.data ?? [];
 
       const safeStats = Array.isArray(statsList)
-        ? statsList.map((item: any) => ({
-            disease: item?.disease ?? item?.name ?? '-',
-            count: Number(item?.count ?? 0),
-          }))
+        ? statsList.map((item: unknown) => {
+            const stat = item && typeof item === 'object' ? item as Record<string, unknown> : {};
+            return {
+              disease: typeof stat.disease === 'string'
+                ? stat.disease
+                : (typeof stat.name === 'string' ? stat.name : '-'),
+              count: Number(stat.count ?? 0),
+            };
+          })
         : [];
       const safeEvents = Array.isArray(eventsList) ? eventsList : [];
 
