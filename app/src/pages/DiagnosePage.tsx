@@ -336,7 +336,9 @@ export function DiagnosePage() {
                 : (typeof event.status === 'string' ? event.status : '')),
             message: typeof event.message === 'string'
               ? event.message
-              : (typeof decision?.reason_str === 'string' ? decision.reason_str : ''),
+              : (typeof decision?.reason_str === 'string'
+                ? decision.reason_str
+                : (typeof decision?.reason === 'string' ? decision.reason : '')),
             raw: event,
           };
         }));
@@ -345,6 +347,14 @@ export function DiagnosePage() {
       console.error('Failed to fetch trace events:', error);
     }
   };
+
+  useEffect(() => {
+    if (!traceId) {
+      setTraceEvents([]);
+      return;
+    }
+    refreshTrace();
+  }, [traceId]);
 
   return (
     <div className="space-y-6 animate-fadeIn">
