@@ -141,6 +141,8 @@ const shortText = (value: unknown, max = 80): string => {
 
 const toArray = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
 
+const isRecord = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
+
 const normalizeStatus = (status: unknown): AgentStatus | 'info' => {
   const text = String(status || '').toLowerCase();
   if (['start', 'started', 'begin', 'running', '执行中', '开始'].includes(text)) return 'running';
@@ -184,13 +186,13 @@ const normalizeEvent = (raw: RawTraceEvent): NormalizedEvent => {
 
   if (raw.agent) {
     const agentId = mapToFixedAgent(String(raw.agent_id || raw.agent), undefined);
-    const outputs = raw.outputs && typeof raw.outputs === 'object' ? raw.outputs : {};
-    const decision = raw.decision && typeof raw.decision === 'object' ? raw.decision : {};
-    const isComplete = String(raw.step || '').toLowerCase().endsWith('_complete') || outputs?.is_complete === true;
+    const outputs = isRecord(raw.outputs) ? raw.outputs : undefined;
+    const decision = isRecord(raw.decision) ? raw.decision : undefined;
+    const isComplete = String(raw.step || '').toLowerCase().endsWith('_complete') || outputs?.['is_complete'] === true;
     const status = isComplete ? 'completed' : 'running';
 
-    const reasons = toArray(decision?.reasons_cn || decision?.reasons).map((item) => String(item));
-    const reasonText = shortText(decision?.reason_str || reasons.join('、'), 120);
+    const reasons = toArray(decision?.['reasons_cn'] ?? decision?.['reasons']).map((item) => String(item));
+    const reasonText = shortText(decision?.['reason_str'] ?? reasons.join('、'), 120);
     const message = shortText(raw.step_cn || raw.step || reasonText || `${raw.agent} ${status === 'completed' ? '完成' : '执行中'}`, 140);
 
     return {
@@ -206,23 +208,23 @@ const normalizeEvent = (raw: RawTraceEvent): NormalizedEvent => {
         agent_cn: raw.agent_cn,
         step: raw.step,
         step_cn: raw.step_cn,
-        inputs: raw.inputs || {},
+        inputs: isRecord(raw.inputs) ? raw.inputs : undefined,
         outputs,
         decision,
       },
     };
   }
 
-  const payload = raw.payload && typeof raw.payload === 'object' ? raw.payload : {};
+  const payload = isRecord(raw.payload) ? raw.payload : {};
   const status = normalizeStatus(raw.status);
   return {
     seq: raw.seq,
     ts,
     tsMs,
-    agentId: mapToFixedAgent(String(payload.agent_id || raw.agent_id || ''), raw.node),
+    agentId: mapToFixedAgent(String(payload['agent_id'] || raw.agent_id || ''), raw.node),
     nodeName: String(raw.node || raw.agent || 'trace'),
     status,
-    message: shortText(raw.message || payload.message || raw.node || 'trace', 140),
+    message: shortText(raw.message || payload['message'] || raw.node || 'trace', 140),
     data: payload,
   };
 };
@@ -234,43 +236,49 @@ const extractHighlights = (agentId: FixedAgentId, events: NormalizedEvent[]): st
   const lines: string[] = [];
 
   if (agentId === 'supervisor') {
-    const decision = latest.data?.decision || {};
-    const nextAction = decision?.next_action || latest.data?.outputs?.next_action;
-    const reasons = toArray(decision?.reasons_cn || decision?.reasons).map((item) => String(item)).filter(Boolean);
-    const isComplete = latest.data?.outputs?.is_complete ?? decision?.is_complete;
-    if (nextAction) lines.push(`下一步：${nextAction}`);
+    const decision = isRecord(latest.data?.['decision']) ? latest.data['decision'] : undefined;
+    const outputs = isRecord(latest.data?.['outputs']) ? latest.data['outputs'] : undefined;
+    const nextAction = (isRecord(decision) ? decision['next_action'] : undefined) ?? (isRecord(outputs) ? outputs['next_action'] : undefined);
+    const reasons = toArray((isRecord(decision) ? decision['reasons_cn'] : undefined) ?? (isRecord(decision) ? decision['reasons'] : undefined)).map((item) => String(item)).filter(Boolean);
+    const isComplete = (isRecord(outputs) ? outputs['is_complete'] : undefined) ?? (isRecord(decision) ? decision['is_complete'] : undefined);
+    if (nextAction) lines.push(`下一步：${String(nextAction)}`);
     reasons.slice(0, 2).forEach((reason) => lines.push(`原因：${shortText(reason, 70)}`));
     if (typeof isComplete === 'boolean') lines.push(`is_complete：${isComplete ? '是' : '否'}`);
   }
 
   if (agentId === 'reception') {
-    const inputs = latest.data?.inputs || {};
-    const cropType = inputs?.crop_type || latest.data?.outputs?.crop_type;
-    const imageName = inputs?.filename || inputs?.image_name || inputs?.image_path || latest.data?.outputs?.image_path;
-    const missing = toArray(latest.data?.outputs?.missing_profile_fields);
-    const symptoms = inputs?.symptoms;
+    const inputs = isRecord(latest.data?.['inputs']) ? latest.data['inputs'] : undefined;
+    const outputs = isRecord(latest.data?.['outputs']) ? latest.data['outputs'] : undefined;
+    const cropType = (isRecord(inputs) ? inputs['crop_type'] : undefined) ?? (isRecord(outputs) ? outputs['crop_type'] : undefined);
+    const imageName = (isRecord(inputs) ? inputs['filename'] : undefined)
+      ?? (isRecord(inputs) ? inputs['image_name'] : undefined)
+      ?? (isRecord(inputs) ? inputs['image_path'] : undefined)
+      ?? (isRecord(outputs) ? outputs['image_path'] : undefined);
+    const missing = toArray(isRecord(outputs) ? outputs['missing_profile_fields'] : undefined);
+    const symptoms = isRecord(inputs) ? inputs['symptoms'] : undefined;
     const symptomCount = Array.isArray(symptoms)
       ? symptoms.length
       : typeof symptoms === 'string'
         ? symptoms.split(/[，,\s]+/).filter(Boolean).length
         : 0;
-    if (cropType) lines.push(`作物：${cropType}`);
-    if (imageName) lines.push(`图片：${shortText(imageName, 48)}`);
+    if (cropType) lines.push(`作物：${String(cropType)}`);
+    if (imageName) lines.push(`图片：${shortText(String(imageName), 48)}`);
     if (missing.length) lines.push(`缺失档案字段：${missing.join('、')}`);
     lines.push(`症状数量：${symptomCount}`);
   }
 
   if (agentId === 'diagnosis') {
-    const outputs = latest.data?.outputs || latest.data;
-    const modelId = outputs?.model_id;
-    const backend = outputs?.backend || outputs?.model_backend;
-    const path = outputs?.path || outputs?.model_path;
-    const finalDisease = outputs?.final_disease || outputs?.disease;
-    const confidenceRaw = Number(outputs?.confidence_pct ?? outputs?.confidence);
+    const outputs = isRecord(latest.data?.['outputs']) ? latest.data['outputs'] : latest.data;
+    const imageResult = isRecord(outputs['image_result']) ? outputs['image_result'] : undefined;
+    const modelId = outputs['model_id'];
+    const backend = outputs['backend'] ?? outputs['model_backend'];
+    const path = outputs['path'] ?? outputs['model_path'] ?? outputs['resolved_model_path'];
+    const finalDisease = outputs['final_disease'] ?? outputs['disease'];
+    const confidenceRaw = Number(outputs['confidence_pct'] ?? outputs['confidence']);
     const confidencePct = Number.isFinite(confidenceRaw)
       ? (confidenceRaw <= 1 ? confidenceRaw * 100 : confidenceRaw)
       : undefined;
-    const top3 = toArray(outputs?.top3 || outputs?.image_result?.top3)
+    const top3 = toArray(outputs['top3'] ?? (isRecord(imageResult) ? imageResult['top3'] : undefined))
       .slice(0, 3)
       .map((item) => {
         const obj = item && typeof item === 'object' ? item as Record<string, unknown> : {};
@@ -279,27 +287,27 @@ const extractHighlights = (agentId: FixedAgentId, events: NormalizedEvent[]): st
         return `${disease}:${confidencePct.toFixed(1)}%`;
       });
 
-    if (modelId || backend) lines.push(`模型：${modelId || '-'} / ${backend || '-'}`);
-    if (path) lines.push(`路径：${shortText(path, 54)}`);
-    if (finalDisease) lines.push(`结论：${finalDisease}`);
+    if (modelId || backend) lines.push(`模型：${String(modelId ?? '-')} / ${String(backend ?? '-')}`);
+    if (path) lines.push(`路径：${shortText(String(path), 54)}`);
+    if (finalDisease) lines.push(`结论：${String(finalDisease)}`);
     if (typeof confidencePct === 'number' && Number.isFinite(confidencePct)) lines.push(`置信度：${confidencePct.toFixed(2)}%`);
     if (top3.length) lines.push(`Top3：${top3.join(' | ')}`);
-    if (outputs?.fallback_reason) lines.push(`回退原因：${outputs.fallback_reason}`);
+    if (outputs['fallback_reason']) lines.push(`回退原因：${String(outputs['fallback_reason'])}`);
   }
 
   if (agentId === 'kb_retrieval') {
-    const outputs = latest.data?.outputs || latest.data;
-    if (outputs?.disease) lines.push(`命中病害：${outputs.disease}`);
-    if (outputs?.description) lines.push(`描述：${shortText(outputs.description, 80)}`);
-    if (outputs?.treatment) lines.push(`治疗：${shortText(outputs.treatment, 70)}`);
-    if (outputs?.prevention) lines.push(`预防：${shortText(outputs.prevention, 70)}`);
+    const outputs = isRecord(latest.data?.['outputs']) ? latest.data['outputs'] : latest.data;
+    if (outputs['disease']) lines.push(`命中病害：${String(outputs['disease'])}`);
+    if (outputs['description']) lines.push(`描述：${shortText(String(outputs['description']), 80)}`);
+    if (outputs['treatment']) lines.push(`治疗：${shortText(String(outputs['treatment']), 70)}`);
+    if (outputs['prevention']) lines.push(`预防：${shortText(String(outputs['prevention']), 70)}`);
   }
 
   if (agentId === 'treatment') {
-    const outputs = latest.data?.outputs || latest.data;
-    if (outputs?.treatment_plan || outputs?.plan) lines.push(`处方：${shortText(outputs.treatment_plan || outputs.plan, 80)}`);
-    if (outputs?.prevention_advice || outputs?.prevention) lines.push(`预防：${shortText(outputs.prevention_advice || outputs.prevention, 80)}`);
-    const filtered = toArray(outputs?.filtered_components).map((item) => String(item));
+    const outputs = isRecord(latest.data?.['outputs']) ? latest.data['outputs'] : latest.data;
+    if (outputs['treatment_plan'] || outputs['plan']) lines.push(`处方：${shortText(String(outputs['treatment_plan'] ?? outputs['plan']), 80)}`);
+    if (outputs['prevention_advice'] || outputs['prevention']) lines.push(`预防：${shortText(String(outputs['prevention_advice'] ?? outputs['prevention']), 80)}`);
+    const filtered = toArray(outputs['filtered_components']).map((item) => String(item));
     if (filtered.length) lines.push(`过滤组件：${filtered.slice(0, 3).join('、')}`);
     const validatorMessages = events
       .filter((event) => /validator|persist/i.test(event.nodeName))
@@ -309,8 +317,8 @@ const extractHighlights = (agentId: FixedAgentId, events: NormalizedEvent[]): st
   }
 
   if (agentId === 'final') {
-    const outputs = latest.data?.outputs || latest.data;
-    if (outputs?.final_disease || outputs?.disease) lines.push(`最终病害：${outputs?.final_disease || outputs?.disease}`);
+    const outputs = isRecord(latest.data?.['outputs']) ? latest.data['outputs'] : latest.data;
+    if (outputs['final_disease'] || outputs['disease']) lines.push(`最终病害：${String(outputs['final_disease'] ?? outputs['disease'])}`);
     lines.push('流程完成');
   }
 

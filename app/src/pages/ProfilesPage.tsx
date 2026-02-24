@@ -225,11 +225,17 @@ export function ProfilesPage() {
       });
 
       const data = await parseJsonOrThrow(resp);
-      if (data?.id) {
+      const createdId = typeof data?.id === 'string'
+        ? data.id
+        : (typeof data?.farmer_id === 'string' ? data.farmer_id : null);
+
+      if (createdId) {
         fetchProfiles();
-        fetchProfileDetail(data.id);
+        fetchProfileDetail(createdId);
         setShowAddDialog(false);
         setNewProfileName('');
+      } else {
+        setErrorMessage('创建成功但未返回有效 farmer_id，无法自动打开详情');
       }
     } catch (error) {
       const msg = error instanceof Error ? error.message : '创建农户失败';
