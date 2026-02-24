@@ -52,38 +52,47 @@ const toSafeNumber = (value: unknown, fallback = 0): number => {
   return fallback;
 };
 
-const normalizeBase = (baseId: string, base: any): FarmerBase => ({
-  base_id: toSafeString(base?.base_id, baseId),
-  name: toSafeString(base?.name),
-  location: toSafeString(base?.location),
-  province: toSafeString(base?.province),
-  facility_type: toSafeString(base?.facility_type ?? base?.facility),
-  environment: toSafeString(base?.environment),
-  growth_stage: toSafeString(base?.growth_stage),
-  notes: toSafeString(base?.notes),
-});
+const normalizeBase = (baseId: string, base: unknown): FarmerBase => {
+  const baseObj = base && typeof base === 'object' ? base as Record<string, unknown> : {};
+  return {
+    base_id: toSafeString(baseObj.base_id, baseId),
+    name: toSafeString(baseObj.name),
+    location: toSafeString(baseObj.location),
+    province: toSafeString(baseObj.province),
+    facility_type: toSafeString(baseObj.facility_type ?? baseObj.facility),
+    environment: toSafeString(baseObj.environment),
+    growth_stage: toSafeString(baseObj.growth_stage),
+    notes: toSafeString(baseObj.notes),
+  };
+};
 
-const normalizeProfile = (raw: any): FarmerProfile => {
-  const rawBases = raw?.bases;
+const normalizeProfile = (raw: unknown): FarmerProfile => {
+  const rawObj = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {};
+  const rawBases = rawObj.bases;
   const basesArray: FarmerBase[] = Array.isArray(rawBases)
-    ? rawBases.map((base: any, idx) => normalizeBase(toSafeString(base?.base_id, `B${idx + 1}`), base))
+    ? rawBases.map((base: unknown, idx) => {
+      const baseObj = base && typeof base === 'object' ? base as Record<string, unknown> : {};
+      return normalizeBase(toSafeString(baseObj.base_id, `B${idx + 1}`), baseObj);
+    })
     : rawBases && typeof rawBases === 'object'
     ? Object.entries(rawBases).map(([baseId, base]) => normalizeBase(baseId, base))
     : [];
 
-  const rawConstraints = raw?.constraints && typeof raw?.constraints === 'object' ? raw.constraints : {};
-  const rawBanned = (rawConstraints as any).banned_ingredients;
+  const rawConstraints = rawObj.constraints && typeof rawObj.constraints === 'object'
+    ? rawObj.constraints as Record<string, unknown>
+    : {};
+  const rawBanned = rawConstraints.banned_ingredients;
 
   return {
-    farmer_id: toSafeString(raw?.farmer_id),
-    name: toSafeString(raw?.name),
-    active_base_id: toSafeString(raw?.active_base_id),
-    confirm_when_low_confidence: Boolean(raw?.confirm_when_low_confidence),
-    schema_version: toSafeString(raw?.schema_version, '1.0'),
-    updated_at: toSafeString(raw?.updated_at),
+    farmer_id: toSafeString(rawObj.farmer_id),
+    name: toSafeString(rawObj.name),
+    active_base_id: toSafeString(rawObj.active_base_id),
+    confirm_when_low_confidence: Boolean(rawObj.confirm_when_low_confidence),
+    schema_version: toSafeString(rawObj.schema_version, '1.0'),
+    updated_at: toSafeString(rawObj.updated_at),
     constraints: {
-      prefer_organic: Boolean((rawConstraints as any).prefer_organic),
-      harvest_window_days: toSafeNumber((rawConstraints as any).harvest_window_days, 0),
+      prefer_organic: Boolean(rawConstraints.prefer_organic),
+      harvest_window_days: toSafeNumber(rawConstraints.harvest_window_days, 0),
       banned_ingredients: Array.isArray(rawBanned)
         ? rawBanned.map((item: unknown) => toSafeString(item)).filter(Boolean)
         : [],
@@ -92,13 +101,14 @@ const normalizeProfile = (raw: any): FarmerProfile => {
   };
 };
 
-const normalizeProfileList = (raw: any): FarmerProfile[] => {
+const normalizeProfileList = (raw: unknown): FarmerProfile[] => {
   if (!Array.isArray(raw)) return [];
-  return raw.map((item: any) => {
-    if (item && typeof item === 'object' && ('farmer_id' in item || 'name' in item)) {
-      return normalizeProfile(item);
+  return raw.map((item: unknown) => {
+    const itemObj = item && typeof item === 'object' ? item as Record<string, unknown> : {};
+    if ('farmer_id' in itemObj || 'name' in itemObj) {
+      return normalizeProfile(itemObj);
     }
-    const farmerId = toSafeString(item?.id);
+    const farmerId = toSafeString(itemObj.id);
     return {
       farmer_id: farmerId,
       name: farmerId || '未命名农户',
@@ -129,15 +139,16 @@ export function ProfilesPage() {
   const [errorMessage, setErrorMessage] = useState('');
 
   const parseJsonOrThrow = async (resp: Response) => {
-    let payload: any = null;
+    let payload: Record<string, unknown> | null = null;
     try {
-      payload = await resp.json();
+      const parsed: unknown = await resp.json();
+      payload = parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : null;
     } catch {
       // noop
     }
     if (!resp.ok) {
-      const detail = payload?.detail || payload?.message || `请求失败：${resp.status}`;
-      throw new Error(detail);
+      const detail = (payload?.detail ?? payload?.message ?? `请求失败：${resp.status}`);
+      throw new Error(String(detail));
     }
     return payload;
   };

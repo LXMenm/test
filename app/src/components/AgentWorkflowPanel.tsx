@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
+import type { LucideIcon } from 'lucide-react';
 
 type AgentStatus = 'pending' | 'running' | 'completed' | 'error';
 type FixedAgentId = 'supervisor' | 'reception' | 'diagnosis' | 'kb_retrieval' | 'treatment' | 'final';
@@ -37,10 +38,10 @@ interface RawTraceEvent {
   node?: string;
   status?: string;
   message?: string;
-  payload?: Record<string, any>;
-  inputs?: Record<string, any>;
-  outputs?: Record<string, any>;
-  decision?: Record<string, any>;
+  payload?: Record<string, unknown>;
+  inputs?: Record<string, unknown>;
+  outputs?: Record<string, unknown>;
+  decision?: Record<string, unknown>;
 }
 
 interface NormalizedEvent {
@@ -51,14 +52,14 @@ interface NormalizedEvent {
   nodeName: string;
   status: AgentStatus | 'info';
   message: string;
-  data: Record<string, any>;
+  data: Record<string, unknown>;
 }
 
 interface AgentRowDef {
   id: FixedAgentId;
   name: string;
   description: string;
-  icon: any;
+  icon: LucideIcon;
 }
 
 interface AgentRowState {
@@ -138,7 +139,7 @@ const shortText = (value: unknown, max = 80): string => {
   return raw.length <= max ? raw : `${raw.slice(0, max)}...`;
 };
 
-const toArray = (value: unknown): any[] => (Array.isArray(value) ? value : []);
+const toArray = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
 
 const normalizeStatus = (status: unknown): AgentStatus | 'info' => {
   const text = String(status || '').toLowerCase();
@@ -271,7 +272,12 @@ const extractHighlights = (agentId: FixedAgentId, events: NormalizedEvent[]): st
       : undefined;
     const top3 = toArray(outputs?.top3 || outputs?.image_result?.top3)
       .slice(0, 3)
-      .map((item: any) => `${item?.disease || item?.name || '-'}:${Number(item?.confidence_pct ?? (Number(item?.confidence) * 100)).toFixed(1)}%`);
+      .map((item) => {
+        const obj = item && typeof item === 'object' ? item as Record<string, unknown> : {};
+        const disease = String(obj.disease ?? obj.name ?? '-');
+        const confidencePct = Number(obj.confidence_pct ?? (Number(obj.confidence) * 100));
+        return `${disease}:${confidencePct.toFixed(1)}%`;
+      });
 
     if (modelId || backend) lines.push(`模型：${modelId || '-'} / ${backend || '-'}`);
     if (path) lines.push(`路径：${shortText(path, 54)}`);
@@ -320,7 +326,7 @@ export function AgentWorkflowPanel({ traceId, confidencePct }: AgentWorkflowPane
   const [connectionState, setConnectionState] = useState<'idle' | 'connecting' | 'connected' | 'disconnected'>('idle');
   const [connectionHint, setConnectionHint] = useState('');
   const [replayedCount, setReplayedCount] = useState(0);
-  const [nowMs, setNowMs] = useState(Date.now());
+  const [nowMs, setNowMs] = useState(() => Date.now());
   const [workflowDone, setWorkflowDone] = useState(false);
   const [diagnosisConfidencePct, setDiagnosisConfidencePct] = useState<number | undefined>(undefined);
   const [debugOpen, setDebugOpen] = useState<Record<FixedAgentId, boolean>>({
