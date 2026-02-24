@@ -31,7 +31,7 @@ interface TraceEvent {
   raw: Record<string, unknown>;
 }
 
-type Top3Item = [string, number];
+type Top3Candidate = { disease: string; probPct: number };
 
 export function DiagnosePage() {
   const [file, setFile] = useState<File | null>(null);
@@ -43,6 +43,7 @@ export function DiagnosePage() {
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<DiagnosisResult | null>(null);
   const [traceEvents, setTraceEvents] = useState<TraceEvent[]>([]);
+  const [latestPayload, setLatestPayload] = useState<Record<string, unknown> | null>(null);
   const [traceId, setTraceId] = useState('');
   const [imageId, setImageId] = useState('');
   const [confirmMode, setConfirmMode] = useState<boolean>(false);
@@ -97,12 +98,109 @@ export function DiagnosePage() {
     return null;
   };
 
+  const hasLowConfidenceReason = (value: unknown): boolean => {
+    if (!Array.isArray(value)) return false;
+    return value.some((item) => {
+      const reason = String(item || '');
+      return reason === 'low_confidence' || reason === 'low_margin';
+    });
+  };
 
+  const parseTop3Candidates = (payloadLike: unknown, resultLike?: DiagnosisResult | null): Top3Candidate[] => {
+    const payload = payloadLike && typeof payloadLike === 'object' ? payloadLike as Record<string, unknown> : {};
+    const imageResult = payload.image_result && typeof payload.image_result === 'object'
+      ? payload.image_result as Record<string, unknown>
+      : undefined;
+    const imageDiagnosis = payload.image_diagnosis && typeof payload.image_diagnosis === 'object'
+      ? payload.image_diagnosis as Record<string, unknown>
+      : undefined;
 
-  const shouldEnterConfirmMode = (payload: Record<string, unknown>): boolean => {
+    const eventCandidates = Array.isArray(payload.events)
+      ? payload.events
+        .map((eventLike) => {
+          if (!eventLike || typeof eventLike !== 'object') return undefined;
+          const event = eventLike as Record<string, unknown>;
+          if (String(event.agent ?? '').toLowerCase() !== 'diagnosis') return undefined;
+          const outputs = event.outputs && typeof event.outputs === 'object' ? event.outputs as Record<string, unknown> : undefined;
+          const fromDiagnosis = outputs?.image_diagnosis && typeof outputs.image_diagnosis === 'object'
+            ? outputs.image_diagnosis as Record<string, unknown>
+            : undefined;
+          return fromDiagnosis?.top3;
+        })
+        .find((top3) => Array.isArray(top3))
+      : undefined;
+
+    const source = Array.isArray(imageResult?.top3)
+      ? imageResult.top3
+      : Array.isArray(imageDiagnosis?.top3)
+        ? imageDiagnosis.top3
+        : Array.isArray(eventCandidates)
+          ? eventCandidates
+          : Array.isArray(resultLike?.top3)
+            ? resultLike.top3
+            : Array.isArray((resultLike?.image_result && typeof resultLike.image_result === 'object')
+              ? (resultLike.image_result as Record<string, unknown>).top3
+              : undefined)
+              ? ((resultLike?.image_result as Record<string, unknown>).top3 as unknown[])
+              : [];
+
+    const mapped = source.map((item): Top3Candidate | null => {
+      if (!item || typeof item !== 'object') {
+        if (Array.isArray(item) && typeof item[0] === 'string') {
+          const probRaw = Number(item[1]);
+          if (!Number.isFinite(probRaw)) return null;
+          return { disease: item[0], probPct: probRaw <= 1 ? probRaw * 100 : probRaw };
+        }
+        return null;
+      }
+
+      if (Array.isArray(item) && typeof item[0] === 'string') {
+        const probRaw = Number(item[1]);
+        if (!Number.isFinite(probRaw)) return null;
+        return { disease: item[0], probPct: probRaw <= 1 ? probRaw * 100 : probRaw };
+      }
+
+      const record = item as Record<string, unknown>;
+      const disease = typeof record.disease === 'string' ? record.disease.trim() : '';
+      if (!disease) return null;
+      const rawProbPct = toNumber(record.prob_pct) ?? toNumber(record.probPct);
+      const rawProb = toNumber(record.prob);
+      const probPct = rawProbPct ?? (rawProb !== null ? rawProb * 100 : null);
+      if (probPct === null || !Number.isFinite(probPct)) return null;
+      return { disease, probPct };
+    }).filter((item): item is Top3Candidate => item !== null && Boolean(item.disease));
+
+    return mapped.sort((a, b) => b.probPct - a.probPct).slice(0, 3);
+  };
+
+  const deriveNeedConfirm = (
+    payloadLike: unknown,
+    candidates: Top3Candidate[],
+    displayConfidencePct: number | null,
+  ): boolean => {
+    const payload = payloadLike && typeof payloadLike === 'object' ? payloadLike as Record<string, unknown> : {};
     if (payload.need_confirm === true) return true;
-    const reasons = Array.isArray(payload.fallback_reason) ? payload.fallback_reason : [];
-    return reasons.includes('low_confidence') || reasons.includes('low_margin');
+    if (hasLowConfidenceReason(payload.fallback_reason)) return true;
+
+    const imageResult = payload.image_result && typeof payload.image_result === 'object'
+      ? payload.image_result as Record<string, unknown>
+      : undefined;
+    const diseaseText = typeof imageResult?.disease === 'string' ? imageResult.disease : '';
+    if (diseaseText.includes('置信度不足')) return true;
+    if (displayConfidencePct !== null && displayConfidencePct < 60) return true;
+
+    if (Array.isArray(payload.events)) {
+      const hasDiagnosisNeedConfirm = payload.events.some((eventLike) => {
+        if (!eventLike || typeof eventLike !== 'object') return false;
+        const event = eventLike as Record<string, unknown>;
+        if (String(event.agent ?? '').toLowerCase() !== 'diagnosis') return false;
+        const outputs = event.outputs && typeof event.outputs === 'object' ? event.outputs as Record<string, unknown> : undefined;
+        return outputs?.need_confirm === true || hasLowConfidenceReason(outputs?.fallback_reason);
+      });
+      if (hasDiagnosisNeedConfirm) return true;
+    }
+
+    return candidates.length > 0 && displayConfidencePct !== null && displayConfidencePct < 60;
   };
 
   const buildResultFromPayload = (payload: Record<string, unknown>): DiagnosisResult => ({
@@ -163,13 +261,16 @@ export function DiagnosePage() {
 
       const normalizedResult = buildResultFromPayload(data);
       setResult(normalizedResult);
+      const payloadRecord = data && typeof data === 'object' ? data as Record<string, unknown> : {};
+      setLatestPayload(payloadRecord);
 
-      const needsConfirm = shouldEnterConfirmMode(data);
-      if (needsConfirm) {
-        setConfirmMode(Boolean(needsConfirm));
-        const initialTop3 = normalizeTop3(normalizedResult.top3);
-        const defaultChoice = initialTop3[0]?.[0] || 'other';
-        setConfirmChoice(defaultChoice);
+      const candidates = parseTop3Candidates(payloadRecord, normalizedResult);
+      const needsConfirm = deriveNeedConfirm(payloadRecord, candidates, normalizedResult.displayConfidencePct);
+      console.log('[confirm] candidates=', candidates);
+      console.log('[confirm] derivedNeedConfirm=', needsConfirm);
+      setConfirmMode(needsConfirm);
+      if (needsConfirm && candidates[0]?.disease && (!confirmChoice || confirmChoice === 'other')) {
+        setConfirmChoice(candidates[0].disease);
       }
     } catch (error) {
       console.error('Diagnosis failed:', error);
@@ -212,14 +313,26 @@ export function DiagnosePage() {
       if (data.trace_id) {
         setTraceId(data.trace_id);
       }
+      if (data.image_id) {
+        setImageId(data.image_id);
+      }
 
       const mergedPayload = {
         ...data,
         image_url: result?.image_url || '',
-        prevention: data?.treatment?.prevention,
       };
-      setResult(buildResultFromPayload(mergedPayload));
-      setConfirmMode(false);
+      const nextResult = buildResultFromPayload(mergedPayload as Record<string, unknown>);
+      setResult(nextResult);
+      const payloadRecord = mergedPayload && typeof mergedPayload === 'object' ? mergedPayload as Record<string, unknown> : {};
+      setLatestPayload(payloadRecord);
+      const candidates = parseTop3Candidates(payloadRecord, nextResult);
+      const needsConfirm = deriveNeedConfirm(payloadRecord, candidates, nextResult.displayConfidencePct);
+      console.log('[confirm] candidates=', candidates);
+      console.log('[confirm] derivedNeedConfirm=', needsConfirm);
+      setConfirmMode(needsConfirm);
+      if (needsConfirm && candidates[0]?.disease && (!confirmChoice || confirmChoice === 'other')) {
+        setConfirmChoice(candidates[0].disease);
+      }
     } catch (error) {
       console.error('Confirm diagnose failed:', error);
     } finally {
@@ -260,51 +373,17 @@ export function DiagnosePage() {
   };
 
   const renderTreatment = (t: unknown): JSX.Element | null => renderRichValue(t);
-  const normalizeTop3 = (v: unknown, fallback?: unknown): Top3Item[] => {
-    const source = Array.isArray(v)
-      ? v
-      : (Array.isArray(fallback) ? fallback : []);
-
-    return source
-      .map((it): Top3Item | null => {
-        if (Array.isArray(it) && typeof it[0] === 'string') {
-          const confidence = Number(it[1]);
-          if (!Number.isFinite(confidence)) return null;
-          return [it[0], confidence > 1 ? confidence / 100 : confidence];
-        }
-
-        if (it && typeof it === 'object') {
-          const record = it as Record<string, unknown>;
-          const disease = typeof record.disease === 'string'
-            ? record.disease
-            : (typeof record.name === 'string' ? record.name : '');
-          if (!disease) return null;
-
-          const rawConfidence = Number(record.confidence ?? record.confidence_pct);
-          if (!Number.isFinite(rawConfidence)) return null;
-          return [disease, rawConfidence > 1 ? rawConfidence / 100 : rawConfidence];
-        }
-
-        return null;
-      })
-      .filter((item): item is Top3Item => item !== null);
-  };
-  const imageResult = result?.image_result && typeof result.image_result === 'object'
-    ? result.image_result as Record<string, unknown>
-    : undefined;
-  const top3: Top3Item[] = normalizeTop3(result?.top3, imageResult?.top3);
-  const finalDiseaseText = (result?.final_disease || '').trim();
-  const isUnknownDisease = !finalDiseaseText || /未知|疑似/.test(finalDiseaseText);
-  const isLowConfidence = result?.displayConfidencePct != null && result.displayConfidencePct < 60;
-  const shouldUseConfirm = Boolean(result) && (isUnknownDisease || isLowConfidence);
+  const candidates = parseTop3Candidates(latestPayload ?? result ?? {}, result);
+  const derivedNeedConfirm = deriveNeedConfirm(latestPayload ?? result ?? {}, candidates, result?.displayConfidencePct ?? null);
+  const shouldHideTreatment = confirmMode || derivedNeedConfirm;
 
   useEffect(() => {
-    if (!shouldUseConfirm) return;
+    if (!derivedNeedConfirm) return;
     setConfirmMode(true);
-    if (top3[0]?.[0]) {
-      setConfirmChoice(top3[0][0]);
+    if (candidates[0]?.disease && (!confirmChoice || confirmChoice === 'other')) {
+      setConfirmChoice(candidates[0].disease);
     }
-  }, [shouldUseConfirm, top3]);
+  }, [derivedNeedConfirm, candidates, confirmChoice]);
 
   const refreshTrace = async () => {
     if (!traceId) return;
@@ -526,11 +605,11 @@ export function DiagnosePage() {
                     </div>
                   </div>
 
-                  {top3.length > 0 ? (
+                  {candidates.length > 0 ? (
                     <div>
                       <h4 className="text-white/80 font-medium mb-3">Top 3 识别结果</h4>
                       <div className="space-y-2">
-                        {top3.map((item, idx) => (
+                        {candidates.map((item, idx) => (
                           <div key={idx} className="flex items-center gap-3">
                             <Badge
                               variant={idx === 0 ? 'default' : 'outline'}
@@ -541,8 +620,8 @@ export function DiagnosePage() {
                             >
                               #{idx + 1}
                             </Badge>
-                            <span className="text-white flex-1">{String(item[0])}</span>
-                            <span className="text-[#c8f7c5] font-mono">{(Number(item[1]) * 100).toFixed(2)}%</span>
+                            <span className="text-white flex-1">{item.disease}</span>
+                            <span className="text-[#c8f7c5] font-mono">{item.probPct.toFixed(2)}%</span>
                           </div>
                         ))}
                       </div>
@@ -552,18 +631,19 @@ export function DiagnosePage() {
                   {confirmMode ? (
                     <div className="bg-[#c8f7c5]/10 border border-[#c8f7c5]/30 rounded-xl p-4 space-y-4">
                       <h4 className="text-[#c8f7c5] font-medium">二次诊断 / 确认入口</h4>
+                      <p className="text-xs text-white/70">当前候选数量：{candidates.length}</p>
                       <div className="space-y-2">
                         <Label className="text-white/80">候选病害选择</Label>
-                        {top3.map((item) => (
-                          <label key={item[0]} className="flex items-center gap-2 text-sm text-white/80 cursor-pointer">
+                        {candidates.map((item) => (
+                          <label key={item.disease} className="flex items-center gap-2 text-sm text-white/80 cursor-pointer">
                             <input
                               type="radio"
                               name="confirmDisease"
-                              value={item[0]}
-                              checked={confirmChoice === item[0]}
+                              value={item.disease}
+                              checked={confirmChoice === item.disease}
                               onChange={(e) => setConfirmChoice(e.target.value)}
                             />
-                            <span>{String(item[0])}</span>
+                            <span>{item.disease} ({item.probPct.toFixed(2)}%)</span>
                           </label>
                         ))}
                         <label className="flex items-center gap-2 text-sm text-white/80 cursor-pointer">
@@ -601,13 +681,13 @@ export function DiagnosePage() {
                   <Separator className="bg-white/10" />
 
                   {/* Treatment */}
-                  {shouldUseConfirm && (
+                  {shouldHideTreatment && (
                     <div className="bg-yellow-500/10 border border-yellow-400/30 rounded-xl p-4 text-yellow-200 text-sm">
-                      置信度不足，请使用二次诊断补充症状/选择候选病害。
+                      置信度不足，建议先二次诊断确认病害或补充症状。
                     </div>
                   )}
 
-                  {Boolean(result.treatment) && !shouldUseConfirm && (
+                  {Boolean(result.treatment) && !shouldHideTreatment && (
                     <div>
                       <h4 className="text-white/80 font-medium mb-2 flex items-center gap-2">
                         <AlertCircle className="w-4 h-4 text-[#c8f7c5]" />
@@ -620,7 +700,7 @@ export function DiagnosePage() {
                   )}
 
                   {/* Prevention */}
-                  {Boolean(result.prevention) && !shouldUseConfirm && (
+                  {Boolean(result.prevention) && !shouldHideTreatment && (
                     <div>
                       <h4 className="text-white/80 font-medium mb-2">预防建议</h4>
                       <div className="bg-white/5 rounded-xl p-4 text-white/80 text-sm leading-relaxed whitespace-pre-line">
