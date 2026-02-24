@@ -428,7 +428,14 @@ export function AgentWorkflowPanel({ traceId, confidencePct }: AgentWorkflowPane
     eventHistoryRef.current[agentId] = [...eventHistoryRef.current[agentId], event].slice(-20);
 
     if (agentId === 'diagnosis') {
-      const rawConfidence = Number(event.data?.confidence_pct ?? event.data?.confidence ?? event.data?.outputs?.confidence_pct ?? event.data?.outputs?.confidence);
+      const data = isRecord(event.data) ? event.data : undefined;
+      const outputs = isRecord(data?.['outputs']) ? data['outputs'] : undefined;
+      const rawConfidence = Number(
+        (isRecord(data) ? data['confidence_pct'] : undefined)
+        ?? (isRecord(data) ? data['confidence'] : undefined)
+        ?? (isRecord(outputs) ? outputs['confidence_pct'] : undefined)
+        ?? (isRecord(outputs) ? outputs['confidence'] : undefined),
+      );
       if (Number.isFinite(rawConfidence)) {
         setDiagnosisConfidencePct(rawConfidence <= 1 ? rawConfidence * 100 : rawConfidence);
       }
@@ -461,7 +468,12 @@ export function AgentWorkflowPanel({ traceId, confidencePct }: AgentWorkflowPane
         if (typeof event.tsMs === 'number') {
           current.startTs = current.startTs ?? event.tsMs;
         }
-        const explicit = Number(event.data?.progress ?? event.data?.outputs?.progress);
+        const data = isRecord(event.data) ? event.data : undefined;
+        const outputs = isRecord(data?.['outputs']) ? data['outputs'] : undefined;
+        const explicit = Number(
+          (isRecord(data) ? data['progress'] : undefined)
+          ?? (isRecord(outputs) ? outputs['progress'] : undefined),
+        );
         if (Number.isFinite(explicit)) {
           current.progress = clamp(explicit, 0, 90);
         } else if (typeof event.tsMs === 'number' && typeof current.startTs === 'number') {

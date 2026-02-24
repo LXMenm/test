@@ -79,6 +79,10 @@ export function DashboardPage() {
   const [events, setEvents] = useState<DiagnosisEvent[]>([]);
   const [selectedEvent, setSelectedEvent] = useState<DiagnosisEvent | null>(null);
   const [loading, setLoading] = useState(false);
+  const hasTreatment = selectedEvent
+    ? typeof selectedEvent.treatment === 'string'
+      || (selectedEvent.treatment !== null && typeof selectedEvent.treatment === 'object')
+    : false;
 
   const fetchData = async () => {
     setLoading(true);
@@ -339,11 +343,11 @@ export function DashboardPage() {
                     </div>
                   )}
 
-                  {selectedEvent.treatment && (
+                  {hasTreatment && (
                     <div>
                       <p className="text-white/60 text-xs mb-2">治疗方案</p>
                       <div className="bg-white/5 rounded-lg p-3 text-white/80 text-sm max-h-32 overflow-y-auto">
-                        {renderTreatment(selectedEvent.treatment)}
+                        {renderTreatment(selectedEvent?.treatment)}
                       </div>
                     </div>
                   )}

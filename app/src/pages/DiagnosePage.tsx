@@ -40,7 +40,7 @@ export function DiagnosePage() {
   const [traceEvents, setTraceEvents] = useState<TraceEvent[]>([]);
   const [traceId, setTraceId] = useState('');
   const [imageId, setImageId] = useState('');
-  const [confirmMode, setConfirmMode] = useState(false);
+  const [confirmMode, setConfirmMode] = useState<boolean>(false);
   const [confirmChoice, setConfirmChoice] = useState('other');
   const [confirmSymptoms, setConfirmSymptoms] = useState('');
   const [confirmSubmitting, setConfirmSubmitting] = useState(false);
@@ -182,8 +182,9 @@ export function DiagnosePage() {
       const normalizedResult = buildResultFromPayload(data);
       setResult(normalizedResult);
 
-      if (shouldEnterConfirmMode(data)) {
-        setConfirmMode(true);
+      const needsConfirm = shouldEnterConfirmMode(data);
+      if (needsConfirm) {
+        setConfirmMode(Boolean(needsConfirm));
         const defaultChoice = normalizedResult.top3[0]?.disease || 'other';
         setConfirmChoice(defaultChoice);
       }
@@ -276,6 +277,7 @@ export function DiagnosePage() {
   };
 
   const renderTreatment = (t: unknown) => renderRichValue(t);
+  const top3 = Array.isArray(result?.top3) ? result.top3 : [];
 
   const refreshTrace = async () => {
     if (!traceId) return;
@@ -464,11 +466,11 @@ export function DiagnosePage() {
                   </div>
 
                   {/* Top 3 */}
-                  {result.top3 && result.top3.length > 0 && (
+                  {top3.length > 0 && (
                     <div>
                       <h4 className="text-white/80 font-medium mb-3">Top 3 识别结果</h4>
                       <div className="space-y-2">
-                        {result.top3.map((item, idx) => (
+                        {top3.map((item, idx) => (
                           <div key={idx} className="flex items-center gap-3">
                             <Badge 
                               variant={idx === 0 ? "default" : "outline"}
@@ -493,7 +495,7 @@ export function DiagnosePage() {
                       <h4 className="text-[#c8f7c5] font-medium">二次诊断 / 确认入口</h4>
                       <div className="space-y-2">
                         <Label className="text-white/80">候选病害选择</Label>
-                        {(Array.isArray(result.top3) ? result.top3 : []).map((item) => (
+                        {top3.map((item) => (
                           <label key={item.disease} className="flex items-center gap-2 text-sm text-white/80 cursor-pointer">
                             <input
                               type="radio"
