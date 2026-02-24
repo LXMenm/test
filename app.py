@@ -637,10 +637,8 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
     base_id = payload.get("base_id")
     if not image_id:
         raise HTTPException(status_code=400, detail="image_id 不能为空")
-    if not trace_id and previous_trace_id:
-        trace_id = uuid.uuid4().hex
     if not trace_id:
-        trace_id = uuid.uuid4().hex
+        raise HTTPException(status_code=400, detail="trace_id 不能为空")
     if not isinstance(symptoms, list):
         raise HTTPException(status_code=400, detail="symptoms 必须为列表")
 
@@ -683,9 +681,16 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
     )
     state["current_step"] = "confirm_input"
 
+    emit_node_event(trace_id, node="DiagnosisAgent", status="start", message="二次诊断开始")
+
     state = diagnosis_agent(state)
+    emit_node_event(trace_id, node="DiagnosisAgent", status="end", message="二次诊断完成")
+    emit_node_event(trace_id, node="KBRetrievalAgent", status="start", message="二次诊断检索知识库")
     state = kb_retrieval_agent(state)
+    emit_node_event(trace_id, node="KBRetrievalAgent", status="end", message="二次诊断知识库检索完成")
+    emit_node_event(trace_id, node="PrescriptionAgent", status="start", message="二次诊断生成方案")
     state = treatment_agent(state)
+    emit_node_event(trace_id, node="PrescriptionAgent", status="end", message="二次诊断方案生成完成")
 
     image_diagnosis = state.get("image_diagnosis") or {}
     image_top1 = image_diagnosis.get("top1") or {}
@@ -708,6 +713,22 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
     confirm_message = None
     if need_confirm:
         confirm_message = "置信度较低，建议补充症状或重新拍摄"
+
+    append_trace(
+        state,
+        agent="supervisor",
+        inputs={"trace_id": trace_id, "image_id": image_id},
+        outputs={"is_complete": True, "next_action": "end", "need_confirm": need_confirm},
+        decision={"is_complete": True, "next_action": "end"},
+    )
+
+    emit_node_event(
+        trace_id,
+        node="Final",
+        status="end",
+        message="二次诊断流程完成",
+        payload={"agent_id": "final", "final_disease": state.get("final_disease")},
+    )
 
     events = list_trace_events(trace_id)
 
@@ -925,8 +946,6 @@ async def stream_trace(trace_id: str):
                 event = await queue.get()
                 stream_event = _to_stream_event(trace_id, event)
                 yield f"event: trace\ndata: {json.dumps(stream_event, ensure_ascii=False)}\n\n"
-                if stream_event.get("node") == "Final" and stream_event.get("status") in {"end", "error"}:
-                    break
         finally:
             unsubscribe_trace(trace_id, queue)
 
