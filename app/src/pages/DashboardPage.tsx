@@ -13,10 +13,11 @@ interface DiseaseStat {
 
 interface DiagnosisEvent {
   id: string;
-  timestamp: string;
-  final_disease: string;
-  confidence: number;
-  image_result?: string;
+  ts: string;
+  disease: string;
+  confidencePct: number | null;
+  imageUrl: string;
+  modelName: string;
   treatment?: unknown;
   top3?: Array<{ disease: string; confidence: number }>;
 }
@@ -37,6 +38,76 @@ function isValidDateString(value: string): boolean {
   const parsed = new Date(`${value}T00:00:00`);
   if (Number.isNaN(parsed.getTime())) return false;
   return formatDate(parsed) === value;
+}
+
+function safeDisplayTime(value: string): string {
+  if (!value) return '—';
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed)) return '—';
+  return new Date(parsed).toLocaleString();
+}
+
+function getConfidencePct(source: Record<string, unknown>): number | null {
+  const imageResult = source.image_result && typeof source.image_result === 'object'
+    ? source.image_result as Record<string, unknown>
+    : undefined;
+
+  const confidencePct = Number(imageResult?.confidence_pct);
+  if (Number.isFinite(confidencePct)) return confidencePct;
+
+  const finalConfidence = Number(source.final_confidence);
+  if (Number.isFinite(finalConfidence)) return finalConfidence <= 1 ? finalConfidence * 100 : finalConfidence;
+
+  const confidence = Number(imageResult?.confidence);
+  if (Number.isFinite(confidence)) return confidence * 100;
+
+  return null;
+}
+
+function normalizeEvent(eventLike: unknown, index: number): DiagnosisEvent {
+  const event = eventLike && typeof eventLike === 'object' ? eventLike as Record<string, unknown> : {};
+  const imageResult = event.image_result && typeof event.image_result === 'object'
+    ? event.image_result as Record<string, unknown>
+    : undefined;
+  const meta = event.meta && typeof event.meta === 'object' ? event.meta as Record<string, unknown> : undefined;
+  const top3Raw = Array.isArray(event.top3)
+    ? event.top3
+    : (Array.isArray(imageResult?.top3) ? imageResult.top3 : []);
+
+  const top3 = top3Raw
+    .map((item) => {
+      if (Array.isArray(item) && typeof item[0] === 'string') {
+        const confidence = Number(item[1]);
+        if (!Number.isFinite(confidence)) return null;
+        return { disease: item[0], confidence: confidence <= 1 ? confidence * 100 : confidence };
+      }
+      if (item && typeof item === 'object') {
+        const obj = item as Record<string, unknown>;
+        const disease = typeof obj.disease === 'string' ? obj.disease : '';
+        const rawConfidence = Number(obj.confidence ?? obj.confidence_pct);
+        if (!disease || !Number.isFinite(rawConfidence)) return null;
+        return { disease, confidence: rawConfidence <= 1 ? rawConfidence * 100 : rawConfidence };
+      }
+      return null;
+    })
+    .filter((item): item is { disease: string; confidence: number } => item !== null);
+
+  return {
+    id: typeof event.id === 'string' ? event.id : `${String(event.ts ?? event.timestamp ?? 'event')}-${index}`,
+    ts: typeof event.ts === 'string'
+      ? event.ts
+      : (typeof event.timestamp === 'string' ? event.timestamp : new Date().toISOString()),
+    disease: typeof event.final_disease === 'string'
+      ? event.final_disease
+      : (typeof imageResult?.disease === 'string' ? imageResult.disease : '—'),
+    imageUrl: typeof event.image_url === 'string' ? event.image_url : '',
+    modelName: typeof meta?.model_display_name === 'string'
+      ? meta.model_display_name
+      : (typeof event.model_display_name === 'string' ? event.model_display_name : '—'),
+    confidencePct: getConfidencePct(event),
+    treatment: event.treatment,
+    top3,
+  };
 }
 
 function renderTreatment(value: unknown) {
@@ -84,19 +155,21 @@ export function DashboardPage() {
       || (selectedEvent.treatment !== null && typeof selectedEvent.treatment === 'object')
     : false;
 
+  const sanitizeDateRange = (): { start: string; end: string } => {
+    const fallbackRange = getDefaultDateRange(7);
+    const invalid = !isValidDateString(startDate) || !isValidDateString(endDate) || startDate > endDate;
+    if (invalid) {
+      setStartDate(fallbackRange.start);
+      setEndDate(fallbackRange.end);
+      return fallbackRange;
+    }
+    return { start: startDate, end: endDate };
+  };
+
   const fetchData = async () => {
     setLoading(true);
 
-    let safeStart = startDate;
-    let safeEnd = endDate;
-    const fallbackRange = getDefaultDateRange(7);
-
-    if (!isValidDateString(safeStart) || !isValidDateString(safeEnd) || safeStart > safeEnd) {
-      safeStart = fallbackRange.start;
-      safeEnd = fallbackRange.end;
-      setStartDate(safeStart);
-      setEndDate(safeEnd);
-    }
+    const { start: safeStart, end: safeEnd } = sanitizeDateRange();
 
     try {
       const [statsResp, eventsResp] = await Promise.all([
@@ -130,7 +203,9 @@ export function DashboardPage() {
             };
           })
         : [];
-      const safeEvents = Array.isArray(eventsList) ? eventsList : [];
+      const safeEvents = Array.isArray(eventsList)
+        ? eventsList.map((eventLike, index) => normalizeEvent(eventLike, index))
+        : [];
 
       setStats(safeStats);
       setEvents(safeEvents);
@@ -268,23 +343,23 @@ export function DashboardPage() {
                 >
                   <div className="flex items-center justify-between">
                     <span className="text-white/40 text-xs font-mono">
-                      {new Date(event.timestamp).toLocaleString()}
+                      {safeDisplayTime(event.ts)}
                     </span>
                     <Badge
                       variant="outline"
                       className={cn(
                         "text-xs",
-                        event.confidence >= 80
+                        (event.confidencePct ?? -1) >= 80
                           ? "border-green-400 text-green-400"
-                          : event.confidence >= 50
+                          : (event.confidencePct ?? -1) >= 50
                           ? "border-yellow-400 text-yellow-400"
                           : "border-red-400 text-red-400"
                       )}
                     >
-                      {event.confidence?.toFixed(1)}%
+                      {event.confidencePct !== null ? `${event.confidencePct.toFixed(2)}%` : '—'}
                     </Badge>
                   </div>
-                  <p className="text-white font-medium mt-1">{event.final_disease}</p>
+                  <p className="text-white font-medium mt-1">{event.disease}</p>
                 </div>
               ))}
               {events.length === 0 && (
@@ -308,25 +383,34 @@ export function DashboardPage() {
           <CardContent>
             {selectedEvent ? (
               <div className="space-y-4 animate-fadeIn">
-                {selectedEvent.image_result && (
+                {selectedEvent.imageUrl ? (
                   <div className="rounded-xl overflow-hidden bg-black/30">
                     <img
-                      src={selectedEvent.image_result}
+                      src={selectedEvent.imageUrl}
                       alt="Diagnosis"
                       className="w-full max-h-48 object-contain"
                     />
+                  </div>
+                ) : (
+                  <div className="rounded-xl bg-white/5 border border-white/10 p-6 text-center text-white/40 text-sm">
+                    暂无图片
                   </div>
                 )}
 
                 <div className="space-y-3">
                   <div className="bg-white/5 rounded-lg p-3">
                     <p className="text-white/60 text-xs mb-1">最终病害</p>
-                    <p className="text-lg font-bold text-[#c8f7c5]">{selectedEvent.final_disease}</p>
+                    <p className="text-lg font-bold text-[#c8f7c5]">{selectedEvent.disease}</p>
                   </div>
 
                   <div className="bg-white/5 rounded-lg p-3">
                     <p className="text-white/60 text-xs mb-1">置信度</p>
-                    <p className="text-lg font-bold text-white">{selectedEvent.confidence?.toFixed(2)}%</p>
+                    <p className="text-lg font-bold text-white">{selectedEvent.confidencePct !== null ? `${selectedEvent.confidencePct.toFixed(2)}%` : '—'}</p>
+                  </div>
+
+                  <div className="bg-white/5 rounded-lg p-3">
+                    <p className="text-white/60 text-xs mb-1">模型</p>
+                    <p className="text-white">{selectedEvent.modelName || '—'}</p>
                   </div>
 
                   {selectedEvent.top3 && selectedEvent.top3.length > 0 && (
