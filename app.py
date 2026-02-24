@@ -46,7 +46,7 @@ kb = get_kb_manager()
 UPLOAD_DIR = Path(".cache/uploads")
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
-FRONTEND_DIST = Path("app/dist")
+FRONTEND_DIR = Path("app/dist")
 LEGACY_WEB_DIR = Path("web")
 MAX_UPLOAD_MB = 8
 TOP_MARGIN = 0.15
@@ -100,8 +100,18 @@ class DiagnoseResponse(BaseModel):
     resolved_model_path: str | None = None
     model_fallback_reason: list[str] | None = None
 
-if (FRONTEND_DIST / "assets").exists():
-    app.mount("/assets", StaticFiles(directory=FRONTEND_DIST / "assets"), name="assets")
+
+class SPAStaticFiles(StaticFiles):
+    async def get_response(self, path: str, scope):
+        response = await super().get_response(path, scope)
+        if response.status_code != 404:
+            return response
+
+        if path.startswith("api/") or path.startswith("uploads/"):
+            return response
+
+        return await super().get_response("index.html", scope)
+
 if LEGACY_WEB_DIR.exists():
     app.mount("/legacy", StaticFiles(directory=LEGACY_WEB_DIR), name="legacy")
 
@@ -166,7 +176,7 @@ def cleanup_old_uploads(max_age_hours: int = 24) -> None:
 
 
 def serve_frontend_index() -> Response:
-    index_path = FRONTEND_DIST / "index.html"
+    index_path = FRONTEND_DIR / "index.html"
     if index_path.exists():
         return FileResponse(index_path)
     return PlainTextResponse(
@@ -177,6 +187,22 @@ def serve_frontend_index() -> Response:
 
 @app.get("/")
 def index() -> Response:
+    return serve_frontend_index()
+
+
+def serve_frontend_path(path: str) -> Response:
+    safe_path = Path(path)
+    if safe_path.is_absolute() or ".." in safe_path.parts:
+        return serve_frontend_index()
+
+    target = (FRONTEND_DIR / safe_path).resolve()
+    frontend_root = FRONTEND_DIR.resolve()
+    if not str(target).startswith(str(frontend_root)):
+        return serve_frontend_index()
+
+    if target.exists() and target.is_file():
+        return FileResponse(target)
+
     return serve_frontend_index()
 
 
@@ -592,10 +618,8 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
     model_id = payload.get("model_id")
     if not image_id:
         raise HTTPException(status_code=400, detail="image_id 不能为空")
-    if not trace_id and previous_trace_id:
-        trace_id = uuid.uuid4().hex
     if not trace_id:
-        trace_id = uuid.uuid4().hex
+        raise HTTPException(status_code=400, detail="trace_id 不能为空")
     if not isinstance(symptoms, list):
         raise HTTPException(status_code=400, detail="symptoms 必须为列表")
 
@@ -627,9 +651,16 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
     )
     state["current_step"] = "confirm_input"
 
+    emit_node_event(trace_id, node="DiagnosisAgent", status="start", message="二次诊断开始")
+
     state = diagnosis_agent(state)
+    emit_node_event(trace_id, node="DiagnosisAgent", status="end", message="二次诊断完成")
+    emit_node_event(trace_id, node="KBRetrievalAgent", status="start", message="二次诊断检索知识库")
     state = kb_retrieval_agent(state)
+    emit_node_event(trace_id, node="KBRetrievalAgent", status="end", message="二次诊断知识库检索完成")
+    emit_node_event(trace_id, node="PrescriptionAgent", status="start", message="二次诊断生成方案")
     state = treatment_agent(state)
+    emit_node_event(trace_id, node="PrescriptionAgent", status="end", message="二次诊断方案生成完成")
 
     image_diagnosis = state.get("image_diagnosis") or {}
     image_top1 = image_diagnosis.get("top1") or {}
@@ -648,6 +679,22 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
     confirm_message = None
     if need_confirm:
         confirm_message = "置信度较低，建议补充症状或重新拍摄"
+
+    append_trace(
+        state,
+        agent="supervisor",
+        inputs={"trace_id": trace_id, "image_id": image_id},
+        outputs={"is_complete": True, "next_action": "end", "need_confirm": need_confirm},
+        decision={"is_complete": True, "next_action": "end"},
+    )
+
+    emit_node_event(
+        trace_id,
+        node="Final",
+        status="end",
+        message="二次诊断流程完成",
+        payload={"agent_id": "final", "final_disease": state.get("final_disease")},
+    )
 
     events = list_trace_events(trace_id)
 
@@ -827,8 +874,6 @@ async def stream_trace(trace_id: str):
                 event = await queue.get()
                 stream_event = _to_stream_event(trace_id, event)
                 yield f"event: trace\ndata: {json.dumps(stream_event, ensure_ascii=False)}\n\n"
-                if stream_event.get("node") == "Final" and stream_event.get("status") in {"end", "error"}:
-                    break
         finally:
             unsubscribe_trace(trace_id, queue)
 
@@ -1138,6 +1183,10 @@ def delete_kb_symptom_map(payload: dict = Body(...)) -> dict:
         raise HTTPException(status_code=400, detail="症状列表不能为空")
     deleted = kb.delete_symptom_map_entries([str(item).strip() for item in symptoms if str(item).strip()])
     return {"ok": True, "deleted": deleted}
+
+
+if FRONTEND_DIR.exists():
+    app.mount("/", SPAStaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")
 
 
 if __name__ == "__main__":

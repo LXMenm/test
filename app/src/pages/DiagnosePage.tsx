@@ -1,4 +1,4 @@
-import { useState, useRef, createElement } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import type { ChangeEvent, JSX } from 'react';
 import { Upload, Send, RefreshCw, AlertCircle, CheckCircle, Loader2, Image as ImageIcon, ChevronDown, ChevronUp } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -28,9 +28,44 @@ interface TraceEvent {
   agent: string;
   status: string;
   message?: string;
+  raw: Record<string, unknown>;
 }
 
-type Top3Item = [string, number];
+type Top3Candidate = { disease: string; probPct: number };
+type ProfileBase = { base_id: string; name: string };
+type FarmerProfile = { farmer_id: string; name: string; active_base_id: string; bases: ProfileBase[] };
+type DiagnoseContext = { farmer_id: string | null; base_id: string | null };
+
+const toSafeString = (value: unknown, fallback = ''): string => {
+  return typeof value === 'string' ? value : fallback;
+};
+
+const normalizeBase = (baseId: string, baseLike: unknown): ProfileBase => {
+  const baseObj = baseLike && typeof baseLike === 'object' ? baseLike as Record<string, unknown> : {};
+  return {
+    base_id: toSafeString(baseObj.base_id, baseId),
+    name: toSafeString(baseObj.name, baseId),
+  };
+};
+
+const normalizeProfileList = (raw: unknown): FarmerProfile[] => {
+  if (!Array.isArray(raw)) return [];
+  return raw.map((item, idx) => {
+    const itemObj = item && typeof item === 'object' ? item as Record<string, unknown> : {};
+    const farmerId = toSafeString(itemObj.farmer_id, `F${idx + 1}`);
+    const basesRaw = Array.isArray(itemObj.bases) ? itemObj.bases : [];
+    const bases = basesRaw.map((baseLike, baseIdx) => {
+      const baseObj = baseLike && typeof baseLike === 'object' ? baseLike as Record<string, unknown> : {};
+      return normalizeBase(toSafeString(baseObj.base_id, `B${baseIdx + 1}`), baseLike);
+    });
+    return {
+      farmer_id: farmerId,
+      name: toSafeString(itemObj.name, farmerId),
+      active_base_id: toSafeString(itemObj.active_base_id),
+      bases,
+    };
+  });
+};
 
 export function DiagnosePage() {
   const [file, setFile] = useState<File | null>(null);
@@ -38,10 +73,14 @@ export function DiagnosePage() {
   const [symptoms, setSymptoms] = useState('');
   const [cropType, setCropType] = useState('番茄');
   const [growthStage, setGrowthStage] = useState('');
-  const [modelId, setModelId] = useState('default');
+  const [modelId, setModelId] = useState('tf_default');
+  const [farmerProfiles, setFarmerProfiles] = useState<FarmerProfile[]>([]);
+  const [activeFarmerId, setActiveFarmerId] = useState('');
+  const [activeBaseId, setActiveBaseId] = useState('');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<DiagnosisResult | null>(null);
   const [traceEvents, setTraceEvents] = useState<TraceEvent[]>([]);
+  const [latestPayload, setLatestPayload] = useState<Record<string, unknown> | null>(null);
   const [traceId, setTraceId] = useState('');
   const [imageId, setImageId] = useState('');
   const [confirmMode, setConfirmMode] = useState<boolean>(false);
@@ -51,6 +90,45 @@ export function DiagnosePage() {
   const [showRawTrace, setShowRawTrace] = useState(false);
   const [diagnosisStartTime, setDiagnosisStartTime] = useState<number | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const selectedProfile = farmerProfiles.find((profile) => profile.farmer_id === activeFarmerId);
+  const availableBases = selectedProfile?.bases ?? [];
+  const diagnoseContext: DiagnoseContext = {
+    farmer_id: activeFarmerId || null,
+    base_id: activeBaseId || null,
+  };
+
+  useEffect(() => {
+    const fetchProfiles = async () => {
+      try {
+        const resp = await fetch('/api/profiles');
+        const data = await resp.json();
+        if (!resp.ok) return;
+        const normalizedProfiles = normalizeProfileList(data?.profiles);
+        setFarmerProfiles(normalizedProfiles);
+      } catch (error) {
+        console.error('Failed to fetch profiles:', error);
+      }
+    };
+    fetchProfiles();
+  }, []);
+
+  useEffect(() => {
+    if (!activeFarmerId) {
+      setActiveBaseId('');
+      return;
+    }
+    const profile = farmerProfiles.find((item) => item.farmer_id === activeFarmerId);
+    if (!profile) {
+      setActiveBaseId('');
+      return;
+    }
+    const defaultBaseId = profile.active_base_id || profile.bases[0]?.base_id || '';
+    setActiveBaseId((prev) => {
+      if (prev && profile.bases.some((base) => base.base_id === prev)) return prev;
+      return defaultBaseId;
+    });
+  }, [farmerProfiles, activeFarmerId]);
 
   const handleFileChange = (e: ChangeEvent<HTMLInputElement>) => {
     const selectedFile = e.target.files?.[0];
@@ -96,12 +174,109 @@ export function DiagnosePage() {
     return null;
   };
 
+  const hasLowConfidenceReason = (value: unknown): boolean => {
+    if (!Array.isArray(value)) return false;
+    return value.some((item) => {
+      const reason = String(item || '');
+      return reason === 'low_confidence' || reason === 'low_margin';
+    });
+  };
 
+  const parseTop3Candidates = (payloadLike: unknown, resultLike?: DiagnosisResult | null): Top3Candidate[] => {
+    const payload = payloadLike && typeof payloadLike === 'object' ? payloadLike as Record<string, unknown> : {};
+    const imageResult = payload.image_result && typeof payload.image_result === 'object'
+      ? payload.image_result as Record<string, unknown>
+      : undefined;
+    const imageDiagnosis = payload.image_diagnosis && typeof payload.image_diagnosis === 'object'
+      ? payload.image_diagnosis as Record<string, unknown>
+      : undefined;
 
-  const shouldEnterConfirmMode = (payload: Record<string, unknown>): boolean => {
+    const eventCandidates = Array.isArray(payload.events)
+      ? payload.events
+        .map((eventLike) => {
+          if (!eventLike || typeof eventLike !== 'object') return undefined;
+          const event = eventLike as Record<string, unknown>;
+          if (String(event.agent ?? '').toLowerCase() !== 'diagnosis') return undefined;
+          const outputs = event.outputs && typeof event.outputs === 'object' ? event.outputs as Record<string, unknown> : undefined;
+          const fromDiagnosis = outputs?.image_diagnosis && typeof outputs.image_diagnosis === 'object'
+            ? outputs.image_diagnosis as Record<string, unknown>
+            : undefined;
+          return fromDiagnosis?.top3;
+        })
+        .find((top3) => Array.isArray(top3))
+      : undefined;
+
+    const source = Array.isArray(imageResult?.top3)
+      ? imageResult.top3
+      : Array.isArray(imageDiagnosis?.top3)
+        ? imageDiagnosis.top3
+        : Array.isArray(eventCandidates)
+          ? eventCandidates
+          : Array.isArray(resultLike?.top3)
+            ? resultLike.top3
+            : Array.isArray((resultLike?.image_result && typeof resultLike.image_result === 'object')
+              ? (resultLike.image_result as Record<string, unknown>).top3
+              : undefined)
+              ? ((resultLike?.image_result as Record<string, unknown>).top3 as unknown[])
+              : [];
+
+    const mapped = source.map((item): Top3Candidate | null => {
+      if (!item || typeof item !== 'object') {
+        if (Array.isArray(item) && typeof item[0] === 'string') {
+          const probRaw = Number(item[1]);
+          if (!Number.isFinite(probRaw)) return null;
+          return { disease: item[0], probPct: probRaw <= 1 ? probRaw * 100 : probRaw };
+        }
+        return null;
+      }
+
+      if (Array.isArray(item) && typeof item[0] === 'string') {
+        const probRaw = Number(item[1]);
+        if (!Number.isFinite(probRaw)) return null;
+        return { disease: item[0], probPct: probRaw <= 1 ? probRaw * 100 : probRaw };
+      }
+
+      const record = item as Record<string, unknown>;
+      const disease = typeof record.disease === 'string' ? record.disease.trim() : '';
+      if (!disease) return null;
+      const rawProbPct = toNumber(record.prob_pct) ?? toNumber(record.probPct);
+      const rawProb = toNumber(record.prob);
+      const probPct = rawProbPct ?? (rawProb !== null ? rawProb * 100 : null);
+      if (probPct === null || !Number.isFinite(probPct)) return null;
+      return { disease, probPct };
+    }).filter((item): item is Top3Candidate => item !== null && Boolean(item.disease));
+
+    return mapped.sort((a, b) => b.probPct - a.probPct).slice(0, 3);
+  };
+
+  const deriveNeedConfirm = (
+    payloadLike: unknown,
+    candidates: Top3Candidate[],
+    displayConfidencePct: number | null,
+  ): boolean => {
+    const payload = payloadLike && typeof payloadLike === 'object' ? payloadLike as Record<string, unknown> : {};
     if (payload.need_confirm === true) return true;
-    const reasons = Array.isArray(payload.fallback_reason) ? payload.fallback_reason : [];
-    return reasons.includes('low_confidence') || reasons.includes('low_margin');
+    if (hasLowConfidenceReason(payload.fallback_reason)) return true;
+
+    const imageResult = payload.image_result && typeof payload.image_result === 'object'
+      ? payload.image_result as Record<string, unknown>
+      : undefined;
+    const diseaseText = typeof imageResult?.disease === 'string' ? imageResult.disease : '';
+    if (diseaseText.includes('置信度不足')) return true;
+    if (displayConfidencePct !== null && displayConfidencePct < 60) return true;
+
+    if (Array.isArray(payload.events)) {
+      const hasDiagnosisNeedConfirm = payload.events.some((eventLike) => {
+        if (!eventLike || typeof eventLike !== 'object') return false;
+        const event = eventLike as Record<string, unknown>;
+        if (String(event.agent ?? '').toLowerCase() !== 'diagnosis') return false;
+        const outputs = event.outputs && typeof event.outputs === 'object' ? event.outputs as Record<string, unknown> : undefined;
+        return outputs?.need_confirm === true || hasLowConfidenceReason(outputs?.fallback_reason);
+      });
+      if (hasDiagnosisNeedConfirm) return true;
+    }
+
+    return candidates.length > 0 && displayConfidencePct !== null && displayConfidencePct < 60;
   };
 
   const buildResultFromPayload = (payload: Record<string, unknown>): DiagnosisResult => ({
@@ -142,6 +317,9 @@ export function DiagnosePage() {
       if (symptoms.trim()) fd.append('symptoms', symptoms.trim());
       if (growthStage.trim()) fd.append('growth_stage', growthStage.trim());
       if (modelId) fd.append('model_id', modelId);
+      if (diagnoseContext.farmer_id) fd.append('farmer_id', diagnoseContext.farmer_id);
+      if (diagnoseContext.base_id) fd.append('base_id', diagnoseContext.base_id);
+      console.log('diagnose-image model_id=', modelId);
 
       const resp = await fetch('/api/diagnose-image', {
         method: 'POST',
@@ -161,13 +339,16 @@ export function DiagnosePage() {
 
       const normalizedResult = buildResultFromPayload(data);
       setResult(normalizedResult);
+      const payloadRecord = data && typeof data === 'object' ? data as Record<string, unknown> : {};
+      setLatestPayload(payloadRecord);
 
-      const needsConfirm = shouldEnterConfirmMode(data);
-      if (needsConfirm) {
-        setConfirmMode(Boolean(needsConfirm));
-        const initialTop3 = normalizeTop3(normalizedResult.top3);
-        const defaultChoice = initialTop3[0]?.[0] || 'other';
-        setConfirmChoice(defaultChoice);
+      const candidates = parseTop3Candidates(payloadRecord, normalizedResult);
+      const needsConfirm = deriveNeedConfirm(payloadRecord, candidates, normalizedResult.displayConfidencePct);
+      console.log('[confirm] candidates=', candidates);
+      console.log('[confirm] derivedNeedConfirm=', needsConfirm);
+      setConfirmMode(needsConfirm);
+      if (needsConfirm && candidates[0]?.disease && (!confirmChoice || confirmChoice === 'other')) {
+        setConfirmChoice(candidates[0].disease);
       }
     } catch (error) {
       console.error('Diagnosis failed:', error);
@@ -184,9 +365,8 @@ export function DiagnosePage() {
         .split(',')
         .map((item) => item.trim())
         .filter(Boolean);
-      const symptomsForConfirm = confirmChoice !== 'other'
-        ? [confirmChoice, ...additionalSymptoms]
-        : additionalSymptoms;
+      const symptomsForConfirm = additionalSymptoms;
+      const choiceForConfirm = (confirmChoice && confirmChoice !== 'other') ? confirmChoice : 'other';
 
       const resp = await fetch('/api/diagnose-confirm', {
         method: 'POST',
@@ -198,7 +378,8 @@ export function DiagnosePage() {
           symptoms: symptomsForConfirm,
           growth_stage: growthStage || null,
           model_id: modelId || null,
-          choice: confirmChoice,
+          ...diagnoseContext,
+          choice: choiceForConfirm,
           notes: confirmSymptoms || null,
         }),
       });
@@ -210,14 +391,26 @@ export function DiagnosePage() {
       if (data.trace_id) {
         setTraceId(data.trace_id);
       }
+      if (data.image_id) {
+        setImageId(data.image_id);
+      }
 
       const mergedPayload = {
         ...data,
         image_url: result?.image_url || '',
-        prevention: data?.treatment?.prevention,
       };
-      setResult(buildResultFromPayload(mergedPayload));
-      setConfirmMode(false);
+      const nextResult = buildResultFromPayload(mergedPayload as Record<string, unknown>);
+      setResult(nextResult);
+      const payloadRecord = mergedPayload && typeof mergedPayload === 'object' ? mergedPayload as Record<string, unknown> : {};
+      setLatestPayload(payloadRecord);
+      const candidates = parseTop3Candidates(payloadRecord, nextResult);
+      const needsConfirm = deriveNeedConfirm(payloadRecord, candidates, nextResult.displayConfidencePct);
+      console.log('[confirm] candidates=', candidates);
+      console.log('[confirm] derivedNeedConfirm=', needsConfirm);
+      setConfirmMode(needsConfirm);
+      if (needsConfirm && candidates[0]?.disease && (!confirmChoice || confirmChoice === 'other')) {
+        setConfirmChoice(candidates[0].disease);
+      }
     } catch (error) {
       console.error('Confirm diagnose failed:', error);
     } finally {
@@ -225,7 +418,7 @@ export function DiagnosePage() {
     }
   };
 
-  const renderRichValue = (value: unknown) => {
+  const renderRichValue = (value: unknown): JSX.Element | null => {
     if (value === null || value === undefined) return null;
     if (typeof value === 'string') {
       return <div className="whitespace-pre-wrap">{value}</div>;
@@ -257,31 +450,18 @@ export function DiagnosePage() {
     return <div className="whitespace-pre-wrap">{String(value)}</div>;
   };
 
-  const renderTreatment = (t: unknown) => renderRichValue(t);
-  const normalizeTop3 = (v: unknown): Top3Item[] => {
-    if (!Array.isArray(v)) return [];
-    return v
-      .map((it) => Array.isArray(it) && typeof it[0] === 'string' ? [it[0], Number(it[1])] as Top3Item : null)
-      .filter(Boolean) as Top3Item[];
-  };
-  const imageResult = result?.image_result && typeof result.image_result === 'object'
-    ? result.image_result as Record<string, unknown>
-    : undefined;
-  const top3 = normalizeTop3(result?.top3 ?? imageResult?.top3);
+  const renderTreatment = (t: unknown): JSX.Element | null => renderRichValue(t);
+  const candidates = parseTop3Candidates(latestPayload ?? result ?? {}, result);
+  const derivedNeedConfirm = deriveNeedConfirm(latestPayload ?? result ?? {}, candidates, result?.displayConfidencePct ?? null);
+  const shouldHideTreatment = confirmMode || derivedNeedConfirm;
 
-  const top3PanelNode: any = createElement(Top3Panel, { top3 });
-  const confirmPanelNode: any = createElement(ConfirmPanel, {
-    visible: confirmMode,
-    top3,
-    confirmChoice,
-    setConfirmChoice,
-    confirmSymptoms,
-    setConfirmSymptoms,
-    confirmSubmitting,
-    traceId,
-    imageId,
-    onSubmit: handleConfirmSubmit,
-  });
+  useEffect(() => {
+    if (!derivedNeedConfirm) return;
+    setConfirmMode(true);
+    if (candidates[0]?.disease && (!confirmChoice || confirmChoice === 'other')) {
+      setConfirmChoice(candidates[0].disease);
+    }
+  }, [derivedNeedConfirm, candidates, confirmChoice]);
 
   const refreshTrace = async () => {
     if (!traceId) return;
@@ -292,11 +472,31 @@ export function DiagnosePage() {
       if (data.events) {
         setTraceEvents(data.events.map((evt: unknown) => {
           const event = evt && typeof evt === 'object' ? evt as Record<string, unknown> : {};
+          const decision = event.decision && typeof event.decision === 'object'
+            ? event.decision as Record<string, unknown>
+            : undefined;
           return {
-            timestamp: typeof event.timestamp === 'string' ? event.timestamp : new Date().toISOString(),
-            agent: typeof event.agent === 'string' ? event.agent : String(event.node ?? ''),
-            status: typeof event.status === 'string' ? event.status : '',
-            message: typeof event.message === 'string' ? event.message : undefined,
+            timestamp: typeof event.ts === 'string'
+              ? event.ts
+              : (typeof event.timestamp === 'string' ? event.timestamp : new Date().toISOString()),
+            agent: typeof event.agent_cn === 'string'
+              ? event.agent_cn
+              : (typeof event.agent_id === 'string'
+                ? event.agent_id
+                : (typeof event.agent === 'string'
+                  ? event.agent
+                  : String(event.node ?? ''))),
+            status: typeof event.step_cn === 'string'
+              ? event.step_cn
+              : (typeof event.step === 'string'
+                ? event.step
+                : (typeof event.status === 'string' ? event.status : '')),
+            message: typeof event.message === 'string'
+              ? event.message
+              : (typeof decision?.reason_str === 'string'
+                ? decision.reason_str
+                : (typeof decision?.reason === 'string' ? decision.reason : '')),
+            raw: event,
           };
         }));
       }
@@ -304,6 +504,14 @@ export function DiagnosePage() {
       console.error('Failed to fetch trace events:', error);
     }
   };
+
+  useEffect(() => {
+    if (!traceId) {
+      setTraceEvents([]);
+      return;
+    }
+    refreshTrace();
+  }, [traceId]);
 
   return (
     <div className="space-y-6 animate-fadeIn">
@@ -399,13 +607,62 @@ export function DiagnosePage() {
               <Label className="text-white/80">识别模型</Label>
               <Select value={modelId} onValueChange={setModelId}>
                 <SelectTrigger className="bg-white/5 border-white/20 text-white">
-                  <SelectValue />
+                  <SelectValue className="text-white placeholder:text-white/60" />
                 </SelectTrigger>
-                <SelectContent className="bg-[#1a1a1a] border-white/20">
-                  <SelectItem value="default">默认高精度模型 (tf)</SelectItem>
-                  <SelectItem value="lightweight">轻量模型V1 (tf)</SelectItem>
+                <SelectContent
+                  side="bottom"
+                  align="start"
+                  sideOffset={6}
+                  className="bg-[#111] text-white border-white/20"
+                >
+                  <SelectItem value="tf_default" className="text-white data-[highlighted]:bg-[#c8f7c5] data-[highlighted]:text-black">默认高精度模型 (tf)</SelectItem>
+                  <SelectItem value="tf_light_v1" className="text-white data-[highlighted]:bg-[#c8f7c5] data-[highlighted]:text-black">轻量模型V1 (tf)</SelectItem>
                 </SelectContent>
               </Select>
+              <p className="text-xs text-white/60">将发送 model_id：{modelId}</p>
+            </div>
+
+            <div className="space-y-2">
+              <Label className="text-white/80">农户</Label>
+              <Select value={activeFarmerId} onValueChange={setActiveFarmerId}>
+                <SelectTrigger className="bg-white/5 border-white/20 text-white">
+                  <SelectValue placeholder="请选择农户" className="text-white placeholder:text-white/60" />
+                </SelectTrigger>
+                <SelectContent side="bottom" align="start" sideOffset={6} className="bg-[#111] text-white border-white/20">
+                  {farmerProfiles.map((profile) => (
+                    <SelectItem
+                      key={profile.farmer_id}
+                      value={profile.farmer_id}
+                      className="text-white data-[highlighted]:bg-[#c8f7c5] data-[highlighted]:text-black"
+                    >
+                      {profile.name || profile.farmer_id}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-2">
+              <Label className="text-white/80">基线档案（可选）</Label>
+              <Select value={activeBaseId} onValueChange={setActiveBaseId} disabled={!activeFarmerId || availableBases.length === 0}>
+                <SelectTrigger className="bg-white/5 border-white/20 text-white">
+                  <SelectValue placeholder={activeFarmerId ? '请选择基线档案' : '请先选择农户'} className="text-white placeholder:text-white/60" />
+                </SelectTrigger>
+                <SelectContent side="bottom" align="start" sideOffset={6} className="bg-[#111] text-white border-white/20">
+                  {availableBases.map((base) => (
+                    <SelectItem
+                      key={base.base_id}
+                      value={base.base_id}
+                      className="text-white data-[highlighted]:bg-[#c8f7c5] data-[highlighted]:text-black"
+                    >
+                      {base.name || base.base_id}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-white/60">
+                当前提交：farmer_id={activeFarmerId || '-'}，base_id={activeBaseId || '-'}
+              </p>
             </div>
 
             {/* Submit Button */}
@@ -469,15 +726,89 @@ export function DiagnosePage() {
                     </div>
                   </div>
 
-                  {/* Top 3 */}
-                  {top3PanelNode}
+                  {candidates.length > 0 ? (
+                    <div>
+                      <h4 className="text-white/80 font-medium mb-3">Top 3 识别结果</h4>
+                      <div className="space-y-2">
+                        {candidates.map((item, idx) => (
+                          <div key={idx} className="flex items-center gap-3">
+                            <Badge
+                              variant={idx === 0 ? 'default' : 'outline'}
+                              className={cn(
+                                'min-w-[3rem] text-center',
+                                idx === 0 ? 'bg-[#c8f7c5] text-black' : 'border-white/30 text-white',
+                              )}
+                            >
+                              #{idx + 1}
+                            </Badge>
+                            <span className="text-white flex-1">{item.disease}</span>
+                            <span className="text-[#c8f7c5] font-mono">{item.probPct.toFixed(2)}%</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
 
-                  {confirmPanelNode}
+                  {confirmMode ? (
+                    <div className="bg-[#c8f7c5]/10 border border-[#c8f7c5]/30 rounded-xl p-4 space-y-4">
+                      <h4 className="text-[#c8f7c5] font-medium">二次诊断 / 确认入口</h4>
+                      <p className="text-xs text-white/70">当前候选数量：{candidates.length}</p>
+                      <div className="space-y-2">
+                        <Label className="text-white/80">候选病害选择</Label>
+                        {candidates.map((item) => (
+                          <label key={item.disease} className="flex items-center gap-2 text-sm text-white/80 cursor-pointer">
+                            <input
+                              type="radio"
+                              name="confirmDisease"
+                              value={item.disease}
+                              checked={confirmChoice === item.disease}
+                              onChange={(e) => setConfirmChoice(e.target.value)}
+                            />
+                            <span>{item.disease} ({item.probPct.toFixed(2)}%)</span>
+                          </label>
+                        ))}
+                        <label className="flex items-center gap-2 text-sm text-white/80 cursor-pointer">
+                          <input
+                            type="radio"
+                            name="confirmDisease"
+                            value="other"
+                            checked={confirmChoice === 'other'}
+                            onChange={(e) => setConfirmChoice(e.target.value)}
+                          />
+                          <span>仍不确定 / 其他</span>
+                        </label>
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label className="text-white/80">补充症状（可选，逗号分隔）</Label>
+                        <Input
+                          value={confirmSymptoms}
+                          onChange={(e) => setConfirmSymptoms(e.target.value)}
+                          placeholder="例如：叶片卷曲, 发黄"
+                          className="bg-white/5 border-white/20 text-white placeholder:text-white/40"
+                        />
+                      </div>
+
+                      <Button
+                        onClick={handleConfirmSubmit}
+                        disabled={confirmSubmitting || !traceId || !imageId}
+                        className="bg-[#c8f7c5] text-black hover:bg-[#b8e7b5]"
+                      >
+                        {confirmSubmitting ? '提交中...' : '提交确认'}
+                      </Button>
+                    </div>
+                  ) : null}
 
                   <Separator className="bg-white/10" />
 
                   {/* Treatment */}
-                  {result.treatment && (
+                  {shouldHideTreatment && (
+                    <div className="bg-yellow-500/10 border border-yellow-400/30 rounded-xl p-4 text-yellow-200 text-sm">
+                      置信度不足，建议先二次诊断确认病害或补充症状。
+                    </div>
+                  )}
+
+                  {Boolean(result.treatment) && !shouldHideTreatment && (
                     <div>
                       <h4 className="text-white/80 font-medium mb-2 flex items-center gap-2">
                         <AlertCircle className="w-4 h-4 text-[#c8f7c5]" />
@@ -490,7 +821,7 @@ export function DiagnosePage() {
                   )}
 
                   {/* Prevention */}
-                  {result.prevention && (
+                  {Boolean(result.prevention) && !shouldHideTreatment && (
                     <div>
                       <h4 className="text-white/80 font-medium mb-2">预防建议</h4>
                       <div className="bg-white/5 rounded-xl p-4 text-white/80 text-sm leading-relaxed whitespace-pre-line">
@@ -531,6 +862,7 @@ export function DiagnosePage() {
             </CardHeader>
             <CardContent className="space-y-4">
               <AgentWorkflowPanel
+                key={traceId || 'idle'}
                 traceId={traceId || undefined}
                 confidencePct={result?.displayConfidencePct ?? undefined}
               />
@@ -577,6 +909,13 @@ export function DiagnosePage() {
                         {event.message && (
                           <p className="text-white/50 text-xs mt-1">{event.message}</p>
                         )}
+
+                        <details className="mt-2">
+                          <summary className="text-xs text-white/40 cursor-pointer hover:text-white/70">查看原始 JSON</summary>
+                          <pre className="mt-1 text-[11px] text-white/60 bg-black/30 border border-white/10 rounded-md p-2 whitespace-pre-wrap break-all">
+                            {JSON.stringify(event.raw, null, 2)}
+                          </pre>
+                        </details>
                       </div>
                     </div>
                   ))}
@@ -598,107 +937,3 @@ export function DiagnosePage() {
     </div>
   );
 }
-
-const Top3Panel: ({ top3 }: { top3: Top3Item[] }) => JSX.Element | null = ({ top3 }) => {
-  if (top3.length === 0) return null;
-
-  return (
-    <div>
-      <h4 className="text-white/80 font-medium mb-3">Top 3 识别结果</h4>
-      <div className="space-y-2">
-        {top3.map((item, idx) => (
-          <div key={idx} className="flex items-center gap-3">
-            <Badge
-              variant={idx === 0 ? 'default' : 'outline'}
-              className={cn(
-                'min-w-[3rem] text-center',
-                idx === 0 ? 'bg-[#c8f7c5] text-black' : 'border-white/30 text-white',
-              )}
-            >
-              #{idx + 1}
-            </Badge>
-            <span className="text-white flex-1">{String(item[0])}</span>
-            <span className="text-[#c8f7c5] font-mono">{(Number(item[1]) * 100).toFixed(2)}%</span>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-};
-
-const ConfirmPanel: (props: {
-  visible: boolean;
-  top3: Top3Item[];
-  confirmChoice: string;
-  setConfirmChoice: (v: string) => void;
-  confirmSymptoms: string;
-  setConfirmSymptoms: (v: string) => void;
-  confirmSubmitting: boolean;
-  traceId: string;
-  imageId: string;
-  onSubmit: () => void;
-}) => JSX.Element | null = (props) => {
-  const {
-    visible,
-    top3,
-    confirmChoice,
-    setConfirmChoice,
-    confirmSymptoms,
-    setConfirmSymptoms,
-    confirmSubmitting,
-    traceId,
-    imageId,
-    onSubmit,
-  } = props;
-
-  if (!visible) return null;
-
-  return (
-    <div className="bg-[#c8f7c5]/10 border border-[#c8f7c5]/30 rounded-xl p-4 space-y-4">
-      <h4 className="text-[#c8f7c5] font-medium">二次诊断 / 确认入口</h4>
-      <div className="space-y-2">
-        <Label className="text-white/80">候选病害选择</Label>
-        {top3.map((item) => (
-          <label key={item[0]} className="flex items-center gap-2 text-sm text-white/80 cursor-pointer">
-            <input
-              type="radio"
-              name="confirmDisease"
-              value={item[0]}
-              checked={confirmChoice === item[0]}
-              onChange={(e) => setConfirmChoice(e.target.value)}
-            />
-            <span>{String(item[0])}</span>
-          </label>
-        ))}
-        <label className="flex items-center gap-2 text-sm text-white/80 cursor-pointer">
-          <input
-            type="radio"
-            name="confirmDisease"
-            value="other"
-            checked={confirmChoice === 'other'}
-            onChange={(e) => setConfirmChoice(e.target.value)}
-          />
-          <span>仍不确定 / 其他</span>
-        </label>
-      </div>
-
-      <div className="space-y-2">
-        <Label className="text-white/80">补充症状（可选，逗号分隔）</Label>
-        <Input
-          value={confirmSymptoms}
-          onChange={(e) => setConfirmSymptoms(e.target.value)}
-          placeholder="例如：叶片卷曲, 发黄"
-          className="bg-white/5 border-white/20 text-white placeholder:text-white/40"
-        />
-      </div>
-
-      <Button
-        onClick={onSubmit}
-        disabled={confirmSubmitting || !traceId || !imageId}
-        className="bg-[#c8f7c5] text-black hover:bg-[#b8e7b5]"
-      >
-        {confirmSubmitting ? '提交中...' : '提交确认'}
-      </Button>
-    </div>
-  );
-};
