@@ -336,6 +336,7 @@ export function DiagnosePage() {
     </div>
   ) : null;
 
+
   const refreshTrace = async () => {
     if (!traceId) return;
     
@@ -526,6 +527,10 @@ export function DiagnosePage() {
                   {top3Block}
 
                   {confirmBlock}
+                  {top3Block}
+
+                  {confirmBlock}
+
 
                   <Separator className="bg-white/10" />
 
