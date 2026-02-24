@@ -287,9 +287,8 @@ export function DiagnosePage() {
         .split(',')
         .map((item) => item.trim())
         .filter(Boolean);
-      const symptomsForConfirm = confirmChoice !== 'other'
-        ? [confirmChoice, ...additionalSymptoms]
-        : additionalSymptoms;
+      const symptomsForConfirm = additionalSymptoms;
+      const choiceForConfirm = (confirmChoice && confirmChoice !== 'other') ? confirmChoice : 'other';
 
       const resp = await fetch('/api/diagnose-confirm', {
         method: 'POST',
@@ -301,7 +300,7 @@ export function DiagnosePage() {
           symptoms: symptomsForConfirm,
           growth_stage: growthStage || null,
           model_id: modelId || null,
-          choice: confirmChoice,
+          choice: choiceForConfirm,
           notes: confirmSymptoms || null,
         }),
       });
