@@ -40,7 +40,7 @@ export function DiagnosePage() {
   const [traceEvents, setTraceEvents] = useState<TraceEvent[]>([]);
   const [traceId, setTraceId] = useState('');
   const [imageId, setImageId] = useState('');
-  const [confirmMode, setConfirmMode] = useState(false);
+  const [confirmMode, setConfirmMode] = useState<boolean>(false);
   const [confirmChoice, setConfirmChoice] = useState('other');
   const [confirmSymptoms, setConfirmSymptoms] = useState('');
   const [confirmSubmitting, setConfirmSubmitting] = useState(false);
@@ -73,18 +73,22 @@ export function DiagnosePage() {
     return null;
   };
 
-  const resolveDisplayConfidencePct = (payload: any): number | null => {
+  const resolveDisplayConfidencePct = (payload: Record<string, unknown>): number | null => {
     const finalConfidence = toNumber(payload?.final_confidence);
     if (finalConfidence !== null) {
       return finalConfidence <= 1 ? finalConfidence * 100 : finalConfidence;
     }
 
-    const imageConfidencePct = toNumber(payload?.image_result?.confidence_pct);
+    const imageResult = payload.image_result && typeof payload.image_result === 'object'
+      ? payload.image_result as Record<string, unknown>
+      : {};
+
+    const imageConfidencePct = toNumber(imageResult.confidence_pct);
     if (imageConfidencePct !== null) {
       return imageConfidencePct;
     }
 
-    const imageConfidence = toNumber(payload?.image_result?.confidence);
+    const imageConfidence = toNumber(imageResult.confidence);
     if (imageConfidence !== null) {
       return imageConfidence * 100;
     }
@@ -94,17 +98,22 @@ export function DiagnosePage() {
 
 
 
-  const normalizeTop3 = (payload: any): Array<{ disease: string; confidence: number }> => {
-    const rawTop3 = payload?.image_result?.top3 ?? payload?.top3 ?? [];
+  const normalizeTop3 = (payload: Record<string, unknown>): Array<{ disease: string; confidence: number }> => {
+    const imageResult = payload.image_result && typeof payload.image_result === 'object'
+      ? payload.image_result as Record<string, unknown>
+      : {};
+    const rawTop3 = imageResult.top3 ?? payload.top3 ?? [];
     if (!Array.isArray(rawTop3)) return [];
     return rawTop3
-      .map((item: any) => {
-        const disease = typeof item?.disease === 'string' ? item.disease : '';
-        const pctFromProb = toNumber(item?.prob) !== null ? (toNumber(item?.prob) as number) * 100 : null;
+      .map((item: unknown) => {
+        const row = item && typeof item === 'object' ? item as Record<string, unknown> : {};
+        const disease = typeof row.disease === 'string' ? row.disease : '';
+        const prob = toNumber(row.prob);
+        const pctFromProb = prob !== null ? prob * 100 : null;
         const confidence =
-          toNumber(item?.confidence) ??
-          toNumber(item?.confidence_pct) ??
-          toNumber(item?.prob_pct) ??
+          toNumber(row.confidence) ??
+          toNumber(row.confidence_pct) ??
+          toNumber(row.prob_pct) ??
           pctFromProb ??
           0;
         return { disease, confidence };
@@ -112,21 +121,27 @@ export function DiagnosePage() {
       .filter((item) => item.disease);
   };
 
-  const shouldEnterConfirmMode = (payload: any): boolean => {
-    if (payload?.need_confirm === true) return true;
-    const reasons = Array.isArray(payload?.fallback_reason) ? payload.fallback_reason : [];
+  const shouldEnterConfirmMode = (payload: Record<string, unknown>): boolean => {
+    if (payload.need_confirm === true) return true;
+    const reasons = Array.isArray(payload.fallback_reason) ? payload.fallback_reason : [];
     return reasons.includes('low_confidence') || reasons.includes('low_margin');
   };
 
-  const buildResultFromPayload = (payload: any): DiagnosisResult => ({
-    image_url: payload?.image_url || '',
-    final_disease: payload?.final_disease || payload?.image_result?.disease || '未知',
+  const buildResultFromPayload = (payload: Record<string, unknown>): DiagnosisResult => ({
+    image_url: typeof payload.image_url === 'string' ? payload.image_url : '',
+    final_disease: typeof payload.final_disease === 'string'
+      ? payload.final_disease
+      : (payload.image_result && typeof payload.image_result === 'object' && typeof (payload.image_result as Record<string, unknown>).disease === 'string'
+        ? String((payload.image_result as Record<string, unknown>).disease)
+        : '未知'),
     displayConfidencePct: resolveDisplayConfidencePct(payload),
-    model_display_name: payload?.model_display_name || payload?.model_id || '-',
+    model_display_name: typeof payload.model_display_name === 'string'
+      ? payload.model_display_name
+      : (typeof payload.model_id === 'string' ? payload.model_id : '-'),
     top3: normalizeTop3(payload),
     treatment: payload?.treatment,
-    prevention: payload?.prevention ?? payload?.treatment?.prevention,
-    trace_id: payload?.trace_id || '',
+    prevention: payload?.prevention ?? ((payload.treatment && typeof payload.treatment === 'object') ? (payload.treatment as Record<string, unknown>).prevention : undefined),
+    trace_id: typeof payload.trace_id === 'string' ? payload.trace_id : '',
   });
 
   const handleSubmit = async () => {
@@ -167,8 +182,9 @@ export function DiagnosePage() {
       const normalizedResult = buildResultFromPayload(data);
       setResult(normalizedResult);
 
-      if (shouldEnterConfirmMode(data)) {
-        setConfirmMode(true);
+      const needsConfirm = shouldEnterConfirmMode(data);
+      if (needsConfirm) {
+        setConfirmMode(Boolean(needsConfirm));
         const defaultChoice = normalizedResult.top3[0]?.disease || 'other';
         setConfirmChoice(defaultChoice);
       }
@@ -261,6 +277,7 @@ export function DiagnosePage() {
   };
 
   const renderTreatment = (t: unknown) => renderRichValue(t);
+  const top3 = Array.isArray(result?.top3) ? result.top3 : [];
 
   const refreshTrace = async () => {
     if (!traceId) return;
@@ -269,12 +286,15 @@ export function DiagnosePage() {
       const resp = await fetch(`/api/trace-events?trace_id=${encodeURIComponent(traceId)}`);
       const data = await resp.json();
       if (data.events) {
-        setTraceEvents(data.events.map((evt: any) => ({
-          timestamp: evt.timestamp || new Date().toISOString(),
-          agent: evt.agent || evt.node,
-          status: evt.status,
-          message: evt.message
-        })));
+        setTraceEvents(data.events.map((evt: unknown) => {
+          const event = evt && typeof evt === 'object' ? evt as Record<string, unknown> : {};
+          return {
+            timestamp: typeof event.timestamp === 'string' ? event.timestamp : new Date().toISOString(),
+            agent: typeof event.agent === 'string' ? event.agent : String(event.node ?? ''),
+            status: typeof event.status === 'string' ? event.status : '',
+            message: typeof event.message === 'string' ? event.message : undefined,
+          };
+        }));
       }
     } catch (error) {
       console.error('Failed to fetch trace events:', error);
@@ -446,11 +466,11 @@ export function DiagnosePage() {
                   </div>
 
                   {/* Top 3 */}
-                  {result.top3 && result.top3.length > 0 && (
+                  {top3.length > 0 && (
                     <div>
                       <h4 className="text-white/80 font-medium mb-3">Top 3 识别结果</h4>
                       <div className="space-y-2">
-                        {result.top3.map((item, idx) => (
+                        {top3.map((item, idx) => (
                           <div key={idx} className="flex items-center gap-3">
                             <Badge 
                               variant={idx === 0 ? "default" : "outline"}
@@ -475,7 +495,7 @@ export function DiagnosePage() {
                       <h4 className="text-[#c8f7c5] font-medium">二次诊断 / 确认入口</h4>
                       <div className="space-y-2">
                         <Label className="text-white/80">候选病害选择</Label>
-                        {(Array.isArray(result.top3) ? result.top3 : []).map((item) => (
+                        {top3.map((item) => (
                           <label key={item.disease} className="flex items-center gap-2 text-sm text-white/80 cursor-pointer">
                             <input
                               type="radio"
