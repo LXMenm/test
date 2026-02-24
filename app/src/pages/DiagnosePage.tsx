@@ -28,6 +28,7 @@ interface TraceEvent {
   agent: string;
   status: string;
   message?: string;
+  raw: Record<string, unknown>;
 }
 
 type Top3Item = [string, number];
@@ -278,11 +279,29 @@ export function DiagnosePage() {
       if (data.events) {
         setTraceEvents(data.events.map((evt: unknown) => {
           const event = evt && typeof evt === 'object' ? evt as Record<string, unknown> : {};
+          const decision = event.decision && typeof event.decision === 'object'
+            ? event.decision as Record<string, unknown>
+            : undefined;
           return {
-            timestamp: typeof event.timestamp === 'string' ? event.timestamp : new Date().toISOString(),
-            agent: typeof event.agent === 'string' ? event.agent : String(event.node ?? ''),
-            status: typeof event.status === 'string' ? event.status : '',
-            message: typeof event.message === 'string' ? event.message : undefined,
+            timestamp: typeof event.ts === 'string'
+              ? event.ts
+              : (typeof event.timestamp === 'string' ? event.timestamp : new Date().toISOString()),
+            agent: typeof event.agent_cn === 'string'
+              ? event.agent_cn
+              : (typeof event.agent_id === 'string'
+                ? event.agent_id
+                : (typeof event.agent === 'string'
+                  ? event.agent
+                  : String(event.node ?? ''))),
+            status: typeof event.step_cn === 'string'
+              ? event.step_cn
+              : (typeof event.step === 'string'
+                ? event.step
+                : (typeof event.status === 'string' ? event.status : '')),
+            message: typeof event.message === 'string'
+              ? event.message
+              : (typeof decision?.reason_str === 'string' ? decision.reason_str : ''),
+            raw: event,
           };
         }));
       }
@@ -631,6 +650,13 @@ export function DiagnosePage() {
                         {event.message && (
                           <p className="text-white/50 text-xs mt-1">{event.message}</p>
                         )}
+
+                        <details className="mt-2">
+                          <summary className="text-xs text-white/40 cursor-pointer hover:text-white/70">查看原始 JSON</summary>
+                          <pre className="mt-1 text-[11px] text-white/60 bg-black/30 border border-white/10 rounded-md p-2 whitespace-pre-wrap break-all">
+                            {JSON.stringify(event.raw, null, 2)}
+                          </pre>
+                        </details>
                       </div>
                     </div>
                   ))}
