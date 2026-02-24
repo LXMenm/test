@@ -9,7 +9,7 @@ from knowledge_base import get_kb_manager
 from config import DIAGNOSIS_CONFIDENCE_THRESHOLD, DIAGNOSIS_ALLOW_TORCH
 from confidence_policy import make_confidence_flags
 from personalization.profile_models import FarmerProfile, BaseProfile, TreatmentConstraint
-from personalization.profile_rules import filter_treatment_by_constraints
+from personalization.profile_rules import apply_personalization_to_treatment
 from trace_store import append_trace_event
 from datetime import datetime, timezone
 from typing import Optional
@@ -647,11 +647,15 @@ def treatment_agent(state: CropDiseaseState) -> CropDiseaseState:
             print(f"大模型调用失败，使用知识库: {e}")
             treatment_plan, prevention_advice = _get_treatment_from_knowledge_base(disease_type)
 
-    if constraints:
-        treatment_plan, dropped = filter_treatment_by_constraints(treatment_plan, constraints, flags)
-        if dropped:
-            flags["filtered_components"] = dropped
-            state["personalization_flags"] = flags
+    personalized_plan, personalized_prevention, personalization_outputs = apply_personalization_to_treatment(
+        treatment_plan,
+        prevention_advice,
+        flags,
+    )
+    treatment_plan = personalized_plan or treatment_plan
+    prevention_advice = personalized_prevention or prevention_advice
+    flags.update(personalization_outputs)
+    state["personalization_flags"] = flags
 
     message = f"番茄病害治疗方案智能体：已生针对{disease_type}的治疗方案"
 
@@ -675,7 +679,10 @@ def treatment_agent(state: CropDiseaseState) -> CropDiseaseState:
         outputs={
             "treatment_plan": treatment_plan,
             "prevention_advice": prevention_advice,
-            "filtered_components": flags.get("filtered_components"),
+            "personalization_applied": flags.get("personalization_applied", False),
+            "filtered": flags.get("filtered", False),
+            "filtered_reasons": flags.get("filtered_reasons") or [],
+            "filtered_components": flags.get("filtered_components") or [],
         },
     )
 
