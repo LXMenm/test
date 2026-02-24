@@ -46,8 +46,6 @@ interface ProfileDetail {
   }>;
 }
 
-type BaseOption = { id: string; name?: string };
-
 interface TraceEvent {
   timestamp: string;
   agent: string;
@@ -77,10 +75,10 @@ export function DiagnosePage() {
   const [confirmSubmitting, setConfirmSubmitting] = useState(false);
   const [showRawTrace, setShowRawTrace] = useState(false);
   const [diagnosisStartTime, setDiagnosisStartTime] = useState<number | null>(null);
-  const [profiles, setProfiles] = useState<ProfileListItem[]>([]);
-  const [selectedFarmerId, setSelectedFarmerId] = useState('');
+  const [, setProfiles] = useState<ProfileListItem[]>([]);
+  const [selectedFarmerId] = useState('');
   const [selectedBaseId, setSelectedBaseId] = useState('');
-  const [selectedProfile, setSelectedProfile] = useState<ProfileDetail | null>(null);
+  const [, setSelectedProfile] = useState<ProfileDetail | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleFileChange = (e: ChangeEvent<HTMLInputElement>) => {
