@@ -267,7 +267,7 @@ export function DiagnosePage() {
     ? result.image_result as Record<string, unknown>
     : undefined;
   const top3 = normalizeTop3(result?.top3 ?? imageResult?.top3);
-  const renderTop3Block = (): ReactNode => {
+  const renderTop3Block: () => ReactNode = () => {
     if (top3.length === 0) return null;
     return (
       <div>
@@ -293,7 +293,7 @@ export function DiagnosePage() {
     );
   };
 
-  const renderConfirmBlock = (): ReactNode => {
+  const renderConfirmBlock: () => ReactNode = () => {
     if (!confirmMode) return null;
     return (
       <div className="bg-[#c8f7c5]/10 border border-[#c8f7c5]/30 rounded-xl p-4 space-y-4">
@@ -532,9 +532,9 @@ export function DiagnosePage() {
                   </div>
 
                   {/* Top 3 */}
-                  {renderTop3Block()}
+                  {renderTop3Block() as ReactNode}
 
-                  {renderConfirmBlock()}
+                  {renderConfirmBlock() as ReactNode}
 
                   <Separator className="bg-white/10" />
 
