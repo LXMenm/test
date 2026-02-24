@@ -414,15 +414,9 @@ export function AgentWorkflowPanel({ traceId, confidencePct }: AgentWorkflowPane
   };
 
   const applyNormalizedEvent = (event: NormalizedEvent): boolean => {
+    if (workflowDoneRef.current) return false;
+
     const seq = event.seq;
-
-    if (workflowDoneRef.current) {
-      const hasFreshSeq = typeof seq === 'number' && Number.isFinite(seq) && seq > lastSeqRef.current;
-      if (!hasFreshSeq) return false;
-      workflowDoneRef.current = false;
-      setWorkflowDone(false);
-    }
-
     if (typeof seq === 'number' && Number.isFinite(seq) && seq <= lastSeqRef.current) {
       return false;
     }
@@ -508,12 +502,7 @@ export function AgentWorkflowPanel({ traceId, confidencePct }: AgentWorkflowPane
       next[agentId] = current;
 
       const finalDone = agentId === 'final' && event.status === 'completed';
-      const supervisorDone = agentId === 'supervisor'
-        && event.status === 'completed'
-        && isRecord(event.data)
-        && isRecord(event.data['outputs'])
-        && event.data['outputs']['is_complete'] === true;
-      if (finalDone || supervisorDone) {
+      if (finalDone) {
         markDone = true;
         if (typeof event.tsMs === 'number') {
           finalTsRef.current = event.tsMs;
