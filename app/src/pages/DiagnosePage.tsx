@@ -1,6 +1,6 @@
 import { useState, useRef } from 'react';
-import type { ReactElement } from 'react';
 import type { ChangeEvent } from 'react';
+import type { ReactNode } from 'react';
 import { Upload, Send, RefreshCw, AlertCircle, CheckCircle, Loader2, Image as ImageIcon, ChevronDown, ChevronUp } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -267,7 +267,7 @@ export function DiagnosePage() {
     ? result.image_result as Record<string, unknown>
     : undefined;
   const top3 = normalizeTop3(result?.top3 ?? imageResult?.top3);
-  const top3Block: ReactElement | null = top3.length > 0 ? (
+  const top3Block: ReactNode = top3.length > 0 ? (
     <div>
       <h4 className="text-white/80 font-medium mb-3">Top 3 识别结果</h4>
       <div className="space-y-2">
@@ -289,7 +289,7 @@ export function DiagnosePage() {
       </div>
     </div>
   ) : null;
-  const confirmBlock: ReactElement | null = confirmMode ? (
+  const confirmBlock: ReactNode = confirmMode ? (
     <div className="bg-[#c8f7c5]/10 border border-[#c8f7c5]/30 rounded-xl p-4 space-y-4">
       <h4 className="text-[#c8f7c5] font-medium">二次诊断 / 确认入口</h4>
       <div className="space-y-2">
