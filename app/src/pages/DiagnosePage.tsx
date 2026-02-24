@@ -393,6 +393,8 @@ export function DiagnosePage() {
           model_id: modelId || null,
           choice: choiceForConfirm,
           notes: confirmSymptoms || null,
+          farmer_id: selectedFarmerId || null,
+          base_id: selectedBaseId || null,
         }),
       });
       const data = await resp.json();
