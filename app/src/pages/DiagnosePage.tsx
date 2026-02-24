@@ -21,7 +21,32 @@ interface DiagnosisResult {
   treatment: unknown;
   prevention: unknown;
   trace_id: string;
+  personalization_applied?: boolean;
+  filtered?: boolean;
+  filtered_reasons?: string[];
 }
+
+interface ProfileListItem {
+  id: string;
+  name?: string;
+}
+
+interface ProfileDetail {
+  farmer_id: string;
+  name?: string;
+  active_base_id?: string;
+  constraints?: {
+    prefer_organic?: boolean;
+    harvest_window_days?: number;
+    banned_ingredients?: string[];
+  };
+  bases?: Record<string, {
+    base_id?: string;
+    name?: string;
+  }>;
+}
+
+type BaseOption = { id: string; name?: string };
 
 interface TraceEvent {
   timestamp: string;
@@ -52,6 +77,10 @@ export function DiagnosePage() {
   const [confirmSubmitting, setConfirmSubmitting] = useState(false);
   const [showRawTrace, setShowRawTrace] = useState(false);
   const [diagnosisStartTime, setDiagnosisStartTime] = useState<number | null>(null);
+  const [profiles, setProfiles] = useState<ProfileListItem[]>([]);
+  const [selectedFarmerId, setSelectedFarmerId] = useState('');
+  const [selectedBaseId, setSelectedBaseId] = useState('');
+  const [selectedProfile, setSelectedProfile] = useState<ProfileDetail | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleFileChange = (e: ChangeEvent<HTMLInputElement>) => {
@@ -221,10 +250,70 @@ export function DiagnosePage() {
     treatment: payload?.treatment,
     prevention: payload?.prevention ?? ((payload.treatment && typeof payload.treatment === 'object') ? (payload.treatment as Record<string, unknown>).prevention : undefined),
     trace_id: typeof payload.trace_id === 'string' ? payload.trace_id : '',
+    personalization_applied: payload.personalization_applied === true,
+    filtered: payload.filtered === true,
+    filtered_reasons: Array.isArray(payload.filtered_reasons) ? payload.filtered_reasons.map((item) => String(item)) : [],
   });
 
+  const parseProfiles = (raw: unknown): ProfileListItem[] => {
+    if (!Array.isArray(raw)) return [];
+    const items: ProfileListItem[] = [];
+    raw.forEach((item) => {
+      const record = item && typeof item === 'object' ? item as Record<string, unknown> : {};
+      const id = typeof record.id === 'string' ? record.id : '';
+      if (!id) return;
+      items.push({ id, name: typeof record.name === 'string' ? record.name : undefined });
+    });
+    return items;
+  };
+
+  const fetchProfiles = async () => {
+    try {
+      const resp = await fetch('/api/profiles');
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(String(data?.detail || '加载农户档案失败'));
+      setProfiles(parseProfiles(data?.profiles));
+    } catch (error) {
+      console.error('Failed to fetch profiles:', error);
+      setProfiles([]);
+    }
+  };
+
+  const fetchProfileDetail = async (farmerId: string) => {
+    if (!farmerId) {
+      setSelectedProfile(null);
+      setSelectedBaseId('');
+      return;
+    }
+    try {
+      const resp = await fetch(`/api/profiles/${encodeURIComponent(farmerId)}`);
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(String(data?.detail || '加载档案详情失败'));
+      const profile = (data || {}) as ProfileDetail;
+      setSelectedProfile(profile);
+      if (profile.active_base_id) {
+        setSelectedBaseId(profile.active_base_id);
+      } else if (profile.bases && typeof profile.bases === 'object') {
+        const firstBaseId = Object.keys(profile.bases)[0];
+        setSelectedBaseId(firstBaseId || '');
+      }
+    } catch (error) {
+      console.error('Failed to fetch profile detail:', error);
+      setSelectedProfile(null);
+      setSelectedBaseId('');
+    }
+  };
+
+  useEffect(() => {
+    fetchProfiles();
+  }, []);
+
+  useEffect(() => {
+    fetchProfileDetail(selectedFarmerId);
+  }, [selectedFarmerId]);
+
   const handleSubmit = async () => {
-    if (!file) return;
+    if (!file || !selectedFarmerId) return;
 
     setLoading(true);
     setResult(null);
@@ -241,6 +330,8 @@ export function DiagnosePage() {
       if (symptoms.trim()) fd.append('symptoms', symptoms.trim());
       if (growthStage.trim()) fd.append('growth_stage', growthStage.trim());
       if (modelId) fd.append('model_id', modelId);
+      fd.append('farmer_id', selectedFarmerId);
+      if (selectedBaseId) fd.append('base_id', selectedBaseId);
       console.log('diagnose-image model_id=', modelId);
 
       const resp = await fetch('/api/diagnose-image', {
@@ -302,6 +393,8 @@ export function DiagnosePage() {
           model_id: modelId || null,
           choice: choiceForConfirm,
           notes: confirmSymptoms || null,
+          farmer_id: selectedFarmerId || null,
+          base_id: selectedBaseId || null,
         }),
       });
       const data = await resp.json();
@@ -375,6 +468,12 @@ export function DiagnosePage() {
   const candidates = parseTop3Candidates(latestPayload ?? result ?? {}, result);
   const derivedNeedConfirm = deriveNeedConfirm(latestPayload ?? result ?? {}, candidates, result?.displayConfidencePct ?? null);
   const shouldHideTreatment = confirmMode || derivedNeedConfirm;
+  const baseOptions: BaseOption[] = selectedProfile?.bases && typeof selectedProfile.bases === 'object'
+    ? Object.entries(selectedProfile.bases).map(([baseId, base]) => ({
+      id: baseId,
+      name: base?.name,
+    }))
+    : [];
 
   useEffect(() => {
     if (!derivedNeedConfirm) return;
@@ -543,10 +642,53 @@ export function DiagnosePage() {
               <p className="text-xs text-white/60">将发送 model_id：{modelId}</p>
             </div>
 
+            {/* Farmer Profile */}
+            <div className="space-y-2">
+              <Label className="text-white/80">农户档案（个性化设置）</Label>
+              <Select value={selectedFarmerId} onValueChange={setSelectedFarmerId}>
+                <SelectTrigger className="bg-white/5 border-white/20 text-white">
+                  <SelectValue placeholder="请选择农户档案" className="text-white placeholder:text-white/60" />
+                </SelectTrigger>
+                <SelectContent side="bottom" align="start" sideOffset={6} className="bg-[#111] text-white border-white/20">
+                  {profiles.map((profile) => (
+                    <SelectItem key={profile.id} value={profile.id} className="text-white data-[highlighted]:bg-[#c8f7c5] data-[highlighted]:text-black">
+                      {profile.id}{profile.name ? ` · ${profile.name}` : ''}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {baseOptions.length > 0 && (
+                <Select value={selectedBaseId} onValueChange={setSelectedBaseId}>
+                  <SelectTrigger className="bg-white/5 border-white/20 text-white">
+                    <SelectValue placeholder="请选择基地" className="text-white placeholder:text-white/60" />
+                  </SelectTrigger>
+                  <SelectContent side="bottom" align="start" sideOffset={6} className="bg-[#111] text-white border-white/20">
+                    {baseOptions.map((base) => (
+                      <SelectItem key={base.id} value={base.id} className="text-white data-[highlighted]:bg-[#c8f7c5] data-[highlighted]:text-black">
+                        {base.id}{base.name ? ` · ${base.name}` : ''}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
+              {selectedProfile && (
+                <div className="bg-white/5 rounded-xl p-3 text-xs text-white/75 space-y-1 border border-white/10">
+                  <p>农户：{selectedProfile.farmer_id}{selectedProfile.name ? ` · ${selectedProfile.name}` : ''}</p>
+                  <p>偏好有机：{selectedProfile.constraints?.prefer_organic ? '是' : '否'}</p>
+                  <p>禁用成分：{(selectedProfile.constraints?.banned_ingredients || []).join('、') || '无'}</p>
+                  <p>采收窗口：{selectedProfile.constraints?.harvest_window_days ?? '未设置'} 天</p>
+                  <p>基地：{selectedBaseId || selectedProfile.active_base_id || '未设置'}</p>
+                </div>
+              )}
+              {!selectedFarmerId && (
+                <p className="text-xs text-yellow-200">请先选择农户档案（个性化方案依赖档案约束）</p>
+              )}
+            </div>
+
             {/* Submit Button */}
             <Button
               onClick={handleSubmit}
-              disabled={!file || loading}
+              disabled={!file || loading || !selectedFarmerId}
               className="w-full bg-[#c8f7c5] text-black hover:bg-[#b8e7b5] font-semibold h-12 rounded-xl transition-all duration-300 disabled:opacity-50"
             >
               {loading ? (
@@ -626,6 +768,30 @@ export function DiagnosePage() {
                       </div>
                     </div>
                   ) : null}
+
+                  <div>
+                    <h4 className="text-white/80 font-medium mb-2">个性化影响</h4>
+                    <div className="bg-white/5 rounded-xl p-4 text-sm text-white/80 space-y-2">
+                      <div className="flex items-center gap-2">
+                        <span>已应用个性化：</span>
+                        <Badge className={cn(result.personalization_applied ? 'bg-[#c8f7c5] text-black' : 'bg-white/10 text-white')}>
+                          {result.personalization_applied ? '是' : '否'}
+                        </Badge>
+                        {result.filtered && (
+                          <Badge className="bg-yellow-400 text-black">已过滤</Badge>
+                        )}
+                      </div>
+                      {Array.isArray(result.filtered_reasons) && result.filtered_reasons.length > 0 ? (
+                        <ul className="list-disc pl-5 space-y-1">
+                          {result.filtered_reasons.map((reason, idx) => (
+                            <li key={`${reason}-${idx}`}>{reason}</li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <p className="text-white/50">暂无过滤说明</p>
+                      )}
+                    </div>
+                  </div>
 
                   {confirmMode ? (
                     <div className="bg-[#c8f7c5]/10 border border-[#c8f7c5]/30 rounded-xl p-4 space-y-4">

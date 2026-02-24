@@ -103,27 +103,32 @@ const normalizeProfile = (raw: unknown): FarmerProfile => {
 
 const normalizeProfileList = (raw: unknown): FarmerProfile[] => {
   if (!Array.isArray(raw)) return [];
-  return raw.map((item: unknown) => {
-    const itemObj = item && typeof item === 'object' ? item as Record<string, unknown> : {};
-    if ('farmer_id' in itemObj || 'name' in itemObj) {
-      return normalizeProfile(itemObj);
-    }
-    const farmerId = toSafeString(itemObj.id);
-    return {
-      farmer_id: farmerId,
-      name: farmerId || '未命名农户',
-      active_base_id: '',
-      confirm_when_low_confidence: true,
-      schema_version: '1.0',
-      updated_at: '',
-      constraints: {
-        prefer_organic: false,
-        harvest_window_days: 0,
-        banned_ingredients: [],
-      },
-      bases: [],
-    };
-  });
+  return raw
+    .map((item: unknown) => {
+      const itemObj = item && typeof item === 'object' ? item as Record<string, unknown> : {};
+      if ('farmer_id' in itemObj) {
+        const normalized = normalizeProfile(itemObj);
+        return normalized.farmer_id ? normalized : null;
+      }
+      const farmerId = toSafeString(itemObj.id).trim();
+      if (!farmerId) return null;
+      const displayName = toSafeString(itemObj.name).trim();
+      return {
+        farmer_id: farmerId,
+        name: displayName || farmerId,
+        active_base_id: '',
+        confirm_when_low_confidence: true,
+        schema_version: '1.0',
+        updated_at: '',
+        constraints: {
+          prefer_organic: false,
+          harvest_window_days: 0,
+          banned_ingredients: [],
+        },
+        bases: [],
+      };
+    })
+    .filter((item): item is FarmerProfile => Boolean(item && item.farmer_id));
 };
 
 export function ProfilesPage() {
@@ -171,9 +176,10 @@ export function ProfilesPage() {
   };
 
   const fetchProfileDetail = async (farmerId: string) => {
+    if (!farmerId) return;
     setErrorMessage('');
     try {
-      const resp = await fetch(`/api/profiles/${farmerId}`);
+      const resp = await fetch(`/api/profiles/${encodeURIComponent(farmerId)}`);
       const data = await parseJsonOrThrow(resp);
       const normalized = normalizeProfile(data);
       setSelectedProfile(normalized);
