@@ -21,6 +21,29 @@ interface DiagnosisResult {
   treatment: unknown;
   prevention: unknown;
   trace_id: string;
+  personalization_applied?: boolean;
+  filtered?: boolean;
+  filtered_reasons?: string[];
+}
+
+interface ProfileListItem {
+  id: string;
+  name?: string;
+}
+
+interface ProfileDetail {
+  farmer_id: string;
+  name?: string;
+  active_base_id?: string;
+  constraints?: {
+    prefer_organic?: boolean;
+    harvest_window_days?: number;
+    banned_ingredients?: string[];
+  };
+  bases?: Record<string, {
+    base_id?: string;
+    name?: string;
+  }>;
 }
 
 interface TraceEvent {
@@ -89,6 +112,10 @@ export function DiagnosePage() {
   const [confirmSubmitting, setConfirmSubmitting] = useState(false);
   const [showRawTrace, setShowRawTrace] = useState(false);
   const [diagnosisStartTime, setDiagnosisStartTime] = useState<number | null>(null);
+  const [, setProfiles] = useState<ProfileListItem[]>([]);
+  const [selectedFarmerId] = useState('');
+  const [selectedBaseId, setSelectedBaseId] = useState('');
+  const [, setSelectedProfile] = useState<ProfileDetail | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const selectedProfile = farmerProfiles.find((profile) => profile.farmer_id === activeFarmerId);
@@ -297,10 +324,70 @@ export function DiagnosePage() {
     treatment: payload?.treatment,
     prevention: payload?.prevention ?? ((payload.treatment && typeof payload.treatment === 'object') ? (payload.treatment as Record<string, unknown>).prevention : undefined),
     trace_id: typeof payload.trace_id === 'string' ? payload.trace_id : '',
+    personalization_applied: payload.personalization_applied === true,
+    filtered: payload.filtered === true,
+    filtered_reasons: Array.isArray(payload.filtered_reasons) ? payload.filtered_reasons.map((item) => String(item)) : [],
   });
 
+  const parseProfiles = (raw: unknown): ProfileListItem[] => {
+    if (!Array.isArray(raw)) return [];
+    const items: ProfileListItem[] = [];
+    raw.forEach((item) => {
+      const record = item && typeof item === 'object' ? item as Record<string, unknown> : {};
+      const id = typeof record.id === 'string' ? record.id : '';
+      if (!id) return;
+      items.push({ id, name: typeof record.name === 'string' ? record.name : undefined });
+    });
+    return items;
+  };
+
+  const fetchProfiles = async () => {
+    try {
+      const resp = await fetch('/api/profiles');
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(String(data?.detail || '加载农户档案失败'));
+      setProfiles(parseProfiles(data?.profiles));
+    } catch (error) {
+      console.error('Failed to fetch profiles:', error);
+      setProfiles([]);
+    }
+  };
+
+  const fetchProfileDetail = async (farmerId: string) => {
+    if (!farmerId) {
+      setSelectedProfile(null);
+      setSelectedBaseId('');
+      return;
+    }
+    try {
+      const resp = await fetch(`/api/profiles/${encodeURIComponent(farmerId)}`);
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(String(data?.detail || '加载档案详情失败'));
+      const profile = (data || {}) as ProfileDetail;
+      setSelectedProfile(profile);
+      if (profile.active_base_id) {
+        setSelectedBaseId(profile.active_base_id);
+      } else if (profile.bases && typeof profile.bases === 'object') {
+        const firstBaseId = Object.keys(profile.bases)[0];
+        setSelectedBaseId(firstBaseId || '');
+      }
+    } catch (error) {
+      console.error('Failed to fetch profile detail:', error);
+      setSelectedProfile(null);
+      setSelectedBaseId('');
+    }
+  };
+
+  useEffect(() => {
+    fetchProfiles();
+  }, []);
+
+  useEffect(() => {
+    fetchProfileDetail(selectedFarmerId);
+  }, [selectedFarmerId]);
+
   const handleSubmit = async () => {
-    if (!file) return;
+    if (!file || !selectedFarmerId) return;
 
     setLoading(true);
     setResult(null);
@@ -381,6 +468,8 @@ export function DiagnosePage() {
           ...diagnoseContext,
           choice: choiceForConfirm,
           notes: confirmSymptoms || null,
+          farmer_id: selectedFarmerId || null,
+          base_id: selectedBaseId || null,
         }),
       });
       const data = await resp.json();
@@ -665,10 +754,33 @@ export function DiagnosePage() {
               </p>
             </div>
 
+            <div className="space-y-2">
+              <Label className="text-white/80">基线档案（可选）</Label>
+              <Select value={selectedBaseId} onValueChange={setSelectedBaseId} disabled={!selectedFarmerId || availableBases.length === 0}>
+                <SelectTrigger className="bg-white/5 border-white/20 text-white">
+                  <SelectValue placeholder={selectedFarmerId ? '请选择基线档案' : '请先选择农户'} className="text-white placeholder:text-white/60" />
+                </SelectTrigger>
+                <SelectContent side="bottom" align="start" sideOffset={6} className="bg-[#111] text-white border-white/20">
+                  {availableBases.map((base) => (
+                    <SelectItem
+                      key={base.base_id}
+                      value={base.base_id}
+                      className="text-white data-[highlighted]:bg-[#c8f7c5] data-[highlighted]:text-black"
+                    >
+                      {base.name || base.base_id}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-white/60">
+                当前提交：farmer_id={selectedFarmerId || '-'}，base_id={selectedBaseId || '-'}
+              </p>
+            </div>
+
             {/* Submit Button */}
             <Button
               onClick={handleSubmit}
-              disabled={!file || loading}
+              disabled={!file || loading || !selectedFarmerId}
               className="w-full bg-[#c8f7c5] text-black hover:bg-[#b8e7b5] font-semibold h-12 rounded-xl transition-all duration-300 disabled:opacity-50"
             >
               {loading ? (
