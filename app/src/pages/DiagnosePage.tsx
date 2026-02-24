@@ -39,7 +39,7 @@ export function DiagnosePage() {
   const [symptoms, setSymptoms] = useState('');
   const [cropType, setCropType] = useState('番茄');
   const [growthStage, setGrowthStage] = useState('');
-  const [modelId, setModelId] = useState('default');
+  const [modelId, setModelId] = useState('tf_default');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<DiagnosisResult | null>(null);
   const [traceEvents, setTraceEvents] = useState<TraceEvent[]>([]);
@@ -143,6 +143,7 @@ export function DiagnosePage() {
       if (symptoms.trim()) fd.append('symptoms', symptoms.trim());
       if (growthStage.trim()) fd.append('growth_stage', growthStage.trim());
       if (modelId) fd.append('model_id', modelId);
+      console.log('diagnose-image model_id=', modelId);
 
       const resp = await fetch('/api/diagnose-image', {
         method: 'POST',
@@ -438,14 +439,20 @@ export function DiagnosePage() {
             <div className="space-y-2">
               <Label className="text-white/80">识别模型</Label>
               <Select value={modelId} onValueChange={setModelId}>
-                <SelectTrigger className="bg-white/5 border-white/20 text-white placeholder:text-white/60">
+                <SelectTrigger className="bg-white/5 border-white/20 text-white">
                   <SelectValue className="text-white placeholder:text-white/60" />
                 </SelectTrigger>
-                <SelectContent className="bg-[#1a1a1a] border-white/20">
-                  <SelectItem value="default" className="text-white focus:bg-[#c8f7c5] focus:text-black">默认高精度模型 (tf)</SelectItem>
-                  <SelectItem value="lightweight" className="text-white focus:bg-[#c8f7c5] focus:text-black">轻量模型V1 (tf)</SelectItem>
+                <SelectContent
+                  side="bottom"
+                  align="start"
+                  sideOffset={6}
+                  className="bg-[#111] text-white border-white/20"
+                >
+                  <SelectItem value="tf_default" className="text-white data-[highlighted]:bg-[#c8f7c5] data-[highlighted]:text-black">默认高精度模型 (tf)</SelectItem>
+                  <SelectItem value="tf_light_v1" className="text-white data-[highlighted]:bg-[#c8f7c5] data-[highlighted]:text-black">轻量模型V1 (tf)</SelectItem>
                 </SelectContent>
               </Select>
+              <p className="text-xs text-white/60">将发送 model_id：{modelId}</p>
             </div>
 
             {/* Submit Button */}
