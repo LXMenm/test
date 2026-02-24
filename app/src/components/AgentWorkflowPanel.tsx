@@ -158,6 +158,7 @@ const mapToFixedAgent = (agentId: string | undefined, node: string | undefined):
   if (MERGE_MAP[aid]) return MERGE_MAP[aid];
 
   const nodeLower = String(node || '').toLowerCase();
+  if (nodeLower === 'final') return 'final';
   if (nodeLower.includes('final')) return 'final';
   if (nodeLower.includes('retrieve') || nodeLower.includes('kb')) return 'kb_retrieval';
   if (nodeLower.includes('diagnosis') || nodeLower.includes('confidence')) return 'diagnosis';
@@ -383,6 +384,10 @@ export function AgentWorkflowPanel({ traceId, confidencePct }: AgentWorkflowPane
     clearTicker();
   };
 
+  const stopPolling = () => {
+    // 保留明确入口，便于在流程结束时统一停止后续轮询/流更新
+  };
+
   const maybeStartTicker = (snapshot: Record<FixedAgentId, AgentRowState>, done: boolean) => {
     const hasRunning = FIXED_AGENTS.some((agent) => snapshot[agent.id].status === 'running');
     if (!done && hasRunning) {
@@ -511,6 +516,7 @@ export function AgentWorkflowPanel({ traceId, confidencePct }: AgentWorkflowPane
     if (markDone) {
       workflowDoneRef.current = true;
       setWorkflowDone(true);
+      stopPolling();
       closeStream();
       clearTicker();
       completeSupervisorOnDone(finalTsRef.current);

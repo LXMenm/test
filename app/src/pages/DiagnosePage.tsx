@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import type { ChangeEvent, JSX } from 'react';
 import { Upload, Send, RefreshCw, AlertCircle, CheckCircle, Loader2, Image as ImageIcon, ChevronDown, ChevronUp } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -259,16 +259,51 @@ export function DiagnosePage() {
   };
 
   const renderTreatment = (t: unknown): JSX.Element | null => renderRichValue(t);
-  const normalizeTop3 = (v: unknown): Top3Item[] => {
-    if (!Array.isArray(v)) return [];
-    return v
-      .map((it) => Array.isArray(it) && typeof it[0] === 'string' ? [it[0], Number(it[1])] as Top3Item : null)
-      .filter(Boolean) as Top3Item[];
+  const normalizeTop3 = (v: unknown, fallback?: unknown): Top3Item[] => {
+    const source = Array.isArray(v)
+      ? v
+      : (Array.isArray(fallback) ? fallback : []);
+
+    return source
+      .map((it): Top3Item | null => {
+        if (Array.isArray(it) && typeof it[0] === 'string') {
+          const confidence = Number(it[1]);
+          if (!Number.isFinite(confidence)) return null;
+          return [it[0], confidence > 1 ? confidence / 100 : confidence];
+        }
+
+        if (it && typeof it === 'object') {
+          const record = it as Record<string, unknown>;
+          const disease = typeof record.disease === 'string'
+            ? record.disease
+            : (typeof record.name === 'string' ? record.name : '');
+          if (!disease) return null;
+
+          const rawConfidence = Number(record.confidence ?? record.confidence_pct);
+          if (!Number.isFinite(rawConfidence)) return null;
+          return [disease, rawConfidence > 1 ? rawConfidence / 100 : rawConfidence];
+        }
+
+        return null;
+      })
+      .filter((item): item is Top3Item => item !== null);
   };
   const imageResult = result?.image_result && typeof result.image_result === 'object'
     ? result.image_result as Record<string, unknown>
     : undefined;
-  const top3: Top3Item[] = normalizeTop3(result?.top3 ?? imageResult?.top3);
+  const top3: Top3Item[] = normalizeTop3(result?.top3, imageResult?.top3);
+  const finalDiseaseText = (result?.final_disease || '').trim();
+  const isUnknownDisease = !finalDiseaseText || /未知|疑似/.test(finalDiseaseText);
+  const isLowConfidence = result?.displayConfidencePct != null && result.displayConfidencePct < 60;
+  const shouldUseConfirm = Boolean(result) && (isUnknownDisease || isLowConfidence);
+
+  useEffect(() => {
+    if (!shouldUseConfirm) return;
+    setConfirmMode(true);
+    if (top3[0]?.[0]) {
+      setConfirmChoice(top3[0][0]);
+    }
+  }, [shouldUseConfirm, top3]);
 
   const refreshTrace = async () => {
     if (!traceId) return;
@@ -549,7 +584,13 @@ export function DiagnosePage() {
                   <Separator className="bg-white/10" />
 
                   {/* Treatment */}
-                  {Boolean(result.treatment) && (
+                  {shouldUseConfirm && (
+                    <div className="bg-yellow-500/10 border border-yellow-400/30 rounded-xl p-4 text-yellow-200 text-sm">
+                      置信度不足，请使用二次诊断补充症状/选择候选病害。
+                    </div>
+                  )}
+
+                  {Boolean(result.treatment) && !shouldUseConfirm && (
                     <div>
                       <h4 className="text-white/80 font-medium mb-2 flex items-center gap-2">
                         <AlertCircle className="w-4 h-4 text-[#c8f7c5]" />
@@ -562,7 +603,7 @@ export function DiagnosePage() {
                   )}
 
                   {/* Prevention */}
-                  {Boolean(result.prevention) && (
+                  {Boolean(result.prevention) && !shouldUseConfirm && (
                     <div>
                       <h4 className="text-white/80 font-medium mb-2">预防建议</h4>
                       <div className="bg-white/5 rounded-xl p-4 text-white/80 text-sm leading-relaxed whitespace-pre-line">
