@@ -744,11 +744,16 @@ def get_models() -> dict[str, object]:
 
 
 @app.get("/api/profiles")
-def list_profiles() -> dict[str, list[dict[str, str]]]:
+def list_profiles() -> dict[str, list[dict[str, str | None]]]:
     profiles = []
     for farmer_id in list_profile_ids():
         path = get_profile_path(farmer_id)
-        profiles.append({"id": farmer_id, "path": str(path)})
+        profile = load_profile(farmer_id)
+        profiles.append({
+            "id": farmer_id,
+            "name": profile.name if profile else None,
+            "path": str(path),
+        })
     return {"profiles": profiles}
 
 
@@ -756,6 +761,32 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
+
+
+def _normalize_profile_payload_for_save(farmer_id: str, payload: dict) -> FarmerProfile:
+    """兼容前端旧结构并校验档案，确保可被 load_profile 解析。"""
+    normalized = dict(payload)
+    normalized["farmer_id"] = farmer_id
+
+    bases = normalized.get("bases")
+    if isinstance(bases, list):
+        bases_map = {}
+        for item in bases:
+            if not isinstance(item, dict):
+                continue
+            base_id = str(item.get("base_id") or "").strip()
+            if not base_id:
+                continue
+            base_data = dict(item)
+            if "facility_type" in base_data and "facility" not in base_data:
+                base_data["facility"] = base_data.pop("facility_type")
+            bases_map[base_id] = base_data
+        normalized["bases"] = bases_map
+
+    profile = FarmerProfile.model_validate(normalized)
+    profile.ensure_timestamp()
+    profile.updated_at = _utc_now_iso()
+    return profile
 def _generate_farmer_id() -> str | None:
     existing_ids = set()
     for farmer_id in list_profile_ids():
@@ -813,13 +844,16 @@ def get_profile(farmer_id: str) -> dict:
 
 @app.post("/api/profiles/{farmer_id}")
 def save_profile(farmer_id: str, payload: dict = Body(...)) -> dict[str, bool]:
-    path = get_profile_path(farmer_id)
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="档案内容非法")
-    payload["updated_at"] = _utc_now_iso()
     try:
-        with path.open("w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=False, indent=2)
+        profile = _normalize_profile_payload_for_save(farmer_id, payload)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"档案格式非法: {exc}") from exc
+    try:
+        save_path = get_profile_path(farmer_id)
+        with save_path.open("w", encoding="utf-8") as f:
+            json.dump(profile.model_dump(), f, ensure_ascii=False, indent=2)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"保存档案失败: {exc}") from exc
     return {"ok": True}
