@@ -108,9 +108,6 @@ export function KBPage() {
       const data = await resp.json();
       
       switch (tab) {
-        case 'diseases':
-          setDiseases(data.items || []);
-          break;
         case 'treatments':
           setTreatments(data.items || []);
           break;

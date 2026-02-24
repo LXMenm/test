@@ -1,4 +1,5 @@
-import { Component, ReactNode, useEffect, useState } from 'react';
+import { Component, useEffect, useState } from 'react';
+import type { ReactNode } from 'react';
 import { Navbar } from './components/Navbar';
 import { DiagnosePage } from './pages/DiagnosePage';
 import { DashboardPage } from './pages/DashboardPage';
