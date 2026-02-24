@@ -97,9 +97,9 @@ export function DiagnosePage() {
   const [cropType, setCropType] = useState('番茄');
   const [growthStage, setGrowthStage] = useState('');
   const [modelId, setModelId] = useState('tf_default');
-  const [profiles, setProfiles] = useState<FarmerProfile[]>([]);
-  const [selectedFarmerId, setSelectedFarmerId] = useState('');
-  const [selectedBaseId, setSelectedBaseId] = useState('');
+  const [farmerProfiles, setFarmerProfiles] = useState<FarmerProfile[]>([]);
+  const [activeFarmerId, setActiveFarmerId] = useState('');
+  const [activeBaseId, setActiveBaseId] = useState('');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<DiagnosisResult | null>(null);
   const [traceEvents, setTraceEvents] = useState<TraceEvent[]>([]);
@@ -118,11 +118,11 @@ export function DiagnosePage() {
   const [, setSelectedProfile] = useState<ProfileDetail | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const selectedProfile = profiles.find((profile) => profile.farmer_id === selectedFarmerId);
+  const selectedProfile = farmerProfiles.find((profile) => profile.farmer_id === activeFarmerId);
   const availableBases = selectedProfile?.bases ?? [];
   const diagnoseContext: DiagnoseContext = {
-    farmer_id: selectedFarmerId || null,
-    base_id: selectedBaseId || null,
+    farmer_id: activeFarmerId || null,
+    base_id: activeBaseId || null,
   };
 
   useEffect(() => {
@@ -132,7 +132,7 @@ export function DiagnosePage() {
         const data = await resp.json();
         if (!resp.ok) return;
         const normalizedProfiles = normalizeProfileList(data?.profiles);
-        setProfiles(normalizedProfiles);
+        setFarmerProfiles(normalizedProfiles);
       } catch (error) {
         console.error('Failed to fetch profiles:', error);
       }
@@ -141,21 +141,21 @@ export function DiagnosePage() {
   }, []);
 
   useEffect(() => {
-    if (!selectedFarmerId) {
-      setSelectedBaseId('');
+    if (!activeFarmerId) {
+      setActiveBaseId('');
       return;
     }
-    const profile = profiles.find((item) => item.farmer_id === selectedFarmerId);
+    const profile = farmerProfiles.find((item) => item.farmer_id === activeFarmerId);
     if (!profile) {
-      setSelectedBaseId('');
+      setActiveBaseId('');
       return;
     }
     const defaultBaseId = profile.active_base_id || profile.bases[0]?.base_id || '';
-    setSelectedBaseId((prev) => {
+    setActiveBaseId((prev) => {
       if (prev && profile.bases.some((base) => base.base_id === prev)) return prev;
       return defaultBaseId;
     });
-  }, [profiles, selectedFarmerId]);
+  }, [farmerProfiles, activeFarmerId]);
 
   const handleFileChange = (e: ChangeEvent<HTMLInputElement>) => {
     const selectedFile = e.target.files?.[0];
@@ -713,12 +713,12 @@ export function DiagnosePage() {
 
             <div className="space-y-2">
               <Label className="text-white/80">农户</Label>
-              <Select value={selectedFarmerId} onValueChange={setSelectedFarmerId}>
+              <Select value={activeFarmerId} onValueChange={setActiveFarmerId}>
                 <SelectTrigger className="bg-white/5 border-white/20 text-white">
                   <SelectValue placeholder="请选择农户" className="text-white placeholder:text-white/60" />
                 </SelectTrigger>
                 <SelectContent side="bottom" align="start" sideOffset={6} className="bg-[#111] text-white border-white/20">
-                  {profiles.map((profile) => (
+                  {farmerProfiles.map((profile) => (
                     <SelectItem
                       key={profile.farmer_id}
                       value={profile.farmer_id}
@@ -729,6 +729,29 @@ export function DiagnosePage() {
                   ))}
                 </SelectContent>
               </Select>
+            </div>
+
+            <div className="space-y-2">
+              <Label className="text-white/80">基线档案（可选）</Label>
+              <Select value={activeBaseId} onValueChange={setActiveBaseId} disabled={!activeFarmerId || availableBases.length === 0}>
+                <SelectTrigger className="bg-white/5 border-white/20 text-white">
+                  <SelectValue placeholder={activeFarmerId ? '请选择基线档案' : '请先选择农户'} className="text-white placeholder:text-white/60" />
+                </SelectTrigger>
+                <SelectContent side="bottom" align="start" sideOffset={6} className="bg-[#111] text-white border-white/20">
+                  {availableBases.map((base) => (
+                    <SelectItem
+                      key={base.base_id}
+                      value={base.base_id}
+                      className="text-white data-[highlighted]:bg-[#c8f7c5] data-[highlighted]:text-black"
+                    >
+                      {base.name || base.base_id}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-white/60">
+                当前提交：farmer_id={activeFarmerId || '-'}，base_id={activeBaseId || '-'}
+              </p>
             </div>
 
             <div className="space-y-2">
