@@ -57,6 +57,7 @@ interface TraceEvent {
 type Top3Candidate = { disease: string; probPct: number };
 type ProfileBase = { base_id: string; name: string };
 type FarmerProfile = { farmer_id: string; name: string; active_base_id: string; bases: ProfileBase[] };
+type DiagnoseContext = { farmer_id: string | null; base_id: string | null };
 
 const toSafeString = (value: unknown, fallback = ''): string => {
   return typeof value === 'string' ? value : fallback;
@@ -119,6 +120,10 @@ export function DiagnosePage() {
 
   const selectedProfile = profiles.find((profile) => profile.farmer_id === selectedFarmerId);
   const availableBases = selectedProfile?.bases ?? [];
+  const diagnoseContext: DiagnoseContext = {
+    farmer_id: selectedFarmerId || null,
+    base_id: selectedBaseId || null,
+  };
 
   useEffect(() => {
     const fetchProfiles = async () => {
@@ -399,8 +404,8 @@ export function DiagnosePage() {
       if (symptoms.trim()) fd.append('symptoms', symptoms.trim());
       if (growthStage.trim()) fd.append('growth_stage', growthStage.trim());
       if (modelId) fd.append('model_id', modelId);
-      if (selectedFarmerId) fd.append('farmer_id', selectedFarmerId);
-      if (selectedBaseId) fd.append('base_id', selectedBaseId);
+      if (diagnoseContext.farmer_id) fd.append('farmer_id', diagnoseContext.farmer_id);
+      if (diagnoseContext.base_id) fd.append('base_id', diagnoseContext.base_id);
       console.log('diagnose-image model_id=', modelId);
 
       const resp = await fetch('/api/diagnose-image', {
@@ -460,8 +465,7 @@ export function DiagnosePage() {
           symptoms: symptomsForConfirm,
           growth_stage: growthStage || null,
           model_id: modelId || null,
-          farmer_id: selectedFarmerId || null,
-          base_id: selectedBaseId || null,
+          ...diagnoseContext,
           choice: choiceForConfirm,
           notes: confirmSymptoms || null,
           farmer_id: selectedFarmerId || null,
