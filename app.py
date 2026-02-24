@@ -633,15 +633,14 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
     symptoms = payload.get("symptoms") or []
     growth_stage = payload.get("growth_stage")
     model_id = payload.get("model_id")
-    choice = str(payload.get("choice") or "").strip()
     farmer_id = payload.get("farmer_id")
     base_id = payload.get("base_id")
     if not image_id:
         raise HTTPException(status_code=400, detail="image_id 不能为空")
-    # 二次诊断始终开启新trace，避免与首轮事件混合导致流程面板停不下来
-    if trace_id and not previous_trace_id:
-        previous_trace_id = trace_id
-    trace_id = uuid.uuid4().hex
+    if not trace_id and previous_trace_id:
+        trace_id = uuid.uuid4().hex
+    if not trace_id:
+        trace_id = uuid.uuid4().hex
     if not isinstance(symptoms, list):
         raise HTTPException(status_code=400, detail="symptoms 必须为列表")
 
@@ -677,7 +676,6 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
             "image_id": image_id,
             "previous_trace_id": previous_trace_id,
             "model_id": model_id,
-            "choice": choice,
             "farmer_id": farmer_id,
             "base_id": base_id,
         },
@@ -686,18 +684,6 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
     state["current_step"] = "confirm_input"
 
     state = diagnosis_agent(state)
-    if choice and choice != "other":
-        state["final_disease"] = choice
-        state["disease_type"] = choice
-        flags = state.get("personalization_flags") or {}
-        flags["need_confirm"] = False
-        state["personalization_flags"] = flags
-        append_trace(
-            state,
-            agent="confirm_choice",
-            inputs={"choice": choice},
-            outputs={"final_disease": choice, "need_confirm": False},
-        )
     state = kb_retrieval_agent(state)
     state = treatment_agent(state)
 
@@ -715,8 +701,6 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
     }
     flags = state.get("personalization_flags") or {}
     need_confirm = bool(flags.get("need_confirm"))
-    if choice and choice != "other":
-        need_confirm = False
     personalization_meta = _build_personalization_meta(flags, farmer_id, state.get("base_id"))
     personalization_applied = bool(flags.get("personalization_applied"))
     filtered = bool(flags.get("filtered"))
