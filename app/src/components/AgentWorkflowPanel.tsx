@@ -361,12 +361,6 @@ export function AgentWorkflowPanel({ traceId, confidencePct }: AgentWorkflowPane
     final: [],
   });
 
-  useEffect(() => {
-    if (typeof confidencePct === 'number' && Number.isFinite(confidencePct)) {
-      setDiagnosisConfidencePct(confidencePct);
-    }
-  }, [confidencePct]);
-
   const clearTicker = () => {
     if (tickerRef.current) {
       clearInterval(tickerRef.current);
@@ -525,12 +519,7 @@ export function AgentWorkflowPanel({ traceId, confidencePct }: AgentWorkflowPane
   useEffect(() => {
     if (!traceId) {
       clearExternal();
-      setRows(buildInitialState());
-      setConnectionState('idle');
-      setConnectionHint('');
-      setReplayedCount(0);
       replayedCountRef.current = 0;
-      setWorkflowDone(false);
       workflowDoneRef.current = false;
       lastSeqRef.current = -1;
       finalTsRef.current = undefined;
@@ -545,13 +534,17 @@ export function AgentWorkflowPanel({ traceId, confidencePct }: AgentWorkflowPane
       return;
     }
 
+    let cancelled = false;
+
     clearExternal();
-    setRows(buildInitialState());
-    setConnectionState('connecting');
-    setConnectionHint('正在回放历史事件...');
-    setReplayedCount(0);
+    queueMicrotask(() => {
+      if (cancelled) return;
+      setConnectionState('connecting');
+      setConnectionHint('正在回放历史事件...');
+      setReplayedCount(0);
+      setWorkflowDone(false);
+    });
     replayedCountRef.current = 0;
-    setWorkflowDone(false);
     workflowDoneRef.current = false;
     lastSeqRef.current = -1;
     finalTsRef.current = undefined;
@@ -563,8 +556,6 @@ export function AgentWorkflowPanel({ traceId, confidencePct }: AgentWorkflowPane
       treatment: [],
       final: [],
     };
-
-    let cancelled = false;
 
     const openStream = () => {
       if (cancelled || workflowDoneRef.current) return;
@@ -684,6 +675,9 @@ export function AgentWorkflowPanel({ traceId, confidencePct }: AgentWorkflowPane
     return ends.length ? Math.max(...ends) : undefined;
   }, [renderedRows, workflowDone]);
 
+  const displayConfidencePct =
+    (typeof confidencePct === 'number' && Number.isFinite(confidencePct)) ? confidencePct : diagnosisConfidencePct;
+
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-2">
@@ -699,9 +693,9 @@ export function AgentWorkflowPanel({ traceId, confidencePct }: AgentWorkflowPane
         </Badge>
         {connectionHint && <span className="text-xs text-white/50">{connectionHint}</span>}
         {replayedCount > 0 && <span className="text-xs text-[#c8f7c5]/70">已回放 {replayedCount} 条</span>}
-        {typeof diagnosisConfidencePct === 'number' && (
+        {typeof displayConfidencePct === 'number' && (
           <Badge className="bg-[#c8f7c5]/20 text-[#c8f7c5] border border-[#c8f7c5]/30">
-            诊断置信度 {diagnosisConfidencePct.toFixed(2)}%
+            诊断置信度 {displayConfidencePct.toFixed(2)}%
           </Badge>
         )}
         {workflowDone && (
