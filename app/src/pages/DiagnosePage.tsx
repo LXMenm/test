@@ -384,12 +384,12 @@ export function DiagnosePage() {
             <div className="space-y-2">
               <Label className="text-white/80">识别模型</Label>
               <Select value={modelId} onValueChange={setModelId}>
-                <SelectTrigger className="bg-white/5 border-white/20 text-white">
-                  <SelectValue />
+                <SelectTrigger className="bg-white/5 border-white/20 text-white placeholder:text-white/60">
+                  <SelectValue className="text-white placeholder:text-white/60" />
                 </SelectTrigger>
                 <SelectContent className="bg-[#1a1a1a] border-white/20">
-                  <SelectItem value="default">默认高精度模型 (tf)</SelectItem>
-                  <SelectItem value="lightweight">轻量模型V1 (tf)</SelectItem>
+                  <SelectItem value="default" className="text-white focus:bg-[#c8f7c5] focus:text-black">默认高精度模型 (tf)</SelectItem>
+                  <SelectItem value="lightweight" className="text-white focus:bg-[#c8f7c5] focus:text-black">轻量模型V1 (tf)</SelectItem>
                 </SelectContent>
               </Select>
             </div>
