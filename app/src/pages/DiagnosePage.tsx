@@ -77,6 +77,7 @@ export function DiagnosePage() {
   const [confirmSubmitting, setConfirmSubmitting] = useState(false);
   const [showRawTrace, setShowRawTrace] = useState(false);
   const [diagnosisStartTime, setDiagnosisStartTime] = useState<number | null>(null);
+  const [workflowRunNonce, setWorkflowRunNonce] = useState(0);
   const [profiles, setProfiles] = useState<ProfileListItem[]>([]);
   const [selectedFarmerId, setSelectedFarmerId] = useState('');
   const [selectedBaseId, setSelectedBaseId] = useState('');
@@ -362,6 +363,7 @@ export function DiagnosePage() {
     setConfirmChoice('other');
     setConfirmSymptoms('');
     setDiagnosisStartTime(Date.now());
+    setWorkflowRunNonce((prev) => prev + 1);
 
     try {
       const fd = new FormData();
@@ -417,6 +419,7 @@ export function DiagnosePage() {
 
   const handleConfirmSubmit = async () => {
     if (!traceId || !imageId) return;
+    setDiagnosisStartTime(Date.now());
     setConfirmSubmitting(true);
     try {
       const additionalSymptoms = confirmSymptoms
@@ -926,9 +929,10 @@ export function DiagnosePage() {
             </CardHeader>
             <CardContent className="space-y-4">
               <AgentWorkflowPanel
-                key={traceId || 'idle'}
+                key={`${traceId || 'idle'}-${workflowRunNonce}`}
                 traceId={traceId || undefined}
                 confidencePct={result?.displayConfidencePct ?? undefined}
+                phaseStartMs={diagnosisStartTime ?? undefined}
               />
 
               <div className="flex items-center justify-between">
