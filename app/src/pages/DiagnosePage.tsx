@@ -256,6 +256,46 @@ export function DiagnosePage() {
     filtered_reasons: Array.isArray(payload.filtered_reasons) ? payload.filtered_reasons.map((item) => String(item)) : [],
   });
 
+  const normalizeTraceEvents = (eventsLike: unknown): TraceEvent[] => {
+    if (!Array.isArray(eventsLike)) return [];
+    return eventsLike
+      .map((evt: unknown) => {
+        const event = evt && typeof evt === 'object' ? evt as Record<string, unknown> : {};
+        const decision = event.decision && typeof event.decision === 'object'
+          ? event.decision as Record<string, unknown>
+          : undefined;
+        const seq = typeof event.seq === 'number' && Number.isFinite(event.seq) ? event.seq : Number.MAX_SAFE_INTEGER;
+        return {
+          seq,
+          value: {
+            timestamp: typeof event.ts === 'string'
+              ? event.ts
+              : (typeof event.timestamp === 'string' ? event.timestamp : new Date().toISOString()),
+            agent: typeof event.agent_cn === 'string'
+              ? event.agent_cn
+              : (typeof event.agent_id === 'string'
+                ? event.agent_id
+                : (typeof event.agent === 'string'
+                  ? event.agent
+                  : String(event.node ?? ''))),
+            status: typeof event.step_cn === 'string'
+              ? event.step_cn
+              : (typeof event.step === 'string'
+                ? event.step
+                : (typeof event.status === 'string' ? event.status : '')),
+            message: typeof event.message === 'string'
+              ? event.message
+              : (typeof decision?.reason_str === 'string'
+                ? decision.reason_str
+                : (typeof decision?.reason === 'string' ? decision.reason : '')),
+            raw: event,
+          } as TraceEvent,
+        };
+      })
+      .sort((a, b) => a.seq - b.seq)
+      .map((item) => item.value);
+  };
+
   const parseProfiles = (raw: unknown): ProfileListItem[] => {
     if (!Array.isArray(raw)) return [];
     const items: ProfileListItem[] = [];
@@ -351,6 +391,9 @@ export function DiagnosePage() {
       if (data.image_id) {
         setImageId(data.image_id);
       }
+      if (Array.isArray(data?.events)) {
+        setTraceEvents(normalizeTraceEvents(data.events));
+      }
 
       const normalizedResult = buildResultFromPayload(data);
       setResult(normalizedResult);
@@ -412,6 +455,9 @@ export function DiagnosePage() {
       }
       if (data.image_id) {
         setImageId(data.image_id);
+      }
+      if (Array.isArray(data?.events)) {
+        setTraceEvents(normalizeTraceEvents(data.events));
       }
 
       const mergedPayload = {
@@ -494,36 +540,8 @@ export function DiagnosePage() {
     try {
       const resp = await fetch(`/api/trace-events?trace_id=${encodeURIComponent(traceId)}`);
       const data = await resp.json();
-      if (data.events) {
-        setTraceEvents(data.events.map((evt: unknown) => {
-          const event = evt && typeof evt === 'object' ? evt as Record<string, unknown> : {};
-          const decision = event.decision && typeof event.decision === 'object'
-            ? event.decision as Record<string, unknown>
-            : undefined;
-          return {
-            timestamp: typeof event.ts === 'string'
-              ? event.ts
-              : (typeof event.timestamp === 'string' ? event.timestamp : new Date().toISOString()),
-            agent: typeof event.agent_cn === 'string'
-              ? event.agent_cn
-              : (typeof event.agent_id === 'string'
-                ? event.agent_id
-                : (typeof event.agent === 'string'
-                  ? event.agent
-                  : String(event.node ?? ''))),
-            status: typeof event.step_cn === 'string'
-              ? event.step_cn
-              : (typeof event.step === 'string'
-                ? event.step
-                : (typeof event.status === 'string' ? event.status : '')),
-            message: typeof event.message === 'string'
-              ? event.message
-              : (typeof decision?.reason_str === 'string'
-                ? decision.reason_str
-                : (typeof decision?.reason === 'string' ? decision.reason : '')),
-            raw: event,
-          };
-        }));
+      if (Array.isArray(data?.events)) {
+        setTraceEvents(normalizeTraceEvents(data.events));
       }
     } catch (error) {
       console.error('Failed to fetch trace events:', error);
