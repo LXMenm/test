@@ -363,7 +363,7 @@ export function DiagnosePage() {
     setConfirmChoice('other');
     setConfirmSymptoms('');
     setDiagnosisStartTime(Date.now());
-    setWorkflowRunNonce((prev) => prev + 1);
+    setWorkflowRefreshToken((prev) => prev + 1);
 
     try {
       const fd = new FormData();
