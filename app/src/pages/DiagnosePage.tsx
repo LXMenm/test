@@ -377,7 +377,6 @@ export function DiagnosePage() {
   const handleConfirmSubmit = async () => {
     if (!traceId || !imageId) return;
     setDiagnosisStartTime(Date.now());
-    setWorkflowRunNonce((prev) => prev + 1);
     setConfirmSubmitting(true);
     try {
       const additionalSymptoms = confirmSymptoms
