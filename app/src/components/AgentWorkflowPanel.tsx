@@ -186,8 +186,33 @@ const compareEvents = (a: RawTraceEvent, b: RawTraceEvent): number => {
 const shouldIncludeEvent = (event: RawTraceEvent, phaseStartMs?: number): boolean => {
   if (!phaseStartMs || !Number.isFinite(phaseStartMs)) return true;
   const tsMs = parseTsMs(event.ts);
+  // 若事件无时间戳，不做截断，避免误丢关键结束事件
   if (typeof tsMs !== 'number') return true;
-  return tsMs >= phaseStartMs;
+  // 允许 2 分钟时钟偏差，避免前后端时钟不同步导致整段事件被过滤为 0
+  return tsMs >= (phaseStartMs - 120_000);
+};
+
+const sliceCurrentPhaseEvents = (events: RawTraceEvent[], phaseStartMs?: number): RawTraceEvent[] => {
+  const sorted = [...events].sort(compareEvents);
+  if (!phaseStartMs || !Number.isFinite(phaseStartMs)) return sorted;
+
+  // 优先按二次确认分段标记截取（与服务器时钟无关）
+  let startIndex = -1;
+  for (let i = sorted.length - 1; i >= 0; i -= 1) {
+    const e = sorted[i];
+    const node = String(e.node || '').toLowerCase();
+    const status = String(e.status || '').toLowerCase();
+    const agent = String(e.agent || e.agent_id || '').toLowerCase();
+    if ((node === 'confirmflow' && ['start', 'started', 'begin', 'running', '开始'].includes(status)) || agent === 'confirm_input') {
+      startIndex = i;
+      break;
+    }
+  }
+  if (startIndex >= 0) return sorted.slice(startIndex);
+
+  // 没有确认分段时回退到时间窗口过滤
+  const filtered = sorted.filter((raw) => shouldIncludeEvent(raw, phaseStartMs));
+  return filtered.length ? filtered : sorted;
 };
 
 const normalizeEvent = (raw: RawTraceEvent): NormalizedEvent => {
@@ -399,7 +424,8 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs }: Age
 
   const maybeStartTicker = (snapshot: Record<FixedAgentId, AgentRowState>, done: boolean) => {
     const hasRunning = FIXED_AGENTS.some((agent) => snapshot[agent.id].status === 'running');
-    if (!done && hasRunning) {
+    const hasPhaseTimer = typeof phaseStartMs === 'number' && Number.isFinite(phaseStartMs);
+    if (!done && (hasRunning || hasPhaseTimer)) {
       if (!tickerRef.current) {
         tickerRef.current = setInterval(() => setNowMs(Date.now()), 100);
       }
@@ -613,7 +639,7 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs }: Age
         }
         const payload = await response.json();
         const events = Array.isArray(payload?.events) ? payload.events : [];
-        const sorted = [...events].sort(compareEvents).filter((raw) => shouldIncludeEvent(raw as RawTraceEvent, phaseStartMs));
+        const sorted = sliceCurrentPhaseEvents(events as RawTraceEvent[], phaseStartMs);
 
         if (cancelled) return;
 
@@ -662,6 +688,13 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs }: Age
       completeSupervisorOnDone(finalTsRef.current);
     }
   }, [workflowDone]);
+
+  useEffect(() => {
+    if (workflowDone) return;
+    if (typeof phaseStartMs === 'number' && Number.isFinite(phaseStartMs) && !tickerRef.current) {
+      tickerRef.current = setInterval(() => setNowMs(Date.now()), 100);
+    }
+  }, [phaseStartMs, workflowDone]);
 
   const renderedRows = useMemo(() => {
     return FIXED_AGENTS.map((def) => {
