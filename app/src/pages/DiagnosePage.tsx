@@ -255,6 +255,46 @@ export function DiagnosePage() {
     filtered_reasons: Array.isArray(payload.filtered_reasons) ? payload.filtered_reasons.map((item) => String(item)) : [],
   });
 
+  const normalizeTraceEvents = (eventsLike: unknown): TraceEvent[] => {
+    if (!Array.isArray(eventsLike)) return [];
+    return eventsLike
+      .map((evt: unknown) => {
+        const event = evt && typeof evt === 'object' ? evt as Record<string, unknown> : {};
+        const decision = event.decision && typeof event.decision === 'object'
+          ? event.decision as Record<string, unknown>
+          : undefined;
+        const seq = typeof event.seq === 'number' && Number.isFinite(event.seq) ? event.seq : Number.MAX_SAFE_INTEGER;
+        return {
+          seq,
+          value: {
+            timestamp: typeof event.ts === 'string'
+              ? event.ts
+              : (typeof event.timestamp === 'string' ? event.timestamp : new Date().toISOString()),
+            agent: typeof event.agent_cn === 'string'
+              ? event.agent_cn
+              : (typeof event.agent_id === 'string'
+                ? event.agent_id
+                : (typeof event.agent === 'string'
+                  ? event.agent
+                  : String(event.node ?? ''))),
+            status: typeof event.step_cn === 'string'
+              ? event.step_cn
+              : (typeof event.step === 'string'
+                ? event.step
+                : (typeof event.status === 'string' ? event.status : '')),
+            message: typeof event.message === 'string'
+              ? event.message
+              : (typeof decision?.reason_str === 'string'
+                ? decision.reason_str
+                : (typeof decision?.reason === 'string' ? decision.reason : '')),
+            raw: event,
+          } as TraceEvent,
+        };
+      })
+      .sort((a, b) => a.seq - b.seq)
+      .map((item) => item.value);
+  };
+
   const parseProfiles = (raw: unknown): ProfileListItem[] => {
     if (!Array.isArray(raw)) return [];
     const items: ProfileListItem[] = [];
@@ -349,6 +389,9 @@ export function DiagnosePage() {
       if (data.image_id) {
         setImageId(data.image_id);
       }
+      if (Array.isArray(data?.events)) {
+        setTraceEvents(normalizeTraceEvents(data.events));
+      }
 
       const normalizedResult = buildResultFromPayload(data);
       setResult(normalizedResult);
@@ -356,7 +399,9 @@ export function DiagnosePage() {
       setLatestPayload(payloadRecord);
 
       const candidates = parseTop3Candidates(payloadRecord, normalizedResult);
-      const needsConfirm = deriveNeedConfirm(payloadRecord, candidates, normalizedResult.displayConfidencePct);
+      const needsConfirm = typeof data?.need_confirm === 'boolean'
+        ? data.need_confirm
+        : deriveNeedConfirm(payloadRecord, candidates, normalizedResult.displayConfidencePct);
       console.log('[confirm] candidates=', candidates);
       console.log('[confirm] derivedNeedConfirm=', needsConfirm);
       setConfirmMode(needsConfirm);
@@ -408,6 +453,9 @@ export function DiagnosePage() {
       if (data.image_id) {
         setImageId(data.image_id);
       }
+      if (Array.isArray(data?.events)) {
+        setTraceEvents(normalizeTraceEvents(data.events));
+      }
 
       const mergedPayload = {
         ...data,
@@ -418,7 +466,9 @@ export function DiagnosePage() {
       const payloadRecord = mergedPayload && typeof mergedPayload === 'object' ? mergedPayload as Record<string, unknown> : {};
       setLatestPayload(payloadRecord);
       const candidates = parseTop3Candidates(payloadRecord, nextResult);
-      const needsConfirm = deriveNeedConfirm(payloadRecord, candidates, nextResult.displayConfidencePct);
+      const needsConfirm = typeof data?.need_confirm === 'boolean'
+        ? data.need_confirm
+        : deriveNeedConfirm(payloadRecord, candidates, nextResult.displayConfidencePct);
       console.log('[confirm] candidates=', candidates);
       console.log('[confirm] derivedNeedConfirm=', needsConfirm);
       setConfirmMode(needsConfirm);
@@ -466,8 +516,7 @@ export function DiagnosePage() {
 
   const renderTreatment = (t: unknown): JSX.Element | null => renderRichValue(t);
   const candidates = parseTop3Candidates(latestPayload ?? result ?? {}, result);
-  const derivedNeedConfirm = deriveNeedConfirm(latestPayload ?? result ?? {}, candidates, result?.displayConfidencePct ?? null);
-  const shouldHideTreatment = confirmMode || derivedNeedConfirm;
+  const shouldHideTreatment = confirmMode;
   const baseOptions: BaseOption[] = selectedProfile?.bases && typeof selectedProfile.bases === 'object'
     ? Object.entries(selectedProfile.bases).map(([baseId, base]) => ({
       id: baseId,
@@ -476,12 +525,11 @@ export function DiagnosePage() {
     : [];
 
   useEffect(() => {
-    if (!derivedNeedConfirm) return;
-    setConfirmMode(true);
+    if (!confirmMode) return;
     if (candidates[0]?.disease && (!confirmChoice || confirmChoice === 'other')) {
       setConfirmChoice(candidates[0].disease);
     }
-  }, [derivedNeedConfirm, candidates, confirmChoice]);
+  }, [confirmMode, candidates, confirmChoice]);
 
   const refreshTrace = async () => {
     if (!traceId) return;
@@ -489,36 +537,8 @@ export function DiagnosePage() {
     try {
       const resp = await fetch(`/api/trace-events?trace_id=${encodeURIComponent(traceId)}`);
       const data = await resp.json();
-      if (data.events) {
-        setTraceEvents(data.events.map((evt: unknown) => {
-          const event = evt && typeof evt === 'object' ? evt as Record<string, unknown> : {};
-          const decision = event.decision && typeof event.decision === 'object'
-            ? event.decision as Record<string, unknown>
-            : undefined;
-          return {
-            timestamp: typeof event.ts === 'string'
-              ? event.ts
-              : (typeof event.timestamp === 'string' ? event.timestamp : new Date().toISOString()),
-            agent: typeof event.agent_cn === 'string'
-              ? event.agent_cn
-              : (typeof event.agent_id === 'string'
-                ? event.agent_id
-                : (typeof event.agent === 'string'
-                  ? event.agent
-                  : String(event.node ?? ''))),
-            status: typeof event.step_cn === 'string'
-              ? event.step_cn
-              : (typeof event.step === 'string'
-                ? event.step
-                : (typeof event.status === 'string' ? event.status : '')),
-            message: typeof event.message === 'string'
-              ? event.message
-              : (typeof decision?.reason_str === 'string'
-                ? decision.reason_str
-                : (typeof decision?.reason === 'string' ? decision.reason : '')),
-            raw: event,
-          };
-        }));
+      if (Array.isArray(data?.events)) {
+        setTraceEvents(normalizeTraceEvents(data.events));
       }
     } catch (error) {
       console.error('Failed to fetch trace events:', error);

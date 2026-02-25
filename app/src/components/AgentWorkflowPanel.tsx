@@ -25,6 +25,7 @@ type FixedAgentId = 'supervisor' | 'reception' | 'diagnosis' | 'kb_retrieval' | 
 interface AgentWorkflowPanelProps {
   traceId?: string;
   confidencePct?: number;
+  phaseStartMs?: number;
 }
 
 interface RawTraceEvent {
@@ -54,6 +55,84 @@ interface NormalizedEvent {
   message: string;
   data: Record<string, unknown>;
 }
+
+
+interface AgentPhaseDurations {
+  phase1Ms: number;
+  phase2Ms: number;
+}
+
+const isSecondPhaseBoundaryEvent = (event: NormalizedEvent): boolean => {
+  const node = String(event.nodeName || '').toLowerCase();
+  if (node === 'confirmflow' && event.status === 'running') return true;
+  const agent = String((event.data && (event.data['agent'] ?? event.data['agent_id'])) || '').toLowerCase();
+  return agent === 'confirm_input' || node === 'confirm_input';
+};
+
+const calcPhaseDurationsByAgent = (
+  events: NormalizedEvent[],
+  nowMs: number,
+  workflowDone: boolean,
+): Record<FixedAgentId, AgentPhaseDurations> => {
+  const sorted = [...events].sort((a, b) => {
+    const sa = typeof a.seq === 'number' ? a.seq : Number.MAX_SAFE_INTEGER;
+    const sb = typeof b.seq === 'number' ? b.seq : Number.MAX_SAFE_INTEGER;
+    if (sa !== sb) return sa - sb;
+    return (a.tsMs ?? Number.MAX_SAFE_INTEGER) - (b.tsMs ?? Number.MAX_SAFE_INTEGER);
+  });
+
+  let phaseBoundaryIndex = -1;
+  for (let i = 0; i < sorted.length; i += 1) {
+    if (isSecondPhaseBoundaryEvent(sorted[i])) {
+      phaseBoundaryIndex = i;
+      break;
+    }
+  }
+
+  const phase1 = phaseBoundaryIndex >= 0 ? sorted.slice(0, phaseBoundaryIndex) : sorted;
+  const phase2 = phaseBoundaryIndex >= 0 ? sorted.slice(phaseBoundaryIndex) : [];
+
+  const calcForPhase = (phaseEvents: NormalizedEvent[]): Record<FixedAgentId, number> => {
+    const totals = FIXED_AGENTS.reduce((acc, def) => {
+      acc[def.id] = 0;
+      return acc;
+    }, {} as Record<FixedAgentId, number>);
+
+    if (!phaseEvents.length) return totals;
+
+    for (let i = 0; i < phaseEvents.length - 1; i += 1) {
+      const current = phaseEvents[i];
+      const next = phaseEvents[i + 1];
+      if (typeof current.tsMs !== 'number' || typeof next.tsMs !== 'number') continue;
+      totals[current.agentId] += Math.max(0, next.tsMs - current.tsMs);
+    }
+
+    const last = phaseEvents[phaseEvents.length - 1];
+    if (!workflowDone && typeof last.tsMs === 'number') {
+      totals[last.agentId] += Math.max(0, nowMs - last.tsMs);
+    }
+
+    return totals;
+  };
+
+  const phase1Totals = calcForPhase(phase1);
+  const phase2Totals = calcForPhase(phase2);
+
+  return FIXED_AGENTS.reduce((acc, def) => {
+    acc[def.id] = { phase1Ms: phase1Totals[def.id], phase2Ms: phase2Totals[def.id] };
+    return acc;
+  }, {} as Record<FixedAgentId, AgentPhaseDurations>);
+};
+
+const calcOverallPhaseDuration = (phaseDurations: Record<FixedAgentId, AgentPhaseDurations>): { phase1Ms: number; phase2Ms: number; totalMs: number } => {
+  let phase1Ms = 0;
+  let phase2Ms = 0;
+  FIXED_AGENTS.forEach((def) => {
+    phase1Ms += phaseDurations[def.id]?.phase1Ms ?? 0;
+    phase2Ms += phaseDurations[def.id]?.phase2Ms ?? 0;
+  });
+  return { phase1Ms, phase2Ms, totalMs: phase1Ms + phase2Ms };
+};
 
 interface AgentRowDef {
   id: FixedAgentId;
@@ -179,6 +258,39 @@ const compareEvents = (a: RawTraceEvent, b: RawTraceEvent): number => {
   if (aHasSeq && !bHasSeq) return -1;
   if (!aHasSeq && bHasSeq) return 1;
   return 0;
+};
+
+
+const shouldIncludeEvent = (event: RawTraceEvent, phaseStartMs?: number): boolean => {
+  if (!phaseStartMs || !Number.isFinite(phaseStartMs)) return true;
+  const tsMs = parseTsMs(event.ts);
+  // 若事件无时间戳，不做截断，避免误丢关键结束事件
+  if (typeof tsMs !== 'number') return true;
+  // 允许 2 分钟时钟偏差，避免前后端时钟不同步导致整段事件被过滤为 0
+  return tsMs >= (phaseStartMs - 120_000);
+};
+
+const sliceCurrentPhaseEvents = (events: RawTraceEvent[], phaseStartMs?: number): RawTraceEvent[] => {
+  const sorted = [...events].sort(compareEvents);
+  if (!phaseStartMs || !Number.isFinite(phaseStartMs)) return sorted;
+
+  // 优先按二次确认分段标记截取（与服务器时钟无关）
+  let startIndex = -1;
+  for (let i = sorted.length - 1; i >= 0; i -= 1) {
+    const e = sorted[i];
+    const node = String(e.node || '').toLowerCase();
+    const status = String(e.status || '').toLowerCase();
+    const agent = String(e.agent || e.agent_id || '').toLowerCase();
+    if ((node === 'confirmflow' && ['start', 'started', 'begin', 'running', '开始'].includes(status)) || agent === 'confirm_input') {
+      startIndex = i;
+      break;
+    }
+  }
+  if (startIndex >= 0) return sorted.slice(startIndex);
+
+  // 没有确认分段时回退到时间窗口过滤
+  const filtered = sorted.filter((raw) => shouldIncludeEvent(raw, phaseStartMs));
+  return filtered.length ? filtered : sorted;
 };
 
 const normalizeEvent = (raw: RawTraceEvent): NormalizedEvent => {
@@ -333,7 +445,7 @@ const extractHighlights = (agentId: FixedAgentId, events: NormalizedEvent[]): st
   return lines.filter(Boolean).slice(0, 6);
 };
 
-export function AgentWorkflowPanel({ traceId, confidencePct }: AgentWorkflowPanelProps) {
+export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs }: AgentWorkflowPanelProps) {
   const [rows, setRows] = useState<Record<FixedAgentId, AgentRowState>>(buildInitialState());
   const [connectionState, setConnectionState] = useState<'idle' | 'connecting' | 'connected' | 'disconnected'>('idle');
   const [connectionHint, setConnectionHint] = useState('');
@@ -364,6 +476,7 @@ export function AgentWorkflowPanel({ traceId, confidencePct }: AgentWorkflowPane
     treatment: [],
     final: [],
   });
+  const allEventsRef = useRef<NormalizedEvent[]>([]);
 
   const clearTicker = () => {
     if (tickerRef.current) {
@@ -390,7 +503,8 @@ export function AgentWorkflowPanel({ traceId, confidencePct }: AgentWorkflowPane
 
   const maybeStartTicker = (snapshot: Record<FixedAgentId, AgentRowState>, done: boolean) => {
     const hasRunning = FIXED_AGENTS.some((agent) => snapshot[agent.id].status === 'running');
-    if (!done && hasRunning) {
+    const hasPhaseTimer = typeof phaseStartMs === 'number' && Number.isFinite(phaseStartMs);
+    if (!done && (hasRunning || hasPhaseTimer)) {
       if (!tickerRef.current) {
         tickerRef.current = setInterval(() => setNowMs(Date.now()), 100);
       }
@@ -428,6 +542,12 @@ export function AgentWorkflowPanel({ traceId, confidencePct }: AgentWorkflowPane
 
     const agentId = event.agentId;
     eventHistoryRef.current[agentId] = [...eventHistoryRef.current[agentId], event].slice(-20);
+    allEventsRef.current = [...allEventsRef.current, event].sort((a, b) => {
+      const sa = typeof a.seq === 'number' ? a.seq : Number.MAX_SAFE_INTEGER;
+      const sb = typeof b.seq === 'number' ? b.seq : Number.MAX_SAFE_INTEGER;
+      if (sa !== sb) return sa - sb;
+      return (a.tsMs ?? Number.MAX_SAFE_INTEGER) - (b.tsMs ?? Number.MAX_SAFE_INTEGER);
+    });
 
     if (agentId === 'diagnosis') {
       const data = isRecord(event.data) ? event.data : undefined;
@@ -540,6 +660,7 @@ export function AgentWorkflowPanel({ traceId, confidencePct }: AgentWorkflowPane
         treatment: [],
         final: [],
       };
+      allEventsRef.current = [];
       return;
     }
 
@@ -565,6 +686,7 @@ export function AgentWorkflowPanel({ traceId, confidencePct }: AgentWorkflowPane
       treatment: [],
       final: [],
     };
+    allEventsRef.current = [];
 
     const openStream = () => {
       if (cancelled || workflowDoneRef.current) return;
@@ -575,6 +697,7 @@ export function AgentWorkflowPanel({ traceId, confidencePct }: AgentWorkflowPane
       es.addEventListener('trace', (messageEvent) => {
         if (cancelled || workflowDoneRef.current) return;
         const raw = JSON.parse(messageEvent.data || '{}') as RawTraceEvent;
+        if (!shouldIncludeEvent(raw, phaseStartMs)) return;
         const normalized = normalizeEvent(raw);
         const seq = normalized.seq;
         if (typeof seq === 'number' && Number.isFinite(seq) && seq <= lastSeqRef.current) {
@@ -603,7 +726,7 @@ export function AgentWorkflowPanel({ traceId, confidencePct }: AgentWorkflowPane
         }
         const payload = await response.json();
         const events = Array.isArray(payload?.events) ? payload.events : [];
-        const sorted = [...events].sort(compareEvents);
+        const sorted = sliceCurrentPhaseEvents(events as RawTraceEvent[], phaseStartMs);
 
         if (cancelled) return;
 
@@ -643,7 +766,7 @@ export function AgentWorkflowPanel({ traceId, confidencePct }: AgentWorkflowPane
       cancelled = true;
       clearExternal();
     };
-  }, [traceId]);
+  }, [traceId, phaseStartMs]);
 
   useEffect(() => {
     if (workflowDone) {
@@ -652,6 +775,19 @@ export function AgentWorkflowPanel({ traceId, confidencePct }: AgentWorkflowPane
       completeSupervisorOnDone(finalTsRef.current);
     }
   }, [workflowDone]);
+
+  useEffect(() => {
+    if (workflowDone) return;
+    if (typeof phaseStartMs === 'number' && Number.isFinite(phaseStartMs) && !tickerRef.current) {
+      tickerRef.current = setInterval(() => setNowMs(Date.now()), 100);
+    }
+  }, [phaseStartMs, workflowDone]);
+
+
+  const phaseDurationsByAgent = useMemo(
+    () => calcPhaseDurationsByAgent(allEventsRef.current, nowMs, workflowDone),
+    [rows, nowMs, workflowDone],
+  );
 
   const renderedRows = useMemo(() => {
     return FIXED_AGENTS.map((def) => {
@@ -664,25 +800,21 @@ export function AgentWorkflowPanel({ traceId, confidencePct }: AgentWorkflowPane
         ...def,
         ...row,
         progress,
-        duration: formatDuration(elapsedMs ?? 0),
+        duration: formatDuration((phaseDurationsByAgent[def.id]?.phase1Ms ?? 0) + (phaseDurationsByAgent[def.id]?.phase2Ms ?? 0)),
+        phase1Duration: formatDuration(phaseDurationsByAgent[def.id]?.phase1Ms ?? 0),
+        phase2Duration: formatDuration(phaseDurationsByAgent[def.id]?.phase2Ms ?? 0),
       };
     });
-  }, [rows, nowMs, workflowDone]);
+  }, [rows, nowMs, workflowDone, phaseDurationsByAgent]);
 
   const completedCount = useMemo(() => renderedRows.filter((row) => row.status === 'completed').length, [renderedRows]);
 
   const totalProgress = Math.round((completedCount / FIXED_AGENTS.length) * 100);
 
-  const overallStart = useMemo(() => {
-    const starts = renderedRows.map((row) => row.startTs).filter(Boolean) as number[];
-    return starts.length ? Math.min(...starts) : undefined;
-  }, [renderedRows]);
-
-  const overallEnd = useMemo(() => {
-    if (!workflowDone) return undefined;
-    const ends = renderedRows.map((row) => row.endTs).filter(Boolean) as number[];
-    return ends.length ? Math.max(...ends) : undefined;
-  }, [renderedRows, workflowDone]);
+  const overallDuration = useMemo(
+    () => calcOverallPhaseDuration(phaseDurationsByAgent),
+    [phaseDurationsByAgent],
+  );
 
   const displayConfidencePct =
     (typeof confidencePct === 'number' && Number.isFinite(confidencePct)) ? confidencePct : diagnosisConfidencePct;
@@ -781,6 +913,7 @@ export function AgentWorkflowPanel({ traceId, confidencePct }: AgentWorkflowPane
                                 ? `中断 (${row.duration})`
                                 : row.duration
                           : '等待执行'}
+                        <span className="text-white/35">（一诊 {row.phase1Duration} / 二诊 {row.phase2Duration}）</span>
                       </div>
                     </div>
 
@@ -851,7 +984,7 @@ export function AgentWorkflowPanel({ traceId, confidencePct }: AgentWorkflowPane
           <div className="h-full bg-[#4ade80] transition-all duration-500 progress-shine" style={{ width: `${totalProgress}%` }} />
         </div>
         <p className="text-xs text-white/50 mt-2">
-          总耗时：{formatDuration((overallStart ? Math.max(0, (overallEnd ?? nowMs) - overallStart) : 0) ?? 0)} {workflowDone ? '· 已结束' : ''}
+          总耗时：{formatDuration(overallDuration.totalMs)}（一诊 {formatDuration(overallDuration.phase1Ms)} + 二诊 {formatDuration(overallDuration.phase2Ms)}） {workflowDone ? '· 已结束' : ''}
         </p>
       </div>
     </div>
