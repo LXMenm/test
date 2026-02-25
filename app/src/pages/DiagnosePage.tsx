@@ -77,6 +77,7 @@ export function DiagnosePage() {
   const [confirmSubmitting, setConfirmSubmitting] = useState(false);
   const [showRawTrace, setShowRawTrace] = useState(false);
   const [diagnosisStartTime, setDiagnosisStartTime] = useState<number | null>(null);
+  const [workflowRunNonce, setWorkflowRunNonce] = useState(0);
   const [profiles, setProfiles] = useState<ProfileListItem[]>([]);
   const [selectedFarmerId, setSelectedFarmerId] = useState('');
   const [selectedBaseId, setSelectedBaseId] = useState('');
@@ -322,6 +323,7 @@ export function DiagnosePage() {
     setConfirmChoice('other');
     setConfirmSymptoms('');
     setDiagnosisStartTime(Date.now());
+    setWorkflowRunNonce((prev) => prev + 1);
 
     try {
       const fd = new FormData();
@@ -356,7 +358,9 @@ export function DiagnosePage() {
       setLatestPayload(payloadRecord);
 
       const candidates = parseTop3Candidates(payloadRecord, normalizedResult);
-      const needsConfirm = deriveNeedConfirm(payloadRecord, candidates, normalizedResult.displayConfidencePct);
+      const needsConfirm = typeof data?.need_confirm === 'boolean'
+        ? data.need_confirm
+        : deriveNeedConfirm(payloadRecord, candidates, normalizedResult.displayConfidencePct);
       console.log('[confirm] candidates=', candidates);
       console.log('[confirm] derivedNeedConfirm=', needsConfirm);
       setConfirmMode(needsConfirm);
@@ -372,6 +376,8 @@ export function DiagnosePage() {
 
   const handleConfirmSubmit = async () => {
     if (!traceId || !imageId) return;
+    setDiagnosisStartTime(Date.now());
+    setWorkflowRunNonce((prev) => prev + 1);
     setConfirmSubmitting(true);
     try {
       const additionalSymptoms = confirmSymptoms
@@ -418,7 +424,9 @@ export function DiagnosePage() {
       const payloadRecord = mergedPayload && typeof mergedPayload === 'object' ? mergedPayload as Record<string, unknown> : {};
       setLatestPayload(payloadRecord);
       const candidates = parseTop3Candidates(payloadRecord, nextResult);
-      const needsConfirm = deriveNeedConfirm(payloadRecord, candidates, nextResult.displayConfidencePct);
+      const needsConfirm = typeof data?.need_confirm === 'boolean'
+        ? data.need_confirm
+        : deriveNeedConfirm(payloadRecord, candidates, nextResult.displayConfidencePct);
       console.log('[confirm] candidates=', candidates);
       console.log('[confirm] derivedNeedConfirm=', needsConfirm);
       setConfirmMode(needsConfirm);
@@ -466,8 +474,7 @@ export function DiagnosePage() {
 
   const renderTreatment = (t: unknown): JSX.Element | null => renderRichValue(t);
   const candidates = parseTop3Candidates(latestPayload ?? result ?? {}, result);
-  const derivedNeedConfirm = deriveNeedConfirm(latestPayload ?? result ?? {}, candidates, result?.displayConfidencePct ?? null);
-  const shouldHideTreatment = confirmMode || derivedNeedConfirm;
+  const shouldHideTreatment = confirmMode;
   const baseOptions: BaseOption[] = selectedProfile?.bases && typeof selectedProfile.bases === 'object'
     ? Object.entries(selectedProfile.bases).map(([baseId, base]) => ({
       id: baseId,
@@ -476,12 +483,11 @@ export function DiagnosePage() {
     : [];
 
   useEffect(() => {
-    if (!derivedNeedConfirm) return;
-    setConfirmMode(true);
+    if (!confirmMode) return;
     if (candidates[0]?.disease && (!confirmChoice || confirmChoice === 'other')) {
       setConfirmChoice(candidates[0].disease);
     }
-  }, [derivedNeedConfirm, candidates, confirmChoice]);
+  }, [confirmMode, candidates, confirmChoice]);
 
   const refreshTrace = async () => {
     if (!traceId) return;
@@ -906,9 +912,10 @@ export function DiagnosePage() {
             </CardHeader>
             <CardContent className="space-y-4">
               <AgentWorkflowPanel
-                key={traceId || 'idle'}
+                key={`${traceId || 'idle'}-${workflowRunNonce}`}
                 traceId={traceId || undefined}
                 confidencePct={result?.displayConfidencePct ?? undefined}
+                phaseStartMs={diagnosisStartTime ?? undefined}
               />
 
               <div className="flex items-center justify-between">
