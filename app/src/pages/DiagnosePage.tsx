@@ -356,7 +356,9 @@ export function DiagnosePage() {
       setLatestPayload(payloadRecord);
 
       const candidates = parseTop3Candidates(payloadRecord, normalizedResult);
-      const needsConfirm = deriveNeedConfirm(payloadRecord, candidates, normalizedResult.displayConfidencePct);
+      const needsConfirm = typeof data?.need_confirm === 'boolean'
+        ? data.need_confirm
+        : deriveNeedConfirm(payloadRecord, candidates, normalizedResult.displayConfidencePct);
       console.log('[confirm] candidates=', candidates);
       console.log('[confirm] derivedNeedConfirm=', needsConfirm);
       setConfirmMode(needsConfirm);
@@ -372,6 +374,7 @@ export function DiagnosePage() {
 
   const handleConfirmSubmit = async () => {
     if (!traceId || !imageId) return;
+    setDiagnosisStartTime(Date.now());
     setConfirmSubmitting(true);
     try {
       const additionalSymptoms = confirmSymptoms
@@ -418,7 +421,9 @@ export function DiagnosePage() {
       const payloadRecord = mergedPayload && typeof mergedPayload === 'object' ? mergedPayload as Record<string, unknown> : {};
       setLatestPayload(payloadRecord);
       const candidates = parseTop3Candidates(payloadRecord, nextResult);
-      const needsConfirm = deriveNeedConfirm(payloadRecord, candidates, nextResult.displayConfidencePct);
+      const needsConfirm = typeof data?.need_confirm === 'boolean'
+        ? data.need_confirm
+        : deriveNeedConfirm(payloadRecord, candidates, nextResult.displayConfidencePct);
       console.log('[confirm] candidates=', candidates);
       console.log('[confirm] derivedNeedConfirm=', needsConfirm);
       setConfirmMode(needsConfirm);
@@ -466,8 +471,7 @@ export function DiagnosePage() {
 
   const renderTreatment = (t: unknown): JSX.Element | null => renderRichValue(t);
   const candidates = parseTop3Candidates(latestPayload ?? result ?? {}, result);
-  const derivedNeedConfirm = deriveNeedConfirm(latestPayload ?? result ?? {}, candidates, result?.displayConfidencePct ?? null);
-  const shouldHideTreatment = confirmMode || derivedNeedConfirm;
+  const shouldHideTreatment = confirmMode;
   const baseOptions: BaseOption[] = selectedProfile?.bases && typeof selectedProfile.bases === 'object'
     ? Object.entries(selectedProfile.bases).map(([baseId, base]) => ({
       id: baseId,
@@ -476,12 +480,11 @@ export function DiagnosePage() {
     : [];
 
   useEffect(() => {
-    if (!derivedNeedConfirm) return;
-    setConfirmMode(true);
+    if (!confirmMode) return;
     if (candidates[0]?.disease && (!confirmChoice || confirmChoice === 'other')) {
       setConfirmChoice(candidates[0].disease);
     }
-  }, [derivedNeedConfirm, candidates, confirmChoice]);
+  }, [confirmMode, candidates, confirmChoice]);
 
   const refreshTrace = async () => {
     if (!traceId) return;

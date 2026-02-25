@@ -16,7 +16,7 @@ from typing import Optional
 from model_registry import resolve_model
 import re
 import json
-import os
+from pathlib import Path
 
 
 # 获取知识库管理器实例
@@ -61,6 +61,39 @@ def _clean_query_for_symptoms(query: str) -> tuple[str, list[str]]:
     return cleaned, removed
 
 
+def _resolve_image_path_fast(raw_path: str | None) -> str | None:
+    if not raw_path:
+        return None
+
+    candidates: list[Path] = []
+    text = str(raw_path).strip().strip('"').strip("'")
+    if not text:
+        return None
+
+    raw = Path(text)
+    candidates.append(raw)
+
+    normalized_text = text.replace('\\', '/')
+    normalized = Path(normalized_text)
+    candidates.append(normalized)
+
+    if normalized.name:
+        upload_guess = Path('.cache') / 'uploads' / normalized.name
+        candidates.append(upload_guess)
+
+    for candidate in candidates:
+        try:
+            resolved = candidate.expanduser().resolve()
+        except Exception:
+            resolved = candidate
+        if resolved.exists():
+            return str(resolved)
+        if candidate.exists():
+            return str(candidate)
+
+    return None
+
+
 def reception_agent(state: CropDiseaseState) -> CropDiseaseState:
     """
     番茄病害接待智能体节点（使用大模型API）
@@ -103,18 +136,12 @@ def reception_agent(state: CropDiseaseState) -> CropDiseaseState:
             query = re.sub(pattern, '', query).strip()
             break
     
-    # 验证图像路径是否存在
-    if image_path and not os.path.exists(image_path):
-        print(f"警告：图像路径不存在：{image_path}")
-        # 尝试查找相似文件名
-        import glob
-        base_name = os.path.basename(image_path)
-        possible_files = glob.glob(f"*{base_name}*") + glob.glob(f"*/*{base_name}*")
-        if possible_files:
-            print(f"找到可能的图像文件：{possible_files[0]}")
-            image_path = possible_files[0]
-        else:
-            image_path = None
+    # 快速解析图像路径，避免全量 glob 导致接待阶段耗时飙升
+    image_path = _resolve_image_path_fast(image_path)
+    if not image_path and state.get("image_path"):
+        image_path = _resolve_image_path_fast(str(state.get("image_path")))
+    if not image_path:
+        print("警告：图像路径不存在或不可解析")
     
     cleaned_query, removed_tokens = _clean_query_for_symptoms(query)
 
@@ -135,19 +162,24 @@ def reception_agent(state: CropDiseaseState) -> CropDiseaseState:
 - 如果没有提取到明确的症状，返回空列表
 - 不要添加任何额外的解释或说明"""
 
-    try:
-        response = call_llm(cleaned_query, system_prompt, temperature=0.3)
-        result = extract_json_from_response(response)
-        
-        if result:
-            crop_growth_stage = result.get("growth_stage")
-            symptoms = result.get("symptoms", [])
-        else:
-            # 如果JSON解析失败，使用规则匹配作为后备
-            _, crop_growth_stage, symptoms = _fallback_extraction(cleaned_query)
-    except Exception as e:
-        print(f"大模型调用失败，使用规则匹配: {e}")
-        _, crop_growth_stage, symptoms = _fallback_extraction(cleaned_query)
+    # 空文本或仅标点时跳过 LLM，降低接待延迟
+    query_for_extract = cleaned_query.strip()
+    if not query_for_extract or re.fullmatch(r"[，,。；;！？!？\s]+", query_for_extract):
+        _, crop_growth_stage, symptoms = _fallback_extraction(query_for_extract)
+    else:
+        try:
+            response = call_llm(query_for_extract, system_prompt, temperature=0.3)
+            result = extract_json_from_response(response)
+
+            if result:
+                crop_growth_stage = result.get("growth_stage")
+                symptoms = result.get("symptoms", [])
+            else:
+                # 如果JSON解析失败，使用规则匹配作为后备
+                _, crop_growth_stage, symptoms = _fallback_extraction(query_for_extract)
+        except Exception as e:
+            print(f"大模型调用失败，使用规则匹配: {e}")
+            _, crop_growth_stage, symptoms = _fallback_extraction(query_for_extract)
 
     # 强制设置作物类型为番茄
     crop_type = "番茄"
