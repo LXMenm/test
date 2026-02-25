@@ -26,6 +26,7 @@ interface AgentWorkflowPanelProps {
   traceId?: string;
   confidencePct?: number;
   phaseStartMs?: number;
+  refreshToken?: number;
 }
 
 interface RawTraceEvent {
@@ -445,7 +446,7 @@ const extractHighlights = (agentId: FixedAgentId, events: NormalizedEvent[]): st
   return lines.filter(Boolean).slice(0, 6);
 };
 
-export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs }: AgentWorkflowPanelProps) {
+export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refreshToken }: AgentWorkflowPanelProps) {
   const [rows, setRows] = useState<Record<FixedAgentId, AgentRowState>>(buildInitialState());
   const [connectionState, setConnectionState] = useState<'idle' | 'connecting' | 'connected' | 'disconnected'>('idle');
   const [connectionHint, setConnectionHint] = useState('');
@@ -766,7 +767,7 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs }: Age
       cancelled = true;
       clearExternal();
     };
-  }, [traceId, phaseStartMs]);
+  }, [traceId, phaseStartMs, refreshToken]);
 
   useEffect(() => {
     if (workflowDone) {

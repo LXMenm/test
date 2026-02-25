@@ -77,7 +77,7 @@ export function DiagnosePage() {
   const [confirmSubmitting, setConfirmSubmitting] = useState(false);
   const [showRawTrace, setShowRawTrace] = useState(false);
   const [diagnosisStartTime, setDiagnosisStartTime] = useState<number | null>(null);
-  const [workflowRunNonce, setWorkflowRunNonce] = useState(0);
+  const [workflowRefreshToken, setWorkflowRefreshToken] = useState(0);
   const [profiles, setProfiles] = useState<ProfileListItem[]>([]);
   const [selectedFarmerId, setSelectedFarmerId] = useState('');
   const [selectedBaseId, setSelectedBaseId] = useState('');
@@ -394,6 +394,7 @@ export function DiagnosePage() {
       if (Array.isArray(data?.events)) {
         setTraceEvents(normalizeTraceEvents(data.events));
       }
+      setWorkflowRefreshToken((prev) => prev + 1);
 
       const normalizedResult = buildResultFromPayload(data);
       setResult(normalizedResult);
@@ -459,6 +460,7 @@ export function DiagnosePage() {
       if (Array.isArray(data?.events)) {
         setTraceEvents(normalizeTraceEvents(data.events));
       }
+      setWorkflowRefreshToken((prev) => prev + 1);
 
       const mergedPayload = {
         ...data,
@@ -929,10 +931,10 @@ export function DiagnosePage() {
             </CardHeader>
             <CardContent className="space-y-4">
               <AgentWorkflowPanel
-                key={`${traceId || 'idle'}-${workflowRunNonce}`}
+                key={`${traceId || 'idle'}-${workflowRefreshToken}`}
                 traceId={traceId || undefined}
                 confidencePct={result?.displayConfidencePct ?? undefined}
-                phaseStartMs={diagnosisStartTime ?? undefined}
+                refreshToken={workflowRefreshToken}
               />
 
               <div className="flex items-center justify-between">
