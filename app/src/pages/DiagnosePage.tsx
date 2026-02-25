@@ -431,6 +431,7 @@ export function DiagnosePage() {
 
   const handleConfirmSubmit = async () => {
     if (!traceId || !imageId) return;
+    setDiagnosisStartTime(Date.now());
     setConfirmSubmitting(true);
     try {
       const additionalSymptoms = confirmSymptoms
@@ -541,7 +542,11 @@ export function DiagnosePage() {
 
   useEffect(() => {
     if (!confirmMode) return;
+<<<<<<< codex/fix-second-diagnosis-submit-issue-4lahbn
     if (candidates[0]?.disease && !confirmChoice) {
+=======
+    if (candidates[0]?.disease && (!confirmChoice || confirmChoice === 'other')) {
+>>>>>>> main
       setConfirmChoice(candidates[0].disease);
     }
   }, [confirmMode, candidates, confirmChoice]);
