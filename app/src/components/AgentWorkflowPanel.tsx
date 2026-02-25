@@ -98,29 +98,19 @@ const calcPhaseDurationsByAgent = (
       return acc;
     }, {} as Record<FixedAgentId, number>);
 
-    FIXED_AGENTS.forEach((def) => {
-      let activeStart: number | undefined;
-      phaseEvents
-        .filter((event) => event.agentId === def.id && event.status !== 'info')
-        .forEach((event) => {
-          if (event.status === 'running') {
-            activeStart = activeStart ?? event.tsMs;
-            return;
-          }
+    if (!phaseEvents.length) return totals;
 
-          if (event.status === 'completed' || event.status === 'error') {
-            const end = event.tsMs ?? activeStart;
-            if (typeof activeStart === 'number' && typeof end === 'number') {
-              totals[def.id] += Math.max(0, end - activeStart);
-            }
-            activeStart = undefined;
-          }
-        });
+    for (let i = 0; i < phaseEvents.length - 1; i += 1) {
+      const current = phaseEvents[i];
+      const next = phaseEvents[i + 1];
+      if (typeof current.tsMs !== 'number' || typeof next.tsMs !== 'number') continue;
+      totals[current.agentId] += Math.max(0, next.tsMs - current.tsMs);
+    }
 
-      if (!workflowDone && typeof activeStart === 'number') {
-        totals[def.id] += Math.max(0, nowMs - activeStart);
-      }
-    });
+    const last = phaseEvents[phaseEvents.length - 1];
+    if (!workflowDone && typeof last.tsMs === 'number') {
+      totals[last.agentId] += Math.max(0, nowMs - last.tsMs);
+    }
 
     return totals;
   };
@@ -134,32 +124,13 @@ const calcPhaseDurationsByAgent = (
   }, {} as Record<FixedAgentId, AgentPhaseDurations>);
 };
 
-const calcOverallPhaseDuration = (events: NormalizedEvent[]): { phase1Ms: number; phase2Ms: number; totalMs: number } => {
-  const sorted = [...events].sort((a, b) => {
-    const sa = typeof a.seq === 'number' ? a.seq : Number.MAX_SAFE_INTEGER;
-    const sb = typeof b.seq === 'number' ? b.seq : Number.MAX_SAFE_INTEGER;
-    if (sa !== sb) return sa - sb;
-    return (a.tsMs ?? Number.MAX_SAFE_INTEGER) - (b.tsMs ?? Number.MAX_SAFE_INTEGER);
+const calcOverallPhaseDuration = (phaseDurations: Record<FixedAgentId, AgentPhaseDurations>): { phase1Ms: number; phase2Ms: number; totalMs: number } => {
+  let phase1Ms = 0;
+  let phase2Ms = 0;
+  FIXED_AGENTS.forEach((def) => {
+    phase1Ms += phaseDurations[def.id]?.phase1Ms ?? 0;
+    phase2Ms += phaseDurations[def.id]?.phase2Ms ?? 0;
   });
-
-  let phaseBoundaryIndex = -1;
-  for (let i = 0; i < sorted.length; i += 1) {
-    if (isSecondPhaseBoundaryEvent(sorted[i])) {
-      phaseBoundaryIndex = i;
-      break;
-    }
-  }
-
-  const getSpan = (slice: NormalizedEvent[]): number => {
-    const tsList = slice.map((event) => event.tsMs).filter((v): v is number => typeof v === 'number');
-    if (!tsList.length) return 0;
-    return Math.max(0, Math.max(...tsList) - Math.min(...tsList));
-  };
-
-  const phase1 = phaseBoundaryIndex >= 0 ? sorted.slice(0, phaseBoundaryIndex) : sorted;
-  const phase2 = phaseBoundaryIndex >= 0 ? sorted.slice(phaseBoundaryIndex) : [];
-  const phase1Ms = getSpan(phase1);
-  const phase2Ms = getSpan(phase2);
   return { phase1Ms, phase2Ms, totalMs: phase1Ms + phase2Ms };
 };
 
@@ -829,7 +800,7 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs }: Age
         ...def,
         ...row,
         progress,
-        duration: formatDuration(elapsedMs ?? 0),
+        duration: formatDuration((phaseDurationsByAgent[def.id]?.phase1Ms ?? 0) + (phaseDurationsByAgent[def.id]?.phase2Ms ?? 0)),
         phase1Duration: formatDuration(phaseDurationsByAgent[def.id]?.phase1Ms ?? 0),
         phase2Duration: formatDuration(phaseDurationsByAgent[def.id]?.phase2Ms ?? 0),
       };
@@ -841,8 +812,8 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs }: Age
   const totalProgress = Math.round((completedCount / FIXED_AGENTS.length) * 100);
 
   const overallDuration = useMemo(
-    () => calcOverallPhaseDuration(allEventsRef.current),
-    [rows, nowMs, workflowDone],
+    () => calcOverallPhaseDuration(phaseDurationsByAgent),
+    [phaseDurationsByAgent],
   );
 
   const displayConfidencePct =
