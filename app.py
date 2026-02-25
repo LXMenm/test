@@ -633,19 +633,27 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
     symptoms = payload.get("symptoms") or []
     growth_stage = payload.get("growth_stage")
     model_id = payload.get("model_id")
+    choice = str(payload.get("choice") or "").strip()
     farmer_id = payload.get("farmer_id")
     base_id = payload.get("base_id")
+
     if not image_id:
         raise HTTPException(status_code=400, detail="image_id 不能为空")
+
+    # 保持二次诊断沿用首轮 trace，便于流程面板展示完整链路
     if not trace_id and previous_trace_id:
-        trace_id = uuid.uuid4().hex
+        trace_id = previous_trace_id
     if not trace_id:
         trace_id = uuid.uuid4().hex
+
     if not isinstance(symptoms, list):
         raise HTTPException(status_code=400, detail="symptoms 必须为列表")
 
+    emit_node_event(trace_id, node="ConfirmFlow", status="start", message="开始二次诊断确认")
+
     image_path = (UPLOAD_DIR / image_id).resolve()
     if not image_path.exists():
+        emit_node_event(trace_id, node="ConfirmFlow", status="error", message="二次诊断图片不存在")
         raise HTTPException(status_code=404, detail="图片不存在")
 
     state = create_initial_state(f"confirm:{image_id}", farmer_id=farmer_id, base_id=base_id)
@@ -676,6 +684,7 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
             "image_id": image_id,
             "previous_trace_id": previous_trace_id,
             "model_id": model_id,
+            "choice": choice,
             "farmer_id": farmer_id,
             "base_id": base_id,
         },
@@ -684,6 +693,20 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
     state["current_step"] = "confirm_input"
 
     state = diagnosis_agent(state)
+
+    if choice and choice != "other":
+        state["final_disease"] = choice
+        state["disease_type"] = choice
+        flags = state.get("personalization_flags") or {}
+        flags["need_confirm"] = False
+        state["personalization_flags"] = flags
+        append_trace(
+            state,
+            agent="confirm_choice",
+            inputs={"choice": choice},
+            outputs={"final_disease": choice, "need_confirm": False},
+        )
+
     state = kb_retrieval_agent(state)
     state = treatment_agent(state)
 
@@ -701,6 +724,20 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
     }
     flags = state.get("personalization_flags") or {}
     need_confirm = bool(flags.get("need_confirm"))
+    if choice and choice != "other":
+        need_confirm = False
+
+    append_trace(
+        state,
+        agent="confirm_finalize",
+        inputs={"choice": choice or "other"},
+        outputs={
+            "final_disease": state.get("final_disease"),
+            "need_confirm": need_confirm,
+            "has_treatment": bool(state.get("treatment_plan")),
+        },
+    )
+
     personalization_meta = _build_personalization_meta(flags, farmer_id, state.get("base_id"))
     personalization_applied = bool(flags.get("personalization_applied"))
     filtered = bool(flags.get("filtered"))
@@ -710,6 +747,21 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
         confirm_message = "置信度较低，建议补充症状或重新拍摄"
 
     events = list_trace_events(trace_id)
+
+    emit_node_event(
+        trace_id,
+        node="ConfirmFlow",
+        status="end",
+        message="二次诊断确认完成",
+        payload={"need_confirm": need_confirm, "final_disease": state.get("final_disease")},
+    )
+    emit_node_event(
+        trace_id,
+        node="Final",
+        status="end",
+        message="二次诊断流程完成",
+        payload={"final_disease": state.get("final_disease"), "confirm_round": True},
+    )
 
     model_meta = state.get("diagnosis_model_meta") or {}
     return {
