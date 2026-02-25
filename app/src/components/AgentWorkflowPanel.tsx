@@ -56,6 +56,113 @@ interface NormalizedEvent {
   data: Record<string, unknown>;
 }
 
+
+interface AgentPhaseDurations {
+  phase1Ms: number;
+  phase2Ms: number;
+}
+
+const isSecondPhaseBoundaryEvent = (event: NormalizedEvent): boolean => {
+  const node = String(event.nodeName || '').toLowerCase();
+  if (node === 'confirmflow' && event.status === 'running') return true;
+  const agent = String((event.data && (event.data['agent'] ?? event.data['agent_id'])) || '').toLowerCase();
+  return agent === 'confirm_input' || node === 'confirm_input';
+};
+
+const calcPhaseDurationsByAgent = (
+  events: NormalizedEvent[],
+  nowMs: number,
+  workflowDone: boolean,
+): Record<FixedAgentId, AgentPhaseDurations> => {
+  const sorted = [...events].sort((a, b) => {
+    const sa = typeof a.seq === 'number' ? a.seq : Number.MAX_SAFE_INTEGER;
+    const sb = typeof b.seq === 'number' ? b.seq : Number.MAX_SAFE_INTEGER;
+    if (sa !== sb) return sa - sb;
+    return (a.tsMs ?? Number.MAX_SAFE_INTEGER) - (b.tsMs ?? Number.MAX_SAFE_INTEGER);
+  });
+
+  let phaseBoundaryIndex = -1;
+  for (let i = 0; i < sorted.length; i += 1) {
+    if (isSecondPhaseBoundaryEvent(sorted[i])) {
+      phaseBoundaryIndex = i;
+      break;
+    }
+  }
+
+  const phase1 = phaseBoundaryIndex >= 0 ? sorted.slice(0, phaseBoundaryIndex) : sorted;
+  const phase2 = phaseBoundaryIndex >= 0 ? sorted.slice(phaseBoundaryIndex) : [];
+
+  const calcForPhase = (phaseEvents: NormalizedEvent[]): Record<FixedAgentId, number> => {
+    const totals = FIXED_AGENTS.reduce((acc, def) => {
+      acc[def.id] = 0;
+      return acc;
+    }, {} as Record<FixedAgentId, number>);
+
+    FIXED_AGENTS.forEach((def) => {
+      let activeStart: number | undefined;
+      phaseEvents
+        .filter((event) => event.agentId === def.id && event.status !== 'info')
+        .forEach((event) => {
+          if (event.status === 'running') {
+            activeStart = activeStart ?? event.tsMs;
+            return;
+          }
+
+          if (event.status === 'completed' || event.status === 'error') {
+            const end = event.tsMs ?? activeStart;
+            if (typeof activeStart === 'number' && typeof end === 'number') {
+              totals[def.id] += Math.max(0, end - activeStart);
+            }
+            activeStart = undefined;
+          }
+        });
+
+      if (!workflowDone && typeof activeStart === 'number') {
+        totals[def.id] += Math.max(0, nowMs - activeStart);
+      }
+    });
+
+    return totals;
+  };
+
+  const phase1Totals = calcForPhase(phase1);
+  const phase2Totals = calcForPhase(phase2);
+
+  return FIXED_AGENTS.reduce((acc, def) => {
+    acc[def.id] = { phase1Ms: phase1Totals[def.id], phase2Ms: phase2Totals[def.id] };
+    return acc;
+  }, {} as Record<FixedAgentId, AgentPhaseDurations>);
+};
+
+const calcOverallPhaseDuration = (events: NormalizedEvent[]): { phase1Ms: number; phase2Ms: number; totalMs: number } => {
+  const sorted = [...events].sort((a, b) => {
+    const sa = typeof a.seq === 'number' ? a.seq : Number.MAX_SAFE_INTEGER;
+    const sb = typeof b.seq === 'number' ? b.seq : Number.MAX_SAFE_INTEGER;
+    if (sa !== sb) return sa - sb;
+    return (a.tsMs ?? Number.MAX_SAFE_INTEGER) - (b.tsMs ?? Number.MAX_SAFE_INTEGER);
+  });
+
+  let phaseBoundaryIndex = -1;
+  for (let i = 0; i < sorted.length; i += 1) {
+    if (isSecondPhaseBoundaryEvent(sorted[i])) {
+      phaseBoundaryIndex = i;
+      break;
+    }
+  }
+
+  const getSpan = (slice: NormalizedEvent[]): number => {
+    const tsList = slice.map((event) => event.tsMs).filter((v): v is number => typeof v === 'number');
+    if (!tsList.length) return 0;
+    return Math.max(0, Math.max(...tsList) - Math.min(...tsList));
+  };
+
+  const phase1 = phaseBoundaryIndex >= 0 ? sorted.slice(0, phaseBoundaryIndex) : sorted;
+  const phase2 = phaseBoundaryIndex >= 0 ? sorted.slice(phaseBoundaryIndex) : [];
+  const phase1Ms = getSpan(phase1);
+  const phase2Ms = getSpan(phase2);
+  return { phase1Ms, phase2Ms, totalMs: phase1Ms + phase2Ms };
+};
+
 interface AgentRowDef {
   id: FixedAgentId;
   name: string;
@@ -398,6 +505,7 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs }: Age
     treatment: [],
     final: [],
   });
+  const allEventsRef = useRef<NormalizedEvent[]>([]);
 
   const clearTicker = () => {
     if (tickerRef.current) {
@@ -463,6 +571,12 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs }: Age
 
     const agentId = event.agentId;
     eventHistoryRef.current[agentId] = [...eventHistoryRef.current[agentId], event].slice(-20);
+    allEventsRef.current = [...allEventsRef.current, event].sort((a, b) => {
+      const sa = typeof a.seq === 'number' ? a.seq : Number.MAX_SAFE_INTEGER;
+      const sb = typeof b.seq === 'number' ? b.seq : Number.MAX_SAFE_INTEGER;
+      if (sa !== sb) return sa - sb;
+      return (a.tsMs ?? Number.MAX_SAFE_INTEGER) - (b.tsMs ?? Number.MAX_SAFE_INTEGER);
+    });
 
     if (agentId === 'diagnosis') {
       const data = isRecord(event.data) ? event.data : undefined;
@@ -575,6 +689,7 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs }: Age
         treatment: [],
         final: [],
       };
+      allEventsRef.current = [];
       return;
     }
 
@@ -600,6 +715,7 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs }: Age
       treatment: [],
       final: [],
     };
+    allEventsRef.current = [];
 
     const openStream = () => {
       if (cancelled || workflowDoneRef.current) return;
@@ -696,6 +812,12 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs }: Age
     }
   }, [phaseStartMs, workflowDone]);
 
+
+  const phaseDurationsByAgent = useMemo(
+    () => calcPhaseDurationsByAgent(allEventsRef.current, nowMs, workflowDone),
+    [rows, nowMs, workflowDone],
+  );
+
   const renderedRows = useMemo(() => {
     return FIXED_AGENTS.map((def) => {
       const row = rows[def.id];
@@ -708,28 +830,20 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs }: Age
         ...row,
         progress,
         duration: formatDuration(elapsedMs ?? 0),
+        phase1Duration: formatDuration(phaseDurationsByAgent[def.id]?.phase1Ms ?? 0),
+        phase2Duration: formatDuration(phaseDurationsByAgent[def.id]?.phase2Ms ?? 0),
       };
     });
-  }, [rows, nowMs, workflowDone]);
+  }, [rows, nowMs, workflowDone, phaseDurationsByAgent]);
 
   const completedCount = useMemo(() => renderedRows.filter((row) => row.status === 'completed').length, [renderedRows]);
 
   const totalProgress = Math.round((completedCount / FIXED_AGENTS.length) * 100);
 
-  const overallStart = useMemo(() => {
-    const starts = renderedRows.map((row) => row.startTs).filter(Boolean) as number[];
-    const minStart = starts.length ? Math.min(...starts) : undefined;
-    if (typeof phaseStartMs === 'number' && Number.isFinite(phaseStartMs)) {
-      return typeof minStart === 'number' ? Math.max(minStart, phaseStartMs) : phaseStartMs;
-    }
-    return minStart;
-  }, [renderedRows, phaseStartMs]);
-
-  const overallEnd = useMemo(() => {
-    if (!workflowDone) return undefined;
-    const ends = renderedRows.map((row) => row.endTs).filter(Boolean) as number[];
-    return ends.length ? Math.max(...ends) : undefined;
-  }, [renderedRows, workflowDone]);
+  const overallDuration = useMemo(
+    () => calcOverallPhaseDuration(allEventsRef.current),
+    [rows, nowMs, workflowDone],
+  );
 
   const displayConfidencePct =
     (typeof confidencePct === 'number' && Number.isFinite(confidencePct)) ? confidencePct : diagnosisConfidencePct;
@@ -828,6 +942,7 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs }: Age
                                 ? `中断 (${row.duration})`
                                 : row.duration
                           : '等待执行'}
+                        <span className="text-white/35">（一诊 {row.phase1Duration} / 二诊 {row.phase2Duration}）</span>
                       </div>
                     </div>
 
@@ -898,7 +1013,7 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs }: Age
           <div className="h-full bg-[#4ade80] transition-all duration-500 progress-shine" style={{ width: `${totalProgress}%` }} />
         </div>
         <p className="text-xs text-white/50 mt-2">
-          总耗时：{formatDuration((overallStart ? Math.max(0, (overallEnd ?? nowMs) - overallStart) : 0) ?? 0)} {workflowDone ? '· 已结束' : ''}
+          总耗时：{formatDuration(overallDuration.totalMs)}（一诊 {formatDuration(overallDuration.phase1Ms)} + 二诊 {formatDuration(overallDuration.phase2Ms)}） {workflowDone ? '· 已结束' : ''}
         </p>
       </div>
     </div>
