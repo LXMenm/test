@@ -420,6 +420,7 @@ export function DiagnosePage() {
 
   const handleConfirmSubmit = async () => {
     if (!traceId || !imageId) return;
+    setDiagnosisStartTime(Date.now());
     setConfirmSubmitting(true);
     try {
       const additionalSymptoms = confirmSymptoms
