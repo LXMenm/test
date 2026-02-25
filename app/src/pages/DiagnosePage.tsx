@@ -363,6 +363,7 @@ export function DiagnosePage() {
     setConfirmChoice('other');
     setConfirmSymptoms('');
     setDiagnosisStartTime(Date.now());
+    setWorkflowRunNonce((prev) => prev + 1);
 
     try {
       const fd = new FormData();
@@ -419,6 +420,7 @@ export function DiagnosePage() {
 
   const handleConfirmSubmit = async () => {
     if (!traceId || !imageId) return;
+    setDiagnosisStartTime(Date.now());
     setConfirmSubmitting(true);
     try {
       const additionalSymptoms = confirmSymptoms

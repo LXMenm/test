@@ -763,6 +763,21 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
 
     events = list_trace_events(trace_id)
 
+    emit_node_event(
+        trace_id,
+        node="ConfirmFlow",
+        status="end",
+        message="二次诊断确认完成",
+        payload={"need_confirm": need_confirm, "final_disease": state.get("final_disease")},
+    )
+    emit_node_event(
+        trace_id,
+        node="Final",
+        status="end",
+        message="二次诊断流程完成",
+        payload={"final_disease": state.get("final_disease"), "confirm_round": True},
+    )
+
     model_meta = state.get("diagnosis_model_meta") or {}
     return {
         "trace_id": trace_id,
