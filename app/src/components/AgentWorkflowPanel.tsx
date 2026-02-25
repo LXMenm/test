@@ -25,6 +25,7 @@ type FixedAgentId = 'supervisor' | 'reception' | 'diagnosis' | 'kb_retrieval' | 
 interface AgentWorkflowPanelProps {
   traceId?: string;
   confidencePct?: number;
+  phaseStartMs?: number;
 }
 
 interface RawTraceEvent {
@@ -181,6 +182,14 @@ const compareEvents = (a: RawTraceEvent, b: RawTraceEvent): number => {
   return 0;
 };
 
+
+const shouldIncludeEvent = (event: RawTraceEvent, phaseStartMs?: number): boolean => {
+  if (!phaseStartMs || !Number.isFinite(phaseStartMs)) return true;
+  const tsMs = parseTsMs(event.ts);
+  if (typeof tsMs !== 'number') return true;
+  return tsMs >= phaseStartMs;
+};
+
 const normalizeEvent = (raw: RawTraceEvent): NormalizedEvent => {
   const ts = raw.ts;
   const tsMs = parseTsMs(ts);
@@ -333,7 +342,7 @@ const extractHighlights = (agentId: FixedAgentId, events: NormalizedEvent[]): st
   return lines.filter(Boolean).slice(0, 6);
 };
 
-export function AgentWorkflowPanel({ traceId, confidencePct }: AgentWorkflowPanelProps) {
+export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs }: AgentWorkflowPanelProps) {
   const [rows, setRows] = useState<Record<FixedAgentId, AgentRowState>>(buildInitialState());
   const [connectionState, setConnectionState] = useState<'idle' | 'connecting' | 'connected' | 'disconnected'>('idle');
   const [connectionHint, setConnectionHint] = useState('');
@@ -575,6 +584,7 @@ export function AgentWorkflowPanel({ traceId, confidencePct }: AgentWorkflowPane
       es.addEventListener('trace', (messageEvent) => {
         if (cancelled || workflowDoneRef.current) return;
         const raw = JSON.parse(messageEvent.data || '{}') as RawTraceEvent;
+        if (!shouldIncludeEvent(raw, phaseStartMs)) return;
         const normalized = normalizeEvent(raw);
         const seq = normalized.seq;
         if (typeof seq === 'number' && Number.isFinite(seq) && seq <= lastSeqRef.current) {
@@ -603,7 +613,7 @@ export function AgentWorkflowPanel({ traceId, confidencePct }: AgentWorkflowPane
         }
         const payload = await response.json();
         const events = Array.isArray(payload?.events) ? payload.events : [];
-        const sorted = [...events].sort(compareEvents);
+        const sorted = [...events].sort(compareEvents).filter((raw) => shouldIncludeEvent(raw as RawTraceEvent, phaseStartMs));
 
         if (cancelled) return;
 
@@ -643,7 +653,7 @@ export function AgentWorkflowPanel({ traceId, confidencePct }: AgentWorkflowPane
       cancelled = true;
       clearExternal();
     };
-  }, [traceId]);
+  }, [traceId, phaseStartMs]);
 
   useEffect(() => {
     if (workflowDone) {
@@ -675,8 +685,12 @@ export function AgentWorkflowPanel({ traceId, confidencePct }: AgentWorkflowPane
 
   const overallStart = useMemo(() => {
     const starts = renderedRows.map((row) => row.startTs).filter(Boolean) as number[];
-    return starts.length ? Math.min(...starts) : undefined;
-  }, [renderedRows]);
+    const minStart = starts.length ? Math.min(...starts) : undefined;
+    if (typeof phaseStartMs === 'number' && Number.isFinite(phaseStartMs)) {
+      return typeof minStart === 'number' ? Math.max(minStart, phaseStartMs) : phaseStartMs;
+    }
+    return minStart;
+  }, [renderedRows, phaseStartMs]);
 
   const overallEnd = useMemo(() => {
     if (!workflowDone) return undefined;
