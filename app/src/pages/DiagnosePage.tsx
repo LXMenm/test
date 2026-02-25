@@ -77,6 +77,7 @@ export function DiagnosePage() {
   const [confirmSubmitting, setConfirmSubmitting] = useState(false);
   const [showRawTrace, setShowRawTrace] = useState(false);
   const [diagnosisStartTime, setDiagnosisStartTime] = useState<number | null>(null);
+  const [workflowRefreshToken, setWorkflowRefreshToken] = useState(0);
   const [profiles, setProfiles] = useState<ProfileListItem[]>([]);
   const [selectedFarmerId, setSelectedFarmerId] = useState('');
   const [selectedBaseId, setSelectedBaseId] = useState('');
@@ -202,6 +203,17 @@ export function DiagnosePage() {
     return mapped.sort((a, b) => b.probPct - a.probPct).slice(0, 3);
   };
 
+  const getCandidateSymptomHint = (disease: string): string => {
+    const name = (disease || '').trim();
+    if (!name) return '建议补充叶片/茎秆/果实的可见症状。';
+    if (name.includes('叶斑')) return '常见症状：叶片出现褐色斑点、边缘黄化。';
+    if (name.includes('靶斑')) return '常见症状：同心轮纹斑，斑点中心灰白。';
+    if (name.includes('蜘蛛螨')) return '常见症状：叶片失绿发黄、背面可见细小螨虫和丝网。';
+    if (name.includes('晚疫') || name.includes('疫病')) return '常见症状：水渍状病斑迅速扩展，湿度高时更明显。';
+    if (name.includes('白粉')) return '常见症状：叶面有白色粉状霉层。';
+    return '建议补充病斑形态、颜色变化、扩散速度等症状。';
+  };
+
   const deriveNeedConfirm = (
     payloadLike: unknown,
     candidates: Top3Candidate[],
@@ -254,6 +266,46 @@ export function DiagnosePage() {
     filtered: payload.filtered === true,
     filtered_reasons: Array.isArray(payload.filtered_reasons) ? payload.filtered_reasons.map((item) => String(item)) : [],
   });
+
+  const normalizeTraceEvents = (eventsLike: unknown): TraceEvent[] => {
+    if (!Array.isArray(eventsLike)) return [];
+    return eventsLike
+      .map((evt: unknown) => {
+        const event = evt && typeof evt === 'object' ? evt as Record<string, unknown> : {};
+        const decision = event.decision && typeof event.decision === 'object'
+          ? event.decision as Record<string, unknown>
+          : undefined;
+        const seq = typeof event.seq === 'number' && Number.isFinite(event.seq) ? event.seq : Number.MAX_SAFE_INTEGER;
+        return {
+          seq,
+          value: {
+            timestamp: typeof event.ts === 'string'
+              ? event.ts
+              : (typeof event.timestamp === 'string' ? event.timestamp : new Date().toISOString()),
+            agent: typeof event.agent_cn === 'string'
+              ? event.agent_cn
+              : (typeof event.agent_id === 'string'
+                ? event.agent_id
+                : (typeof event.agent === 'string'
+                  ? event.agent
+                  : String(event.node ?? ''))),
+            status: typeof event.step_cn === 'string'
+              ? event.step_cn
+              : (typeof event.step === 'string'
+                ? event.step
+                : (typeof event.status === 'string' ? event.status : '')),
+            message: typeof event.message === 'string'
+              ? event.message
+              : (typeof decision?.reason_str === 'string'
+                ? decision.reason_str
+                : (typeof decision?.reason === 'string' ? decision.reason : '')),
+            raw: event,
+          } as TraceEvent,
+        };
+      })
+      .sort((a, b) => a.seq - b.seq)
+      .map((item) => item.value);
+  };
 
   const parseProfiles = (raw: unknown): ProfileListItem[] => {
     if (!Array.isArray(raw)) return [];
@@ -322,6 +374,7 @@ export function DiagnosePage() {
     setConfirmChoice('other');
     setConfirmSymptoms('');
     setDiagnosisStartTime(Date.now());
+    setWorkflowRefreshToken((prev) => prev + 1);
 
     try {
       const fd = new FormData();
@@ -349,6 +402,10 @@ export function DiagnosePage() {
       if (data.image_id) {
         setImageId(data.image_id);
       }
+      if (Array.isArray(data?.events)) {
+        setTraceEvents(normalizeTraceEvents(data.events));
+      }
+      setWorkflowRefreshToken((prev) => prev + 1);
 
       const normalizedResult = buildResultFromPayload(data);
       setResult(normalizedResult);
@@ -356,11 +413,13 @@ export function DiagnosePage() {
       setLatestPayload(payloadRecord);
 
       const candidates = parseTop3Candidates(payloadRecord, normalizedResult);
-      const needsConfirm = deriveNeedConfirm(payloadRecord, candidates, normalizedResult.displayConfidencePct);
+      const needsConfirm = typeof data?.need_confirm === 'boolean'
+        ? data.need_confirm
+        : deriveNeedConfirm(payloadRecord, candidates, normalizedResult.displayConfidencePct);
       console.log('[confirm] candidates=', candidates);
       console.log('[confirm] derivedNeedConfirm=', needsConfirm);
       setConfirmMode(needsConfirm);
-      if (needsConfirm && candidates[0]?.disease && (!confirmChoice || confirmChoice === 'other')) {
+      if (needsConfirm && candidates[0]?.disease && !confirmChoice) {
         setConfirmChoice(candidates[0].disease);
       }
     } catch (error) {
@@ -408,6 +467,10 @@ export function DiagnosePage() {
       if (data.image_id) {
         setImageId(data.image_id);
       }
+      if (Array.isArray(data?.events)) {
+        setTraceEvents(normalizeTraceEvents(data.events));
+      }
+      setWorkflowRefreshToken((prev) => prev + 1);
 
       const mergedPayload = {
         ...data,
@@ -418,11 +481,13 @@ export function DiagnosePage() {
       const payloadRecord = mergedPayload && typeof mergedPayload === 'object' ? mergedPayload as Record<string, unknown> : {};
       setLatestPayload(payloadRecord);
       const candidates = parseTop3Candidates(payloadRecord, nextResult);
-      const needsConfirm = deriveNeedConfirm(payloadRecord, candidates, nextResult.displayConfidencePct);
+      const needsConfirm = typeof data?.need_confirm === 'boolean'
+        ? data.need_confirm
+        : deriveNeedConfirm(payloadRecord, candidates, nextResult.displayConfidencePct);
       console.log('[confirm] candidates=', candidates);
       console.log('[confirm] derivedNeedConfirm=', needsConfirm);
       setConfirmMode(needsConfirm);
-      if (needsConfirm && candidates[0]?.disease && (!confirmChoice || confirmChoice === 'other')) {
+      if (needsConfirm && candidates[0]?.disease && !confirmChoice) {
         setConfirmChoice(candidates[0].disease);
       }
     } catch (error) {
@@ -466,8 +531,7 @@ export function DiagnosePage() {
 
   const renderTreatment = (t: unknown): JSX.Element | null => renderRichValue(t);
   const candidates = parseTop3Candidates(latestPayload ?? result ?? {}, result);
-  const derivedNeedConfirm = deriveNeedConfirm(latestPayload ?? result ?? {}, candidates, result?.displayConfidencePct ?? null);
-  const shouldHideTreatment = confirmMode || derivedNeedConfirm;
+  const shouldHideTreatment = confirmMode;
   const baseOptions: BaseOption[] = selectedProfile?.bases && typeof selectedProfile.bases === 'object'
     ? Object.entries(selectedProfile.bases).map(([baseId, base]) => ({
       id: baseId,
@@ -476,12 +540,11 @@ export function DiagnosePage() {
     : [];
 
   useEffect(() => {
-    if (!derivedNeedConfirm) return;
-    setConfirmMode(true);
-    if (candidates[0]?.disease && (!confirmChoice || confirmChoice === 'other')) {
+    if (!confirmMode) return;
+    if (candidates[0]?.disease && !confirmChoice) {
       setConfirmChoice(candidates[0].disease);
     }
-  }, [derivedNeedConfirm, candidates, confirmChoice]);
+  }, [confirmMode, candidates, confirmChoice]);
 
   const refreshTrace = async () => {
     if (!traceId) return;
@@ -489,36 +552,8 @@ export function DiagnosePage() {
     try {
       const resp = await fetch(`/api/trace-events?trace_id=${encodeURIComponent(traceId)}`);
       const data = await resp.json();
-      if (data.events) {
-        setTraceEvents(data.events.map((evt: unknown) => {
-          const event = evt && typeof evt === 'object' ? evt as Record<string, unknown> : {};
-          const decision = event.decision && typeof event.decision === 'object'
-            ? event.decision as Record<string, unknown>
-            : undefined;
-          return {
-            timestamp: typeof event.ts === 'string'
-              ? event.ts
-              : (typeof event.timestamp === 'string' ? event.timestamp : new Date().toISOString()),
-            agent: typeof event.agent_cn === 'string'
-              ? event.agent_cn
-              : (typeof event.agent_id === 'string'
-                ? event.agent_id
-                : (typeof event.agent === 'string'
-                  ? event.agent
-                  : String(event.node ?? ''))),
-            status: typeof event.step_cn === 'string'
-              ? event.step_cn
-              : (typeof event.step === 'string'
-                ? event.step
-                : (typeof event.status === 'string' ? event.status : '')),
-            message: typeof event.message === 'string'
-              ? event.message
-              : (typeof decision?.reason_str === 'string'
-                ? decision.reason_str
-                : (typeof decision?.reason === 'string' ? decision.reason : '')),
-            raw: event,
-          };
-        }));
+      if (Array.isArray(data?.events)) {
+        setTraceEvents(normalizeTraceEvents(data.events));
       }
     } catch (error) {
       console.error('Failed to fetch trace events:', error);
@@ -808,7 +843,7 @@ export function DiagnosePage() {
                               checked={confirmChoice === item.disease}
                               onChange={(e) => setConfirmChoice(e.target.value)}
                             />
-                            <span>{item.disease} ({item.probPct.toFixed(2)}%)</span>
+                            <span>{item.disease} ({item.probPct.toFixed(2)}%) · {getCandidateSymptomHint(item.disease)}</span>
                           </label>
                         ))}
                         <label className="flex items-center gap-2 text-sm text-white/80 cursor-pointer">
@@ -823,15 +858,20 @@ export function DiagnosePage() {
                         </label>
                       </div>
 
-                      <div className="space-y-2">
-                        <Label className="text-white/80">补充症状（可选，逗号分隔）</Label>
-                        <Input
-                          value={confirmSymptoms}
-                          onChange={(e) => setConfirmSymptoms(e.target.value)}
-                          placeholder="例如：叶片卷曲, 发黄"
-                          className="bg-white/5 border-white/20 text-white placeholder:text-white/40"
-                        />
-                      </div>
+                      {confirmChoice === 'other' ? (
+                        <div className="space-y-2">
+                          <Label className="text-white/80">补充症状（必填建议，逗号分隔）</Label>
+                          <Input
+                            value={confirmSymptoms}
+                            onChange={(e) => setConfirmSymptoms(e.target.value)}
+                            placeholder="例如：叶片卷曲, 发黄, 斑点扩大"
+                            className="bg-white/5 border-white/20 text-white placeholder:text-white/40"
+                          />
+                          <p className="text-xs text-white/60">已选择“仍不确定/其他”，建议填写症状帮助模型继续判别。</p>
+                        </div>
+                      ) : (
+                        <p className="text-xs text-white/60">已选择具体病害，可直接提交确认；若仍不确定请切换到“仍不确定/其他”并补充症状。</p>
+                      )}
 
                       <Button
                         onClick={handleConfirmSubmit}
@@ -906,9 +946,10 @@ export function DiagnosePage() {
             </CardHeader>
             <CardContent className="space-y-4">
               <AgentWorkflowPanel
-                key={traceId || 'idle'}
+                key={`${traceId || 'idle'}-${workflowRefreshToken}`}
                 traceId={traceId || undefined}
                 confidencePct={result?.displayConfidencePct ?? undefined}
+                refreshToken={workflowRefreshToken}
               />
 
               <div className="flex items-center justify-between">
