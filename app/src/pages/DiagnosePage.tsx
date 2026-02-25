@@ -431,6 +431,7 @@ export function DiagnosePage() {
 
   const handleConfirmSubmit = async () => {
     if (!traceId || !imageId) return;
+    setDiagnosisStartTime(Date.now());
     setConfirmSubmitting(true);
     try {
       const additionalSymptoms = confirmSymptoms
@@ -544,6 +545,8 @@ export function DiagnosePage() {
     // 仅在尚未选择时自动回填首个候选；不要覆盖用户手动选择“仍不确定/其他”。
     const shouldAutofillChoice = !confirmChoice;
     if (candidates[0]?.disease && shouldAutofillChoice) {
+    if (candidates[0]?.disease && !confirmChoice) {
+
       setConfirmChoice(candidates[0].disease);
     }
   }, [confirmMode, candidates, confirmChoice]);
