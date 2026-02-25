@@ -203,6 +203,17 @@ export function DiagnosePage() {
     return mapped.sort((a, b) => b.probPct - a.probPct).slice(0, 3);
   };
 
+  const getCandidateSymptomHint = (disease: string): string => {
+    const name = (disease || '').trim();
+    if (!name) return '建议补充叶片/茎秆/果实的可见症状。';
+    if (name.includes('叶斑')) return '常见症状：叶片出现褐色斑点、边缘黄化。';
+    if (name.includes('靶斑')) return '常见症状：同心轮纹斑，斑点中心灰白。';
+    if (name.includes('蜘蛛螨')) return '常见症状：叶片失绿发黄、背面可见细小螨虫和丝网。';
+    if (name.includes('晚疫') || name.includes('疫病')) return '常见症状：水渍状病斑迅速扩展，湿度高时更明显。';
+    if (name.includes('白粉')) return '常见症状：叶面有白色粉状霉层。';
+    return '建议补充病斑形态、颜色变化、扩散速度等症状。';
+  };
+
   const deriveNeedConfirm = (
     payloadLike: unknown,
     candidates: Top3Candidate[],
@@ -408,7 +419,7 @@ export function DiagnosePage() {
       console.log('[confirm] candidates=', candidates);
       console.log('[confirm] derivedNeedConfirm=', needsConfirm);
       setConfirmMode(needsConfirm);
-      if (needsConfirm && candidates[0]?.disease && (!confirmChoice || confirmChoice === 'other')) {
+      if (needsConfirm && candidates[0]?.disease && !confirmChoice) {
         setConfirmChoice(candidates[0].disease);
       }
     } catch (error) {
@@ -477,7 +488,7 @@ export function DiagnosePage() {
       console.log('[confirm] candidates=', candidates);
       console.log('[confirm] derivedNeedConfirm=', needsConfirm);
       setConfirmMode(needsConfirm);
-      if (needsConfirm && candidates[0]?.disease && (!confirmChoice || confirmChoice === 'other')) {
+      if (needsConfirm && candidates[0]?.disease && !confirmChoice) {
         setConfirmChoice(candidates[0].disease);
       }
     } catch (error) {
@@ -531,7 +542,11 @@ export function DiagnosePage() {
 
   useEffect(() => {
     if (!confirmMode) return;
+<<<<<<< codex/fix-second-diagnosis-submit-issue-4lahbn
+    if (candidates[0]?.disease && !confirmChoice) {
+=======
     if (candidates[0]?.disease && (!confirmChoice || confirmChoice === 'other')) {
+>>>>>>> main
       setConfirmChoice(candidates[0].disease);
     }
   }, [confirmMode, candidates, confirmChoice]);
@@ -833,7 +848,7 @@ export function DiagnosePage() {
                               checked={confirmChoice === item.disease}
                               onChange={(e) => setConfirmChoice(e.target.value)}
                             />
-                            <span>{item.disease} ({item.probPct.toFixed(2)}%)</span>
+                            <span>{item.disease} ({item.probPct.toFixed(2)}%) · {getCandidateSymptomHint(item.disease)}</span>
                           </label>
                         ))}
                         <label className="flex items-center gap-2 text-sm text-white/80 cursor-pointer">
@@ -848,15 +863,20 @@ export function DiagnosePage() {
                         </label>
                       </div>
 
-                      <div className="space-y-2">
-                        <Label className="text-white/80">补充症状（可选，逗号分隔）</Label>
-                        <Input
-                          value={confirmSymptoms}
-                          onChange={(e) => setConfirmSymptoms(e.target.value)}
-                          placeholder="例如：叶片卷曲, 发黄"
-                          className="bg-white/5 border-white/20 text-white placeholder:text-white/40"
-                        />
-                      </div>
+                      {confirmChoice === 'other' ? (
+                        <div className="space-y-2">
+                          <Label className="text-white/80">补充症状（必填建议，逗号分隔）</Label>
+                          <Input
+                            value={confirmSymptoms}
+                            onChange={(e) => setConfirmSymptoms(e.target.value)}
+                            placeholder="例如：叶片卷曲, 发黄, 斑点扩大"
+                            className="bg-white/5 border-white/20 text-white placeholder:text-white/40"
+                          />
+                          <p className="text-xs text-white/60">已选择“仍不确定/其他”，建议填写症状帮助模型继续判别。</p>
+                        </div>
+                      ) : (
+                        <p className="text-xs text-white/60">已选择具体病害，可直接提交确认；若仍不确定请切换到“仍不确定/其他”并补充症状。</p>
+                      )}
 
                       <Button
                         onClick={handleConfirmSubmit}
