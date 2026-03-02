@@ -12,6 +12,7 @@ from personalization.profile_context import (
     build_personalization_flags,
 )
 from personalization.profile_models import FarmerProfile, BaseProfile
+from personalization.policy_engine import build_policy
 
 
 class CropDiseaseState(TypedDict):
@@ -72,6 +73,8 @@ class CropDiseaseState(TypedDict):
     farmer_profile: Optional[Dict[str, Any]]
     personalization_context: Optional[str]
     personalization_flags: Dict[str, Any]
+    personalization_policy: Optional[Dict[str, Any]]
+    personalization_reasons: List[str]
 
     # Trace信息
     trace_id: str
@@ -123,6 +126,8 @@ def create_initial_state(
         farmer_profile=None,
         personalization_context=None,
         personalization_flags={},
+        personalization_policy=None,
+        personalization_reasons=[],
         trace_id=uuid.uuid4().hex,
         trace_events=[],
         kb_snapshot=None,
@@ -135,8 +140,17 @@ def create_initial_state(
             resolved_base_id, base_profile = _resolve_base(profile, base_id)
             state["base_id"] = resolved_base_id
             apply_base_profile_to_state(state, base_profile)
-            state["personalization_context"] = build_personalization_context(profile, base_profile)
-            state["personalization_flags"] = build_personalization_flags(profile, base_profile)
+            policy = None
+            try:
+                policy = build_policy(profile, base_profile)
+                state["personalization_policy"] = policy.model_dump()
+                state["personalization_reasons"] = list(policy.explanations)
+                state["personalization_context"] = policy.context_text
+            except Exception:
+                state["personalization_context"] = build_personalization_context(profile, base_profile)
+                state["personalization_policy"] = None
+                state["personalization_reasons"] = []
+            state["personalization_flags"] = build_personalization_flags(profile, base_profile, policy=policy)
         else:
             state["error"] = f"未找到农户档案：{farmer_id}"
 
