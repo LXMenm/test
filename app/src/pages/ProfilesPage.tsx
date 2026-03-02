@@ -29,6 +29,12 @@ interface FarmerProfile {
   confirm_when_low_confidence: boolean;
   schema_version: string;
   updated_at: string;
+  farm_scale: 'BALCONY' | 'SMALL' | 'MEDIUM' | 'LARGE' | 'GREENHOUSE_LARGE';
+  pesticide_access_level: 'NONE' | 'LIMITED' | 'FULL';
+  equipment: Array<'HAND_SPRAYER' | 'BACKPACK_SPRAYER' | 'MIST_BLOWER' | 'DRONE'>;
+  cultivation_mode: 'SOIL' | 'HYDROPONIC' | 'SUBSTRATE';
+  experience_level: 'NOVICE' | 'INTERMEDIATE' | 'EXPERT';
+  risk_preference: 'CONSERVATIVE' | 'BALANCED' | 'AGGRESSIVE';
   constraints: {
     prefer_organic: boolean;
     harvest_window_days: number;
@@ -36,6 +42,13 @@ interface FarmerProfile {
   };
   bases: FarmerBase[];
 }
+
+const FARM_SCALE_OPTIONS = ['BALCONY', 'SMALL', 'MEDIUM', 'LARGE', 'GREENHOUSE_LARGE'] as const;
+const PESTICIDE_ACCESS_OPTIONS = ['NONE', 'LIMITED', 'FULL'] as const;
+const EQUIPMENT_OPTIONS = ['HAND_SPRAYER', 'BACKPACK_SPRAYER', 'MIST_BLOWER', 'DRONE'] as const;
+const CULTIVATION_MODE_OPTIONS = ['SOIL', 'HYDROPONIC', 'SUBSTRATE'] as const;
+const EXPERIENCE_OPTIONS = ['NOVICE', 'INTERMEDIATE', 'EXPERT'] as const;
+const RISK_OPTIONS = ['CONSERVATIVE', 'BALANCED', 'AGGRESSIVE'] as const;
 
 const toSafeString = (value: unknown, fallback = ''): string => {
   if (typeof value === 'string') return value;
@@ -88,8 +101,16 @@ const normalizeProfile = (raw: unknown): FarmerProfile => {
     name: toSafeString(rawObj.name),
     active_base_id: toSafeString(rawObj.active_base_id),
     confirm_when_low_confidence: Boolean(rawObj.confirm_when_low_confidence),
-    schema_version: toSafeString(rawObj.schema_version, '1.0'),
+    schema_version: toSafeString(rawObj.schema_version, '1.1'),
     updated_at: toSafeString(rawObj.updated_at),
+    farm_scale: (FARM_SCALE_OPTIONS.includes(toSafeString(rawObj.farm_scale) as never) ? toSafeString(rawObj.farm_scale) : 'SMALL') as FarmerProfile['farm_scale'],
+    pesticide_access_level: (PESTICIDE_ACCESS_OPTIONS.includes(toSafeString(rawObj.pesticide_access_level) as never) ? toSafeString(rawObj.pesticide_access_level) : 'LIMITED') as FarmerProfile['pesticide_access_level'],
+    equipment: (Array.isArray(rawObj.equipment) ? rawObj.equipment : [])
+      .map((v) => toSafeString(v))
+      .filter((v): v is FarmerProfile['equipment'][number] => EQUIPMENT_OPTIONS.includes(v as never)),
+    cultivation_mode: (CULTIVATION_MODE_OPTIONS.includes(toSafeString(rawObj.cultivation_mode) as never) ? toSafeString(rawObj.cultivation_mode) : 'SOIL') as FarmerProfile['cultivation_mode'],
+    experience_level: (EXPERIENCE_OPTIONS.includes(toSafeString(rawObj.experience_level) as never) ? toSafeString(rawObj.experience_level) : 'INTERMEDIATE') as FarmerProfile['experience_level'],
+    risk_preference: (RISK_OPTIONS.includes(toSafeString(rawObj.risk_preference) as never) ? toSafeString(rawObj.risk_preference) : 'BALANCED') as FarmerProfile['risk_preference'],
     constraints: {
       prefer_organic: Boolean(rawConstraints.prefer_organic),
       harvest_window_days: toSafeNumber(rawConstraints.harvest_window_days, 0),
@@ -118,8 +139,14 @@ const normalizeProfileList = (raw: unknown): FarmerProfile[] => {
         name: displayName || farmerId,
         active_base_id: '',
         confirm_when_low_confidence: true,
-        schema_version: '1.0',
+        schema_version: '1.1',
         updated_at: '',
+        farm_scale: 'SMALL',
+        pesticide_access_level: 'LIMITED',
+        equipment: [],
+        cultivation_mode: 'SOIL',
+        experience_level: 'INTERMEDIATE',
+        risk_preference: 'BALANCED',
         constraints: {
           prefer_organic: false,
           harvest_window_days: 0,
@@ -226,7 +253,13 @@ export function ProfilesPage() {
             prefer_organic: false,
             harvest_window_days: 30,
             banned_ingredients: []
-          }
+          },
+          farm_scale: 'SMALL',
+          pesticide_access_level: 'LIMITED',
+          equipment: [],
+          cultivation_mode: 'SOIL',
+          experience_level: 'INTERMEDIATE',
+          risk_preference: 'BALANCED',
         })
       });
 
@@ -512,6 +545,74 @@ export function ProfilesPage() {
                         className="border-white/30 data-[state=checked]:bg-[#c8f7c5] data-[state=checked]:text-black"
                       />
                       <Label className="text-white/80">低置信度需确认</Label>
+                    </div>
+                    <div className="space-y-2">
+                      <Label className="text-white/60">种植规模</Label>
+                      <Select value={editedProfile.farm_scale} onValueChange={(v) => setEditedProfile({ ...editedProfile, farm_scale: v as FarmerProfile['farm_scale'] })}>
+                        <SelectTrigger className="bg-white/5 border-white/20 text-white"><SelectValue /></SelectTrigger>
+                        <SelectContent className="bg-[#1a1a1a] border-white/20">
+                          {FARM_SCALE_OPTIONS.map((v) => <SelectItem key={v} value={v}>{v}</SelectItem>)}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-2">
+                      <Label className="text-white/60">购药能力</Label>
+                      <Select value={editedProfile.pesticide_access_level} onValueChange={(v) => setEditedProfile({ ...editedProfile, pesticide_access_level: v as FarmerProfile['pesticide_access_level'] })}>
+                        <SelectTrigger className="bg-white/5 border-white/20 text-white"><SelectValue /></SelectTrigger>
+                        <SelectContent className="bg-[#1a1a1a] border-white/20">
+                          {PESTICIDE_ACCESS_OPTIONS.map((v) => <SelectItem key={v} value={v}>{v}</SelectItem>)}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-2">
+                      <Label className="text-white/60">栽培模式</Label>
+                      <Select value={editedProfile.cultivation_mode} onValueChange={(v) => setEditedProfile({ ...editedProfile, cultivation_mode: v as FarmerProfile['cultivation_mode'] })}>
+                        <SelectTrigger className="bg-white/5 border-white/20 text-white"><SelectValue /></SelectTrigger>
+                        <SelectContent className="bg-[#1a1a1a] border-white/20">
+                          {CULTIVATION_MODE_OPTIONS.map((v) => <SelectItem key={v} value={v}>{v}</SelectItem>)}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-2">
+                      <Label className="text-white/60">经验水平</Label>
+                      <Select value={editedProfile.experience_level} onValueChange={(v) => setEditedProfile({ ...editedProfile, experience_level: v as FarmerProfile['experience_level'] })}>
+                        <SelectTrigger className="bg-white/5 border-white/20 text-white"><SelectValue /></SelectTrigger>
+                        <SelectContent className="bg-[#1a1a1a] border-white/20">
+                          {EXPERIENCE_OPTIONS.map((v) => <SelectItem key={v} value={v}>{v}</SelectItem>)}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-2">
+                      <Label className="text-white/60">风险偏好</Label>
+                      <Select value={editedProfile.risk_preference} onValueChange={(v) => setEditedProfile({ ...editedProfile, risk_preference: v as FarmerProfile['risk_preference'] })}>
+                        <SelectTrigger className="bg-white/5 border-white/20 text-white"><SelectValue /></SelectTrigger>
+                        <SelectContent className="bg-[#1a1a1a] border-white/20">
+                          {RISK_OPTIONS.map((v) => <SelectItem key={v} value={v}>{v}</SelectItem>)}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-2 sm:col-span-2">
+                      <Label className="text-white/60">可用设备（多选）</Label>
+                      <div className="flex flex-wrap gap-2">
+                        {EQUIPMENT_OPTIONS.map((eq) => {
+                          const checked = editedProfile.equipment.includes(eq);
+                          return (
+                            <label key={eq} className="inline-flex items-center gap-2 text-sm text-white/80 bg-white/5 border border-white/10 px-2 py-1 rounded">
+                              <Checkbox
+                                checked={checked}
+                                onCheckedChange={(v) => {
+                                  const next = v
+                                    ? [...editedProfile.equipment, eq]
+                                    : editedProfile.equipment.filter((item) => item !== eq);
+                                  setEditedProfile({ ...editedProfile, equipment: Array.from(new Set(next)) as FarmerProfile['equipment'] });
+                                }}
+                                className="border-white/30 data-[state=checked]:bg-[#c8f7c5] data-[state=checked]:text-black"
+                              />
+                              <span>{eq}</span>
+                            </label>
+                          );
+                        })}
+                      </div>
                     </div>
                   </div>
                 </div>
