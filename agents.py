@@ -14,6 +14,7 @@ from trace_store import append_trace_event
 from datetime import datetime, timezone
 from typing import Optional
 from model_registry import resolve_model
+from pydantic import BaseModel, Field, ValidationError
 import re
 import json
 from pathlib import Path
@@ -21,6 +22,24 @@ from pathlib import Path
 
 # 获取知识库管理器实例
 kb_manager = get_kb_manager()
+
+
+class TreatmentPlanBranches(BaseModel):
+    BALCONY: list[str] = Field(default_factory=list)
+    SMALL_MEDIUM: list[str] = Field(default_factory=list)
+    LARGE_MECHANIZED: list[str] = Field(default_factory=list)
+
+
+class TreatmentLLMOutput(BaseModel):
+    overview: str
+    immediate_actions: list[str] = Field(default_factory=list)
+    treatment_plan: TreatmentPlanBranches
+    prevention_plan: list[str] = Field(default_factory=list)
+    resistance_management: list[str] = Field(default_factory=list)
+    safety_notes: list[str] = Field(default_factory=list)
+    follow_up: list[str] = Field(default_factory=list)
+    personalization_reasons: list[str] = Field(default_factory=list)
+    follow_up_questions: list[str] = Field(default_factory=list)
 
 
 def append_trace(
@@ -647,67 +666,155 @@ def treatment_agent(state: CropDiseaseState) -> CropDiseaseState:
     print("\n[番茄病害治疗方案智能体] 正在制定治疗方案...")
 
     disease_type = state.get("final_disease") or state.get("disease_type")
-    crop_type = "番茄"  # 确保是番茄
+    crop_type = "番茄"
     crop_growth_stage = state.get("crop_growth_stage")
+    symptoms = state.get("symptoms") or []
     disease_description = state.get("disease_description", "")
-    profile, _ = _get_profile_from_state(state)
-    constraints = TreatmentConstraint()
-    if profile:
-        constraints = profile.constraints
+    profile, base_profile = _get_profile_from_state(state)
+    constraints = profile.constraints if profile else TreatmentConstraint()
     flags = state.get("personalization_flags", {}) or {}
-    constraint_brief = _summarize_constraints(constraints)
-    
+    policy = state.get("personalization_policy") or {}
+    policy_reasons = list(state.get("personalization_reasons") or flags.get("personalization_reasons") or [])
+    hard_constraints = policy.get("hard_constraints") if isinstance(policy, dict) else {}
+    hard_constraints = hard_constraints if isinstance(hard_constraints, dict) else {}
+
     kb_snapshot = state.get("kb_snapshot") or {}
-    if kb_snapshot.get("treatment") or kb_snapshot.get("prevention"):
-        treatment_plan = kb_snapshot.get("treatment", "")
-        prevention_advice = kb_snapshot.get("prevention", "")
-    else:
-        # 使用大模型生成治疗方案
-        prompt = f"""请为以下番茄病害制定详细的治疗方案和预防建议：
+    base_info = {
+        "facility": flags.get("facility") or (base_profile.facility if base_profile else None),
+        "environment": flags.get("environment") or (base_profile.environment if base_profile else None),
+        "growth_stage": flags.get("growth_stage") or (base_profile.growth_stage if base_profile else None),
+        "province": flags.get("province") or (base_profile.province if base_profile else None),
+    }
 
-作物类型：{crop_type}
-生长阶段：{crop_growth_stage or '未知'}
-病害类型：{disease_type}
-病害描述：{disease_description}
-个性化上下文：{state.get('personalization_context') or '无'}
-治疗约束：{constraint_brief}
+    must_forbid_professional = bool(hard_constraints.get("forbid_professional_pesticides"))
+    forbidden_equipment_flows = [str(x) for x in (hard_constraints.get("forbidden_equipment_flows") or [])]
+    banned_ingredients = [str(x) for x in (hard_constraints.get("banned_ingredients") or flags.get("banned_ingredients") or [])]
+    harvest_window_days = hard_constraints.get("harvest_window_days")
+    if harvest_window_days is None:
+        harvest_window_days = flags.get("harvest_window_days")
+    prefer_organic = bool(flags.get("prefer_organic") or constraints.prefer_organic)
 
-请提供：
-1. 具体的治疗方案（包括推荐药物、使用方法、使用频率等）
-2. 预防措施（包括栽培管理、环境控制等）
+    llm_output: TreatmentLLMOutput | None = None
+    llm_failed_reason = ""
 
-请以JSON格式返回，格式如下：
+    def _build_prompt() -> str:
+        return f"""你要为番茄病害输出结构化处置方案，必须严格返回JSON，不要输出额外文字。
+
+病害信息：
+- 作物：{crop_type}
+- 病害：{disease_type}
+- 生育期：{crop_growth_stage or '未知'}
+- 症状：{symptoms}
+- 诊断说明：{disease_description}
+
+知识证据（可参考但不可机械照抄）：
+{json.dumps(kb_snapshot, ensure_ascii=False)}
+
+个性化策略（单一真源）：
+{json.dumps(policy, ensure_ascii=False)}
+
+基地信息：
+{json.dumps(base_info, ensure_ascii=False)}
+
+约束：
+- banned_ingredients={banned_ingredients}
+- harvest_window_days={harvest_window_days}
+- prefer_organic={prefer_organic}
+- forbid_professional_pesticides={must_forbid_professional}
+- forbidden_equipment_flows={forbidden_equipment_flows}
+
+强制规则：
+1) 若 forbid_professional_pesticides=True，则 BALCONY/SMALL_MEDIUM 不得出现专业化学农药处置或不可执行购买要求，优先农艺/物理/生物/低毒替代，并用“可咨询当地农技/按标签合规”表述。
+2) 若 forbidden_equipment_flows 包含 DRONE，则 LARGE_MECHANIZED 不得出现无人机喷洒流程。
+3) 不得推荐 banned_ingredients 中成分；可给“替代策略/咨询”。
+4) harvest_window_days 较小（<=7）时，必须写采收窗口与安全间隔提醒。
+5) 番茄场景必须强调通风、叶面干燥、修剪清园、监测复查。
+
+输出JSON schema：
 {{
-    "treatment": "详细的治疗方案",
-    "prevention": "预防建议（多条用换行分隔）"
+  "overview": "...",
+  "immediate_actions": ["..."],
+  "treatment_plan": {{
+     "BALCONY": ["..."],
+     "SMALL_MEDIUM": ["..."],
+     "LARGE_MECHANIZED": ["..."]
+  }},
+  "prevention_plan": ["..."],
+  "resistance_management": ["..."],
+  "safety_notes": ["..."],
+  "follow_up": ["..."],
+  "personalization_reasons": ["...来自policy.explanations..."],
+  "follow_up_questions": ["...最多3个..."]
 }}"""
 
-        system_prompt = (
-            "你是一位经验丰富的番茄病害防治专家，擅长制定番茄病害的专业、实用、安全的治疗方案和预防建议。"
-        )
+    system_prompt = "你是番茄病害防治首席农艺师，输出必须专业、可执行、可审计，并严格遵守约束。"
+    prompt = _build_prompt()
 
+    for temperature in (0.4, 0.2):
         try:
-            response = call_llm(prompt, system_prompt, temperature=0.7)
-            result = extract_json_from_response(response)
-            
-            if result:
-                treatment_plan = result.get("treatment", "")
-                prevention_advice = result.get("prevention", "")
-            else:
-                # 如果解析失败，使用知识库作为后备
-                treatment_plan, prevention_advice = _get_treatment_from_knowledge_base(disease_type)
-        except Exception as e:
-            print(f"大模型调用失败，使用知识库: {e}")
-            treatment_plan, prevention_advice = _get_treatment_from_knowledge_base(disease_type)
+            response = call_llm(prompt, system_prompt, temperature=temperature)
+            parsed = extract_json_from_response(response)
+            if not parsed:
+                raise ValueError("JSON解析为空")
+            llm_output = TreatmentLLMOutput.model_validate(parsed)
+            break
+        except (ValidationError, ValueError, Exception) as exc:
+            llm_failed_reason = str(exc)
+            llm_output = None
+
+    if llm_output is None:
+        kb_treatment, kb_prevention = _get_treatment_from_knowledge_base(disease_type)
+        flags["llm_failed"] = True
+        flags["llm_failed_reason"] = llm_failed_reason[:200]
+        llm_output = TreatmentLLMOutput(
+            overview=f"基于知识库的后备方案（原因：{llm_failed_reason[:80] or '模型输出不可解析'}）",
+            immediate_actions=["先隔离疑似病株与重病叶，减少传播风险。"],
+            treatment_plan=TreatmentPlanBranches(
+                BALCONY=[kb_treatment or "咨询当地农技获取可执行替代方案。"],
+                SMALL_MEDIUM=[kb_treatment or "咨询当地农技获取可执行替代方案。"],
+                LARGE_MECHANIZED=[kb_treatment or "咨询当地农技获取可执行替代方案。"],
+            ),
+            prevention_plan=[line for line in (kb_prevention or "").splitlines() if line.strip()] or ["加强通风、控湿与清园。"],
+            resistance_management=["不同作用机制药剂轮换，避免连续单一用药。"],
+            safety_notes=["严格按标签与采收安全间隔执行。"],
+            follow_up=["48-72小时复查病斑扩展与叶面湿度情况。"],
+            personalization_reasons=policy_reasons,
+            follow_up_questions=(state.get("personalization_reasons") or [])[:3],
+        )
+    else:
+        flags["llm_failed"] = False
+
+    selected_branch = "SMALL_MEDIUM"
+    farm_scale = str(flags.get("farm_scale") or "SMALL")
+    if farm_scale == "BALCONY":
+        selected_branch = "BALCONY"
+    elif farm_scale in {"LARGE", "GREENHOUSE_LARGE"}:
+        selected_branch = "LARGE_MECHANIZED"
+
+    branch_lines = getattr(llm_output.treatment_plan, selected_branch)
+    treatment_text = "\n".join([
+        f"【方案概述】{llm_output.overview}",
+        "【立即行动】" + "；".join(llm_output.immediate_actions),
+        f"【差异化处置-{selected_branch}】" + "；".join(branch_lines),
+        "【抗性管理】" + "；".join(llm_output.resistance_management),
+        "【安全注意】" + "；".join(llm_output.safety_notes),
+        "【复查计划】" + "；".join(llm_output.follow_up),
+    ]).strip()
+
+    prevention_advice = "\n".join(llm_output.prevention_plan).strip()
 
     personalized_plan, personalized_prevention, personalization_outputs = apply_personalization_to_treatment(
-        treatment_plan,
+        treatment_text,
         prevention_advice,
         flags,
     )
-    treatment_plan = personalized_plan or treatment_plan
+    treatment_plan = personalized_plan or treatment_text
     prevention_advice = personalized_prevention or prevention_advice
     flags.update(personalization_outputs)
+    if llm_output.personalization_reasons:
+        flags["personalization_reasons"] = list(dict.fromkeys(llm_output.personalization_reasons + policy_reasons))
+    if llm_output.follow_up_questions:
+        flags["follow_up_questions"] = list(llm_output.follow_up_questions)[:3]
     state["personalization_flags"] = flags
 
     message = f"番茄病害治疗方案智能体：已生针对{disease_type}的治疗方案"
@@ -732,6 +839,9 @@ def treatment_agent(state: CropDiseaseState) -> CropDiseaseState:
         outputs={
             "treatment_plan": treatment_plan,
             "prevention_advice": prevention_advice,
+            "selected_branch": selected_branch,
+            "llm_failed": flags.get("llm_failed"),
+            "personalization_reasons": flags.get("personalization_reasons") or [],
             "personalization_applied": flags.get("personalization_applied", False),
             "filtered": flags.get("filtered", False),
             "filtered_reasons": flags.get("filtered_reasons") or [],
