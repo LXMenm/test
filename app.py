@@ -91,6 +91,10 @@ class DiagnoseResponse(BaseModel):
     filtered: bool
     filtered_reasons: list[str]
     filtered_components: list[str]
+    profile_farm_scale: str | None = None
+    profile_pesticide_access_level: str | None = None
+    profile_equipment: list[str] = []
+    profile_cultivation_mode: str | None = None
     trace_id: str
     need_confirm: bool | None = None
     final_confidence: float | None = None
@@ -259,6 +263,12 @@ def _build_personalization_meta(flags: dict, farmer_id: str | None, base_id: str
         "facility": flags.get("facility"),
         "environment": flags.get("environment"),
         "growth_stage": flags.get("growth_stage"),
+        "farm_scale": flags.get("farm_scale"),
+        "pesticide_access_level": flags.get("pesticide_access_level"),
+        "equipment": flags.get("equipment") or [],
+        "cultivation_mode": flags.get("cultivation_mode"),
+        "experience_level": flags.get("experience_level"),
+        "risk_preference": flags.get("risk_preference"),
     }
 
 
@@ -583,6 +593,10 @@ async def diagnose_image(
         filtered=filtered,
         filtered_reasons=filtered_reasons,
         filtered_components=filtered_components,
+        profile_farm_scale=flags.get("farm_scale"),
+        profile_pesticide_access_level=flags.get("pesticide_access_level"),
+        profile_equipment=[str(item) for item in (flags.get("equipment") or [])],
+        profile_cultivation_mode=flags.get("cultivation_mode"),
         trace_id=trace_id,
         need_confirm=need_confirm,
         final_confidence=final_confidence,
@@ -851,6 +865,16 @@ def create_profile(payload: dict = Body(...)) -> dict[str, bool | str]:
         raise HTTPException(status_code=409, detail="农户ID已存在")
 
     profile = FarmerProfile(farmer_id=farmer_id, name=payload.get("name"))
+    for field in [
+        "farm_scale",
+        "pesticide_access_level",
+        "equipment",
+        "cultivation_mode",
+        "experience_level",
+        "risk_preference",
+    ]:
+        if field in payload:
+            setattr(profile, field, payload.get(field))
     if "confirm_when_low_confidence" in payload:
         profile.confirm_when_low_confidence = bool(payload.get("confirm_when_low_confidence"))
     if "constraints" in payload and isinstance(payload.get("constraints"), dict):

@@ -34,6 +34,13 @@ def build_personalization_context(
             parts.append(f"备注: {base_profile.notes}")
 
     constraints = profile.constraints
+    parts.append(f"种植规模: {profile.farm_scale}")
+    parts.append(f"购药能力: {profile.pesticide_access_level}")
+    if profile.equipment:
+        parts.append(f"可用设备: {', '.join(profile.equipment)}")
+    parts.append(f"栽培模式: {profile.cultivation_mode}")
+    parts.append(f"经验水平: {profile.experience_level}")
+    parts.append(f"风险偏好: {profile.risk_preference}")
     if constraints.banned_ingredients:
         parts.append(f"禁用成分: {', '.join(constraints.banned_ingredients)}")
     if constraints.harvest_window_days:
@@ -60,6 +67,12 @@ def build_personalization_flags(
         "profile_schema_version": profile.schema_version,
         "profile_updated_at": profile.updated_at,
         "profile_hash": compute_profile_hash(profile),
+        "farm_scale": profile.farm_scale,
+        "pesticide_access_level": profile.pesticide_access_level,
+        "equipment": profile.equipment,
+        "cultivation_mode": profile.cultivation_mode,
+        "experience_level": profile.experience_level,
+        "risk_preference": profile.risk_preference,
     }
 
     if base_profile:
