@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import Dict, Optional
 
 from .profile_models import BaseProfile, FarmerProfile, TreatmentConstraint, compute_profile_hash
+from .policy_engine import PersonalizationPolicy
 
 
 def build_personalization_context(
@@ -52,7 +53,9 @@ def build_personalization_context(
 
 
 def build_personalization_flags(
-    profile: Optional[FarmerProfile], base_profile: Optional[BaseProfile]
+    profile: Optional[FarmerProfile],
+    base_profile: Optional[BaseProfile],
+    policy: Optional[PersonalizationPolicy] = None,
 ) -> Dict:
     """构建约束与决策标志。"""
     if not profile:
@@ -74,6 +77,8 @@ def build_personalization_flags(
         "experience_level": profile.experience_level,
         "risk_preference": profile.risk_preference,
     }
+    if policy is not None:
+        flags["personalization_reasons"] = list(policy.explanations)
 
     if base_profile:
         flags.update(

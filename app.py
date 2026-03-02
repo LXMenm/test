@@ -91,6 +91,7 @@ class DiagnoseResponse(BaseModel):
     filtered: bool
     filtered_reasons: list[str]
     filtered_components: list[str]
+    personalization_reasons: list[str]
     profile_farm_scale: str | None = None
     profile_pesticide_access_level: str | None = None
     profile_equipment: list[str] = []
@@ -455,6 +456,7 @@ async def diagnose_image(
     filtered = False
     filtered_reasons: list[str] = []
     filtered_components: list[str] = []
+    personalization_reasons: list[str] = []
 
     image_result_dict = {
         "disease": disease,
@@ -504,17 +506,21 @@ async def diagnose_image(
         prevention_advice = (final_state.get("prevention_advice") or "").strip()
         if treatment_plan or prevention_advice:
             treatment = TreatmentPlan(plan=treatment_plan, prevention=prevention_advice)
+        personalization_reasons = list(final_state.get("personalization_reasons") or [])
 
     personalization_applied = bool(flags.get("personalization_applied"))
     filtered = bool(flags.get("filtered"))
     filtered_reasons = list(flags.get("filtered_reasons") or [])
     filtered_components = list(flags.get("filtered_components") or [])
+    if not personalization_reasons:
+        personalization_reasons = list(flags.get("personalization_reasons") or [])
 
     trace_personalization_outputs = {
         "personalization_applied": personalization_applied,
         "filtered": filtered,
         "filtered_reasons": filtered_reasons,
         "filtered_components": filtered_components,
+        "personalization_reasons": personalization_reasons,
         "personalization_context": personalization_context,
         "personalization_flags_summary": personalization_meta,
     }
@@ -593,6 +599,7 @@ async def diagnose_image(
         filtered=filtered,
         filtered_reasons=filtered_reasons,
         filtered_components=filtered_components,
+        personalization_reasons=personalization_reasons,
         profile_farm_scale=flags.get("farm_scale"),
         profile_pesticide_access_level=flags.get("pesticide_access_level"),
         profile_equipment=[str(item) for item in (flags.get("equipment") or [])],
