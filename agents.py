@@ -185,7 +185,8 @@ def reception_agent(state: CropDiseaseState) -> CropDiseaseState:
     crop_type = "番茄"
     _fill_missing_from_profile(state, base_profile)
 
-    missing_profile_fields = _find_missing_profile_fields(base_profile)
+    policy = state.get("personalization_policy") or {}
+    missing_profile_fields = _find_missing_profile_fields(profile, base_profile, policy)
     
     # 如果没有提取到症状，保持为空列表
     if not symptoms:
@@ -202,6 +203,9 @@ def reception_agent(state: CropDiseaseState) -> CropDiseaseState:
         message_parts.append(f"档案缺失字段：{', '.join(missing_profile_fields)}，请后续追问补充。")
         flags = state.get("personalization_flags", {}) or {}
         flags["missing_profile_fields"] = missing_profile_fields
+        follow_ups = _build_profile_follow_up_questions(missing_profile_fields, profile, base_profile, policy)
+        if follow_ups:
+            flags["follow_up_questions"] = follow_ups[:3]
         state["personalization_flags"] = flags
     message = "，".join(message_parts)
 
@@ -287,6 +291,8 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
     crop_growth_stage = state.get("crop_growth_stage")
     image_path = state.get("image_path")
     flags = state.get("personalization_flags", {}) or {}
+    policy = state.get("personalization_policy") or {}
+    hard_constraints = policy.get("hard_constraints") if isinstance(policy, dict) else {}
     priors = {
         "facility": flags.get("facility"),
         "province": flags.get("province"),
@@ -407,6 +413,16 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
         except Exception:
             pass
 
+    env_risk_hints = []
+    cultivation_mode = str(flags.get("cultivation_mode") or "")
+    facility_text = str(flags.get("facility") or "")
+    if cultivation_mode == "HYDROPONIC":
+        env_risk_hints.append("水培番茄需重点监测营养液卫生与根区溶氧，避免环境诱导型病害扩散。")
+    if ("温室" in facility_text) or ("GREENHOUSE" in str(flags.get("farm_scale") or "")):
+        env_risk_hints.append("温室场景建议关注通风除湿与叶面持续结露风险，降低灰霉/霉病类压力。")
+    if env_risk_hints:
+        disease_description = (disease_description or "") + "\n环境风险提示：" + "；".join(env_risk_hints[:2])
+
     final_confidence = final_confidence if final_confidence is not None else (disease_confidence or 0.0)
     disease_confidence = final_confidence
     if final_source is None:
@@ -426,6 +442,11 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
 
     if flags.get("confirm_when_low_confidence") and disease_confidence < DIAGNOSIS_CONFIDENCE_THRESHOLD:
         follow_ups = _build_follow_up_questions(symptoms, flags, state)
+        if hard_constraints.get("forbid_professional_pesticides"):
+            follow_ups = [
+                "当前是否能购买合规药剂，还是仅能采用家庭可执行方案？",
+                "现有喷雾设备条件如何（手动喷壶/背负式/弥雾/无人机）？",
+            ] + follow_ups
         if follow_ups:
             flags["follow_up_questions"] = follow_ups
             message += f"；建议追问：{'；'.join(follow_ups)}"
@@ -760,18 +781,58 @@ def _fill_missing_from_profile(state: CropDiseaseState, base_profile: Optional[B
         state["crop_growth_stage"] = base_profile.growth_stage
 
 
-def _find_missing_profile_fields(base_profile: Optional[BaseProfile]) -> list[str]:
+def _find_missing_profile_fields(
+    profile: Optional[FarmerProfile],
+    base_profile: Optional[BaseProfile],
+    policy: Optional[dict] = None,
+) -> list[str]:
     """检查档案中缺少的关键字段，提示追问。"""
-    if not base_profile:
-        return ["base_id", "location", "growth_stage"]
+    if not profile:
+        return ["farm_scale", "pesticide_access_level", "cultivation_mode", "base_id", "location", "growth_stage"]
     missing = []
-    if not base_profile.location:
-        missing.append("location")
-    if not base_profile.growth_stage:
-        missing.append("growth_stage")
-    if not base_profile.environment:
-        missing.append("environment")
-    return missing
+    for field in ["farm_scale", "pesticide_access_level", "cultivation_mode", "experience_level", "risk_preference"]:
+        if not getattr(profile, field, None):
+            missing.append(field)
+
+    scale = getattr(profile, "farm_scale", None)
+    equipment = list(getattr(profile, "equipment", []) or [])
+    if scale in {"GREENHOUSE_LARGE", "LARGE"} and not equipment:
+        missing.append("equipment")
+
+    if base_profile is None:
+        missing.extend(["base_id", "location", "growth_stage"])
+    else:
+        if not base_profile.location:
+            missing.append("location")
+        if not base_profile.growth_stage:
+            missing.append("growth_stage")
+        if not base_profile.environment:
+            missing.append("environment")
+    return list(dict.fromkeys(missing))
+
+
+def _build_profile_follow_up_questions(
+    missing_fields: list[str],
+    profile: Optional[FarmerProfile],
+    base_profile: Optional[BaseProfile],
+    policy: Optional[dict] = None,
+) -> list[str]:
+    """根据档案缺失项生成番茄场景追问（最多3条）。"""
+    questions: list[str] = []
+    missing = set(missing_fields)
+    if "farm_scale" in missing:
+        questions.append("您的番茄种植规模更接近家庭阳台、小规模地块，还是大棚/大农场？")
+    if "pesticide_access_level" in missing:
+        questions.append("您目前是否能方便购买合规农药（无/受限/充足）？")
+    if "cultivation_mode" in missing:
+        questions.append("当前番茄是土培、水培还是基质栽培？")
+    if "equipment" in missing:
+        questions.append("是否具备喷施设备（背负式喷雾器、弥雾机或无人机）？")
+    if "experience_level" in missing or "risk_preference" in missing:
+        questions.append("更希望稳妥低风险方案，还是追求见效更快的积极方案？")
+    if "growth_stage" in missing and base_profile is not None:
+        questions.append("当前番茄处于哪个生育期（苗期/开花/结果）？")
+    return questions[:3]
 
 
 def _summarize_constraints(constraints: TreatmentConstraint) -> str:
@@ -808,6 +869,39 @@ def supervisor_agent(state: CropDiseaseState) -> CropDiseaseState:
     flags = state.get("personalization_flags", {}) or {}
     personalization_context = state.get("personalization_context") or "无"
     follow_ups = flags.get("follow_up_questions", [])
+    missing_profile_fields = list(flags.get("missing_profile_fields") or [])
+    policy = state.get("personalization_policy") or {}
+    policy_reasons = list(state.get("personalization_reasons") or flags.get("personalization_reasons") or [])
+    hard_constraints = policy.get("hard_constraints") if isinstance(policy, dict) else {}
+    hard_constraint_summary = {
+        "forbid_professional_pesticides": bool((hard_constraints or {}).get("forbid_professional_pesticides")),
+        "forbidden_equipment_flows": list((hard_constraints or {}).get("forbidden_equipment_flows") or []),
+    }
+
+    if missing_profile_fields:
+        message = f"番茄病害监督智能体：档案关键信息缺失({', '.join(missing_profile_fields)})，先回到接待智能体追问"
+        state["next_action"] = "reception"
+        state["is_complete"] = False
+        state["messages"] = [message]
+        history = state.get("history", [])
+        history.append((current_step, "reception"))
+        state["history"] = history[-10:]
+        append_trace(
+            state,
+            agent="supervisor",
+            inputs={
+                "current_step": current_step,
+                "missing_profile_fields": missing_profile_fields,
+                "follow_up_questions": follow_ups,
+            },
+            outputs={"next_action": "reception", "is_complete": False},
+            decision={
+                "next_action": "reception",
+                "reasons": ["missing_profile_fields"],
+                "reason": message,
+            },
+        )
+        return state
     
     # 获取历史next_action，防止无限循环
     history = state.get("history", [])
@@ -824,6 +918,9 @@ def supervisor_agent(state: CropDiseaseState) -> CropDiseaseState:
 - 历史消息：{messages[-3:] if messages else '无'}
 - 个性化上下文：{personalization_context}
 - 追问建议：{follow_ups or '无'}
+- 缺失档案字段：{missing_profile_fields or '无'}
+- Policy解释摘要：{policy_reasons[:3] or '无'}
+- 关键硬约束：{hard_constraint_summary}
 """
 
     prompt = f"""{context}
