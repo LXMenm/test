@@ -24,6 +24,10 @@ interface DiagnosisResult {
   personalization_applied?: boolean;
   filtered?: boolean;
   filtered_reasons?: string[];
+  profile_farm_scale?: string;
+  profile_pesticide_access_level?: string;
+  profile_equipment?: string[];
+  profile_cultivation_mode?: string;
 }
 
 interface ProfileListItem {
@@ -35,6 +39,10 @@ interface ProfileDetail {
   farmer_id: string;
   name?: string;
   active_base_id?: string;
+  farm_scale?: string;
+  pesticide_access_level?: string;
+  equipment?: string[];
+  cultivation_mode?: string;
   constraints?: {
     prefer_organic?: boolean;
     harvest_window_days?: number;
@@ -265,6 +273,10 @@ export function DiagnosePage() {
     personalization_applied: payload.personalization_applied === true,
     filtered: payload.filtered === true,
     filtered_reasons: Array.isArray(payload.filtered_reasons) ? payload.filtered_reasons.map((item) => String(item)) : [],
+    profile_farm_scale: typeof payload.profile_farm_scale === 'string' ? payload.profile_farm_scale : undefined,
+    profile_pesticide_access_level: typeof payload.profile_pesticide_access_level === 'string' ? payload.profile_pesticide_access_level : undefined,
+    profile_equipment: Array.isArray(payload.profile_equipment) ? payload.profile_equipment.map((item) => String(item)) : [],
+    profile_cultivation_mode: typeof payload.profile_cultivation_mode === 'string' ? payload.profile_cultivation_mode : undefined,
   });
 
   const normalizeTraceEvents = (eventsLike: unknown): TraceEvent[] => {
@@ -712,6 +724,10 @@ export function DiagnosePage() {
               {selectedProfile && (
                 <div className="bg-white/5 rounded-xl p-3 text-xs text-white/75 space-y-1 border border-white/10">
                   <p>农户：{selectedProfile.farmer_id}{selectedProfile.name ? ` · ${selectedProfile.name}` : ''}</p>
+                  <p>规模：{selectedProfile.farm_scale || 'SMALL'}</p>
+                  <p>购药能力：{selectedProfile.pesticide_access_level || 'LIMITED'}</p>
+                  <p>设备：{(selectedProfile.equipment || []).join('、') || '无'}</p>
+                  <p>栽培模式：{selectedProfile.cultivation_mode || 'SOIL'}</p>
                   <p>偏好有机：{selectedProfile.constraints?.prefer_organic ? '是' : '否'}</p>
                   <p>禁用成分：{(selectedProfile.constraints?.banned_ingredients || []).join('、') || '无'}</p>
                   <p>采收窗口：{selectedProfile.constraints?.harvest_window_days ?? '未设置'} 天</p>
@@ -828,6 +844,16 @@ export function DiagnosePage() {
                       ) : (
                         <p className="text-white/50">暂无过滤说明</p>
                       )}
+                    </div>
+                  </div>
+
+                  <div>
+                    <h4 className="text-white/80 font-medium mb-2">Profile Snapshot</h4>
+                    <div className="bg-white/5 rounded-xl p-4 text-sm text-white/80 space-y-1">
+                      <p>farm_scale: {result.profile_farm_scale || 'SMALL'}</p>
+                      <p>pesticide_access_level: {result.profile_pesticide_access_level || 'LIMITED'}</p>
+                      <p>equipment: {(result.profile_equipment || []).join(', ') || '[]'}</p>
+                      <p>cultivation_mode: {result.profile_cultivation_mode || 'SOIL'}</p>
                     </div>
                   </div>
 
