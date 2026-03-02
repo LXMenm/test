@@ -454,6 +454,7 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [workflowDone, setWorkflowDone] = useState(false);
   const [diagnosisConfidencePct, setDiagnosisConfidencePct] = useState<number | undefined>(undefined);
+  const [allEvents, setAllEvents] = useState<NormalizedEvent[]>([]);
   const [debugOpen, setDebugOpen] = useState<Record<FixedAgentId, boolean>>({
     supervisor: false,
     reception: false,
@@ -549,6 +550,7 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
       if (sa !== sb) return sa - sb;
       return (a.tsMs ?? Number.MAX_SAFE_INTEGER) - (b.tsMs ?? Number.MAX_SAFE_INTEGER);
     });
+    setAllEvents(allEventsRef.current);
 
     if (agentId === 'diagnosis') {
       const data = isRecord(event.data) ? event.data : undefined;
@@ -662,6 +664,7 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
         final: [],
       };
       allEventsRef.current = [];
+      queueMicrotask(() => setAllEvents([]));
       return;
     }
 
@@ -688,6 +691,7 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
       final: [],
     };
     allEventsRef.current = [];
+    queueMicrotask(() => setAllEvents([]));
 
     const openStream = () => {
       if (cancelled || workflowDoneRef.current) return;
@@ -767,7 +771,7 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
       cancelled = true;
       clearExternal();
     };
-  }, [traceId, phaseStartMs, refreshToken]);
+  }, [traceId, phaseStartMs, refreshToken, applyNormalizedEvent, clearExternal]);
 
   useEffect(() => {
     if (workflowDone) {
@@ -786,8 +790,8 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
 
 
   const phaseDurationsByAgent = useMemo(
-    () => calcPhaseDurationsByAgent(allEventsRef.current, nowMs, workflowDone),
-    [rows, nowMs, workflowDone],
+    () => calcPhaseDurationsByAgent(allEvents, nowMs, workflowDone),
+    [allEvents, nowMs, workflowDone],
   );
 
   const renderedRows = useMemo(() => {
