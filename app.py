@@ -33,7 +33,6 @@ from event_store import (
 from knowledge_base import get_kb_manager
 from personalization.profile_models import BaseProfile, FarmerProfile, TreatmentConstraint
 from personalization.profile_context import build_personalization_context, build_personalization_flags
-from personalization.profile_rules import apply_personalization_to_treatment
 from personalization.profile_store import get_profile_path, load_profile, list_profile_ids
 from state import create_initial_state
 from trace_store import list_trace_events, subscribe as subscribe_trace, unsubscribe as unsubscribe_trace, emit_trace_event
@@ -91,6 +90,12 @@ class DiagnoseResponse(BaseModel):
     farmer_id: Optional[str]
     filtered: bool
     filtered_reasons: list[str]
+    filtered_components: list[str]
+    personalization_reasons: list[str]
+    profile_farm_scale: str | None = None
+    profile_pesticide_access_level: str | None = None
+    profile_equipment: list[str] = []
+    profile_cultivation_mode: str | None = None
     trace_id: str
     need_confirm: bool | None = None
     final_confidence: float | None = None
@@ -259,6 +264,12 @@ def _build_personalization_meta(flags: dict, farmer_id: str | None, base_id: str
         "facility": flags.get("facility"),
         "environment": flags.get("environment"),
         "growth_stage": flags.get("growth_stage"),
+        "farm_scale": flags.get("farm_scale"),
+        "pesticide_access_level": flags.get("pesticide_access_level"),
+        "equipment": flags.get("equipment") or [],
+        "cultivation_mode": flags.get("cultivation_mode"),
+        "experience_level": flags.get("experience_level"),
+        "risk_preference": flags.get("risk_preference"),
     }
 
 
@@ -435,15 +446,6 @@ async def diagnose_image(
         final_disease = rule_result.rule_disease
 
     treatment: TreatmentPlan | None = None
-    emit_node_event(trace_id, node="KBRetrievalAgent", status="start", message="检索知识库方案")
-    if final_disease:
-        plan = kb.get_treatment_plan(final_disease)
-        if isinstance(plan, dict) and "treatment" in plan and "prevention" in plan:
-            treatment = TreatmentPlan(
-                plan=plan["treatment"],
-                prevention=plan["prevention"],
-            )
-    emit_node_event(trace_id, node="KBRetrievalAgent", status="end", message="知识库检索完成", payload={"final_disease": final_disease})
 
     profile, base_profile, resolved_base_id = _resolve_profile_and_base(farmer_id, base_id)
     personalization_context = build_personalization_context(profile, base_profile)
@@ -454,33 +456,7 @@ async def diagnose_image(
     filtered = False
     filtered_reasons: list[str] = []
     filtered_components: list[str] = []
-    emit_node_event(trace_id, node="PersonalizationAgent", status="start", message="应用个性化约束", payload={"meta": personalization_meta})
-    if treatment:
-        plan, prevention, personalization_outputs = apply_personalization_to_treatment(
-            treatment.plan,
-            treatment.prevention,
-            personalization_flags,
-        )
-        treatment = TreatmentPlan(plan=plan or treatment.plan, prevention=prevention or treatment.prevention)
-        personalization_applied = bool(personalization_outputs.get("personalization_applied"))
-        filtered = bool(personalization_outputs.get("filtered"))
-        filtered_reasons = list(personalization_outputs.get("filtered_reasons") or [])
-        filtered_components = list(personalization_outputs.get("filtered_components") or [])
-    trace_personalization_outputs = {
-        "personalization_applied": personalization_applied,
-        "filtered": filtered,
-        "filtered_reasons": filtered_reasons,
-        "filtered_components": filtered_components,
-        "personalization_context": personalization_context,
-        "personalization_flags_summary": personalization_meta,
-    }
-    emit_node_event(
-        trace_id,
-        node="PersonalizationAgent",
-        status="end",
-        message="个性化处理完成" if farmer_id else "未提供个性化档案，跳过",
-        payload={"outputs": trace_personalization_outputs, "meta": {**personalization_meta, **trace_personalization_outputs}},
-    )
+    personalization_reasons: list[str] = []
 
     image_result_dict = {
         "disease": disease,
@@ -491,8 +467,6 @@ async def diagnose_image(
     rule_result_dict = rule_result.model_dump() if rule_result else None
     image_url = f"/uploads/{unique_name}"
 
-    emit_node_event(trace_id, node="PrescriptionAgent", status="start", message="生成处置建议")
-    emit_node_event(trace_id, node="PrescriptionAgent", status="end", message="处置建议准备完成")
     emit_node_event(trace_id, node="ValidatorAgent", status="start", message="校验结果")
     need_confirm = None
     trace_fallback_reason: list[str] | None = None
@@ -520,31 +494,43 @@ async def diagnose_image(
         print(f"Warning: failed to build trace events: {exc}")
         emit_node_event(trace_id, node="ValidatorAgent", status="error", message=f"校验失败: {exc}")
 
-    if final_state and final_state.get("final_disease"):
+    flags = dict(personalization_flags)
+    if final_state:
         final_disease = final_state.get("final_disease") or final_disease
-        flags = final_state.get("personalization_flags") or {}
+        flags = final_state.get("personalization_flags") or flags
         need_confirm = flags.get("need_confirm")
         trace_fallback_reason = flags.get("fallback_reason")
         final_confidence = final_state.get("final_confidence")
         final_source = final_state.get("final_source")
-        if final_disease:
-            plan = kb.get_treatment_plan(final_disease)
-            if isinstance(plan, dict) and "treatment" in plan and "prevention" in plan:
-                treatment = TreatmentPlan(
-                    plan=plan["treatment"],
-                    prevention=plan["prevention"],
-                )
-            if treatment:
-                plan, prevention, personalization_outputs = apply_personalization_to_treatment(
-                    treatment.plan,
-                    treatment.prevention,
-                    personalization_flags,
-                )
-                treatment = TreatmentPlan(plan=plan or treatment.plan, prevention=prevention or treatment.prevention)
-                personalization_applied = bool(personalization_outputs.get("personalization_applied"))
-                filtered = bool(personalization_outputs.get("filtered"))
-                filtered_reasons = list(personalization_outputs.get("filtered_reasons") or [])
-                filtered_components = list(personalization_outputs.get("filtered_components") or [])
+        treatment_plan = (final_state.get("treatment_plan") or "").strip()
+        prevention_advice = (final_state.get("prevention_advice") or "").strip()
+        if treatment_plan or prevention_advice:
+            treatment = TreatmentPlan(plan=treatment_plan, prevention=prevention_advice)
+        personalization_reasons = list(final_state.get("personalization_reasons") or [])
+
+    personalization_applied = bool(flags.get("personalization_applied"))
+    filtered = bool(flags.get("filtered"))
+    filtered_reasons = list(flags.get("filtered_reasons") or [])
+    filtered_components = list(flags.get("filtered_components") or [])
+    if not personalization_reasons:
+        personalization_reasons = list(flags.get("personalization_reasons") or [])
+
+    trace_personalization_outputs = {
+        "personalization_applied": personalization_applied,
+        "filtered": filtered,
+        "filtered_reasons": filtered_reasons,
+        "filtered_components": filtered_components,
+        "personalization_reasons": personalization_reasons,
+        "personalization_context": personalization_context,
+        "personalization_flags_summary": personalization_meta,
+    }
+    emit_node_event(
+        trace_id,
+        node="PersonalizationAgent",
+        status="end",
+        message="个性化结果来自LangGraph输出" if farmer_id else "未提供个性化档案，跳过",
+        payload={"outputs": trace_personalization_outputs, "meta": {**personalization_meta, **trace_personalization_outputs}},
+    )
 
     treatment_or_none = treatment.model_dump() if treatment else None
 
@@ -612,6 +598,12 @@ async def diagnose_image(
         farmer_id=farmer_id,
         filtered=filtered,
         filtered_reasons=filtered_reasons,
+        filtered_components=filtered_components,
+        personalization_reasons=personalization_reasons,
+        profile_farm_scale=flags.get("farm_scale"),
+        profile_pesticide_access_level=flags.get("pesticide_access_level"),
+        profile_equipment=[str(item) for item in (flags.get("equipment") or [])],
+        profile_cultivation_mode=flags.get("cultivation_mode"),
         trace_id=trace_id,
         need_confirm=need_confirm,
         final_confidence=final_confidence,
@@ -880,6 +872,16 @@ def create_profile(payload: dict = Body(...)) -> dict[str, bool | str]:
         raise HTTPException(status_code=409, detail="农户ID已存在")
 
     profile = FarmerProfile(farmer_id=farmer_id, name=payload.get("name"))
+    for field in [
+        "farm_scale",
+        "pesticide_access_level",
+        "equipment",
+        "cultivation_mode",
+        "experience_level",
+        "risk_preference",
+    ]:
+        if field in payload:
+            setattr(profile, field, payload.get(field))
     if "confirm_when_low_confidence" in payload:
         profile.confirm_when_low_confidence = bool(payload.get("confirm_when_low_confidence"))
     if "constraints" in payload and isinstance(payload.get("constraints"), dict):

@@ -4,7 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -37,10 +37,16 @@ class FarmerProfile(BaseModel):
 
     farmer_id: str
     name: Optional[str] = None
-    schema_version: str = "1.0"
+    schema_version: str = "1.1"
     updated_at: Optional[str] = None
     active_base_id: Optional[str] = None
     confirm_when_low_confidence: bool = True
+    farm_scale: Literal["BALCONY", "SMALL", "MEDIUM", "LARGE", "GREENHOUSE_LARGE"] = "SMALL"
+    pesticide_access_level: Literal["NONE", "LIMITED", "FULL"] = "LIMITED"
+    equipment: List[Literal["HAND_SPRAYER", "BACKPACK_SPRAYER", "MIST_BLOWER", "DRONE"]] = Field(default_factory=list)
+    cultivation_mode: Literal["SOIL", "HYDROPONIC", "SUBSTRATE"] = "SOIL"
+    experience_level: Literal["NOVICE", "INTERMEDIATE", "EXPERT"] = "INTERMEDIATE"
+    risk_preference: Literal["CONSERVATIVE", "BALANCED", "AGGRESSIVE"] = "BALANCED"
     bases: Dict[str, BaseProfile] = Field(default_factory=dict)
     constraints: TreatmentConstraint = Field(default_factory=TreatmentConstraint)
 
