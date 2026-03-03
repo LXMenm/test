@@ -10,6 +10,12 @@ import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
 import { cn } from '@/lib/utils';
 import { AgentWorkflowPanel } from '@/components/AgentWorkflowPanel';
+import {
+  getCultivationModeLabel,
+  getEquipmentLabel,
+  getFarmScaleLabel,
+  getPesticideAccessLevelLabel,
+} from '@/lib/profileLabels';
 
 interface DiagnosisResult {
   image_url: string;
@@ -724,10 +730,10 @@ export function DiagnosePage() {
               {selectedProfile && (
                 <div className="bg-white/5 rounded-xl p-3 text-xs text-white/75 space-y-1 border border-white/10">
                   <p>农户：{selectedProfile.farmer_id}{selectedProfile.name ? ` · ${selectedProfile.name}` : ''}</p>
-                  <p>规模：{selectedProfile.farm_scale || 'SMALL'}</p>
-                  <p>购药能力：{selectedProfile.pesticide_access_level || 'LIMITED'}</p>
-                  <p>设备：{(selectedProfile.equipment || []).join('、') || '无'}</p>
-                  <p>栽培模式：{selectedProfile.cultivation_mode || 'SOIL'}</p>
+                  <p>规模：{getFarmScaleLabel(selectedProfile.farm_scale || 'SMALL')}</p>
+                  <p>购药能力：{getPesticideAccessLevelLabel(selectedProfile.pesticide_access_level || 'LIMITED')}</p>
+                  <p>设备：{(selectedProfile.equipment || []).map((item) => getEquipmentLabel(item)).join('、') || '无'}</p>
+                  <p>栽培模式：{getCultivationModeLabel(selectedProfile.cultivation_mode || 'SOIL')}</p>
                   <p>偏好有机：{selectedProfile.constraints?.prefer_organic ? '是' : '否'}</p>
                   <p>禁用成分：{(selectedProfile.constraints?.banned_ingredients || []).join('、') || '无'}</p>
                   <p>采收窗口：{selectedProfile.constraints?.harvest_window_days ?? '未设置'} 天</p>
@@ -850,10 +856,10 @@ export function DiagnosePage() {
                   <div>
                     <h4 className="text-white/80 font-medium mb-2">Profile Snapshot</h4>
                     <div className="bg-white/5 rounded-xl p-4 text-sm text-white/80 space-y-1">
-                      <p>farm_scale: {result.profile_farm_scale || 'SMALL'}</p>
-                      <p>pesticide_access_level: {result.profile_pesticide_access_level || 'LIMITED'}</p>
-                      <p>equipment: {(result.profile_equipment || []).join(', ') || '[]'}</p>
-                      <p>cultivation_mode: {result.profile_cultivation_mode || 'SOIL'}</p>
+                      <p>规模: {getFarmScaleLabel(result.profile_farm_scale || 'SMALL')}</p>
+                      <p>购药能力: {getPesticideAccessLevelLabel(result.profile_pesticide_access_level || 'LIMITED')}</p>
+                      <p>设备: {(result.profile_equipment || []).map((item) => getEquipmentLabel(item)).join('、') || '无'}</p>
+                      <p>栽培模式: {getCultivationModeLabel(result.profile_cultivation_mode || 'SOIL')}</p>
                     </div>
                   </div>
 

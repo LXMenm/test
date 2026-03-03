@@ -10,6 +10,14 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Separator } from '@/components/ui/separator';
 import { cn } from '@/lib/utils';
+import {
+  getCultivationModeLabel,
+  getEquipmentLabel,
+  getExperienceLevelLabel,
+  getFarmScaleLabel,
+  getPesticideAccessLevelLabel,
+  getRiskPreferenceLabel,
+} from '@/lib/profileLabels';
 
 interface FarmerBase {
   base_id: string;
@@ -551,7 +559,7 @@ export function ProfilesPage() {
                       <Select value={editedProfile.farm_scale} onValueChange={(v) => setEditedProfile({ ...editedProfile, farm_scale: v as FarmerProfile['farm_scale'] })}>
                         <SelectTrigger className="bg-white/5 border-white/20 text-white"><SelectValue /></SelectTrigger>
                         <SelectContent className="bg-[#1a1a1a] border-white/20">
-                          {FARM_SCALE_OPTIONS.map((v) => <SelectItem key={v} value={v}>{v}</SelectItem>)}
+                          {FARM_SCALE_OPTIONS.map((v) => <SelectItem key={v} value={v}>{getFarmScaleLabel(v)}</SelectItem>)}
                         </SelectContent>
                       </Select>
                     </div>
@@ -560,7 +568,7 @@ export function ProfilesPage() {
                       <Select value={editedProfile.pesticide_access_level} onValueChange={(v) => setEditedProfile({ ...editedProfile, pesticide_access_level: v as FarmerProfile['pesticide_access_level'] })}>
                         <SelectTrigger className="bg-white/5 border-white/20 text-white"><SelectValue /></SelectTrigger>
                         <SelectContent className="bg-[#1a1a1a] border-white/20">
-                          {PESTICIDE_ACCESS_OPTIONS.map((v) => <SelectItem key={v} value={v}>{v}</SelectItem>)}
+                          {PESTICIDE_ACCESS_OPTIONS.map((v) => <SelectItem key={v} value={v}>{getPesticideAccessLevelLabel(v)}</SelectItem>)}
                         </SelectContent>
                       </Select>
                     </div>
@@ -569,7 +577,7 @@ export function ProfilesPage() {
                       <Select value={editedProfile.cultivation_mode} onValueChange={(v) => setEditedProfile({ ...editedProfile, cultivation_mode: v as FarmerProfile['cultivation_mode'] })}>
                         <SelectTrigger className="bg-white/5 border-white/20 text-white"><SelectValue /></SelectTrigger>
                         <SelectContent className="bg-[#1a1a1a] border-white/20">
-                          {CULTIVATION_MODE_OPTIONS.map((v) => <SelectItem key={v} value={v}>{v}</SelectItem>)}
+                          {CULTIVATION_MODE_OPTIONS.map((v) => <SelectItem key={v} value={v}>{getCultivationModeLabel(v)}</SelectItem>)}
                         </SelectContent>
                       </Select>
                     </div>
@@ -578,7 +586,7 @@ export function ProfilesPage() {
                       <Select value={editedProfile.experience_level} onValueChange={(v) => setEditedProfile({ ...editedProfile, experience_level: v as FarmerProfile['experience_level'] })}>
                         <SelectTrigger className="bg-white/5 border-white/20 text-white"><SelectValue /></SelectTrigger>
                         <SelectContent className="bg-[#1a1a1a] border-white/20">
-                          {EXPERIENCE_OPTIONS.map((v) => <SelectItem key={v} value={v}>{v}</SelectItem>)}
+                          {EXPERIENCE_OPTIONS.map((v) => <SelectItem key={v} value={v}>{getExperienceLevelLabel(v)}</SelectItem>)}
                         </SelectContent>
                       </Select>
                     </div>
@@ -587,7 +595,7 @@ export function ProfilesPage() {
                       <Select value={editedProfile.risk_preference} onValueChange={(v) => setEditedProfile({ ...editedProfile, risk_preference: v as FarmerProfile['risk_preference'] })}>
                         <SelectTrigger className="bg-white/5 border-white/20 text-white"><SelectValue /></SelectTrigger>
                         <SelectContent className="bg-[#1a1a1a] border-white/20">
-                          {RISK_OPTIONS.map((v) => <SelectItem key={v} value={v}>{v}</SelectItem>)}
+                          {RISK_OPTIONS.map((v) => <SelectItem key={v} value={v}>{getRiskPreferenceLabel(v)}</SelectItem>)}
                         </SelectContent>
                       </Select>
                     </div>
@@ -608,7 +616,7 @@ export function ProfilesPage() {
                                 }}
                                 className="border-white/30 data-[state=checked]:bg-[#c8f7c5] data-[state=checked]:text-black"
                               />
-                              <span>{eq}</span>
+                              <span>{getEquipmentLabel(eq)}</span>
                             </label>
                           );
                         })}
