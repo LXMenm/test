@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   BadgeCheck,
@@ -480,30 +480,30 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
   });
   const allEventsRef = useRef<NormalizedEvent[]>([]);
 
-  const clearTicker = () => {
+  const clearTicker = useCallback(() => {
     if (tickerRef.current) {
       clearInterval(tickerRef.current);
       tickerRef.current = null;
     }
-  };
+  }, []);
 
-  const closeStream = () => {
+  const closeStream = useCallback(() => {
     if (esRef.current) {
       esRef.current.close();
       esRef.current = null;
     }
-  };
+  }, []);
 
-  const clearExternal = () => {
+  const clearExternal = useCallback(() => {
     closeStream();
     clearTicker();
-  };
+  }, [closeStream, clearTicker]);
 
-  const stopPolling = () => {
+  const stopPolling = useCallback(() => {
     // 保留明确入口，便于在流程结束时统一停止后续轮询/流更新
-  };
+  }, []);
 
-  const maybeStartTicker = (snapshot: Record<FixedAgentId, AgentRowState>, done: boolean) => {
+  const maybeStartTicker = useCallback((snapshot: Record<FixedAgentId, AgentRowState>, done: boolean) => {
     const hasRunning = FIXED_AGENTS.some((agent) => snapshot[agent.id].status === 'running');
     const hasPhaseTimer = typeof phaseStartMs === 'number' && Number.isFinite(phaseStartMs);
     if (!done && (hasRunning || hasPhaseTimer)) {
@@ -513,9 +513,9 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
     } else {
       clearTicker();
     }
-  };
+  }, [phaseStartMs, clearTicker]);
 
-  const completeSupervisorOnDone = (doneTs?: number) => {
+  const completeSupervisorOnDone = useCallback((doneTs?: number) => {
     setRows((prev) => {
       if (prev.supervisor.status !== 'running') return prev;
       const next = { ...prev };
@@ -527,9 +527,9 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
       };
       return next;
     });
-  };
+  }, []);
 
-  const applyNormalizedEvent = (event: NormalizedEvent): boolean => {
+  const applyNormalizedEvent = useCallback((event: NormalizedEvent): boolean => {
     if (workflowDoneRef.current) return false;
 
     const seq = event.seq;
@@ -646,7 +646,7 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
     }
 
     return true;
-  };
+  }, [maybeStartTicker, stopPolling, closeStream, clearTicker, completeSupervisorOnDone]);
 
   useEffect(() => {
     if (!traceId) {
@@ -771,7 +771,7 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
       cancelled = true;
       clearExternal();
     };
-  }, [traceId, phaseStartMs, refreshToken, applyNormalizedEvent, clearExternal]);
+  }, [traceId, phaseStartMs, refreshToken, applyNormalizedEvent, clearExternal, closeStream]);
 
   useEffect(() => {
     if (workflowDone) {
@@ -779,7 +779,7 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
       closeStream();
       completeSupervisorOnDone(finalTsRef.current);
     }
-  }, [workflowDone]);
+  }, [workflowDone, clearTicker, closeStream, completeSupervisorOnDone]);
 
   useEffect(() => {
     if (workflowDone) return;
