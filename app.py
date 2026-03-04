@@ -31,6 +31,7 @@ from event_store import (
     geo_points_range,
 )
 from knowledge_base import get_kb_manager
+from personalization import profile_rules
 from personalization.profile_models import BaseProfile, FarmerProfile, TreatmentConstraint
 from personalization.profile_context import build_personalization_context, build_personalization_flags
 from personalization.profile_store import get_profile_path, load_profile, list_profile_ids
@@ -295,7 +296,7 @@ def _build_degraded_treatment(
     if not kb_prevention:
         kb_prevention = "加强通风、清园与轮作，避免长期高湿环境。"
 
-    personalized_plan, personalized_prevention, personalization_outputs = apply_personalization_to_treatment(
+    personalized_plan, personalized_prevention, personalization_outputs = profile_rules.apply_personalization_to_treatment(
         kb_treatment,
         kb_prevention,
         flags,
