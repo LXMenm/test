@@ -33,7 +33,6 @@ from event_store import (
 from knowledge_base import get_kb_manager
 from personalization.profile_models import BaseProfile, FarmerProfile, TreatmentConstraint
 from personalization.profile_context import build_personalization_context, build_personalization_flags
-from personalization.profile_rules import apply_personalization_to_treatment
 from personalization.profile_store import get_profile_path, load_profile, list_profile_ids
 from state import create_initial_state
 from trace_store import list_trace_events, subscribe as subscribe_trace, unsubscribe as unsubscribe_trace, emit_trace_event
