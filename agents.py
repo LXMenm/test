@@ -310,6 +310,7 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
     crop_growth_stage = state.get("crop_growth_stage")
     image_path = state.get("image_path")
     flags = state.get("personalization_flags", {}) or {}
+    flags["need_confirm"] = False
     policy = state.get("personalization_policy") or {}
     hard_constraints = policy.get("hard_constraints") if isinstance(policy, dict) else {}
     priors = {
@@ -964,14 +965,9 @@ def _deterministic_supervisor_decision(state: CropDiseaseState, flags: dict, mis
     if not has_diagnosis:
         return "diagnosis", False, "番茄病害监督智能体：缺少诊断结果，先执行诊断智能体", ["missing_diagnosis"]
 
-    # b) need_confirm 或 missing_profile_fields -> reception
-    if flags.get("need_confirm") or missing_profile_fields:
-        reasons = []
-        if flags.get("need_confirm"):
-            reasons.append("need_confirm")
-        if missing_profile_fields:
-            reasons.append("missing_profile_fields")
-        return "reception", False, "番茄病害监督智能体：需要补充确认/档案信息，回到接待智能体", reasons
+    # b) 仅 need_confirm 才回 reception（missing_profile_fields 仅作为提示，不阻断流程）
+    if flags.get("need_confirm"):
+        return "reception", False, "番茄病害监督智能体：需要补充确认信息，回到接待智能体", ["need_confirm"]
 
     # c) 无 kb_snapshot -> kb_retrieval
     if not state.get("kb_snapshot"):
@@ -1000,6 +996,23 @@ def supervisor_agent(state: CropDiseaseState) -> CropDiseaseState:
 
     missing_profile_fields = list(flags.get("missing_profile_fields") or [])
     follow_ups = flags.get("follow_up_questions", [])
+
+    query_text = str(state.get("user_query") or "")
+    has_uploaded_image_hint = any(token in query_text for token in ["图片路径", "图像路径", "path:", "path：", ".jpg", ".jpeg", ".png", ".webp"])
+    if has_uploaded_image_hint and not state.get("image_path"):
+        state["next_action"] = "reception"
+        state["is_complete"] = False
+        state["messages"] = ["番茄病害监督智能体：检测到有上传图片但尚未解析路径，先回接待智能体补全 image_path"]
+        history.append((current_step, "reception"))
+        state["history"] = history[-20:]
+        append_trace(
+            state,
+            agent="supervisor",
+            inputs={"current_step": current_step, "step_count": step_count, "image_path": state.get("image_path")},
+            outputs={"next_action": "reception", "is_complete": False},
+            decision={"next_action": "reception", "reasons": ["image_path_missing"], "reason": "image_path_missing"},
+        )
+        return state
 
     if step_count > 12:
         workflow_error = f"SUPERVISOR_STEP_GUARD_EXCEEDED(step_count={step_count})"
