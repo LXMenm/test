@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 
 from .profile_models import BaseProfile, FarmerProfile
+from .utils import dedupe_reasons
 
 
 class PersonalizationPolicy(BaseModel):
@@ -126,6 +127,6 @@ def build_policy(profile: FarmerProfile, base: Optional[BaseProfile] = None) -> 
         equipment=equipment,
         hard_constraints=hard_constraints,
         soft_preferences=soft_preferences,
-        explanations=explanations,
+        explanations=dedupe_reasons(explanations),
         context_text=context_text,
     )

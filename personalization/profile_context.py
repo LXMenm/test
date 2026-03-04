@@ -5,6 +5,7 @@ from typing import Dict, Optional
 
 from .profile_models import BaseProfile, FarmerProfile, TreatmentConstraint, compute_profile_hash
 from .policy_engine import PersonalizationPolicy
+from .utils import dedupe_reasons
 
 
 def build_personalization_context(
@@ -78,7 +79,7 @@ def build_personalization_flags(
         "risk_preference": profile.risk_preference,
     }
     if policy is not None:
-        flags["personalization_reasons"] = list(policy.explanations)
+        flags["personalization_reasons"] = dedupe_reasons(policy.explanations)
 
     if base_profile:
         flags.update(

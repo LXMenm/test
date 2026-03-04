@@ -35,6 +35,7 @@ from personalization import profile_rules
 from personalization.profile_models import BaseProfile, FarmerProfile, TreatmentConstraint
 from personalization.profile_context import build_personalization_context, build_personalization_flags
 from personalization.profile_store import get_profile_path, load_profile, list_profile_ids
+from personalization.utils import dedupe_reasons
 from state import create_initial_state
 from trace_store import list_trace_events, subscribe as subscribe_trace, unsubscribe as unsubscribe_trace, emit_trace_event
 from model_registry import list_models, resolve_model
@@ -552,7 +553,7 @@ async def diagnose_image(
         prevention_advice = (final_state.get("prevention_advice") or "").strip()
         if treatment_plan or prevention_advice:
             treatment = TreatmentPlan(plan=treatment_plan, prevention=prevention_advice)
-        personalization_reasons = list(final_state.get("personalization_reasons") or [])
+        personalization_reasons = dedupe_reasons(final_state.get("personalization_reasons") or [])
 
     if treatment is None:
         fallback_treatment, personalization_outputs = _build_degraded_treatment(final_disease, dict(flags))
@@ -568,7 +569,10 @@ async def diagnose_image(
     filtered_reasons = list(flags.get("filtered_reasons") or [])
     filtered_components = list(flags.get("filtered_components") or [])
     if not personalization_reasons:
-        personalization_reasons = list(flags.get("personalization_reasons") or [])
+        personalization_reasons = dedupe_reasons(flags.get("personalization_reasons") or [])
+    else:
+        personalization_reasons = dedupe_reasons(personalization_reasons)
+    flags["personalization_reasons"] = dedupe_reasons(flags.get("personalization_reasons") or personalization_reasons)
 
     trace_personalization_outputs = {
         "personalization_applied": personalization_applied,

@@ -10,6 +10,7 @@ from config import DIAGNOSIS_CONFIDENCE_THRESHOLD, DIAGNOSIS_ALLOW_TORCH
 from confidence_policy import make_confidence_flags
 from personalization.profile_models import FarmerProfile, BaseProfile, TreatmentConstraint
 from personalization.profile_rules import apply_personalization_to_treatment
+from personalization.utils import dedupe_reasons
 from trace_store import append_trace_event
 from datetime import datetime, timezone
 from typing import Optional
@@ -675,7 +676,7 @@ def treatment_agent(state: CropDiseaseState) -> CropDiseaseState:
     constraints = profile.constraints if profile else TreatmentConstraint()
     flags = state.get("personalization_flags", {}) or {}
     policy = state.get("personalization_policy") or {}
-    policy_reasons = list(state.get("personalization_reasons") or flags.get("personalization_reasons") or [])
+    policy_reasons = dedupe_reasons(state.get("personalization_reasons") or flags.get("personalization_reasons") or [])
     hard_constraints = policy.get("hard_constraints") if isinstance(policy, dict) else {}
     hard_constraints = hard_constraints if isinstance(hard_constraints, dict) else {}
 
@@ -779,7 +780,7 @@ def treatment_agent(state: CropDiseaseState) -> CropDiseaseState:
             resistance_management=["不同作用机制药剂轮换，避免连续单一用药。"],
             safety_notes=["严格按标签与采收安全间隔执行。"],
             follow_up=["48-72小时复查病斑扩展与叶面湿度情况。"],
-            personalization_reasons=policy_reasons,
+            personalization_reasons=dedupe_reasons(policy_reasons),
             follow_up_questions=(state.get("personalization_reasons") or [])[:3],
         )
     else:
@@ -813,7 +814,9 @@ def treatment_agent(state: CropDiseaseState) -> CropDiseaseState:
     prevention_advice = personalized_prevention or prevention_advice
     flags.update(personalization_outputs)
     if llm_output.personalization_reasons:
-        flags["personalization_reasons"] = list(dict.fromkeys(llm_output.personalization_reasons + policy_reasons))
+        flags["personalization_reasons"] = dedupe_reasons(list(llm_output.personalization_reasons) + policy_reasons)
+    elif policy_reasons:
+        flags["personalization_reasons"] = dedupe_reasons(policy_reasons)
     if llm_output.follow_up_questions:
         flags["follow_up_questions"] = list(llm_output.follow_up_questions)[:3]
     state["personalization_flags"] = flags
@@ -842,7 +845,7 @@ def treatment_agent(state: CropDiseaseState) -> CropDiseaseState:
             "prevention_advice": prevention_advice,
             "selected_branch": selected_branch,
             "llm_failed": flags.get("llm_failed"),
-            "personalization_reasons": flags.get("personalization_reasons") or [],
+            "personalization_reasons": dedupe_reasons(flags.get("personalization_reasons") or []),
             "personalization_applied": flags.get("personalization_applied", False),
             "filtered": flags.get("filtered", False),
             "filtered_reasons": flags.get("filtered_reasons") or [],
