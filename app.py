@@ -105,6 +105,8 @@ class DiagnoseResponse(BaseModel):
     model_backend: str | None = None
     resolved_model_path: str | None = None
     model_fallback_reason: list[str] | None = None
+    workflow_degraded: bool = False
+    degraded_reason: str | None = None
 
 
 class SPAStaticFiles(StaticFiles):
@@ -272,6 +274,37 @@ def _build_personalization_meta(flags: dict, farmer_id: str | None, base_id: str
         "risk_preference": flags.get("risk_preference"),
     }
 
+
+
+
+def _build_degraded_treatment(
+    disease_name: str,
+    flags: dict,
+) -> tuple[TreatmentPlan | None, dict]:
+    """图流程异常时的兜底治疗方案：KB 优先 + 个性化约束过滤。"""
+    try:
+        kb_result = kb.get_treatment_plan(disease_name or "") or {}
+        kb_treatment = str(kb_result.get("treatment") or "").strip()
+        kb_prevention = str(kb_result.get("prevention") or "").strip()
+    except Exception:
+        kb_treatment = ""
+        kb_prevention = ""
+
+    if not kb_treatment:
+        kb_treatment = f"针对{disease_name or '疑似病害'}：先隔离重病叶，降低田间湿度并连续观察48小时。"
+    if not kb_prevention:
+        kb_prevention = "加强通风、清园与轮作，避免长期高湿环境。"
+
+    personalized_plan, personalized_prevention, personalization_outputs = apply_personalization_to_treatment(
+        kb_treatment,
+        kb_prevention,
+        flags,
+    )
+    plan_text = (personalized_plan or kb_treatment).strip()
+    prevention_text = (personalized_prevention or kb_prevention).strip()
+    if not plan_text and not prevention_text:
+        return None, personalization_outputs
+    return TreatmentPlan(plan=plan_text, prevention=prevention_text), personalization_outputs
 
 def load_profile_payload(farmer_id: str) -> tuple[dict | None, TreatmentConstraint | None]:
     path = get_profile_path(farmer_id)
@@ -473,6 +506,8 @@ async def diagnose_image(
     final_confidence = None
     final_source = None
     final_state = None
+    workflow_degraded = False
+    degraded_reason: str | None = None
     try:
         query_text = build_trace_query(
             crop_type=crop_type,
@@ -487,12 +522,22 @@ async def diagnose_image(
         if personalization_flags:
             initial_state["personalization_flags"] = dict(personalization_flags)
         graph = build_graph()
-        final_state = graph.invoke(initial_state)
+        final_state = graph.invoke(initial_state, config={"recursion_limit": 80})
+        if not isinstance(final_state, dict):
+            raise RuntimeError("GRAPH_EMPTY_FINAL_STATE")
         trace_id = final_state.get("trace_id", trace_id)
         emit_node_event(trace_id, node="ValidatorAgent", status="end", message="校验完成")
     except Exception as exc:
         print(f"Warning: failed to build trace events: {exc}")
+        lowered = str(exc).lower()
+        degraded_reason = "GRAPH_RECURSION_LIMIT" if "recursion" in lowered else str(exc)
+        workflow_degraded = True
         emit_node_event(trace_id, node="ValidatorAgent", status="error", message=f"校验失败: {exc}")
+        fallback_treatment, personalization_outputs = _build_degraded_treatment(final_disease, dict(personalization_flags))
+        if fallback_treatment:
+            treatment = fallback_treatment
+        personalization_flags.update(personalization_outputs)
+        emit_node_event(trace_id, node="ValidatorAgent", status="end", message=f"降级兜底完成: {degraded_reason}")
 
     flags = dict(personalization_flags)
     if final_state:
@@ -507,6 +552,15 @@ async def diagnose_image(
         if treatment_plan or prevention_advice:
             treatment = TreatmentPlan(plan=treatment_plan, prevention=prevention_advice)
         personalization_reasons = list(final_state.get("personalization_reasons") or [])
+
+    if treatment is None:
+        fallback_treatment, personalization_outputs = _build_degraded_treatment(final_disease, dict(flags))
+        if fallback_treatment:
+            treatment = fallback_treatment
+        flags.update(personalization_outputs)
+        if not workflow_degraded:
+            workflow_degraded = True
+            degraded_reason = degraded_reason or "EMPTY_TREATMENT_FROM_GRAPH"
 
     personalization_applied = bool(flags.get("personalization_applied"))
     filtered = bool(flags.get("filtered"))
@@ -573,6 +627,8 @@ async def diagnose_image(
             "model_backend": model_meta.get("backend"),
             "resolved_model_path": model_meta.get("resolved_model_path"),
             "model_fallback_reason": model_meta.get("model_fallback_reason"),
+            "workflow_degraded": workflow_degraded,
+            "degraded_reason": degraded_reason,
         },
     }
     emit_node_event(trace_id, node="Persist", status="start", message="写入事件日志")
@@ -613,6 +669,8 @@ async def diagnose_image(
         model_backend=model_meta.get("backend"),
         resolved_model_path=model_meta.get("resolved_model_path"),
         model_fallback_reason=model_meta.get("model_fallback_reason"),
+        workflow_degraded=workflow_degraded,
+        degraded_reason=degraded_reason,
     )
 
 

@@ -57,6 +57,8 @@ class CropDiseaseState(TypedDict):
     current_step: str  # 当前执行步骤
     next_action: Optional[str]  # 下一步动作
     is_complete: bool  # 是否完成整个流程
+    step_count: int  # supervisor 调度计数
+    workflow_error: Optional[str]  # 工作流降级/保护原因
 
     # 消息历史（用于记录各个智能体的输出）
     messages: Annotated[List[str], operator.add]
@@ -118,6 +120,8 @@ def create_initial_state(
         current_step="start",
         next_action=None,
         is_complete=False,
+        step_count=0,
+        workflow_error=None,
         messages=[],
         history=[],
         error=None,

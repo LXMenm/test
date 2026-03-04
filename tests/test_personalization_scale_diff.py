@@ -46,7 +46,7 @@ class _DummyEngine:
 
 
 class _DummyGraph:
-    def invoke(self, state):
+    def invoke(self, state, config=None):
         state = agents_module.diagnosis_agent(state)
         state = agents_module.kb_retrieval_agent(state)
         state = agents_module.treatment_agent(state)

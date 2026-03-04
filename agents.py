@@ -957,181 +957,98 @@ def _summarize_constraints(constraints: TreatmentConstraint) -> str:
     return "；".join(parts) if parts else "无"
 
 
+def _deterministic_supervisor_decision(state: CropDiseaseState, flags: dict, missing_profile_fields: list[str]) -> tuple[str, bool, str, list[str]]:
+    """确定性路由，避免同态循环。"""
+    # a) 无诊断结果 -> diagnosis
+    has_diagnosis = bool(state.get("final_disease") or state.get("disease_type"))
+    if not has_diagnosis:
+        return "diagnosis", False, "番茄病害监督智能体：缺少诊断结果，先执行诊断智能体", ["missing_diagnosis"]
+
+    # b) need_confirm 或 missing_profile_fields -> reception
+    if flags.get("need_confirm") or missing_profile_fields:
+        reasons = []
+        if flags.get("need_confirm"):
+            reasons.append("need_confirm")
+        if missing_profile_fields:
+            reasons.append("missing_profile_fields")
+        return "reception", False, "番茄病害监督智能体：需要补充确认/档案信息，回到接待智能体", reasons
+
+    # c) 无 kb_snapshot -> kb_retrieval
+    if not state.get("kb_snapshot"):
+        return "kb_retrieval", False, "番茄病害监督智能体：缺少知识快照，进入知识检索智能体", ["missing_kb_snapshot"]
+
+    # d) 无 treatment_plan/prevention_advice -> treatment
+    treatment_plan = str(state.get("treatment_plan") or "").strip()
+    prevention_advice = str(state.get("prevention_advice") or "").strip()
+    if not treatment_plan or not prevention_advice:
+        return "treatment", False, "番茄病害监督智能体：缺少治疗/预防方案，进入治疗方案智能体", ["missing_treatment_or_prevention"]
+
+    # e) 其他情况 end
+    return "end", True, "番茄病害监督智能体：核心结果齐备，流程结束", ["all_required_outputs_ready"]
+
+
 def supervisor_agent(state: CropDiseaseState) -> CropDiseaseState:
-    """
-    番茄病害监督智能体节点（使用大模型API进行智能决策）
-
-    职责：
-    1. 协调番茄病害诊断流程
-    2. 决定下一步执行哪个智能体
-    3. 判断流程是否完成
-
-    Args:
-        state: 当前系统状态
-
-    Returns:
-        更新后的状态，包含next_action字段
-    """
+    """监督智能体：执行确定性路由并带循环保护。"""
     print("\n[番茄病害监督智能体] 协调流程...")
 
     current_step = state.get("current_step", "start")
-    messages = state.get("messages", [])
     flags = state.get("personalization_flags", {}) or {}
-    personalization_context = state.get("personalization_context") or "无"
-    follow_ups = flags.get("follow_up_questions", [])
-    missing_profile_fields = list(flags.get("missing_profile_fields") or [])
-    policy = state.get("personalization_policy") or {}
-    policy_reasons = list(state.get("personalization_reasons") or flags.get("personalization_reasons") or [])
-    hard_constraints = policy.get("hard_constraints") if isinstance(policy, dict) else {}
-    hard_constraint_summary = {
-        "forbid_professional_pesticides": bool((hard_constraints or {}).get("forbid_professional_pesticides")),
-        "forbidden_equipment_flows": list((hard_constraints or {}).get("forbidden_equipment_flows") or []),
-    }
+    history = state.get("history", [])
 
-    if missing_profile_fields:
-        message = f"番茄病害监督智能体：档案关键信息缺失({', '.join(missing_profile_fields)})，先回到接待智能体追问"
-        state["next_action"] = "reception"
-        state["is_complete"] = False
-        state["messages"] = [message]
-        history = state.get("history", [])
-        history.append((current_step, "reception"))
-        state["history"] = history[-10:]
+    step_count = int(state.get("step_count") or 0) + 1
+    state["step_count"] = step_count
+
+    missing_profile_fields = list(flags.get("missing_profile_fields") or [])
+    follow_ups = flags.get("follow_up_questions", [])
+
+    if step_count > 12:
+        workflow_error = f"SUPERVISOR_STEP_GUARD_EXCEEDED(step_count={step_count})"
+        state["workflow_error"] = workflow_error
+        state["next_action"] = "end"
+        state["is_complete"] = True
+        state["messages"] = ["番茄病害监督智能体：触发步骤上限保护，强制结束流程"]
         append_trace(
             state,
             agent="supervisor",
             inputs={
                 "current_step": current_step,
+                "step_count": step_count,
                 "missing_profile_fields": missing_profile_fields,
                 "follow_up_questions": follow_ups,
             },
-            outputs={"next_action": "reception", "is_complete": False},
+            outputs={"next_action": "end", "is_complete": True},
             decision={
-                "next_action": "reception",
-                "reasons": ["missing_profile_fields"],
-                "reason": message,
+                "next_action": "end",
+                "reasons": ["step_count_guard"],
+                "reason": workflow_error,
+                "reason_str": workflow_error,
             },
         )
         return state
-    
-    # 获取历史next_action，防止无限循环
-    history = state.get("history", [])
-    
-    # 使用大模型进行智能决策
-    context = f"""
-当前番茄病害诊断流程状态：
-- 当前步骤：{current_step}
-- 作物类型：番茄
-- 生长阶段：{state.get('crop_growth_stage', '未识别')}
-- 症状：{state.get('symptoms', [])}
-- 病害类型：{state.get('disease_type', '未诊断')}
-- 诊断置信度：{state.get('disease_confidence') or 0:.2%}
-- 历史消息：{messages[-3:] if messages else '无'}
-- 个性化上下文：{personalization_context}
-- 追问建议：{follow_ups or '无'}
-- 缺失档案字段：{missing_profile_fields or '无'}
-- Policy解释摘要：{policy_reasons[:3] or '无'}
-- 关键硬约束：{hard_constraint_summary}
-"""
 
-    prompt = f"""{context}
+    next_action, is_complete, message, decision_reasons = _deterministic_supervisor_decision(
+        state,
+        flags,
+        missing_profile_fields,
+    )
 
-请根据当前状态决定下一步操作。可选操作：
-1. "reception" - 转到接待智能体（信息收集）
-2. "diagnosis" - 转到诊断智能体（病害诊断）
-3. "kb_retrieval" - 转到知识检索智能体（知识补全）
-4. "treatment" - 转到治疗方案智能体（生成治疗方案）
-5. "end" - 结束流程
-若诊断置信度低于{DIAGNOSIS_CONFIDENCE_THRESHOLD:.2%}且农户要求低置信度需确认，请返回"reception"追问补充信息（可参考追问建议）。
+    if history and history[-1] == (current_step, next_action):
+        workflow_error = f"SUPERVISOR_LOOP_GUARD(state={current_step}, action={next_action})"
+        state["workflow_error"] = workflow_error
+        next_action = "end"
+        is_complete = True
+        message = "番茄病害监督智能体：检测到同状态重复路由，触发循环保护并结束"
+        decision_reasons = ["repeat_same_state_action", workflow_error]
 
-请以JSON格式返回，格式如下：
-{{
-    "next_action": "下一步操作",
-    "is_complete": true/false,
-    "reason": "决策理由"
-}}"""
-
-    system_prompt = f"""你是一个智能流程协调器，负责协调番茄病害诊断流程。
-流程顺序：start -> reception -> diagnosis -> kb_retrieval -> treatment -> end
-当current_step为start时，必须先执行reception
-当current_step为reception_complete时，必须执行diagnosis
-当current_step为diagnosis_complete时，必须执行kb_retrieval
-当current_step为kb_retrieval_complete时，必须执行treatment
-当current_step为treatment_complete时，必须执行end
-如果信息不完整，可以返回reception重新收集。
-如果诊断置信度低于{DIAGNOSIS_CONFIDENCE_THRESHOLD:.2%}且农户要求确认，请返回reception追问。
-如果所有步骤完成，返回end。"""
-
-    decision_reason = ""
-    try:
-        response = call_llm(prompt, system_prompt, temperature=0.3)
-        result = extract_json_from_response(response)
-        
-        if result:
-            next_action = result.get("next_action", "end")
-            # 验证next_action的有效性，防止无效值导致循环
-            valid_actions = ["reception", "diagnosis", "kb_retrieval", "treatment", "end"]
-            if next_action not in valid_actions:
-                print(f"无效的next_action: {next_action}，使用规则决策")
-                next_action, is_complete, message = _rule_based_supervisor(current_step, state, flags)
-            else:
-                is_complete = result.get("is_complete", True)
-                reason = result.get("reason", "")
-                decision_reason = reason
-                message = f"番茄病害监督智能体：{reason or f'下一步操作：{next_action}'}"
-        else:
-            # 如果解析失败，使用规则决策
-            next_action, is_complete, message = _rule_based_supervisor(current_step, state, flags)
-    except Exception as e:
-        print(f"大模型调用失败，使用规则决策: {e}")
-        next_action, is_complete, message = _rule_based_supervisor(current_step, state, flags)
-        decision_reason = message
-
-    decision_reasons = []
-    if not decision_reason:
-        if state.get("image_path"):
-            decision_reasons.append("has_image")
-        if not state.get("symptoms"):
-            decision_reasons.append("symptoms_missing")
-        if (state.get("disease_confidence") or 0) < DIAGNOSIS_CONFIDENCE_THRESHOLD:
-            decision_reasons.append("low_confidence")
-            if state.get("final_disease"):
-                decision_reasons.append("need_confirm_but_continue")
-        if flags.get("need_confirm") and state.get("symptoms"):
-            decision_reasons.append("retry_with_more_symptoms")
-        if current_step == "diagnosis_complete":
-            decision_reasons.append("post_diagnosis")
-        decision_reason = ", ".join(decision_reasons) or message
-    else:
-        if isinstance(decision_reason, str):
-            decision_reasons = [decision_reason]
-        elif isinstance(decision_reason, list):
-            decision_reasons = decision_reason
-        else:
-            decision_reasons = [str(decision_reason)]
-
-    # 更新状态
-    if current_step == "diagnosis_complete" and state.get("final_disease") and next_action == "end":
-        next_action = "kb_retrieval"
-        is_complete = False
-        message = "番茄病害监督智能体：诊断已完成，继续进入知识检索智能体"
     state["next_action"] = next_action
     state["is_complete"] = is_complete
     state["messages"] = [message]
-    
-    # 添加历史记录，防止无限循环
+
     history.append((current_step, next_action))
-    # 只保留最近的10个历史记录
-    state["history"] = history[-10:]
-    
-    # 检查是否出现重复的动作序列（超过3次）
-    if len(history) > 6:
-        recent_sequence = tuple(history[-3:])
-        if history.count(recent_sequence) > 2:
-            print("检测到重复动作序列，强制结束流程")
-            state["next_action"] = "end"
-            state["is_complete"] = True
+    state["history"] = history[-20:]
 
     print(f"  - 当前步骤: {current_step}")
+    print(f"  - 步骤计数: {step_count}")
     print(f"  - 下一步动作: {next_action}")
     print(f"  - 是否完成: {is_complete}")
 
@@ -1144,13 +1061,17 @@ def supervisor_agent(state: CropDiseaseState) -> CropDiseaseState:
             "disease_confidence": state.get("disease_confidence"),
             "symptoms": state.get("symptoms"),
             "image_path": state.get("image_path"),
+            "step_count": step_count,
+            "missing_profile_fields": missing_profile_fields,
+            "follow_up_questions": follow_ups,
         },
         outputs={"next_action": next_action, "is_complete": is_complete},
         decision={
             "next_action": next_action,
             "reasons": decision_reasons,
-            "reason_str": decision_reason,
-            "reason": decision_reason,
+            "reason_str": message,
+            "reason": message,
+            "workflow_error": state.get("workflow_error"),
             "model_info": state.get("diagnosis_model_meta"),
         },
     )
