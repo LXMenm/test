@@ -35,7 +35,7 @@ from personalization import profile_rules
 from personalization.profile_models import BaseProfile, FarmerProfile, TreatmentConstraint
 from personalization.profile_context import build_personalization_context, build_personalization_flags
 from personalization.profile_store import get_profile_path, load_profile, list_profile_ids
-from personalization.utils import dedupe_reasons
+from personalization.utils import dedupe_reasons, compute_personalization_applied
 from state import create_initial_state
 from trace_store import list_trace_events, subscribe as subscribe_trace, unsubscribe as unsubscribe_trace, emit_trace_event
 from model_registry import list_models, resolve_model
@@ -564,7 +564,13 @@ async def diagnose_image(
             workflow_degraded = True
             degraded_reason = degraded_reason or "EMPTY_TREATMENT_FROM_GRAPH"
 
-    personalization_applied = bool(flags.get("personalization_applied"))
+    personalization_state = final_state if isinstance(final_state, dict) else {
+        "farmer_id": farmer_id,
+        "personalization_context": personalization_context,
+        "personalization_reasons": personalization_reasons,
+    }
+    personalization_applied = compute_personalization_applied(personalization_state, flags)
+    flags["personalization_applied"] = personalization_applied
     filtered = bool(flags.get("filtered"))
     filtered_reasons = list(flags.get("filtered_reasons") or [])
     filtered_components = list(flags.get("filtered_components") or [])
@@ -794,7 +800,8 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
     )
 
     personalization_meta = _build_personalization_meta(flags, farmer_id, state.get("base_id"))
-    personalization_applied = bool(flags.get("personalization_applied"))
+    personalization_applied = compute_personalization_applied(state, flags)
+    flags["personalization_applied"] = personalization_applied
     filtered = bool(flags.get("filtered"))
     filtered_reasons = list(flags.get("filtered_reasons") or [])
     confirm_message = None

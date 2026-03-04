@@ -13,7 +13,7 @@ from personalization.profile_context import (
 )
 from personalization.profile_models import FarmerProfile, BaseProfile
 from personalization.policy_engine import build_policy
-from personalization.utils import dedupe_reasons
+from personalization.utils import dedupe_reasons, compute_personalization_applied
 
 
 class CropDiseaseState(TypedDict):
@@ -158,6 +158,10 @@ def create_initial_state(
             state["personalization_flags"] = build_personalization_flags(profile, base_profile, policy=policy)
             state["personalization_flags"]["personalization_reasons"] = dedupe_reasons(
                 state["personalization_flags"].get("personalization_reasons") or state.get("personalization_reasons") or []
+            )
+            state["personalization_flags"]["personalization_applied"] = compute_personalization_applied(
+                state,
+                state["personalization_flags"],
             )
         else:
             state["error"] = f"未找到农户档案：{farmer_id}"

@@ -10,7 +10,7 @@ from config import DIAGNOSIS_CONFIDENCE_THRESHOLD, DIAGNOSIS_ALLOW_TORCH
 from confidence_policy import make_confidence_flags
 from personalization.profile_models import FarmerProfile, BaseProfile, TreatmentConstraint
 from personalization.profile_rules import apply_personalization_to_treatment
-from personalization.utils import dedupe_reasons
+from personalization.utils import dedupe_reasons, compute_personalization_applied
 from trace_store import append_trace_event
 from datetime import datetime, timezone
 from typing import Optional
@@ -819,6 +819,7 @@ def treatment_agent(state: CropDiseaseState) -> CropDiseaseState:
         flags["personalization_reasons"] = dedupe_reasons(policy_reasons)
     if llm_output.follow_up_questions:
         flags["follow_up_questions"] = list(llm_output.follow_up_questions)[:3]
+    flags["personalization_applied"] = compute_personalization_applied(state, flags)
     state["personalization_flags"] = flags
 
     message = f"番茄病害治疗方案智能体：已生针对{disease_type}的治疗方案"
