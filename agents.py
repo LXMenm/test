@@ -26,9 +26,9 @@ kb_manager = get_kb_manager()
 
 
 class TreatmentPlanBranches(BaseModel):
-    BALCONY: list[str] = Field(default_factory=list)
-    SMALL_MEDIUM: list[str] = Field(default_factory=list)
-    LARGE_MECHANIZED: list[str] = Field(default_factory=list)
+    FAMILY: list[str] = Field(default_factory=list)
+    MID: list[str] = Field(default_factory=list)
+    ENTERPRISE: list[str] = Field(default_factory=list)
 
 
 class TreatmentLLMOutput(BaseModel):
@@ -650,6 +650,125 @@ def _build_follow_up_questions(symptoms: list, flags: dict, state: CropDiseaseSt
     return questions[:3]
 
 
+def _resolve_treatment_branch(flags: dict) -> str:
+    farm_scale = str(flags.get("farm_scale") or "SMALL")
+    pesticide_access_level = str(flags.get("pesticide_access_level") or "LIMITED")
+    equipment = [str(item) for item in (flags.get("equipment") or [])]
+
+    if farm_scale in {"BALCONY", "SMALL"}:
+        branch = "FAMILY"
+    elif farm_scale == "MEDIUM":
+        branch = "MID"
+    else:
+        branch = "ENTERPRISE"
+
+    if pesticide_access_level == "NONE":
+        return "FAMILY"
+
+    if branch == "ENTERPRISE" and not equipment and pesticide_access_level != "FULL":
+        branch = "MID"
+
+    if (
+        branch == "MID"
+        and any(item in {"DRONE", "MIST_BLOWER"} for item in equipment)
+        and pesticide_access_level == "FULL"
+        and farm_scale == "GREENHOUSE_LARGE"
+    ):
+        branch = "ENTERPRISE"
+
+    return branch
+
+
+def _contains_any(text: str, keywords: list[str]) -> bool:
+    lower = text.lower()
+    return any(keyword.lower() in lower for keyword in keywords)
+
+
+def _validate_treatment_output(
+    *,
+    branch: str,
+    hard_constraints: dict,
+    flags: dict,
+    treatment_text: str,
+    prevention_text: str,
+) -> list[str]:
+    violations: list[str] = []
+    whole_text = f"{treatment_text}\n{prevention_text}"
+    equipment = [str(item) for item in (flags.get("equipment") or [])]
+    pesticide_access_level = str(flags.get("pesticide_access_level") or "LIMITED")
+    prefer_organic = bool(flags.get("prefer_organic"))
+
+    drone_words = ["无人机", "drone"]
+    enterprise_words = ["规模化", "sop", "标准作业", "监测", "复查", "轮换", "作用机制"]
+    family_forbidden = ["无人机", "drone", "规模化喷施", "sop", "专业设备"]
+    mid_forbidden = ["无人机", "drone"] if "DRONE" not in equipment else []
+
+    if branch == "FAMILY":
+        if _contains_any(whole_text, family_forbidden):
+            violations.append("FAMILY 分支出现不可执行的企业/无人机流程")
+        if pesticide_access_level == "NONE" and _contains_any(whole_text, ["购买", "专业杀虫", "专业杀菌", "资质"]):
+            violations.append("FAMILY + 无购药能力时出现专业购药措辞")
+
+    if branch == "MID" and mid_forbidden and _contains_any(whole_text, mid_forbidden):
+        violations.append("MID 分支出现无人机流程")
+
+    if branch == "ENTERPRISE":
+        if "DRONE" not in equipment and _contains_any(whole_text, drone_words):
+            violations.append("ENTERPRISE 在无 DRONE 设备时输出了无人机流程")
+        if not _contains_any(whole_text, enterprise_words):
+            violations.append("ENTERPRISE 缺少SOP/监测/轮换等企业化要素")
+
+    forbidden_equipment_flows = [str(x) for x in (hard_constraints.get("forbidden_equipment_flows") or [])]
+    if "DRONE" in forbidden_equipment_flows and _contains_any(whole_text, drone_words):
+        violations.append("hard_constraints 禁止 DRONE 但文本出现无人机流程")
+
+    banned_ingredients = [str(x).strip() for x in (hard_constraints.get("banned_ingredients") or []) if str(x).strip()]
+    for ingredient in banned_ingredients:
+        if ingredient in whole_text:
+            violations.append(f"出现禁用成分: {ingredient}")
+
+    harvest_window_days = hard_constraints.get("harvest_window_days")
+    if harvest_window_days is None:
+        harvest_window_days = flags.get("harvest_window_days")
+    try:
+        harvest_window_days = int(harvest_window_days)
+    except Exception:
+        harvest_window_days = None
+    if harvest_window_days is not None and harvest_window_days <= 7 and not _contains_any(whole_text, ["采收", "安全间隔", "间隔期"]):
+        violations.append("临近采收但缺少安全间隔提示")
+
+    if prefer_organic and branch in {"FAMILY", "MID"} and _contains_any(whole_text, ["高毒", "强力化学", "专业化学农药"]):
+        violations.append("prefer_organic 场景出现高风险化学措辞")
+
+    return violations
+
+
+def _apply_branch_post_fixes(branch: str, hard_constraints: dict, flags: dict, treatment_text: str, prevention_text: str) -> tuple[str, str]:
+    text = treatment_text
+    prevention = prevention_text
+
+    if branch in {"FAMILY", "MID"} and str(flags.get("pesticide_access_level") or "") == "NONE":
+        text = re.sub(r".*(专业杀虫|专业杀菌|需资质|必须购买).*(\n|$)", "", text, flags=re.IGNORECASE)
+
+    forbidden_equipment_flows = [str(x) for x in (hard_constraints.get("forbidden_equipment_flows") or [])]
+    if "DRONE" in forbidden_equipment_flows:
+        text = re.sub(r".*(无人机|DRONE).*(\n|$)", "", text, flags=re.IGNORECASE)
+        prevention = re.sub(r".*(无人机|DRONE).*(\n|$)", "", prevention, flags=re.IGNORECASE)
+
+    harvest_window_days = hard_constraints.get("harvest_window_days")
+    if harvest_window_days is None:
+        harvest_window_days = flags.get("harvest_window_days")
+    try:
+        harvest_window_days = int(harvest_window_days)
+    except Exception:
+        harvest_window_days = None
+    if harvest_window_days is not None and harvest_window_days <= 7 and not _contains_any(f"{text}\n{prevention}", ["采收", "安全间隔", "间隔期"]):
+        notice = "【采收安全】距采收较近，请严格遵守采收安全间隔并优先低残留方案。"
+        text = f"{text}\n{notice}".strip()
+
+    return text.strip(), prevention.strip()
+
+
 def treatment_agent(state: CropDiseaseState) -> CropDiseaseState:
     """
     番茄病害治疗方案智能体节点（使用大模型API）
@@ -699,8 +818,10 @@ def treatment_agent(state: CropDiseaseState) -> CropDiseaseState:
     llm_output: TreatmentLLMOutput | None = None
     llm_failed_reason = ""
 
-    def _build_prompt() -> str:
-        return f"""你要为番茄病害输出结构化处置方案，必须严格返回JSON，不要输出额外文字。
+    def _build_prompt(branch: str, extra_requirements: str = "") -> str:
+        return f"""你是番茄病害诊治系统治疗智能体。你要为番茄病害输出结构化处置方案，必须严格返回JSON，不要输出额外文字。
+本次目标分叉 branch={branch}（由系统确定，禁止自行改动）。
+{extra_requirements}
 
 病害信息：
 - 作物：{crop_type}
@@ -726,8 +847,10 @@ def treatment_agent(state: CropDiseaseState) -> CropDiseaseState:
 - forbidden_equipment_flows={forbidden_equipment_flows}
 
 强制规则：
-1) 若 forbid_professional_pesticides=True，则 BALCONY/SMALL_MEDIUM 不得出现专业化学农药处置或不可执行购买要求，优先农艺/物理/生物/低毒替代，并用“可咨询当地农技/按标签合规”表述。
-2) 若 forbidden_equipment_flows 包含 DRONE，则 LARGE_MECHANIZED 不得出现无人机喷洒流程。
+1) FAMILY 不得出现无人机/规模化喷施/SOP/专业资质购药流程；若购药能力为NONE，避免要求购买专业药剂。
+2) MID 可用背负式/常规可购药剂并强调安全间隔与轮换；仅当设备允许时可写无人机。
+3) ENTERPRISE 可输出规模化SOP/监测/轮换，但仅设备包含DRONE时可写无人机流程。
+4) 若 forbidden_equipment_flows 包含 DRONE，则全文不得出现无人机喷洒流程。
 3) 不得推荐 banned_ingredients 中成分；可给“替代策略/咨询”。
 4) harvest_window_days 较小（<=7）时，必须写采收窗口与安全间隔提醒。
 5) 番茄场景必须强调通风、叶面干燥、修剪清园、监测复查。
@@ -737,9 +860,9 @@ def treatment_agent(state: CropDiseaseState) -> CropDiseaseState:
   "overview": "...",
   "immediate_actions": ["..."],
   "treatment_plan": {{
-     "BALCONY": ["..."],
-     "SMALL_MEDIUM": ["..."],
-     "LARGE_MECHANIZED": ["..."]
+     "FAMILY": ["..."],
+     "MID": ["..."],
+     "ENTERPRISE": ["..."]
   }},
   "prevention_plan": ["..."],
   "resistance_management": ["..."],
@@ -750,7 +873,10 @@ def treatment_agent(state: CropDiseaseState) -> CropDiseaseState:
 }}"""
 
     system_prompt = "你是番茄病害防治首席农艺师，输出必须专业、可执行、可审计，并严格遵守约束。"
-    prompt = _build_prompt()
+
+    selected_branch = _resolve_treatment_branch(flags)
+    flags["selected_branch"] = selected_branch
+    prompt = _build_prompt(selected_branch)
 
     for temperature in (0.4, 0.2):
         try:
@@ -772,9 +898,9 @@ def treatment_agent(state: CropDiseaseState) -> CropDiseaseState:
             overview=f"基于知识库的后备方案（原因：{llm_failed_reason[:80] or '模型输出不可解析'}）",
             immediate_actions=["先隔离疑似病株与重病叶，减少传播风险。"],
             treatment_plan=TreatmentPlanBranches(
-                BALCONY=[kb_treatment or "咨询当地农技获取可执行替代方案。"],
-                SMALL_MEDIUM=[kb_treatment or "咨询当地农技获取可执行替代方案。"],
-                LARGE_MECHANIZED=[kb_treatment or "咨询当地农技获取可执行替代方案。"],
+                FAMILY=[kb_treatment or "咨询当地农技获取可执行替代方案。"],
+                MID=[kb_treatment or "咨询当地农技获取可执行替代方案。"],
+                ENTERPRISE=[kb_treatment or "咨询当地农技获取可执行替代方案。"],
             ),
             prevention_plan=[line for line in (kb_prevention or "").splitlines() if line.strip()] or ["加强通风、控湿与清园。"],
             resistance_management=["不同作用机制药剂轮换，避免连续单一用药。"],
@@ -785,13 +911,6 @@ def treatment_agent(state: CropDiseaseState) -> CropDiseaseState:
         )
     else:
         flags["llm_failed"] = False
-
-    selected_branch = "SMALL_MEDIUM"
-    farm_scale = str(flags.get("farm_scale") or "SMALL")
-    if farm_scale == "BALCONY":
-        selected_branch = "BALCONY"
-    elif farm_scale in {"LARGE", "GREENHOUSE_LARGE"}:
-        selected_branch = "LARGE_MECHANIZED"
 
     branch_lines = getattr(llm_output.treatment_plan, selected_branch)
     treatment_text = "\n".join([
@@ -804,6 +923,55 @@ def treatment_agent(state: CropDiseaseState) -> CropDiseaseState:
     ]).strip()
 
     prevention_advice = "\n".join(llm_output.prevention_plan).strip()
+
+    violations = _validate_treatment_output(
+        branch=selected_branch,
+        hard_constraints=hard_constraints,
+        flags=flags,
+        treatment_text=treatment_text,
+        prevention_text=prevention_advice,
+    )
+    if violations:
+        retry_prompt = _build_prompt(selected_branch, extra_requirements="以下约束被违反，请修正后输出JSON：" + "；".join(violations))
+        try:
+            retry_response = call_llm(retry_prompt, system_prompt, temperature=0.1)
+            retry_parsed = extract_json_from_response(retry_response)
+            if retry_parsed:
+                llm_output = TreatmentLLMOutput.model_validate(retry_parsed)
+                branch_lines = getattr(llm_output.treatment_plan, selected_branch)
+                treatment_text = "\n".join([
+                    f"【方案概述】{llm_output.overview}",
+                    "【立即行动】" + "；".join(llm_output.immediate_actions),
+                    f"【差异化处置-{selected_branch}】" + "；".join(branch_lines),
+                    "【抗性管理】" + "；".join(llm_output.resistance_management),
+                    "【安全注意】" + "；".join(llm_output.safety_notes),
+                    "【复查计划】" + "；".join(llm_output.follow_up),
+                ]).strip()
+                prevention_advice = "\n".join(llm_output.prevention_plan).strip()
+                violations = _validate_treatment_output(
+                    branch=selected_branch,
+                    hard_constraints=hard_constraints,
+                    flags=flags,
+                    treatment_text=treatment_text,
+                    prevention_text=prevention_advice,
+                )
+        except Exception:
+            pass
+
+    if violations:
+        kb_treatment, kb_prevention = _get_treatment_from_knowledge_base(disease_type)
+        flags["llm_failed"] = True
+        flags["llm_failed_reason"] = "constraint_violation"
+        treatment_text = kb_treatment or "咨询当地农技获取可执行替代方案。"
+        prevention_advice = kb_prevention or "加强通风、控湿与清园。"
+
+    treatment_text, prevention_advice = _apply_branch_post_fixes(
+        selected_branch,
+        hard_constraints,
+        flags,
+        treatment_text,
+        prevention_advice,
+    )
 
     personalized_plan, personalized_prevention, personalization_outputs = apply_personalization_to_treatment(
         treatment_text,

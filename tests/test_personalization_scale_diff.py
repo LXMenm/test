@@ -59,17 +59,17 @@ def _mock_call_llm(prompt: str, system_prompt: str, temperature: float = 0.3):
             "overview": "番茄早疫病综合处置",
             "immediate_actions": ["移除重病叶", "加强通风并保持叶面干燥"],
             "treatment_plan": {
-                "BALCONY": [
+                "FAMILY": [
                     "家庭场景：采用人工摘除病叶+低毒生物措施，避免专业化学农药依赖",
                     "小喷壶点喷可执行替代方案，必要时咨询当地农技",
                 ],
-                "SMALL_MEDIUM": [
-                    "分区喷施与病株隔离，按标签合规执行",
+                "MID": [
+                    "分区喷施与病株隔离，按标签合规执行，并说明安全间隔与轮换",
                 ],
-                "LARGE_MECHANIZED": [
+                "ENTERPRISE": [
                     "制定规模化喷施SOP与巡检计划",
                     "使用无人机喷施流程结合弥雾设备提高覆盖率",
-                    "建立周度监测与复查记录",
+                    "建立周度监测与复查记录并进行作用机制轮换",
                 ],
             },
             "prevention_plan": ["修剪清园", "降低湿度", "加强监测"],
@@ -141,6 +141,9 @@ def test_personalization_scale_diff_endpoint(monkeypatch, tmp_path):
     assert len(reasons_b) >= 2
     assert any("规模" in r or "购药" in r or "设备" in r for r in reasons_a)
     assert any("规模" in r or "购药" in r or "设备" in r for r in reasons_b)
+
+    assert resp_a.get("selected_branch") == "FAMILY"
+    assert resp_b.get("selected_branch") == "ENTERPRISE"
 
     treatment_a = ((resp_a.get("treatment") or {}).get("plan") or "")
     treatment_b = ((resp_b.get("treatment") or {}).get("plan") or "")

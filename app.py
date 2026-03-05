@@ -98,6 +98,8 @@ class DiagnoseResponse(BaseModel):
     profile_pesticide_access_level: str | None = None
     profile_equipment: list[str] = []
     profile_cultivation_mode: str | None = None
+    selected_branch: str | None = None
+    llm_failed: bool = False
     trace_id: str
     need_confirm: bool | None = None
     final_confidence: float | None = None
@@ -582,6 +584,8 @@ async def diagnose_image(
 
     trace_personalization_outputs = {
         "personalization_applied": personalization_applied,
+        "selected_branch": flags.get("selected_branch"),
+        "llm_failed": bool(flags.get("llm_failed")),
         "filtered": filtered,
         "filtered_reasons": filtered_reasons,
         "filtered_components": filtered_components,
@@ -671,6 +675,8 @@ async def diagnose_image(
         profile_pesticide_access_level=flags.get("pesticide_access_level"),
         profile_equipment=[str(item) for item in (flags.get("equipment") or [])],
         profile_cultivation_mode=flags.get("cultivation_mode"),
+        selected_branch=flags.get("selected_branch"),
+        llm_failed=bool(flags.get("llm_failed")),
         trace_id=trace_id,
         need_confirm=need_confirm,
         final_confidence=final_confidence,
