@@ -31,10 +31,11 @@ from event_store import (
     geo_points_range,
 )
 from knowledge_base import get_kb_manager
+from personalization import profile_rules
 from personalization.profile_models import BaseProfile, FarmerProfile, TreatmentConstraint
 from personalization.profile_context import build_personalization_context, build_personalization_flags
-from personalization.profile_rules import apply_personalization_to_treatment
 from personalization.profile_store import get_profile_path, load_profile, list_profile_ids
+from personalization.utils import dedupe_reasons, compute_personalization_applied
 from state import create_initial_state
 from trace_store import list_trace_events, subscribe as subscribe_trace, unsubscribe as unsubscribe_trace, emit_trace_event
 from model_registry import list_models, resolve_model
@@ -91,6 +92,14 @@ class DiagnoseResponse(BaseModel):
     farmer_id: Optional[str]
     filtered: bool
     filtered_reasons: list[str]
+    filtered_components: list[str]
+    personalization_reasons: list[str]
+    profile_farm_scale: str | None = None
+    profile_pesticide_access_level: str | None = None
+    profile_equipment: list[str] = []
+    profile_cultivation_mode: str | None = None
+    selected_branch: str | None = None
+    llm_failed: bool = False
     trace_id: str
     need_confirm: bool | None = None
     final_confidence: float | None = None
@@ -100,6 +109,8 @@ class DiagnoseResponse(BaseModel):
     model_backend: str | None = None
     resolved_model_path: str | None = None
     model_fallback_reason: list[str] | None = None
+    workflow_degraded: bool = False
+    degraded_reason: str | None = None
 
 
 class SPAStaticFiles(StaticFiles):
@@ -259,8 +270,65 @@ def _build_personalization_meta(flags: dict, farmer_id: str | None, base_id: str
         "facility": flags.get("facility"),
         "environment": flags.get("environment"),
         "growth_stage": flags.get("growth_stage"),
+        "farm_scale": flags.get("farm_scale"),
+        "pesticide_access_level": flags.get("pesticide_access_level"),
+        "equipment": flags.get("equipment") or [],
+        "cultivation_mode": flags.get("cultivation_mode"),
+        "experience_level": flags.get("experience_level"),
+        "risk_preference": flags.get("risk_preference"),
     }
 
+
+def _normalize_filter_state(flags: dict) -> tuple[bool, list[str], list[str]]:
+    """在 API 层做 filtered/filtered_reasons 的最终一致性兜底。
+
+    语义约定：
+    - filtered 表示个性化过滤器是否对最终文本做过任何干预（删除/替换/插入提示/增加警示）。
+    - filtered_reasons 表示发生干预的原因。
+    - filtered_components 表示被删除/替换/涉及的成分或关键词（可为空）。
+
+    只要 filtered_reasons 非空，filtered 必须为 True。
+    """
+    normalized = profile_rules.normalize_filter_outputs({
+        "filtered": flags.get("filtered", False),
+        "filtered_reasons": flags.get("filtered_reasons") or [],
+        "filtered_components": flags.get("filtered_components") or [],
+        "personalization_applied": flags.get("personalization_applied", False),
+    })
+    flags.update(normalized)
+    return bool(normalized["filtered"]), list(normalized["filtered_reasons"]), list(normalized["filtered_components"])
+
+
+
+
+def _build_degraded_treatment(
+    disease_name: str,
+    flags: dict,
+) -> tuple[TreatmentPlan | None, dict]:
+    """图流程异常时的兜底治疗方案：KB 优先 + 个性化约束过滤。"""
+    try:
+        kb_result = kb.get_treatment_plan(disease_name or "") or {}
+        kb_treatment = str(kb_result.get("treatment") or "").strip()
+        kb_prevention = str(kb_result.get("prevention") or "").strip()
+    except Exception:
+        kb_treatment = ""
+        kb_prevention = ""
+
+    if not kb_treatment:
+        kb_treatment = f"针对{disease_name or '疑似病害'}：先隔离重病叶，降低田间湿度并连续观察48小时。"
+    if not kb_prevention:
+        kb_prevention = "加强通风、清园与轮作，避免长期高湿环境。"
+
+    personalized_plan, personalized_prevention, personalization_outputs = profile_rules.apply_personalization_to_treatment(
+        kb_treatment,
+        kb_prevention,
+        flags,
+    )
+    plan_text = (personalized_plan or kb_treatment).strip()
+    prevention_text = (personalized_prevention or kb_prevention).strip()
+    if not plan_text and not prevention_text:
+        return None, personalization_outputs
+    return TreatmentPlan(plan=plan_text, prevention=prevention_text), personalization_outputs
 
 def load_profile_payload(farmer_id: str) -> tuple[dict | None, TreatmentConstraint | None]:
     path = get_profile_path(farmer_id)
@@ -435,15 +503,6 @@ async def diagnose_image(
         final_disease = rule_result.rule_disease
 
     treatment: TreatmentPlan | None = None
-    emit_node_event(trace_id, node="KBRetrievalAgent", status="start", message="检索知识库方案")
-    if final_disease:
-        plan = kb.get_treatment_plan(final_disease)
-        if isinstance(plan, dict) and "treatment" in plan and "prevention" in plan:
-            treatment = TreatmentPlan(
-                plan=plan["treatment"],
-                prevention=plan["prevention"],
-            )
-    emit_node_event(trace_id, node="KBRetrievalAgent", status="end", message="知识库检索完成", payload={"final_disease": final_disease})
 
     profile, base_profile, resolved_base_id = _resolve_profile_and_base(farmer_id, base_id)
     personalization_context = build_personalization_context(profile, base_profile)
@@ -454,33 +513,7 @@ async def diagnose_image(
     filtered = False
     filtered_reasons: list[str] = []
     filtered_components: list[str] = []
-    emit_node_event(trace_id, node="PersonalizationAgent", status="start", message="应用个性化约束", payload={"meta": personalization_meta})
-    if treatment:
-        plan, prevention, personalization_outputs = apply_personalization_to_treatment(
-            treatment.plan,
-            treatment.prevention,
-            personalization_flags,
-        )
-        treatment = TreatmentPlan(plan=plan or treatment.plan, prevention=prevention or treatment.prevention)
-        personalization_applied = bool(personalization_outputs.get("personalization_applied"))
-        filtered = bool(personalization_outputs.get("filtered"))
-        filtered_reasons = list(personalization_outputs.get("filtered_reasons") or [])
-        filtered_components = list(personalization_outputs.get("filtered_components") or [])
-    trace_personalization_outputs = {
-        "personalization_applied": personalization_applied,
-        "filtered": filtered,
-        "filtered_reasons": filtered_reasons,
-        "filtered_components": filtered_components,
-        "personalization_context": personalization_context,
-        "personalization_flags_summary": personalization_meta,
-    }
-    emit_node_event(
-        trace_id,
-        node="PersonalizationAgent",
-        status="end",
-        message="个性化处理完成" if farmer_id else "未提供个性化档案，跳过",
-        payload={"outputs": trace_personalization_outputs, "meta": {**personalization_meta, **trace_personalization_outputs}},
-    )
+    personalization_reasons: list[str] = []
 
     image_result_dict = {
         "disease": disease,
@@ -491,14 +524,14 @@ async def diagnose_image(
     rule_result_dict = rule_result.model_dump() if rule_result else None
     image_url = f"/uploads/{unique_name}"
 
-    emit_node_event(trace_id, node="PrescriptionAgent", status="start", message="生成处置建议")
-    emit_node_event(trace_id, node="PrescriptionAgent", status="end", message="处置建议准备完成")
     emit_node_event(trace_id, node="ValidatorAgent", status="start", message="校验结果")
     need_confirm = None
     trace_fallback_reason: list[str] | None = None
     final_confidence = None
     final_source = None
     final_state = None
+    workflow_degraded = False
+    degraded_reason: str | None = None
     try:
         query_text = build_trace_query(
             crop_type=crop_type,
@@ -513,38 +546,78 @@ async def diagnose_image(
         if personalization_flags:
             initial_state["personalization_flags"] = dict(personalization_flags)
         graph = build_graph()
-        final_state = graph.invoke(initial_state)
+        final_state = graph.invoke(initial_state, config={"recursion_limit": 80})
+        if not isinstance(final_state, dict):
+            raise RuntimeError("GRAPH_EMPTY_FINAL_STATE")
         trace_id = final_state.get("trace_id", trace_id)
         emit_node_event(trace_id, node="ValidatorAgent", status="end", message="校验完成")
     except Exception as exc:
         print(f"Warning: failed to build trace events: {exc}")
+        lowered = str(exc).lower()
+        degraded_reason = "GRAPH_RECURSION_LIMIT" if "recursion" in lowered else str(exc)
+        workflow_degraded = True
         emit_node_event(trace_id, node="ValidatorAgent", status="error", message=f"校验失败: {exc}")
+        fallback_treatment, personalization_outputs = _build_degraded_treatment(final_disease, dict(personalization_flags))
+        if fallback_treatment:
+            treatment = fallback_treatment
+        personalization_flags.update(personalization_outputs)
+        emit_node_event(trace_id, node="ValidatorAgent", status="end", message=f"降级兜底完成: {degraded_reason}")
 
-    if final_state and final_state.get("final_disease"):
+    flags = dict(personalization_flags)
+    if final_state:
         final_disease = final_state.get("final_disease") or final_disease
-        flags = final_state.get("personalization_flags") or {}
+        flags = final_state.get("personalization_flags") or flags
         need_confirm = flags.get("need_confirm")
         trace_fallback_reason = flags.get("fallback_reason")
         final_confidence = final_state.get("final_confidence")
         final_source = final_state.get("final_source")
-        if final_disease:
-            plan = kb.get_treatment_plan(final_disease)
-            if isinstance(plan, dict) and "treatment" in plan and "prevention" in plan:
-                treatment = TreatmentPlan(
-                    plan=plan["treatment"],
-                    prevention=plan["prevention"],
-                )
-            if treatment:
-                plan, prevention, personalization_outputs = apply_personalization_to_treatment(
-                    treatment.plan,
-                    treatment.prevention,
-                    personalization_flags,
-                )
-                treatment = TreatmentPlan(plan=plan or treatment.plan, prevention=prevention or treatment.prevention)
-                personalization_applied = bool(personalization_outputs.get("personalization_applied"))
-                filtered = bool(personalization_outputs.get("filtered"))
-                filtered_reasons = list(personalization_outputs.get("filtered_reasons") or [])
-                filtered_components = list(personalization_outputs.get("filtered_components") or [])
+        treatment_plan = (final_state.get("treatment_plan") or "").strip()
+        prevention_advice = (final_state.get("prevention_advice") or "").strip()
+        if treatment_plan or prevention_advice:
+            treatment = TreatmentPlan(plan=treatment_plan, prevention=prevention_advice)
+        personalization_reasons = dedupe_reasons(final_state.get("personalization_reasons") or [])
+
+    if treatment is None:
+        fallback_treatment, personalization_outputs = _build_degraded_treatment(final_disease, dict(flags))
+        if fallback_treatment:
+            treatment = fallback_treatment
+        flags.update(personalization_outputs)
+        if not workflow_degraded:
+            workflow_degraded = True
+            degraded_reason = degraded_reason or "EMPTY_TREATMENT_FROM_GRAPH"
+
+    personalization_state = final_state if isinstance(final_state, dict) else {
+        "farmer_id": farmer_id,
+        "personalization_context": personalization_context,
+        "personalization_reasons": personalization_reasons,
+    }
+    personalization_applied = compute_personalization_applied(personalization_state, flags)
+    flags["personalization_applied"] = personalization_applied
+    filtered, filtered_reasons, filtered_components = _normalize_filter_state(flags)
+    if not personalization_reasons:
+        personalization_reasons = dedupe_reasons(flags.get("personalization_reasons") or [])
+    else:
+        personalization_reasons = dedupe_reasons(personalization_reasons)
+    flags["personalization_reasons"] = dedupe_reasons(flags.get("personalization_reasons") or personalization_reasons)
+
+    trace_personalization_outputs = {
+        "personalization_applied": personalization_applied,
+        "selected_branch": flags.get("selected_branch"),
+        "llm_failed": bool(flags.get("llm_failed")),
+        "filtered": filtered,
+        "filtered_reasons": filtered_reasons,
+        "filtered_components": filtered_components,
+        "personalization_reasons": personalization_reasons,
+        "personalization_context": personalization_context,
+        "personalization_flags_summary": personalization_meta,
+    }
+    emit_node_event(
+        trace_id,
+        node="PersonalizationAgent",
+        status="end",
+        message="个性化结果来自LangGraph输出" if farmer_id else "未提供个性化档案，跳过",
+        payload={"outputs": trace_personalization_outputs, "meta": {**personalization_meta, **trace_personalization_outputs}},
+    )
 
     treatment_or_none = treatment.model_dump() if treatment else None
 
@@ -587,6 +660,8 @@ async def diagnose_image(
             "model_backend": model_meta.get("backend"),
             "resolved_model_path": model_meta.get("resolved_model_path"),
             "model_fallback_reason": model_meta.get("model_fallback_reason"),
+            "workflow_degraded": workflow_degraded,
+            "degraded_reason": degraded_reason,
         },
     }
     emit_node_event(trace_id, node="Persist", status="start", message="写入事件日志")
@@ -612,6 +687,14 @@ async def diagnose_image(
         farmer_id=farmer_id,
         filtered=filtered,
         filtered_reasons=filtered_reasons,
+        filtered_components=filtered_components,
+        personalization_reasons=personalization_reasons,
+        profile_farm_scale=flags.get("farm_scale"),
+        profile_pesticide_access_level=flags.get("pesticide_access_level"),
+        profile_equipment=[str(item) for item in (flags.get("equipment") or [])],
+        profile_cultivation_mode=flags.get("cultivation_mode"),
+        selected_branch=flags.get("selected_branch"),
+        llm_failed=bool(flags.get("llm_failed")),
         trace_id=trace_id,
         need_confirm=need_confirm,
         final_confidence=final_confidence,
@@ -621,6 +704,8 @@ async def diagnose_image(
         model_backend=model_meta.get("backend"),
         resolved_model_path=model_meta.get("resolved_model_path"),
         model_fallback_reason=model_meta.get("model_fallback_reason"),
+        workflow_degraded=workflow_degraded,
+        degraded_reason=degraded_reason,
     )
 
 
@@ -739,9 +824,9 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
     )
 
     personalization_meta = _build_personalization_meta(flags, farmer_id, state.get("base_id"))
-    personalization_applied = bool(flags.get("personalization_applied"))
-    filtered = bool(flags.get("filtered"))
-    filtered_reasons = list(flags.get("filtered_reasons") or [])
+    personalization_applied = compute_personalization_applied(state, flags)
+    flags["personalization_applied"] = personalization_applied
+    filtered, filtered_reasons, filtered_components = _normalize_filter_state(flags)
     confirm_message = None
     if need_confirm:
         confirm_message = "置信度较低，建议补充症状或重新拍摄"
@@ -799,7 +884,18 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
         "personalization_applied": personalization_applied,
         "filtered": filtered,
         "filtered_reasons": filtered_reasons,
-        "meta": {**personalization_meta, "personalization_applied": personalization_applied, "filtered": filtered, "filtered_reasons": filtered_reasons},
+        "filtered_components": filtered_components,
+        "llm_failed": bool(flags.get("llm_failed")),
+        "llm_failed_reason": flags.get("llm_failed_reason"),
+        "meta": {
+            **personalization_meta,
+            "personalization_applied": personalization_applied,
+            "filtered": filtered,
+            "filtered_reasons": filtered_reasons,
+            "filtered_components": filtered_components,
+            "llm_failed": bool(flags.get("llm_failed")),
+            "llm_failed_reason": flags.get("llm_failed_reason"),
+        },
         "events": events,
     }
 
@@ -880,6 +976,16 @@ def create_profile(payload: dict = Body(...)) -> dict[str, bool | str]:
         raise HTTPException(status_code=409, detail="农户ID已存在")
 
     profile = FarmerProfile(farmer_id=farmer_id, name=payload.get("name"))
+    for field in [
+        "farm_scale",
+        "pesticide_access_level",
+        "equipment",
+        "cultivation_mode",
+        "experience_level",
+        "risk_preference",
+    ]:
+        if field in payload:
+            setattr(profile, field, payload.get(field))
     if "confirm_when_low_confidence" in payload:
         profile.confirm_when_low_confidence = bool(payload.get("confirm_when_low_confidence"))
     if "constraints" in payload and isinstance(payload.get("constraints"), dict):
