@@ -572,7 +572,7 @@ export function DiagnosePage() {
 
   useEffect(() => {
     if (!confirmMode) return;
-    // 仅在尚未选择时自动回填首个候选；不要覆盖用户手动选择“仍不确定/其他”。
+    // 仅在尚未选择时自动回填首个候选；不要覆盖用户手动选择"仍不确定/其他"。
     const shouldAutofillChoice = !confirmChoice;
     if (candidates[0]?.disease && shouldAutofillChoice) {
       setConfirmChoice(candidates[0].disease);
