@@ -66,3 +66,15 @@ export const getEquipmentLabel = (value?: string | null): string => {
   if (!value) return '未设置';
   return EQUIPMENT_LABELS[value as keyof typeof EQUIPMENT_LABELS] || value;
 };
+
+
+export const BRANCH_LABEL_MAP = {
+  FAMILY: '家庭规模（小）',
+  MID: '中等规模',
+  ENTERPRISE: '企业级（大）',
+} as const;
+
+export const formatSelectedBranch = (value?: string | null): string => {
+  if (!value) return '—';
+  return BRANCH_LABEL_MAP[value as keyof typeof BRANCH_LABEL_MAP] || '—';
+};

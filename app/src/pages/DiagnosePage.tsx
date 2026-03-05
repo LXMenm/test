@@ -15,6 +15,7 @@ import {
   getEquipmentLabel,
   getFarmScaleLabel,
   getPesticideAccessLevelLabel,
+  formatSelectedBranch,
 } from '@/lib/profileLabels';
 
 interface DiagnosisResult {
@@ -34,6 +35,7 @@ interface DiagnosisResult {
   profile_pesticide_access_level?: string;
   profile_equipment?: string[];
   profile_cultivation_mode?: string;
+  selected_branch?: "FAMILY" | "MID" | "ENTERPRISE" | string;
 }
 
 interface ProfileListItem {
@@ -283,6 +285,7 @@ export function DiagnosePage() {
     profile_pesticide_access_level: typeof payload.profile_pesticide_access_level === 'string' ? payload.profile_pesticide_access_level : undefined,
     profile_equipment: Array.isArray(payload.profile_equipment) ? payload.profile_equipment.map((item) => String(item)) : [],
     profile_cultivation_mode: typeof payload.profile_cultivation_mode === 'string' ? payload.profile_cultivation_mode : undefined,
+    selected_branch: typeof payload.selected_branch === 'string' ? payload.selected_branch : undefined,
   });
 
   const normalizeTraceEvents = (eventsLike: unknown): TraceEvent[] => {
@@ -860,6 +863,7 @@ export function DiagnosePage() {
                       <p>购药能力: {getPesticideAccessLevelLabel(result.profile_pesticide_access_level || 'LIMITED')}</p>
                       <p>设备: {(result.profile_equipment || []).map((item) => getEquipmentLabel(item)).join('、') || '无'}</p>
                       <p>栽培模式: {getCultivationModeLabel(result.profile_cultivation_mode || 'SOIL')}</p>
+                      <p>方案档位: {formatSelectedBranch(result.selected_branch)}</p>
                     </div>
                   </div>
 
@@ -932,6 +936,11 @@ export function DiagnosePage() {
                       <h4 className="text-white/80 font-medium mb-2 flex items-center gap-2">
                         <AlertCircle className="w-4 h-4 text-[#c8f7c5]" />
                         治疗方案
+                        {result.selected_branch ? (
+                          <span className="inline-flex items-center rounded-full border border-emerald-600/70 bg-emerald-900/50 px-2 py-0.5 text-xs text-emerald-100">
+                            {formatSelectedBranch(result.selected_branch)}
+                          </span>
+                        ) : null}
                       </h4>
                       <div className="bg-white/5 rounded-xl p-4 text-white/80 text-sm leading-relaxed whitespace-pre-line">
                         {renderTreatment(result.treatment)}
