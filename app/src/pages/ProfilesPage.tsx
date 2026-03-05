@@ -17,6 +17,8 @@ import {
   getFarmScaleLabel,
   getPesticideAccessLevelLabel,
   getRiskPreferenceLabel,
+  getSelectedBranchLabel,
+  type SelectedBranch,
 } from '@/lib/profileLabels';
 
 interface FarmerBase {
@@ -57,6 +59,24 @@ const EQUIPMENT_OPTIONS = ['HAND_SPRAYER', 'BACKPACK_SPRAYER', 'MIST_BLOWER', 'D
 const CULTIVATION_MODE_OPTIONS = ['SOIL', 'HYDROPONIC', 'SUBSTRATE'] as const;
 const EXPERIENCE_OPTIONS = ['NOVICE', 'INTERMEDIATE', 'EXPERT'] as const;
 const RISK_OPTIONS = ['CONSERVATIVE', 'BALANCED', 'AGGRESSIVE'] as const;
+
+
+const predictBranch = (
+  profile: Pick<FarmerProfile, 'farm_scale' | 'pesticide_access_level' | 'equipment'>
+): SelectedBranch => {
+  if (profile.pesticide_access_level === 'NONE') return 'FAMILY';
+  if (profile.farm_scale === 'BALCONY' || profile.farm_scale === 'SMALL') return 'FAMILY';
+  if (profile.farm_scale === 'MEDIUM') return 'MID';
+
+  if (profile.farm_scale === 'LARGE' || profile.farm_scale === 'GREENHOUSE_LARGE') {
+    const hasAdvancedEquipment = profile.equipment.includes('DRONE') || profile.equipment.includes('MIST_BLOWER');
+    if (profile.equipment.length === 0 && profile.pesticide_access_level !== 'FULL') return 'MID';
+    if (profile.farm_scale === 'GREENHOUSE_LARGE' && profile.pesticide_access_level === 'FULL' && hasAdvancedEquipment) return 'ENTERPRISE';
+    return 'ENTERPRISE';
+  }
+
+  return 'MID';
+};
 
 const toSafeString = (value: unknown, fallback = ''): string => {
   if (typeof value === 'string') return value;
@@ -620,6 +640,15 @@ export function ProfilesPage() {
                             </label>
                           );
                         })}
+                      </div>
+                    </div>
+                    <div className="space-y-2 sm:col-span-2">
+                      <Label className="text-white/60">系统预估方案档位</Label>
+                      <div className="flex items-center gap-2">
+                        <Badge className="bg-emerald-900/50 border border-emerald-600/60 text-emerald-100">
+                          {getSelectedBranchLabel(predictBranch(editedProfile))}
+                        </Badge>
+                        <span className="text-xs text-white/50">{predictBranch(editedProfile)}</span>
                       </div>
                     </div>
                   </div>
