@@ -9,11 +9,13 @@ from knowledge_base import get_kb_manager
 from config import DIAGNOSIS_CONFIDENCE_THRESHOLD, DIAGNOSIS_ALLOW_TORCH
 from confidence_policy import make_confidence_flags
 from personalization.profile_models import FarmerProfile, BaseProfile, TreatmentConstraint
-from personalization.profile_rules import apply_personalization_to_treatment
+from personalization.profile_rules import apply_personalization_to_treatment, normalize_filter_outputs
+from personalization.utils import dedupe_reasons, compute_personalization_applied
 from trace_store import append_trace_event
 from datetime import datetime, timezone
 from typing import Optional
 from model_registry import resolve_model
+from pydantic import BaseModel, Field, ValidationError
 import re
 import json
 from pathlib import Path
@@ -21,6 +23,24 @@ from pathlib import Path
 
 # 获取知识库管理器实例
 kb_manager = get_kb_manager()
+
+
+class TreatmentPlanBranches(BaseModel):
+    FAMILY: list[str] = Field(default_factory=list)
+    MID: list[str] = Field(default_factory=list)
+    ENTERPRISE: list[str] = Field(default_factory=list)
+
+
+class TreatmentLLMOutput(BaseModel):
+    overview: str
+    immediate_actions: list[str] = Field(default_factory=list)
+    treatment_plan: TreatmentPlanBranches
+    prevention_plan: list[str] = Field(default_factory=list)
+    resistance_management: list[str] = Field(default_factory=list)
+    safety_notes: list[str] = Field(default_factory=list)
+    follow_up: list[str] = Field(default_factory=list)
+    personalization_reasons: list[str] = Field(default_factory=list)
+    follow_up_questions: list[str] = Field(default_factory=list)
 
 
 def append_trace(
@@ -185,7 +205,8 @@ def reception_agent(state: CropDiseaseState) -> CropDiseaseState:
     crop_type = "番茄"
     _fill_missing_from_profile(state, base_profile)
 
-    missing_profile_fields = _find_missing_profile_fields(base_profile)
+    policy = state.get("personalization_policy") or {}
+    missing_profile_fields = _find_missing_profile_fields(profile, base_profile, policy)
     
     # 如果没有提取到症状，保持为空列表
     if not symptoms:
@@ -202,6 +223,9 @@ def reception_agent(state: CropDiseaseState) -> CropDiseaseState:
         message_parts.append(f"档案缺失字段：{', '.join(missing_profile_fields)}，请后续追问补充。")
         flags = state.get("personalization_flags", {}) or {}
         flags["missing_profile_fields"] = missing_profile_fields
+        follow_ups = _build_profile_follow_up_questions(missing_profile_fields, profile, base_profile, policy)
+        if follow_ups:
+            flags["follow_up_questions"] = follow_ups[:3]
         state["personalization_flags"] = flags
     message = "，".join(message_parts)
 
@@ -287,6 +311,9 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
     crop_growth_stage = state.get("crop_growth_stage")
     image_path = state.get("image_path")
     flags = state.get("personalization_flags", {}) or {}
+    flags["need_confirm"] = False
+    policy = state.get("personalization_policy") or {}
+    hard_constraints = policy.get("hard_constraints") if isinstance(policy, dict) else {}
     priors = {
         "facility": flags.get("facility"),
         "province": flags.get("province"),
@@ -407,6 +434,16 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
         except Exception:
             pass
 
+    env_risk_hints = []
+    cultivation_mode = str(flags.get("cultivation_mode") or "")
+    facility_text = str(flags.get("facility") or "")
+    if cultivation_mode == "HYDROPONIC":
+        env_risk_hints.append("水培番茄需重点监测营养液卫生与根区溶氧，避免环境诱导型病害扩散。")
+    if ("温室" in facility_text) or ("GREENHOUSE" in str(flags.get("farm_scale") or "")):
+        env_risk_hints.append("温室场景建议关注通风除湿与叶面持续结露风险，降低灰霉/霉病类压力。")
+    if env_risk_hints:
+        disease_description = (disease_description or "") + "\n环境风险提示：" + "；".join(env_risk_hints[:2])
+
     final_confidence = final_confidence if final_confidence is not None else (disease_confidence or 0.0)
     disease_confidence = final_confidence
     if final_source is None:
@@ -426,6 +463,11 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
 
     if flags.get("confirm_when_low_confidence") and disease_confidence < DIAGNOSIS_CONFIDENCE_THRESHOLD:
         follow_ups = _build_follow_up_questions(symptoms, flags, state)
+        if hard_constraints.get("forbid_professional_pesticides"):
+            follow_ups = [
+                "当前是否能购买合规药剂，还是仅能采用家庭可执行方案？",
+                "现有喷雾设备条件如何（手动喷壶/背负式/弥雾/无人机）？",
+            ] + follow_ups
         if follow_ups:
             flags["follow_up_questions"] = follow_ups
             message += f"；建议追问：{'；'.join(follow_ups)}"
@@ -608,6 +650,125 @@ def _build_follow_up_questions(symptoms: list, flags: dict, state: CropDiseaseSt
     return questions[:3]
 
 
+def _resolve_treatment_branch(flags: dict) -> str:
+    farm_scale = str(flags.get("farm_scale") or "SMALL")
+    pesticide_access_level = str(flags.get("pesticide_access_level") or "LIMITED")
+    equipment = [str(item) for item in (flags.get("equipment") or [])]
+
+    if farm_scale in {"BALCONY", "SMALL"}:
+        branch = "FAMILY"
+    elif farm_scale == "MEDIUM":
+        branch = "MID"
+    else:
+        branch = "ENTERPRISE"
+
+    if pesticide_access_level == "NONE":
+        return "FAMILY"
+
+    if branch == "ENTERPRISE" and not equipment and pesticide_access_level != "FULL":
+        branch = "MID"
+
+    if (
+        branch == "MID"
+        and any(item in {"DRONE", "MIST_BLOWER"} for item in equipment)
+        and pesticide_access_level == "FULL"
+        and farm_scale == "GREENHOUSE_LARGE"
+    ):
+        branch = "ENTERPRISE"
+
+    return branch
+
+
+def _contains_any(text: str, keywords: list[str]) -> bool:
+    lower = text.lower()
+    return any(keyword.lower() in lower for keyword in keywords)
+
+
+def _validate_treatment_output(
+    *,
+    branch: str,
+    hard_constraints: dict,
+    flags: dict,
+    treatment_text: str,
+    prevention_text: str,
+) -> list[str]:
+    violations: list[str] = []
+    whole_text = f"{treatment_text}\n{prevention_text}"
+    equipment = [str(item) for item in (flags.get("equipment") or [])]
+    pesticide_access_level = str(flags.get("pesticide_access_level") or "LIMITED")
+    prefer_organic = bool(flags.get("prefer_organic"))
+
+    drone_words = ["无人机", "drone"]
+    enterprise_words = ["规模化", "sop", "标准作业", "监测", "复查", "轮换", "作用机制"]
+    family_forbidden = ["无人机", "drone", "规模化喷施", "sop", "专业设备"]
+    mid_forbidden = ["无人机", "drone"] if "DRONE" not in equipment else []
+
+    if branch == "FAMILY":
+        if _contains_any(whole_text, family_forbidden):
+            violations.append("FAMILY 分支出现不可执行的企业/无人机流程")
+        if pesticide_access_level == "NONE" and _contains_any(whole_text, ["购买", "专业杀虫", "专业杀菌", "资质"]):
+            violations.append("FAMILY + 无购药能力时出现专业购药措辞")
+
+    if branch == "MID" and mid_forbidden and _contains_any(whole_text, mid_forbidden):
+        violations.append("MID 分支出现无人机流程")
+
+    if branch == "ENTERPRISE":
+        if "DRONE" not in equipment and _contains_any(whole_text, drone_words):
+            violations.append("ENTERPRISE 在无 DRONE 设备时输出了无人机流程")
+        if not _contains_any(whole_text, enterprise_words):
+            violations.append("ENTERPRISE 缺少SOP/监测/轮换等企业化要素")
+
+    forbidden_equipment_flows = [str(x) for x in (hard_constraints.get("forbidden_equipment_flows") or [])]
+    if "DRONE" in forbidden_equipment_flows and _contains_any(whole_text, drone_words):
+        violations.append("hard_constraints 禁止 DRONE 但文本出现无人机流程")
+
+    banned_ingredients = [str(x).strip() for x in (hard_constraints.get("banned_ingredients") or []) if str(x).strip()]
+    for ingredient in banned_ingredients:
+        if ingredient in whole_text:
+            violations.append(f"出现禁用成分: {ingredient}")
+
+    harvest_window_days = hard_constraints.get("harvest_window_days")
+    if harvest_window_days is None:
+        harvest_window_days = flags.get("harvest_window_days")
+    try:
+        harvest_window_days = int(harvest_window_days)
+    except Exception:
+        harvest_window_days = None
+    if harvest_window_days is not None and harvest_window_days <= 7 and not _contains_any(whole_text, ["采收", "安全间隔", "间隔期"]):
+        violations.append("临近采收但缺少安全间隔提示")
+
+    if prefer_organic and branch in {"FAMILY", "MID"} and _contains_any(whole_text, ["高毒", "强力化学", "专业化学农药"]):
+        violations.append("prefer_organic 场景出现高风险化学措辞")
+
+    return violations
+
+
+def _apply_branch_post_fixes(branch: str, hard_constraints: dict, flags: dict, treatment_text: str, prevention_text: str) -> tuple[str, str]:
+    text = treatment_text
+    prevention = prevention_text
+
+    if branch in {"FAMILY", "MID"} and str(flags.get("pesticide_access_level") or "") == "NONE":
+        text = re.sub(r".*(专业杀虫|专业杀菌|需资质|必须购买).*(\n|$)", "", text, flags=re.IGNORECASE)
+
+    forbidden_equipment_flows = [str(x) for x in (hard_constraints.get("forbidden_equipment_flows") or [])]
+    if "DRONE" in forbidden_equipment_flows:
+        text = re.sub(r".*(无人机|DRONE).*(\n|$)", "", text, flags=re.IGNORECASE)
+        prevention = re.sub(r".*(无人机|DRONE).*(\n|$)", "", prevention, flags=re.IGNORECASE)
+
+    harvest_window_days = hard_constraints.get("harvest_window_days")
+    if harvest_window_days is None:
+        harvest_window_days = flags.get("harvest_window_days")
+    try:
+        harvest_window_days = int(harvest_window_days)
+    except Exception:
+        harvest_window_days = None
+    if harvest_window_days is not None and harvest_window_days <= 7 and not _contains_any(f"{text}\n{prevention}", ["采收", "安全间隔", "间隔期"]):
+        notice = "【采收安全】距采收较近，请严格遵守采收安全间隔并优先低残留方案。"
+        text = f"{text}\n{notice}".strip()
+
+    return text.strip(), prevention.strip()
+
+
 def treatment_agent(state: CropDiseaseState) -> CropDiseaseState:
     """
     番茄病害治疗方案智能体节点（使用大模型API）
@@ -626,67 +787,208 @@ def treatment_agent(state: CropDiseaseState) -> CropDiseaseState:
     print("\n[番茄病害治疗方案智能体] 正在制定治疗方案...")
 
     disease_type = state.get("final_disease") or state.get("disease_type")
-    crop_type = "番茄"  # 确保是番茄
+    crop_type = "番茄"
     crop_growth_stage = state.get("crop_growth_stage")
+    symptoms = state.get("symptoms") or []
     disease_description = state.get("disease_description", "")
-    profile, _ = _get_profile_from_state(state)
-    constraints = TreatmentConstraint()
-    if profile:
-        constraints = profile.constraints
+    profile, base_profile = _get_profile_from_state(state)
+    constraints = profile.constraints if profile else TreatmentConstraint()
     flags = state.get("personalization_flags", {}) or {}
-    constraint_brief = _summarize_constraints(constraints)
-    
+    policy = state.get("personalization_policy") or {}
+    policy_reasons = dedupe_reasons(state.get("personalization_reasons") or flags.get("personalization_reasons") or [])
+    hard_constraints = policy.get("hard_constraints") if isinstance(policy, dict) else {}
+    hard_constraints = hard_constraints if isinstance(hard_constraints, dict) else {}
+
     kb_snapshot = state.get("kb_snapshot") or {}
-    if kb_snapshot.get("treatment") or kb_snapshot.get("prevention"):
-        treatment_plan = kb_snapshot.get("treatment", "")
-        prevention_advice = kb_snapshot.get("prevention", "")
-    else:
-        # 使用大模型生成治疗方案
-        prompt = f"""请为以下番茄病害制定详细的治疗方案和预防建议：
+    base_info = {
+        "facility": flags.get("facility") or (base_profile.facility if base_profile else None),
+        "environment": flags.get("environment") or (base_profile.environment if base_profile else None),
+        "growth_stage": flags.get("growth_stage") or (base_profile.growth_stage if base_profile else None),
+        "province": flags.get("province") or (base_profile.province if base_profile else None),
+    }
 
-作物类型：{crop_type}
-生长阶段：{crop_growth_stage or '未知'}
-病害类型：{disease_type}
-病害描述：{disease_description}
-个性化上下文：{state.get('personalization_context') or '无'}
-治疗约束：{constraint_brief}
+    must_forbid_professional = bool(hard_constraints.get("forbid_professional_pesticides"))
+    forbidden_equipment_flows = [str(x) for x in (hard_constraints.get("forbidden_equipment_flows") or [])]
+    banned_ingredients = [str(x) for x in (hard_constraints.get("banned_ingredients") or flags.get("banned_ingredients") or [])]
+    harvest_window_days = hard_constraints.get("harvest_window_days")
+    if harvest_window_days is None:
+        harvest_window_days = flags.get("harvest_window_days")
+    prefer_organic = bool(flags.get("prefer_organic") or constraints.prefer_organic)
 
-请提供：
-1. 具体的治疗方案（包括推荐药物、使用方法、使用频率等）
-2. 预防措施（包括栽培管理、环境控制等）
+    llm_output: TreatmentLLMOutput | None = None
+    llm_failed_reason = ""
 
-请以JSON格式返回，格式如下：
+    def _build_prompt(branch: str, extra_requirements: str = "") -> str:
+        return f"""你是番茄病害诊治系统治疗智能体。你要为番茄病害输出结构化处置方案，必须严格返回JSON，不要输出额外文字。
+本次目标分叉 branch={branch}（由系统确定，禁止自行改动）。
+{extra_requirements}
+
+病害信息：
+- 作物：{crop_type}
+- 病害：{disease_type}
+- 生育期：{crop_growth_stage or '未知'}
+- 症状：{symptoms}
+- 诊断说明：{disease_description}
+
+知识证据（可参考但不可机械照抄）：
+{json.dumps(kb_snapshot, ensure_ascii=False)}
+
+个性化策略（单一真源）：
+{json.dumps(policy, ensure_ascii=False)}
+
+基地信息：
+{json.dumps(base_info, ensure_ascii=False)}
+
+约束：
+- banned_ingredients={banned_ingredients}
+- harvest_window_days={harvest_window_days}
+- prefer_organic={prefer_organic}
+- forbid_professional_pesticides={must_forbid_professional}
+- forbidden_equipment_flows={forbidden_equipment_flows}
+
+强制规则：
+1) FAMILY 不得出现无人机/规模化喷施/SOP/专业资质购药流程；若购药能力为NONE，避免要求购买专业药剂。
+2) MID 可用背负式/常规可购药剂并强调安全间隔与轮换；仅当设备允许时可写无人机。
+3) ENTERPRISE 可输出规模化SOP/监测/轮换，但仅设备包含DRONE时可写无人机流程。
+4) 若 forbidden_equipment_flows 包含 DRONE，则全文不得出现无人机喷洒流程。
+3) 不得推荐 banned_ingredients 中成分；可给“替代策略/咨询”。
+4) harvest_window_days 较小（<=7）时，必须写采收窗口与安全间隔提醒。
+5) 番茄场景必须强调通风、叶面干燥、修剪清园、监测复查。
+
+输出JSON schema：
 {{
-    "treatment": "详细的治疗方案",
-    "prevention": "预防建议（多条用换行分隔）"
+  "overview": "...",
+  "immediate_actions": ["..."],
+  "treatment_plan": {{
+     "FAMILY": ["..."],
+     "MID": ["..."],
+     "ENTERPRISE": ["..."]
+  }},
+  "prevention_plan": ["..."],
+  "resistance_management": ["..."],
+  "safety_notes": ["..."],
+  "follow_up": ["..."],
+  "personalization_reasons": ["...来自policy.explanations..."],
+  "follow_up_questions": ["...最多3个..."]
 }}"""
 
-        system_prompt = (
-            "你是一位经验丰富的番茄病害防治专家，擅长制定番茄病害的专业、实用、安全的治疗方案和预防建议。"
-        )
+    system_prompt = "你是番茄病害防治首席农艺师，输出必须专业、可执行、可审计，并严格遵守约束。"
 
+    selected_branch = _resolve_treatment_branch(flags)
+    flags["selected_branch"] = selected_branch
+    prompt = _build_prompt(selected_branch)
+
+    for temperature in (0.4, 0.2):
         try:
-            response = call_llm(prompt, system_prompt, temperature=0.7)
-            result = extract_json_from_response(response)
-            
-            if result:
-                treatment_plan = result.get("treatment", "")
-                prevention_advice = result.get("prevention", "")
-            else:
-                # 如果解析失败，使用知识库作为后备
-                treatment_plan, prevention_advice = _get_treatment_from_knowledge_base(disease_type)
-        except Exception as e:
-            print(f"大模型调用失败，使用知识库: {e}")
-            treatment_plan, prevention_advice = _get_treatment_from_knowledge_base(disease_type)
+            response = call_llm(prompt, system_prompt, temperature=temperature)
+            parsed = extract_json_from_response(response)
+            if not parsed:
+                raise ValueError("JSON解析为空")
+            llm_output = TreatmentLLMOutput.model_validate(parsed)
+            break
+        except (ValidationError, ValueError, Exception) as exc:
+            llm_failed_reason = str(exc)
+            llm_output = None
+
+    if llm_output is None:
+        kb_treatment, kb_prevention = _get_treatment_from_knowledge_base(disease_type)
+        flags["llm_failed"] = True
+        flags["llm_failed_reason"] = llm_failed_reason[:200]
+        llm_output = TreatmentLLMOutput(
+            overview=f"基于知识库的后备方案（原因：{llm_failed_reason[:80] or '模型输出不可解析'}）",
+            immediate_actions=["先隔离疑似病株与重病叶，减少传播风险。"],
+            treatment_plan=TreatmentPlanBranches(
+                FAMILY=[kb_treatment or "咨询当地农技获取可执行替代方案。"],
+                MID=[kb_treatment or "咨询当地农技获取可执行替代方案。"],
+                ENTERPRISE=[kb_treatment or "咨询当地农技获取可执行替代方案。"],
+            ),
+            prevention_plan=[line for line in (kb_prevention or "").splitlines() if line.strip()] or ["加强通风、控湿与清园。"],
+            resistance_management=["不同作用机制药剂轮换，避免连续单一用药。"],
+            safety_notes=["严格按标签与采收安全间隔执行。"],
+            follow_up=["48-72小时复查病斑扩展与叶面湿度情况。"],
+            personalization_reasons=dedupe_reasons(policy_reasons),
+            follow_up_questions=(state.get("personalization_reasons") or [])[:3],
+        )
+    else:
+        flags["llm_failed"] = False
+
+    branch_lines = getattr(llm_output.treatment_plan, selected_branch)
+    treatment_text = "\n".join([
+        f"【方案概述】{llm_output.overview}",
+        "【立即行动】" + "；".join(llm_output.immediate_actions),
+        f"【差异化处置-{selected_branch}】" + "；".join(branch_lines),
+        "【抗性管理】" + "；".join(llm_output.resistance_management),
+        "【安全注意】" + "；".join(llm_output.safety_notes),
+        "【复查计划】" + "；".join(llm_output.follow_up),
+    ]).strip()
+
+    prevention_advice = "\n".join(llm_output.prevention_plan).strip()
+
+    violations = _validate_treatment_output(
+        branch=selected_branch,
+        hard_constraints=hard_constraints,
+        flags=flags,
+        treatment_text=treatment_text,
+        prevention_text=prevention_advice,
+    )
+    if violations:
+        retry_prompt = _build_prompt(selected_branch, extra_requirements="以下约束被违反，请修正后输出JSON：" + "；".join(violations))
+        try:
+            retry_response = call_llm(retry_prompt, system_prompt, temperature=0.1)
+            retry_parsed = extract_json_from_response(retry_response)
+            if retry_parsed:
+                llm_output = TreatmentLLMOutput.model_validate(retry_parsed)
+                branch_lines = getattr(llm_output.treatment_plan, selected_branch)
+                treatment_text = "\n".join([
+                    f"【方案概述】{llm_output.overview}",
+                    "【立即行动】" + "；".join(llm_output.immediate_actions),
+                    f"【差异化处置-{selected_branch}】" + "；".join(branch_lines),
+                    "【抗性管理】" + "；".join(llm_output.resistance_management),
+                    "【安全注意】" + "；".join(llm_output.safety_notes),
+                    "【复查计划】" + "；".join(llm_output.follow_up),
+                ]).strip()
+                prevention_advice = "\n".join(llm_output.prevention_plan).strip()
+                violations = _validate_treatment_output(
+                    branch=selected_branch,
+                    hard_constraints=hard_constraints,
+                    flags=flags,
+                    treatment_text=treatment_text,
+                    prevention_text=prevention_advice,
+                )
+        except Exception:
+            pass
+
+    if violations:
+        kb_treatment, kb_prevention = _get_treatment_from_knowledge_base(disease_type)
+        flags["llm_failed"] = True
+        flags["llm_failed_reason"] = "constraint_violation"
+        treatment_text = kb_treatment or "咨询当地农技获取可执行替代方案。"
+        prevention_advice = kb_prevention or "加强通风、控湿与清园。"
+
+    treatment_text, prevention_advice = _apply_branch_post_fixes(
+        selected_branch,
+        hard_constraints,
+        flags,
+        treatment_text,
+        prevention_advice,
+    )
 
     personalized_plan, personalized_prevention, personalization_outputs = apply_personalization_to_treatment(
-        treatment_plan,
+        treatment_text,
         prevention_advice,
         flags,
     )
-    treatment_plan = personalized_plan or treatment_plan
+    treatment_plan = personalized_plan or treatment_text
     prevention_advice = personalized_prevention or prevention_advice
     flags.update(personalization_outputs)
+    flags.update(normalize_filter_outputs(flags))
+    if llm_output.personalization_reasons:
+        flags["personalization_reasons"] = dedupe_reasons(list(llm_output.personalization_reasons) + policy_reasons)
+    elif policy_reasons:
+        flags["personalization_reasons"] = dedupe_reasons(policy_reasons)
+    if llm_output.follow_up_questions:
+        flags["follow_up_questions"] = list(llm_output.follow_up_questions)[:3]
+    flags["personalization_applied"] = compute_personalization_applied(state, flags)
     state["personalization_flags"] = flags
 
     message = f"番茄病害治疗方案智能体：已生针对{disease_type}的治疗方案"
@@ -711,6 +1013,9 @@ def treatment_agent(state: CropDiseaseState) -> CropDiseaseState:
         outputs={
             "treatment_plan": treatment_plan,
             "prevention_advice": prevention_advice,
+            "selected_branch": selected_branch,
+            "llm_failed": flags.get("llm_failed"),
+            "personalization_reasons": dedupe_reasons(flags.get("personalization_reasons") or []),
             "personalization_applied": flags.get("personalization_applied", False),
             "filtered": flags.get("filtered", False),
             "filtered_reasons": flags.get("filtered_reasons") or [],
@@ -760,18 +1065,58 @@ def _fill_missing_from_profile(state: CropDiseaseState, base_profile: Optional[B
         state["crop_growth_stage"] = base_profile.growth_stage
 
 
-def _find_missing_profile_fields(base_profile: Optional[BaseProfile]) -> list[str]:
+def _find_missing_profile_fields(
+    profile: Optional[FarmerProfile],
+    base_profile: Optional[BaseProfile],
+    policy: Optional[dict] = None,
+) -> list[str]:
     """检查档案中缺少的关键字段，提示追问。"""
-    if not base_profile:
-        return ["base_id", "location", "growth_stage"]
+    if not profile:
+        return ["farm_scale", "pesticide_access_level", "cultivation_mode", "base_id", "location", "growth_stage"]
     missing = []
-    if not base_profile.location:
-        missing.append("location")
-    if not base_profile.growth_stage:
-        missing.append("growth_stage")
-    if not base_profile.environment:
-        missing.append("environment")
-    return missing
+    for field in ["farm_scale", "pesticide_access_level", "cultivation_mode", "experience_level", "risk_preference"]:
+        if not getattr(profile, field, None):
+            missing.append(field)
+
+    scale = getattr(profile, "farm_scale", None)
+    equipment = list(getattr(profile, "equipment", []) or [])
+    if scale in {"GREENHOUSE_LARGE", "LARGE"} and not equipment:
+        missing.append("equipment")
+
+    if base_profile is None:
+        missing.extend(["base_id", "location", "growth_stage"])
+    else:
+        if not base_profile.location:
+            missing.append("location")
+        if not base_profile.growth_stage:
+            missing.append("growth_stage")
+        if not base_profile.environment:
+            missing.append("environment")
+    return list(dict.fromkeys(missing))
+
+
+def _build_profile_follow_up_questions(
+    missing_fields: list[str],
+    profile: Optional[FarmerProfile],
+    base_profile: Optional[BaseProfile],
+    policy: Optional[dict] = None,
+) -> list[str]:
+    """根据档案缺失项生成番茄场景追问（最多3条）。"""
+    questions: list[str] = []
+    missing = set(missing_fields)
+    if "farm_scale" in missing:
+        questions.append("您的番茄种植规模更接近家庭阳台、小规模地块，还是大棚/大农场？")
+    if "pesticide_access_level" in missing:
+        questions.append("您目前是否能方便购买合规农药（无/受限/充足）？")
+    if "cultivation_mode" in missing:
+        questions.append("当前番茄是土培、水培还是基质栽培？")
+    if "equipment" in missing:
+        questions.append("是否具备喷施设备（背负式喷雾器、弥雾机或无人机）？")
+    if "experience_level" in missing or "risk_preference" in missing:
+        questions.append("更希望稳妥低风险方案，还是追求见效更快的积极方案？")
+    if "growth_stage" in missing and base_profile is not None:
+        questions.append("当前番茄处于哪个生育期（苗期/开花/结果）？")
+    return questions[:3]
 
 
 def _summarize_constraints(constraints: TreatmentConstraint) -> str:
@@ -786,145 +1131,110 @@ def _summarize_constraints(constraints: TreatmentConstraint) -> str:
     return "；".join(parts) if parts else "无"
 
 
+def _deterministic_supervisor_decision(state: CropDiseaseState, flags: dict, missing_profile_fields: list[str]) -> tuple[str, bool, str, list[str]]:
+    """确定性路由，避免同态循环。"""
+    # a) 无诊断结果 -> diagnosis
+    has_diagnosis = bool(state.get("final_disease") or state.get("disease_type"))
+    if not has_diagnosis:
+        return "diagnosis", False, "番茄病害监督智能体：缺少诊断结果，先执行诊断智能体", ["missing_diagnosis"]
+
+    # b) 仅 need_confirm 才回 reception（missing_profile_fields 仅作为提示，不阻断流程）
+    if flags.get("need_confirm"):
+        return "reception", False, "番茄病害监督智能体：需要补充确认信息，回到接待智能体", ["need_confirm"]
+
+    # c) 无 kb_snapshot -> kb_retrieval
+    if not state.get("kb_snapshot"):
+        return "kb_retrieval", False, "番茄病害监督智能体：缺少知识快照，进入知识检索智能体", ["missing_kb_snapshot"]
+
+    # d) 无 treatment_plan/prevention_advice -> treatment
+    treatment_plan = str(state.get("treatment_plan") or "").strip()
+    prevention_advice = str(state.get("prevention_advice") or "").strip()
+    if not treatment_plan or not prevention_advice:
+        return "treatment", False, "番茄病害监督智能体：缺少治疗/预防方案，进入治疗方案智能体", ["missing_treatment_or_prevention"]
+
+    # e) 其他情况 end
+    return "end", True, "番茄病害监督智能体：核心结果齐备，流程结束", ["all_required_outputs_ready"]
+
+
 def supervisor_agent(state: CropDiseaseState) -> CropDiseaseState:
-    """
-    番茄病害监督智能体节点（使用大模型API进行智能决策）
-
-    职责：
-    1. 协调番茄病害诊断流程
-    2. 决定下一步执行哪个智能体
-    3. 判断流程是否完成
-
-    Args:
-        state: 当前系统状态
-
-    Returns:
-        更新后的状态，包含next_action字段
-    """
+    """监督智能体：执行确定性路由并带循环保护。"""
     print("\n[番茄病害监督智能体] 协调流程...")
 
     current_step = state.get("current_step", "start")
-    messages = state.get("messages", [])
     flags = state.get("personalization_flags", {}) or {}
-    personalization_context = state.get("personalization_context") or "无"
-    follow_ups = flags.get("follow_up_questions", [])
-    
-    # 获取历史next_action，防止无限循环
     history = state.get("history", [])
-    
-    # 使用大模型进行智能决策
-    context = f"""
-当前番茄病害诊断流程状态：
-- 当前步骤：{current_step}
-- 作物类型：番茄
-- 生长阶段：{state.get('crop_growth_stage', '未识别')}
-- 症状：{state.get('symptoms', [])}
-- 病害类型：{state.get('disease_type', '未诊断')}
-- 诊断置信度：{state.get('disease_confidence') or 0:.2%}
-- 历史消息：{messages[-3:] if messages else '无'}
-- 个性化上下文：{personalization_context}
-- 追问建议：{follow_ups or '无'}
-"""
 
-    prompt = f"""{context}
+    step_count = int(state.get("step_count") or 0) + 1
+    state["step_count"] = step_count
 
-请根据当前状态决定下一步操作。可选操作：
-1. "reception" - 转到接待智能体（信息收集）
-2. "diagnosis" - 转到诊断智能体（病害诊断）
-3. "kb_retrieval" - 转到知识检索智能体（知识补全）
-4. "treatment" - 转到治疗方案智能体（生成治疗方案）
-5. "end" - 结束流程
-若诊断置信度低于{DIAGNOSIS_CONFIDENCE_THRESHOLD:.2%}且农户要求低置信度需确认，请返回"reception"追问补充信息（可参考追问建议）。
+    missing_profile_fields = list(flags.get("missing_profile_fields") or [])
+    follow_ups = flags.get("follow_up_questions", [])
 
-请以JSON格式返回，格式如下：
-{{
-    "next_action": "下一步操作",
-    "is_complete": true/false,
-    "reason": "决策理由"
-}}"""
+    query_text = str(state.get("user_query") or "")
+    has_uploaded_image_hint = any(token in query_text for token in ["图片路径", "图像路径", "path:", "path：", ".jpg", ".jpeg", ".png", ".webp"])
+    if has_uploaded_image_hint and not state.get("image_path"):
+        state["next_action"] = "reception"
+        state["is_complete"] = False
+        state["messages"] = ["番茄病害监督智能体：检测到有上传图片但尚未解析路径，先回接待智能体补全 image_path"]
+        history.append((current_step, "reception"))
+        state["history"] = history[-20:]
+        append_trace(
+            state,
+            agent="supervisor",
+            inputs={"current_step": current_step, "step_count": step_count, "image_path": state.get("image_path")},
+            outputs={"next_action": "reception", "is_complete": False},
+            decision={"next_action": "reception", "reasons": ["image_path_missing"], "reason": "image_path_missing"},
+        )
+        return state
 
-    system_prompt = f"""你是一个智能流程协调器，负责协调番茄病害诊断流程。
-流程顺序：start -> reception -> diagnosis -> kb_retrieval -> treatment -> end
-当current_step为start时，必须先执行reception
-当current_step为reception_complete时，必须执行diagnosis
-当current_step为diagnosis_complete时，必须执行kb_retrieval
-当current_step为kb_retrieval_complete时，必须执行treatment
-当current_step为treatment_complete时，必须执行end
-如果信息不完整，可以返回reception重新收集。
-如果诊断置信度低于{DIAGNOSIS_CONFIDENCE_THRESHOLD:.2%}且农户要求确认，请返回reception追问。
-如果所有步骤完成，返回end。"""
+    if step_count > 12:
+        workflow_error = f"SUPERVISOR_STEP_GUARD_EXCEEDED(step_count={step_count})"
+        state["workflow_error"] = workflow_error
+        state["next_action"] = "end"
+        state["is_complete"] = True
+        state["messages"] = ["番茄病害监督智能体：触发步骤上限保护，强制结束流程"]
+        append_trace(
+            state,
+            agent="supervisor",
+            inputs={
+                "current_step": current_step,
+                "step_count": step_count,
+                "missing_profile_fields": missing_profile_fields,
+                "follow_up_questions": follow_ups,
+            },
+            outputs={"next_action": "end", "is_complete": True},
+            decision={
+                "next_action": "end",
+                "reasons": ["step_count_guard"],
+                "reason": workflow_error,
+                "reason_str": workflow_error,
+            },
+        )
+        return state
 
-    decision_reason = ""
-    try:
-        response = call_llm(prompt, system_prompt, temperature=0.3)
-        result = extract_json_from_response(response)
-        
-        if result:
-            next_action = result.get("next_action", "end")
-            # 验证next_action的有效性，防止无效值导致循环
-            valid_actions = ["reception", "diagnosis", "kb_retrieval", "treatment", "end"]
-            if next_action not in valid_actions:
-                print(f"无效的next_action: {next_action}，使用规则决策")
-                next_action, is_complete, message = _rule_based_supervisor(current_step, state, flags)
-            else:
-                is_complete = result.get("is_complete", True)
-                reason = result.get("reason", "")
-                decision_reason = reason
-                message = f"番茄病害监督智能体：{reason or f'下一步操作：{next_action}'}"
-        else:
-            # 如果解析失败，使用规则决策
-            next_action, is_complete, message = _rule_based_supervisor(current_step, state, flags)
-    except Exception as e:
-        print(f"大模型调用失败，使用规则决策: {e}")
-        next_action, is_complete, message = _rule_based_supervisor(current_step, state, flags)
-        decision_reason = message
+    next_action, is_complete, message, decision_reasons = _deterministic_supervisor_decision(
+        state,
+        flags,
+        missing_profile_fields,
+    )
 
-    decision_reasons = []
-    if not decision_reason:
-        if state.get("image_path"):
-            decision_reasons.append("has_image")
-        if not state.get("symptoms"):
-            decision_reasons.append("symptoms_missing")
-        if (state.get("disease_confidence") or 0) < DIAGNOSIS_CONFIDENCE_THRESHOLD:
-            decision_reasons.append("low_confidence")
-            if state.get("final_disease"):
-                decision_reasons.append("need_confirm_but_continue")
-        if flags.get("need_confirm") and state.get("symptoms"):
-            decision_reasons.append("retry_with_more_symptoms")
-        if current_step == "diagnosis_complete":
-            decision_reasons.append("post_diagnosis")
-        decision_reason = ", ".join(decision_reasons) or message
-    else:
-        if isinstance(decision_reason, str):
-            decision_reasons = [decision_reason]
-        elif isinstance(decision_reason, list):
-            decision_reasons = decision_reason
-        else:
-            decision_reasons = [str(decision_reason)]
+    if history and history[-1] == (current_step, next_action):
+        workflow_error = f"SUPERVISOR_LOOP_GUARD(state={current_step}, action={next_action})"
+        state["workflow_error"] = workflow_error
+        next_action = "end"
+        is_complete = True
+        message = "番茄病害监督智能体：检测到同状态重复路由，触发循环保护并结束"
+        decision_reasons = ["repeat_same_state_action", workflow_error]
 
-    # 更新状态
-    if current_step == "diagnosis_complete" and state.get("final_disease") and next_action == "end":
-        next_action = "kb_retrieval"
-        is_complete = False
-        message = "番茄病害监督智能体：诊断已完成，继续进入知识检索智能体"
     state["next_action"] = next_action
     state["is_complete"] = is_complete
     state["messages"] = [message]
-    
-    # 添加历史记录，防止无限循环
+
     history.append((current_step, next_action))
-    # 只保留最近的10个历史记录
-    state["history"] = history[-10:]
-    
-    # 检查是否出现重复的动作序列（超过3次）
-    if len(history) > 6:
-        recent_sequence = tuple(history[-3:])
-        if history.count(recent_sequence) > 2:
-            print("检测到重复动作序列，强制结束流程")
-            state["next_action"] = "end"
-            state["is_complete"] = True
+    state["history"] = history[-20:]
 
     print(f"  - 当前步骤: {current_step}")
+    print(f"  - 步骤计数: {step_count}")
     print(f"  - 下一步动作: {next_action}")
     print(f"  - 是否完成: {is_complete}")
 
@@ -937,13 +1247,17 @@ def supervisor_agent(state: CropDiseaseState) -> CropDiseaseState:
             "disease_confidence": state.get("disease_confidence"),
             "symptoms": state.get("symptoms"),
             "image_path": state.get("image_path"),
+            "step_count": step_count,
+            "missing_profile_fields": missing_profile_fields,
+            "follow_up_questions": follow_ups,
         },
         outputs={"next_action": next_action, "is_complete": is_complete},
         decision={
             "next_action": next_action,
             "reasons": decision_reasons,
-            "reason_str": decision_reason,
-            "reason": decision_reason,
+            "reason_str": message,
+            "reason": message,
+            "workflow_error": state.get("workflow_error"),
             "model_info": state.get("diagnosis_model_meta"),
         },
     )

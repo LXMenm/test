@@ -69,8 +69,8 @@ def build_graph() -> StateGraph:
     workflow.add_node("kb_retrieval", kb_retrieval_agent)  # 知识检索智能体
     workflow.add_node("treatment", treatment_agent)    # 治疗方案智能体
 
-    # 设置入口点：从监督智能体开始
-    workflow.set_entry_point("supervisor")
+    # 设置入口点：从接待智能体开始，确保先解析图片路径再进入诊断
+    workflow.set_entry_point("reception")
 
     # 添加条件边：从监督智能体根据决策路由到不同节点
     workflow.add_conditional_edges(
