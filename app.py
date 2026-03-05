@@ -885,12 +885,16 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
         "filtered": filtered,
         "filtered_reasons": filtered_reasons,
         "filtered_components": filtered_components,
+        "llm_failed": bool(flags.get("llm_failed")),
+        "llm_failed_reason": flags.get("llm_failed_reason"),
         "meta": {
             **personalization_meta,
             "personalization_applied": personalization_applied,
             "filtered": filtered,
             "filtered_reasons": filtered_reasons,
             "filtered_components": filtered_components,
+            "llm_failed": bool(flags.get("llm_failed")),
+            "llm_failed_reason": flags.get("llm_failed_reason"),
         },
         "events": events,
     }
