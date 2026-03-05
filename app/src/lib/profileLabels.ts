@@ -68,13 +68,21 @@ export const getEquipmentLabel = (value?: string | null): string => {
 };
 
 
-export const BRANCH_LABEL_MAP = {
+export type SelectedBranch = 'FAMILY' | 'MID' | 'ENTERPRISE';
+
+export const SELECTED_BRANCH_LABELS: Record<SelectedBranch, string> = {
   FAMILY: '家庭规模（小）',
   MID: '中等规模',
   ENTERPRISE: '企业级（大）',
-} as const;
-
-export const formatSelectedBranch = (value?: string | null): string => {
-  if (!value) return '—';
-  return BRANCH_LABEL_MAP[value as keyof typeof BRANCH_LABEL_MAP] || '—';
 };
+
+export const isSelectedBranch = (v: unknown): v is SelectedBranch =>
+  v === 'FAMILY' || v === 'MID' || v === 'ENTERPRISE';
+
+export function getSelectedBranchLabel(value?: string | null): string {
+  if (!value || !isSelectedBranch(value)) return '—';
+  return SELECTED_BRANCH_LABELS[value];
+}
+
+// 兼容已有调用
+export const formatSelectedBranch = getSelectedBranchLabel;
