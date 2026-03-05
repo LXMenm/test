@@ -10,6 +10,13 @@ import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
 import { cn } from '@/lib/utils';
 import { AgentWorkflowPanel } from '@/components/AgentWorkflowPanel';
+import {
+  getCultivationModeLabel,
+  getEquipmentLabel,
+  getFarmScaleLabel,
+  getPesticideAccessLevelLabel,
+  getSelectedBranchLabel,
+} from '@/lib/profileLabels';
 
 interface DiagnosisResult {
   image_url: string;
@@ -24,6 +31,11 @@ interface DiagnosisResult {
   personalization_applied?: boolean;
   filtered?: boolean;
   filtered_reasons?: string[];
+  profile_farm_scale?: string;
+  profile_pesticide_access_level?: string;
+  profile_equipment?: string[];
+  profile_cultivation_mode?: string;
+  selected_branch?: "FAMILY" | "MID" | "ENTERPRISE" | string;
 }
 
 interface ProfileListItem {
@@ -35,6 +47,10 @@ interface ProfileDetail {
   farmer_id: string;
   name?: string;
   active_base_id?: string;
+  farm_scale?: string;
+  pesticide_access_level?: string;
+  equipment?: string[];
+  cultivation_mode?: string;
   constraints?: {
     prefer_organic?: boolean;
     harvest_window_days?: number;
@@ -244,7 +260,15 @@ export function DiagnosePage() {
     return candidates.length > 0 && displayConfidencePct !== null && displayConfidencePct < 60;
   };
 
-  const buildResultFromPayload = (payload: Record<string, unknown>): DiagnosisResult => ({
+  const buildResultFromPayload = (payload: Record<string, unknown>): DiagnosisResult => {
+    const treatmentObj = payload.treatment && typeof payload.treatment === 'object'
+      ? payload.treatment as Record<string, unknown>
+      : undefined;
+    const selectedBranch = typeof treatmentObj?.selected_branch === 'string'
+      ? treatmentObj.selected_branch
+      : (typeof payload.selected_branch === 'string' ? payload.selected_branch : undefined);
+
+    return ({
     image_url: typeof payload.image_url === 'string' ? payload.image_url : '',
     final_disease: typeof payload.final_disease === 'string'
       ? payload.final_disease
@@ -265,7 +289,13 @@ export function DiagnosePage() {
     personalization_applied: payload.personalization_applied === true,
     filtered: payload.filtered === true,
     filtered_reasons: Array.isArray(payload.filtered_reasons) ? payload.filtered_reasons.map((item) => String(item)) : [],
+    profile_farm_scale: typeof payload.profile_farm_scale === 'string' ? payload.profile_farm_scale : undefined,
+    profile_pesticide_access_level: typeof payload.profile_pesticide_access_level === 'string' ? payload.profile_pesticide_access_level : undefined,
+    profile_equipment: Array.isArray(payload.profile_equipment) ? payload.profile_equipment.map((item) => String(item)) : [],
+    profile_cultivation_mode: typeof payload.profile_cultivation_mode === 'string' ? payload.profile_cultivation_mode : undefined,
+    selected_branch: selectedBranch,
   });
+  };
 
   const normalizeTraceEvents = (eventsLike: unknown): TraceEvent[] => {
     if (!Array.isArray(eventsLike)) return [];
@@ -545,8 +575,6 @@ export function DiagnosePage() {
     // 仅在尚未选择时自动回填首个候选；不要覆盖用户手动选择“仍不确定/其他”。
     const shouldAutofillChoice = !confirmChoice;
     if (candidates[0]?.disease && shouldAutofillChoice) {
-    if (candidates[0]?.disease && !confirmChoice) {
-
       setConfirmChoice(candidates[0].disease);
     }
   }, [confirmMode, candidates, confirmChoice]);
@@ -714,6 +742,10 @@ export function DiagnosePage() {
               {selectedProfile && (
                 <div className="bg-white/5 rounded-xl p-3 text-xs text-white/75 space-y-1 border border-white/10">
                   <p>农户：{selectedProfile.farmer_id}{selectedProfile.name ? ` · ${selectedProfile.name}` : ''}</p>
+                  <p>规模：{getFarmScaleLabel(selectedProfile.farm_scale || 'SMALL')}</p>
+                  <p>购药能力：{getPesticideAccessLevelLabel(selectedProfile.pesticide_access_level || 'LIMITED')}</p>
+                  <p>设备：{(selectedProfile.equipment || []).map((item) => getEquipmentLabel(item)).join('、') || '无'}</p>
+                  <p>栽培模式：{getCultivationModeLabel(selectedProfile.cultivation_mode || 'SOIL')}</p>
                   <p>偏好有机：{selectedProfile.constraints?.prefer_organic ? '是' : '否'}</p>
                   <p>禁用成分：{(selectedProfile.constraints?.banned_ingredients || []).join('、') || '无'}</p>
                   <p>采收窗口：{selectedProfile.constraints?.harvest_window_days ?? '未设置'} 天</p>
@@ -833,6 +865,17 @@ export function DiagnosePage() {
                     </div>
                   </div>
 
+                  <div>
+                    <h4 className="text-white/80 font-medium mb-2">Profile Snapshot</h4>
+                    <div className="bg-white/5 rounded-xl p-4 text-sm text-white/80 space-y-1">
+                      <p>规模: {getFarmScaleLabel(result.profile_farm_scale || 'SMALL')}</p>
+                      <p>购药能力: {getPesticideAccessLevelLabel(result.profile_pesticide_access_level || 'LIMITED')}</p>
+                      <p>设备: {(result.profile_equipment || []).map((item) => getEquipmentLabel(item)).join('、') || '无'}</p>
+                      <p>栽培模式: {getCultivationModeLabel(result.profile_cultivation_mode || 'SOIL')}</p>
+                      <p>方案档位: {getSelectedBranchLabel(result.selected_branch)}</p>
+                    </div>
+                  </div>
+
                   {confirmMode ? (
                     <div className="bg-[#c8f7c5]/10 border border-[#c8f7c5]/30 rounded-xl p-4 space-y-4">
                       <h4 className="text-[#c8f7c5] font-medium">二次诊断 / 确认入口</h4>
@@ -902,6 +945,11 @@ export function DiagnosePage() {
                       <h4 className="text-white/80 font-medium mb-2 flex items-center gap-2">
                         <AlertCircle className="w-4 h-4 text-[#c8f7c5]" />
                         治疗方案
+                        {result.selected_branch ? (
+                          <span className="inline-flex items-center rounded-full border border-emerald-600/70 bg-emerald-900/50 px-2 py-0.5 text-xs text-emerald-100">
+                            {getSelectedBranchLabel(result.selected_branch)}
+                          </span>
+                        ) : null}
                       </h4>
                       <div className="bg-white/5 rounded-xl p-4 text-white/80 text-sm leading-relaxed whitespace-pre-line">
                         {renderTreatment(result.treatment)}
