@@ -15,7 +15,7 @@ import {
   getEquipmentLabel,
   getFarmScaleLabel,
   getPesticideAccessLevelLabel,
-  formatSelectedBranch,
+  getSelectedBranchLabel,
 } from '@/lib/profileLabels';
 
 interface DiagnosisResult {
@@ -260,7 +260,15 @@ export function DiagnosePage() {
     return candidates.length > 0 && displayConfidencePct !== null && displayConfidencePct < 60;
   };
 
-  const buildResultFromPayload = (payload: Record<string, unknown>): DiagnosisResult => ({
+  const buildResultFromPayload = (payload: Record<string, unknown>): DiagnosisResult => {
+    const treatmentObj = payload.treatment && typeof payload.treatment === 'object'
+      ? payload.treatment as Record<string, unknown>
+      : undefined;
+    const selectedBranch = typeof treatmentObj?.selected_branch === 'string'
+      ? treatmentObj.selected_branch
+      : (typeof payload.selected_branch === 'string' ? payload.selected_branch : undefined);
+
+    return ({
     image_url: typeof payload.image_url === 'string' ? payload.image_url : '',
     final_disease: typeof payload.final_disease === 'string'
       ? payload.final_disease
@@ -285,8 +293,9 @@ export function DiagnosePage() {
     profile_pesticide_access_level: typeof payload.profile_pesticide_access_level === 'string' ? payload.profile_pesticide_access_level : undefined,
     profile_equipment: Array.isArray(payload.profile_equipment) ? payload.profile_equipment.map((item) => String(item)) : [],
     profile_cultivation_mode: typeof payload.profile_cultivation_mode === 'string' ? payload.profile_cultivation_mode : undefined,
-    selected_branch: typeof payload.selected_branch === 'string' ? payload.selected_branch : undefined,
+    selected_branch: selectedBranch,
   });
+  };
 
   const normalizeTraceEvents = (eventsLike: unknown): TraceEvent[] => {
     if (!Array.isArray(eventsLike)) return [];
@@ -863,7 +872,7 @@ export function DiagnosePage() {
                       <p>购药能力: {getPesticideAccessLevelLabel(result.profile_pesticide_access_level || 'LIMITED')}</p>
                       <p>设备: {(result.profile_equipment || []).map((item) => getEquipmentLabel(item)).join('、') || '无'}</p>
                       <p>栽培模式: {getCultivationModeLabel(result.profile_cultivation_mode || 'SOIL')}</p>
-                      <p>方案档位: {formatSelectedBranch(result.selected_branch)}</p>
+                      <p>方案档位: {getSelectedBranchLabel(result.selected_branch)}</p>
                     </div>
                   </div>
 
@@ -938,7 +947,7 @@ export function DiagnosePage() {
                         治疗方案
                         {result.selected_branch ? (
                           <span className="inline-flex items-center rounded-full border border-emerald-600/70 bg-emerald-900/50 px-2 py-0.5 text-xs text-emerald-100">
-                            {formatSelectedBranch(result.selected_branch)}
+                            {getSelectedBranchLabel(result.selected_branch)}
                           </span>
                         ) : null}
                       </h4>
