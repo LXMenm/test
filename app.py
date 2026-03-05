@@ -279,6 +279,26 @@ def _build_personalization_meta(flags: dict, farmer_id: str | None, base_id: str
     }
 
 
+def _normalize_filter_state(flags: dict) -> tuple[bool, list[str], list[str]]:
+    """在 API 层做 filtered/filtered_reasons 的最终一致性兜底。
+
+    语义约定：
+    - filtered 表示个性化过滤器是否对最终文本做过任何干预（删除/替换/插入提示/增加警示）。
+    - filtered_reasons 表示发生干预的原因。
+    - filtered_components 表示被删除/替换/涉及的成分或关键词（可为空）。
+
+    只要 filtered_reasons 非空，filtered 必须为 True。
+    """
+    normalized = profile_rules.normalize_filter_outputs({
+        "filtered": flags.get("filtered", False),
+        "filtered_reasons": flags.get("filtered_reasons") or [],
+        "filtered_components": flags.get("filtered_components") or [],
+        "personalization_applied": flags.get("personalization_applied", False),
+    })
+    flags.update(normalized)
+    return bool(normalized["filtered"]), list(normalized["filtered_reasons"]), list(normalized["filtered_components"])
+
+
 
 
 def _build_degraded_treatment(
@@ -573,9 +593,7 @@ async def diagnose_image(
     }
     personalization_applied = compute_personalization_applied(personalization_state, flags)
     flags["personalization_applied"] = personalization_applied
-    filtered = bool(flags.get("filtered"))
-    filtered_reasons = list(flags.get("filtered_reasons") or [])
-    filtered_components = list(flags.get("filtered_components") or [])
+    filtered, filtered_reasons, filtered_components = _normalize_filter_state(flags)
     if not personalization_reasons:
         personalization_reasons = dedupe_reasons(flags.get("personalization_reasons") or [])
     else:
@@ -808,8 +826,7 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
     personalization_meta = _build_personalization_meta(flags, farmer_id, state.get("base_id"))
     personalization_applied = compute_personalization_applied(state, flags)
     flags["personalization_applied"] = personalization_applied
-    filtered = bool(flags.get("filtered"))
-    filtered_reasons = list(flags.get("filtered_reasons") or [])
+    filtered, filtered_reasons, filtered_components = _normalize_filter_state(flags)
     confirm_message = None
     if need_confirm:
         confirm_message = "置信度较低，建议补充症状或重新拍摄"
@@ -867,7 +884,14 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
         "personalization_applied": personalization_applied,
         "filtered": filtered,
         "filtered_reasons": filtered_reasons,
-        "meta": {**personalization_meta, "personalization_applied": personalization_applied, "filtered": filtered, "filtered_reasons": filtered_reasons},
+        "filtered_components": filtered_components,
+        "meta": {
+            **personalization_meta,
+            "personalization_applied": personalization_applied,
+            "filtered": filtered,
+            "filtered_reasons": filtered_reasons,
+            "filtered_components": filtered_components,
+        },
         "events": events,
     }
 

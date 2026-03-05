@@ -9,7 +9,7 @@ from knowledge_base import get_kb_manager
 from config import DIAGNOSIS_CONFIDENCE_THRESHOLD, DIAGNOSIS_ALLOW_TORCH
 from confidence_policy import make_confidence_flags
 from personalization.profile_models import FarmerProfile, BaseProfile, TreatmentConstraint
-from personalization.profile_rules import apply_personalization_to_treatment
+from personalization.profile_rules import apply_personalization_to_treatment, normalize_filter_outputs
 from personalization.utils import dedupe_reasons, compute_personalization_applied
 from trace_store import append_trace_event
 from datetime import datetime, timezone
@@ -981,6 +981,7 @@ def treatment_agent(state: CropDiseaseState) -> CropDiseaseState:
     treatment_plan = personalized_plan or treatment_text
     prevention_advice = personalized_prevention or prevention_advice
     flags.update(personalization_outputs)
+    flags.update(normalize_filter_outputs(flags))
     if llm_output.personalization_reasons:
         flags["personalization_reasons"] = dedupe_reasons(list(llm_output.personalization_reasons) + policy_reasons)
     elif policy_reasons:
