@@ -12,6 +12,8 @@ from personalization.profile_context import (
     build_personalization_flags,
 )
 from personalization.profile_models import FarmerProfile, BaseProfile
+from personalization.policy_engine import build_policy
+from personalization.utils import dedupe_reasons, compute_personalization_applied
 
 
 class CropDiseaseState(TypedDict):
@@ -56,6 +58,8 @@ class CropDiseaseState(TypedDict):
     current_step: str  # 当前执行步骤
     next_action: Optional[str]  # 下一步动作
     is_complete: bool  # 是否完成整个流程
+    step_count: int  # supervisor 调度计数
+    workflow_error: Optional[str]  # 工作流降级/保护原因
 
     # 消息历史（用于记录各个智能体的输出）
     messages: Annotated[List[str], operator.add]
@@ -72,6 +76,9 @@ class CropDiseaseState(TypedDict):
     farmer_profile: Optional[Dict[str, Any]]
     personalization_context: Optional[str]
     personalization_flags: Dict[str, Any]
+    personalization_policy: Optional[Dict[str, Any]]
+    personalization_reasons: List[str]
+    follow_up_questions: List[str]
 
     # Trace信息
     trace_id: str
@@ -115,6 +122,8 @@ def create_initial_state(
         current_step="start",
         next_action=None,
         is_complete=False,
+        step_count=0,
+        workflow_error=None,
         messages=[],
         history=[],
         error=None,
@@ -123,6 +132,9 @@ def create_initial_state(
         farmer_profile=None,
         personalization_context=None,
         personalization_flags={},
+        personalization_policy=None,
+        personalization_reasons=[],
+        follow_up_questions=[],
         trace_id=uuid.uuid4().hex,
         trace_events=[],
         kb_snapshot=None,
@@ -135,8 +147,24 @@ def create_initial_state(
             resolved_base_id, base_profile = _resolve_base(profile, base_id)
             state["base_id"] = resolved_base_id
             apply_base_profile_to_state(state, base_profile)
-            state["personalization_context"] = build_personalization_context(profile, base_profile)
-            state["personalization_flags"] = build_personalization_flags(profile, base_profile)
+            policy = None
+            try:
+                policy = build_policy(profile, base_profile)
+                state["personalization_policy"] = policy.model_dump()
+                state["personalization_reasons"] = dedupe_reasons(policy.explanations)
+                state["personalization_context"] = policy.context_text
+            except Exception:
+                state["personalization_context"] = build_personalization_context(profile, base_profile)
+                state["personalization_policy"] = None
+                state["personalization_reasons"] = dedupe_reasons([])
+            state["personalization_flags"] = build_personalization_flags(profile, base_profile, policy=policy)
+            state["personalization_flags"]["personalization_reasons"] = dedupe_reasons(
+                state["personalization_flags"].get("personalization_reasons") or state.get("personalization_reasons") or []
+            )
+            state["personalization_flags"]["personalization_applied"] = compute_personalization_applied(
+                state,
+                state["personalization_flags"],
+            )
         else:
             state["error"] = f"未找到农户档案：{farmer_id}"
 
