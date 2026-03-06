@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   BadgeCheck,
@@ -343,106 +343,113 @@ const normalizeEvent = (raw: RawTraceEvent): NormalizedEvent => {
   };
 };
 
-const extractHighlights = (agentId: FixedAgentId, events: NormalizedEvent[]): string[] => {
+const isSystemNodeEvent = (event: NormalizedEvent): boolean => {
+  const node = String(event.nodeName || '').toLowerCase();
+  const message = String(event.message || '').toLowerCase();
+  return node.includes('persist')
+    || node.includes('validator')
+    || message.includes('写入事件日志')
+    || message.includes('事件落盘完成')
+    || message.includes('校验完成');
+};
+
+const toStringArray = (value: unknown): string[] => toArray(value).map((item) => String(item)).filter(Boolean);
+
+const getOutputs = (event: NormalizedEvent): Record<string, unknown> => {
+  const data = isRecord(event.data) ? event.data : {};
+  if (isRecord(data['outputs'])) return data['outputs'];
+  if (isRecord(data['payload']) && isRecord((data['payload'] as Record<string, unknown>)['outputs'])) {
+    return (data['payload'] as Record<string, unknown>)['outputs'] as Record<string, unknown>;
+  }
+  return data;
+};
+
+const extractHighlights = (agentId: FixedAgentId, events: NormalizedEvent[], showSystemNodes: boolean): string[] => {
   if (!events.length) return [];
 
-  const latest = events[events.length - 1];
+  const viewEvents = showSystemNodes ? events : events.filter((event) => !isSystemNodeEvent(event));
+  const latest = (viewEvents.length ? viewEvents : events)[(viewEvents.length ? viewEvents : events).length - 1];
+  const outputs = getOutputs(latest);
   const lines: string[] = [];
 
-  if (agentId === 'supervisor') {
-    const decision = isRecord(latest.data?.['decision']) ? latest.data['decision'] : undefined;
-    const outputs = isRecord(latest.data?.['outputs']) ? latest.data['outputs'] : undefined;
-    const nextAction = (isRecord(decision) ? decision['next_action'] : undefined) ?? (isRecord(outputs) ? outputs['next_action'] : undefined);
-    const reasons = toArray((isRecord(decision) ? decision['reasons_cn'] : undefined) ?? (isRecord(decision) ? decision['reasons'] : undefined)).map((item) => String(item)).filter(Boolean);
-    const isComplete = (isRecord(outputs) ? outputs['is_complete'] : undefined) ?? (isRecord(decision) ? decision['is_complete'] : undefined);
-    if (nextAction) lines.push(`下一步：${String(nextAction)}`);
-    reasons.slice(0, 2).forEach((reason) => lines.push(`原因：${shortText(reason, 70)}`));
-    if (typeof isComplete === 'boolean') lines.push(`is_complete：${isComplete ? '是' : '否'}`);
-  }
-
   if (agentId === 'reception') {
-    const inputs = isRecord(latest.data?.['inputs']) ? latest.data['inputs'] : undefined;
-    const outputs = isRecord(latest.data?.['outputs']) ? latest.data['outputs'] : undefined;
-    const cropType = (isRecord(inputs) ? inputs['crop_type'] : undefined) ?? (isRecord(outputs) ? outputs['crop_type'] : undefined);
-    const imageName = (isRecord(inputs) ? inputs['filename'] : undefined)
-      ?? (isRecord(inputs) ? inputs['image_name'] : undefined)
-      ?? (isRecord(inputs) ? inputs['image_path'] : undefined)
-      ?? (isRecord(outputs) ? outputs['image_path'] : undefined);
-    const missing = toArray(isRecord(outputs) ? outputs['missing_profile_fields'] : undefined);
-    const symptoms = (isRecord(outputs) ? outputs['symptoms'] : undefined)
-      ?? (isRecord(inputs) ? inputs['symptoms'] : undefined)
-      ?? (isRecord(inputs) ? inputs['cleaned_query'] : undefined)
-      ?? (isRecord(inputs) ? inputs['user_query'] : undefined);
-    const symptomCount = Array.isArray(symptoms)
-      ? symptoms.length
-      : typeof symptoms === 'string'
-        ? symptoms.split(/[，,\s]+/).filter(Boolean).length
-        : 0;
-    if (cropType) lines.push(`作物：${String(cropType)}`);
-    if (imageName) lines.push(`图片：${shortText(String(imageName), 48)}`);
-    if (missing.length) lines.push(`缺失档案字段：${missing.join('、')}`);
-    lines.push(`症状数量：${symptomCount}`);
+    const missing = toStringArray(outputs['missing_profile_fields']);
+    if (missing.length) lines.push(`待补齐：${missing.join('、')}`);
   }
 
   if (agentId === 'diagnosis') {
-    const outputs = isRecord(latest.data?.['outputs']) ? latest.data['outputs'] : latest.data;
-    const imageResult = isRecord(outputs['image_result']) ? outputs['image_result'] : undefined;
-    const modelId = outputs['model_id'];
-    const backend = outputs['backend'] ?? outputs['model_backend'];
-    const path = outputs['path'] ?? outputs['model_path'] ?? outputs['resolved_model_path'];
-    const finalDisease = outputs['final_disease'] ?? outputs['disease'];
-    const confidenceRaw = Number(outputs['confidence_pct'] ?? outputs['confidence']);
-    const confidencePct = Number.isFinite(confidenceRaw)
-      ? (confidenceRaw <= 1 ? confidenceRaw * 100 : confidenceRaw)
-      : undefined;
-    const top3 = toArray(outputs['top3'] ?? (isRecord(imageResult) ? imageResult['top3'] : undefined))
-      .slice(0, 3)
-      .map((item) => {
-        const obj = item && typeof item === 'object' ? item as Record<string, unknown> : {};
-        const disease = String(obj.disease ?? obj.name ?? '-');
-        const confidencePct = Number(obj.confidence_pct ?? (Number(obj.confidence) * 100));
-        return `${disease}:${confidencePct.toFixed(1)}%`;
-      });
-
-    if (modelId || backend) lines.push(`模型：${String(modelId ?? '-')} / ${String(backend ?? '-')}`);
-    if (path) lines.push(`路径：${shortText(String(path), 54)}`);
-    if (finalDisease) lines.push(`结论：${String(finalDisease)}`);
-    if (typeof confidencePct === 'number' && Number.isFinite(confidencePct)) lines.push(`置信度：${confidencePct.toFixed(2)}%`);
-    if (top3.length) lines.push(`Top3：${top3.join(' | ')}`);
-    if (outputs['fallback_reason']) lines.push(`回退原因：${String(outputs['fallback_reason'])}`);
+    const disease = String(outputs['final_disease'] ?? outputs['disease_type'] ?? outputs['disease'] ?? '').trim();
+    const source = String(outputs['final_source'] ?? '').trim();
+    const confidenceRaw = Number(outputs['final_confidence'] ?? outputs['confidence_pct'] ?? outputs['confidence']);
+    const confidence = Number.isFinite(confidenceRaw) ? (confidenceRaw <= 1 ? confidenceRaw * 100 : confidenceRaw) : undefined;
+    if (disease) {
+      lines.push(`诊断=${disease}${typeof confidence === 'number' ? ` 置信度=${confidence.toFixed(2)}%` : ''}${source ? ` 来源=${source}` : ''}`);
+    }
+    if (outputs['need_confirm'] === true) lines.push('需要二次确认');
   }
 
   if (agentId === 'kb_retrieval') {
-    const outputs = isRecord(latest.data?.['outputs']) ? latest.data['outputs'] : latest.data;
-    if (outputs['disease']) lines.push(`命中病害：${String(outputs['disease'])}`);
-    if (outputs['description']) lines.push(`描述：${shortText(String(outputs['description']), 80)}`);
-    if (outputs['treatment']) lines.push(`治疗：${shortText(String(outputs['treatment']), 70)}`);
-    if (outputs['prevention']) lines.push(`预防：${shortText(String(outputs['prevention']), 70)}`);
+    const actions = isRecord(outputs['actions']) ? outputs['actions'] : undefined;
+    const ingredients = toStringArray(outputs['ingredients']);
+    const actionCount = actions ? 1 : 0;
+    lines.push(`已加载 KB actions + ingredients（${ingredients.length} 项）`);
+    if (actionCount > 0 && isRecord(actions?.['treatment_plan'])) {
+      const tp = actions?.['treatment_plan'] as Record<string, unknown>;
+      lines.push(`actions分支：FAMILY ${toStringArray(tp['FAMILY']).length} / MID ${toStringArray(tp['MID']).length} / ENTERPRISE ${toStringArray(tp['ENTERPRISE']).length}`);
+    }
   }
 
   if (agentId === 'treatment') {
-    const outputs = isRecord(latest.data?.['outputs']) ? latest.data['outputs'] : latest.data;
-    if (outputs['treatment_plan'] || outputs['plan']) lines.push(`处方：${shortText(String(outputs['treatment_plan'] ?? outputs['plan']), 80)}`);
-    if (outputs['prevention_advice'] || outputs['prevention']) lines.push(`预防：${shortText(String(outputs['prevention_advice'] ?? outputs['prevention']), 80)}`);
-    const filtered = toArray(outputs['filtered_components']).map((item) => String(item));
-    if (filtered.length) lines.push(`过滤组件：${filtered.slice(0, 3).join('、')}`);
-    const validatorMessages = events
-      .filter((event) => /validator|persist/i.test(event.nodeName))
-      .slice(-2)
-      .map((event) => shortText(event.message, 80));
-    validatorMessages.forEach((message) => lines.push(`校验/落盘：${message}`));
+    const selectedBranch = String(outputs['selected_branch'] ?? '').trim();
+    const llmFailed = outputs['llm_failed'] === true;
+    const llmReason = String(outputs['llm_failed_reason'] ?? '').trim();
+    if (selectedBranch || outputs['llm_failed'] !== undefined) {
+      lines.push(`档位=${selectedBranch || '-'}；LLM=${llmFailed ? '失败' : '成功'}${llmFailed && llmReason ? `（${llmReason}）` : ''}`);
+    }
+
+    const filtered = outputs['filtered'] === true;
+    const filteredReasons = toStringArray(outputs['filtered_reasons']);
+    const filteredComponents = toStringArray(outputs['filtered_components']);
+    const personalizationApplied = outputs['personalization_applied'] === true;
+    if (personalizationApplied) lines.push('已应用个性化');
+    if (filtered) {
+      lines.push(`触发过滤：${filteredReasons.length ? filteredReasons.join('；') : '已触发'}`);
+      if (filteredComponents.length) lines.push(`过滤成分：${filteredComponents.join('、')}`);
+    } else {
+      lines.push('未触发过滤');
+    }
+
+    const reasons = toStringArray(outputs['personalization_reasons']);
+    if (reasons.length) lines.push(`原因概览：${reasons.slice(0, 3).join('；')}`);
+
+    const planText = String(outputs['treatment_plan'] ?? outputs['plan'] ?? '');
+    const immediateCount = (planText.match(/【立即行动】/g) || []).length > 0 ? 1 : 0;
+    const branchCount = (planText.match(/【差异化处置-/g) || []).length;
+    if (immediateCount || branchCount) lines.push(`引用KB/结构化动作：立即行动${immediateCount}段，差异化处置${branchCount}段`);
+  }
+
+  if (agentId === 'supervisor') {
+    const decision = isRecord((isRecord(latest.data) ? latest.data['decision'] : undefined)) ? (latest.data as Record<string, unknown>)['decision'] as Record<string, unknown> : undefined;
+    const nextAction = decision?.['next_action'] ?? outputs['next_action'];
+    if (nextAction) lines.push(`下一步：${String(nextAction)}`);
+    const followUps = toStringArray(outputs['follow_up_questions']);
+    if (followUps.length) lines.push(`待补充问题：${followUps.slice(0, 2).join('；')}`);
   }
 
   if (agentId === 'final') {
-    const outputs = isRecord(latest.data?.['outputs']) ? latest.data['outputs'] : latest.data;
-    if (outputs['final_disease'] || outputs['disease']) lines.push(`最终病害：${String(outputs['final_disease'] ?? outputs['disease'])}`);
+    const finalDisease = String(outputs['final_disease'] ?? outputs['disease'] ?? '').trim();
+    if (finalDisease) lines.push(`最终病害：${finalDisease}`);
     lines.push('流程完成');
   }
 
-  if (!lines.length) {
-    lines.push(shortText(latest.message, 100) || '等待事件');
+  if (!showSystemNodes) {
+    const systemLines = lines.filter((line) => /校验|落盘|事件日志/.test(line));
+    if (systemLines.length) {
+      // 降噪：默认隐藏系统执行细节，由“显示系统节点”开关控制。
+    }
   }
 
+  if (!lines.length) lines.push(shortText(latest.message, 100) || '等待事件');
   return lines.filter(Boolean).slice(0, 6);
 };
 
@@ -454,6 +461,8 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [workflowDone, setWorkflowDone] = useState(false);
   const [diagnosisConfidencePct, setDiagnosisConfidencePct] = useState<number | undefined>(undefined);
+  const [allEvents, setAllEvents] = useState<NormalizedEvent[]>([]);
+  const [showSystemNodes, setShowSystemNodes] = useState(false);
   const [debugOpen, setDebugOpen] = useState<Record<FixedAgentId, boolean>>({
     supervisor: false,
     reception: false,
@@ -479,30 +488,30 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
   });
   const allEventsRef = useRef<NormalizedEvent[]>([]);
 
-  const clearTicker = () => {
+  const clearTicker = useCallback(() => {
     if (tickerRef.current) {
       clearInterval(tickerRef.current);
       tickerRef.current = null;
     }
-  };
+  }, []);
 
-  const closeStream = () => {
+  const closeStream = useCallback(() => {
     if (esRef.current) {
       esRef.current.close();
       esRef.current = null;
     }
-  };
+  }, []);
 
-  const clearExternal = () => {
+  const clearExternal = useCallback(() => {
     closeStream();
     clearTicker();
-  };
+  }, [closeStream, clearTicker]);
 
-  const stopPolling = () => {
+  const stopPolling = useCallback(() => {
     // 保留明确入口，便于在流程结束时统一停止后续轮询/流更新
-  };
+  }, []);
 
-  const maybeStartTicker = (snapshot: Record<FixedAgentId, AgentRowState>, done: boolean) => {
+  const maybeStartTicker = useCallback((snapshot: Record<FixedAgentId, AgentRowState>, done: boolean) => {
     const hasRunning = FIXED_AGENTS.some((agent) => snapshot[agent.id].status === 'running');
     const hasPhaseTimer = typeof phaseStartMs === 'number' && Number.isFinite(phaseStartMs);
     if (!done && (hasRunning || hasPhaseTimer)) {
@@ -512,9 +521,9 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
     } else {
       clearTicker();
     }
-  };
+  }, [phaseStartMs, clearTicker]);
 
-  const completeSupervisorOnDone = (doneTs?: number) => {
+  const completeSupervisorOnDone = useCallback((doneTs?: number) => {
     setRows((prev) => {
       if (prev.supervisor.status !== 'running') return prev;
       const next = { ...prev };
@@ -526,9 +535,9 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
       };
       return next;
     });
-  };
+  }, []);
 
-  const applyNormalizedEvent = (event: NormalizedEvent): boolean => {
+  const applyNormalizedEvent = useCallback((event: NormalizedEvent): boolean => {
     if (workflowDoneRef.current) return false;
 
     const seq = event.seq;
@@ -549,6 +558,7 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
       if (sa !== sb) return sa - sb;
       return (a.tsMs ?? Number.MAX_SAFE_INTEGER) - (b.tsMs ?? Number.MAX_SAFE_INTEGER);
     });
+    setAllEvents(allEventsRef.current);
 
     if (agentId === 'diagnosis') {
       const data = isRecord(event.data) ? event.data : undefined;
@@ -584,7 +594,7 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
         })
         .slice(-3);
       current.lastMessage = message;
-      current.highlights = extractHighlights(agentId, eventHistoryRef.current[agentId]);
+      current.highlights = extractHighlights(agentId, eventHistoryRef.current[agentId], showSystemNodes);
 
       if (event.status === 'running') {
         current.status = 'running';
@@ -644,11 +654,17 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
     }
 
     return true;
-  };
+  }, [maybeStartTicker, stopPolling, closeStream, clearTicker, completeSupervisorOnDone, showSystemNodes]);
 
   useEffect(() => {
     if (!traceId) {
       clearExternal();
+      setRows(buildInitialState());
+      setDiagnosisConfidencePct(undefined);
+      setConnectionState('idle');
+      setConnectionHint('');
+      setReplayedCount(0);
+      setWorkflowDone(false);
       replayedCountRef.current = 0;
       workflowDoneRef.current = false;
       lastSeqRef.current = -1;
@@ -662,6 +678,7 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
         final: [],
       };
       allEventsRef.current = [];
+      queueMicrotask(() => setAllEvents([]));
       return;
     }
 
@@ -670,6 +687,8 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
     clearExternal();
     queueMicrotask(() => {
       if (cancelled) return;
+      setRows(buildInitialState());
+      setDiagnosisConfidencePct(undefined);
       setConnectionState('connecting');
       setConnectionHint('正在回放历史事件...');
       setReplayedCount(0);
@@ -688,6 +707,7 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
       final: [],
     };
     allEventsRef.current = [];
+    queueMicrotask(() => setAllEvents([]));
 
     const openStream = () => {
       if (cancelled || workflowDoneRef.current) return;
@@ -767,7 +787,7 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
       cancelled = true;
       clearExternal();
     };
-  }, [traceId, phaseStartMs, refreshToken]);
+  }, [traceId, phaseStartMs, refreshToken, applyNormalizedEvent, clearExternal, closeStream]);
 
   useEffect(() => {
     if (workflowDone) {
@@ -775,7 +795,7 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
       closeStream();
       completeSupervisorOnDone(finalTsRef.current);
     }
-  }, [workflowDone]);
+  }, [workflowDone, clearTicker, closeStream, completeSupervisorOnDone]);
 
   useEffect(() => {
     if (workflowDone) return;
@@ -784,10 +804,9 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
     }
   }, [phaseStartMs, workflowDone]);
 
-
   const phaseDurationsByAgent = useMemo(
-    () => calcPhaseDurationsByAgent(allEventsRef.current, nowMs, workflowDone),
-    [rows, nowMs, workflowDone],
+    () => calcPhaseDurationsByAgent(allEvents, nowMs, workflowDone),
+    [allEvents, nowMs, workflowDone],
   );
 
   const renderedRows = useMemo(() => {
@@ -845,6 +864,18 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
             <BadgeCheck className="w-3 h-3 mr-1" />流程已结束
           </Badge>
         )}
+        <button
+          type="button"
+          onClick={() => setShowSystemNodes((v) => !v)}
+          className={cn(
+            "text-xs px-2 py-1 rounded border",
+            showSystemNodes
+              ? "border-[#c8f7c5]/60 text-[#c8f7c5] bg-[#c8f7c5]/10"
+              : "border-white/20 text-white/60 hover:text-white/80"
+          )}
+        >
+          显示系统节点（校验/落盘）
+        </button>
       </div>
 
       <div className="space-y-0">
@@ -949,7 +980,15 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
 
                     {debugOpen[row.id] && (
                       <div className="mt-1 space-y-1">
-                        {row.steps.length ? row.steps.map((step, index) => (
+                        {(showSystemNodes ? row.steps : row.steps.filter((step) => {
+                          const node = String(step.node || '').toLowerCase();
+                          const msg = String(step.message || '').toLowerCase();
+                          return !(node.includes('persist') || node.includes('validator') || msg.includes('落盘') || msg.includes('校验'));
+                        })).length ? (showSystemNodes ? row.steps : row.steps.filter((step) => {
+                          const node = String(step.node || '').toLowerCase();
+                          const msg = String(step.message || '').toLowerCase();
+                          return !(node.includes('persist') || node.includes('validator') || msg.includes('落盘') || msg.includes('校验'));
+                        })).map((step, index) => (
                           <div key={`${step.seq ?? 'na'}-${index}`} className="text-xs text-white/50">
                             <span className="text-white/70">{step.node}</span>
                             <span className="mx-1">·</span>
