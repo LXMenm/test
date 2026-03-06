@@ -462,10 +462,7 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
   const [workflowDone, setWorkflowDone] = useState(false);
   const [diagnosisConfidencePct, setDiagnosisConfidencePct] = useState<number | undefined>(undefined);
   const [allEvents, setAllEvents] = useState<NormalizedEvent[]>([]);
-<<<<<<< codex/set-project-rules-for-next-phase-seblys
   const [showSystemNodes, setShowSystemNodes] = useState(false);
-=======
->>>>>>> main
   const [debugOpen, setDebugOpen] = useState<Record<FixedAgentId, boolean>>({
     supervisor: false,
     reception: false,
@@ -657,11 +654,9 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
     }
 
     return true;
-<<<<<<< codex/set-project-rules-for-next-phase-seblys
+
   }, [maybeStartTicker, stopPolling, closeStream, clearTicker, completeSupervisorOnDone, showSystemNodes]);
-=======
-  }, [maybeStartTicker, stopPolling, closeStream, clearTicker, completeSupervisorOnDone]);
->>>>>>> main
+
 
   useEffect(() => {
     if (!traceId) {
