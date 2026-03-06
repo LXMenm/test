@@ -78,6 +78,7 @@ class CropDiseaseState(TypedDict):
     personalization_flags: Dict[str, Any]
     personalization_policy: Optional[Dict[str, Any]]
     personalization_reasons: List[str]
+    follow_up_questions: List[str]
 
     # Trace信息
     trace_id: str
@@ -133,6 +134,7 @@ def create_initial_state(
         personalization_flags={},
         personalization_policy=None,
         personalization_reasons=[],
+        follow_up_questions=[],
         trace_id=uuid.uuid4().hex,
         trace_events=[],
         kb_snapshot=None,

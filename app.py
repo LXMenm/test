@@ -35,7 +35,7 @@ from personalization import profile_rules
 from personalization.profile_models import BaseProfile, FarmerProfile, TreatmentConstraint
 from personalization.profile_context import build_personalization_context, build_personalization_flags
 from personalization.profile_store import get_profile_path, load_profile, list_profile_ids
-from personalization.utils import dedupe_reasons, compute_personalization_applied
+from personalization.utils import dedupe_reasons, compute_personalization_applied, normalize_follow_up_questions
 from state import create_initial_state
 from trace_store import list_trace_events, subscribe as subscribe_trace, unsubscribe as unsubscribe_trace, emit_trace_event
 from model_registry import list_models, resolve_model
@@ -94,6 +94,7 @@ class DiagnoseResponse(BaseModel):
     filtered_reasons: list[str]
     filtered_components: list[str]
     personalization_reasons: list[str]
+    follow_up_questions: list[str] = []
     profile_farm_scale: str | None = None
     profile_pesticide_access_level: str | None = None
     profile_equipment: list[str] = []
@@ -590,15 +591,20 @@ async def diagnose_image(
         "farmer_id": farmer_id,
         "personalization_context": personalization_context,
         "personalization_reasons": personalization_reasons,
+        "follow_up_questions": follow_up_questions,
     }
     personalization_applied = compute_personalization_applied(personalization_state, flags)
     flags["personalization_applied"] = personalization_applied
     filtered, filtered_reasons, filtered_components = _normalize_filter_state(flags)
+    follow_up_questions = normalize_follow_up_questions(flags.get("follow_up_questions") or [])
+    flags["follow_up_questions"] = follow_up_questions
     if not personalization_reasons:
         personalization_reasons = dedupe_reasons(flags.get("personalization_reasons") or [])
     else:
         personalization_reasons = dedupe_reasons(personalization_reasons)
     flags["personalization_reasons"] = dedupe_reasons(flags.get("personalization_reasons") or personalization_reasons)
+    follow_up_questions = normalize_follow_up_questions(flags.get("follow_up_questions") or [])
+    flags["follow_up_questions"] = follow_up_questions
 
     trace_personalization_outputs = {
         "personalization_applied": personalization_applied,
@@ -608,6 +614,7 @@ async def diagnose_image(
         "filtered_reasons": filtered_reasons,
         "filtered_components": filtered_components,
         "personalization_reasons": personalization_reasons,
+        "follow_up_questions": follow_up_questions,
         "personalization_context": personalization_context,
         "personalization_flags_summary": personalization_meta,
     }
@@ -689,6 +696,7 @@ async def diagnose_image(
         filtered_reasons=filtered_reasons,
         filtered_components=filtered_components,
         personalization_reasons=personalization_reasons,
+        follow_up_questions=follow_up_questions,
         profile_farm_scale=flags.get("farm_scale"),
         profile_pesticide_access_level=flags.get("pesticide_access_level"),
         profile_equipment=[str(item) for item in (flags.get("equipment") or [])],
@@ -827,6 +835,8 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
     personalization_applied = compute_personalization_applied(state, flags)
     flags["personalization_applied"] = personalization_applied
     filtered, filtered_reasons, filtered_components = _normalize_filter_state(flags)
+    follow_up_questions = normalize_follow_up_questions(flags.get("follow_up_questions") or [])
+    flags["follow_up_questions"] = follow_up_questions
     confirm_message = None
     if need_confirm:
         confirm_message = "置信度较低，建议补充症状或重新拍摄"
@@ -885,6 +895,7 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
         "filtered": filtered,
         "filtered_reasons": filtered_reasons,
         "filtered_components": filtered_components,
+        "follow_up_questions": follow_up_questions,
         "llm_failed": bool(flags.get("llm_failed")),
         "llm_failed_reason": flags.get("llm_failed_reason"),
         "meta": {
@@ -893,6 +904,7 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
             "filtered": filtered,
             "filtered_reasons": filtered_reasons,
             "filtered_components": filtered_components,
+            "follow_up_questions": follow_up_questions,
             "llm_failed": bool(flags.get("llm_failed")),
             "llm_failed_reason": flags.get("llm_failed_reason"),
         },

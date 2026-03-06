@@ -10,7 +10,12 @@ from config import DIAGNOSIS_CONFIDENCE_THRESHOLD, DIAGNOSIS_ALLOW_TORCH
 from confidence_policy import make_confidence_flags
 from personalization.profile_models import FarmerProfile, BaseProfile, TreatmentConstraint
 from personalization.profile_rules import apply_personalization_to_treatment, normalize_filter_outputs
-from personalization.utils import dedupe_reasons, compute_personalization_applied
+from personalization.utils import (
+    dedupe_reasons,
+    compute_personalization_applied,
+    build_missing_field_questions,
+    normalize_follow_up_questions,
+)
 from trace_store import append_trace_event
 from datetime import datetime, timezone
 from typing import Optional
@@ -191,9 +196,12 @@ def reception_agent(state: CropDiseaseState) -> CropDiseaseState:
         message_parts.append(f"档案缺失字段：{', '.join(missing_profile_fields)}，请后续追问补充。")
         flags = state.get("personalization_flags", {}) or {}
         flags["missing_profile_fields"] = missing_profile_fields
-        follow_ups = _build_profile_follow_up_questions(missing_profile_fields, profile, base_profile, policy)
+        follow_ups = normalize_follow_up_questions(
+            _build_profile_follow_up_questions(missing_profile_fields, profile, base_profile, policy)
+        )
         if follow_ups:
             flags["follow_up_questions"] = follow_ups[:3]
+            state["follow_up_questions"] = follow_ups[:3]
         state["personalization_flags"] = flags
     message = "，".join(message_parts)
     # 更新状态
@@ -418,8 +426,10 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
                 "当前是否能购买合规药剂，还是仅能采用家庭可执行方案？",
                 "现有喷雾设备条件如何（手动喷壶/背负式/弥雾/无人机）？",
             ] + follow_ups
+        follow_ups = normalize_follow_up_questions(follow_ups)
         if follow_ups:
             flags["follow_up_questions"] = follow_ups
+            state["follow_up_questions"] = follow_ups
             message += f"；建议追问：{'；'.join(follow_ups)}"
         flags["need_confirm"] = True
         flags.setdefault("fallback_reason", [])
@@ -840,7 +850,7 @@ def treatment_agent(state: CropDiseaseState) -> CropDiseaseState:
             kb_snapshot=kb_snapshot,
             reason=llm_failed_reason[:80] or "模型输出不可解析",
             policy_reasons=policy_reasons,
-            fallback_questions=(state.get("personalization_reasons") or [])[:3],
+            fallback_questions=normalize_follow_up_questions(flags.get("follow_up_questions") or []),
         )
     else:
         flags["llm_failed"] = False
@@ -895,7 +905,7 @@ def treatment_agent(state: CropDiseaseState) -> CropDiseaseState:
             kb_snapshot=kb_snapshot,
             reason="constraint_violation",
             policy_reasons=policy_reasons,
-            fallback_questions=(state.get("personalization_reasons") or [])[:3],
+            fallback_questions=normalize_follow_up_questions(flags.get("follow_up_questions") or []),
         )
         fallback_branch_lines = getattr(kb_fallback_output.treatment_plan, selected_branch)
         treatment_text = "\n".join([
@@ -937,7 +947,9 @@ def treatment_agent(state: CropDiseaseState) -> CropDiseaseState:
     elif policy_reasons:
         flags["personalization_reasons"] = dedupe_reasons(policy_reasons)
     if llm_output.follow_up_questions:
-        flags["follow_up_questions"] = list(llm_output.follow_up_questions)[:3]
+        flags["post_treatment_questions"] = dedupe_reasons(llm_output.follow_up_questions)[:3]
+    flags["follow_up_questions"] = normalize_follow_up_questions(flags.get("follow_up_questions") or [])
+    state["follow_up_questions"] = flags["follow_up_questions"]
     flags["personalization_applied"] = compute_personalization_applied(state, flags)
     state["personalization_flags"] = flags
     message = f"番茄病害治疗方案智能体：已生针对{disease_type}的治疗方案"
@@ -1034,22 +1046,10 @@ def _build_profile_follow_up_questions(
     base_profile: Optional[BaseProfile],
     policy: Optional[dict] = None,
 ) -> list[str]:
-    """根据档案缺失项生成番茄场景追问（最多3条）。"""
-    questions: list[str] = []
-    missing = set(missing_fields)
-    if "farm_scale" in missing:
-        questions.append("您的番茄种植规模更接近家庭阳台、小规模地块，还是大棚/大农场？")
-    if "pesticide_access_level" in missing:
-        questions.append("您目前是否能方便购买合规农药（无/受限/充足）？")
-    if "cultivation_mode" in missing:
-        questions.append("当前番茄是土培、水培还是基质栽培？")
-    if "equipment" in missing:
-        questions.append("是否具备喷施设备（背负式喷雾器、弥雾机或无人机）？")
-    if "experience_level" in missing or "risk_preference" in missing:
-        questions.append("更希望稳妥低风险方案，还是追求见效更快的积极方案？")
-    if "growth_stage" in missing and base_profile is not None:
-        questions.append("当前番茄处于哪个生育期（苗期/开花/结果）？")
-    return questions[:3]
+    """根据档案缺失项生成追问问句（仅用于待补充信息，不混入解释性 reasons）。"""
+    _ = (profile, base_profile, policy)
+    return build_missing_field_questions(missing_fields)[:3]
+
 def _summarize_constraints(constraints: TreatmentConstraint) -> str:
     """将治疗约束转为简短文本。"""
     parts = []
@@ -1088,7 +1088,13 @@ def supervisor_agent(state: CropDiseaseState) -> CropDiseaseState:
     step_count = int(state.get("step_count") or 0) + 1
     state["step_count"] = step_count
     missing_profile_fields = list(flags.get("missing_profile_fields") or [])
-    follow_ups = flags.get("follow_up_questions", [])
+    follow_ups = normalize_follow_up_questions([
+        *(flags.get("follow_up_questions") or []),
+        *build_missing_field_questions(missing_profile_fields),
+    ])
+    flags["follow_up_questions"] = follow_ups
+    state["follow_up_questions"] = follow_ups
+    state["personalization_flags"] = flags
     query_text = str(state.get("user_query") or "")
     has_uploaded_image_hint = any(token in query_text for token in ["图片路径", "图像路径", "path:", "path：", ".jpg", ".jpeg", ".png", ".webp"])
     if has_uploaded_image_hint and not state.get("image_path"):
