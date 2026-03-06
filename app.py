@@ -1262,12 +1262,14 @@ def create_kb_treatments(payload: dict = Body(...)) -> dict[str, bool]:
     disease = (payload.get("disease") or "").strip()
     treatment = (payload.get("treatment") or "").strip()
     prevention = (payload.get("prevention") or "").strip()
+    actions = payload.get("actions") if isinstance(payload.get("actions"), dict) else None
+    ingredients = payload.get("ingredients") if isinstance(payload.get("ingredients"), list) else None
     if not disease or not treatment or not prevention:
         raise HTTPException(status_code=400, detail="病害、治疗与预防不能为空")
     existing = {item["disease"] for item in kb.list_treatments()}
     if disease in existing:
         raise HTTPException(status_code=409, detail="治疗方案已存在，请使用编辑")
-    kb.upsert_treatment_plan(disease, treatment, prevention)
+    kb.upsert_treatment_plan(disease, treatment, prevention, actions=actions, ingredients=ingredients)
     return {"ok": True}
 
 
@@ -1277,12 +1279,14 @@ def update_kb_treatments(disease: str, payload: dict = Body(...)) -> dict[str, b
         raise HTTPException(status_code=400, detail="参数非法")
     treatment = (payload.get("treatment") or "").strip()
     prevention = (payload.get("prevention") or "").strip()
+    actions = payload.get("actions") if isinstance(payload.get("actions"), dict) else None
+    ingredients = payload.get("ingredients") if isinstance(payload.get("ingredients"), list) else None
     if not treatment or not prevention:
         raise HTTPException(status_code=400, detail="治疗与预防不能为空")
     existing = {item["disease"] for item in kb.list_treatments()}
     if disease not in existing:
         raise HTTPException(status_code=404, detail="治疗方案不存在")
-    kb.upsert_treatment_plan(disease, treatment, prevention)
+    kb.update_treatment(disease, treatment=treatment, prevention=prevention, actions=actions, ingredients=ingredients)
     return {"ok": True}
 
 
