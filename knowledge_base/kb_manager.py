@@ -163,7 +163,7 @@ class KnowledgeBaseManager:
         )
         return True
     
-    def update_treatment(self, disease_name, treatment=None, prevention=None):
+    def update_treatment(self, disease_name, treatment=None, prevention=None, actions=None, ingredients=None):
         """
         更新病害的治疗方案
         
@@ -175,7 +175,7 @@ class KnowledgeBaseManager:
         Returns:
             bool: 更新是否成功
         """
-        return self.treatment_kb.update_treatment_plan(disease_name, treatment, prevention)
+        return self.treatment_kb.update_treatment_plan(disease_name, treatment, prevention, actions=actions, ingredients=ingredients)
     
     def add_diagnosis_rule(self, crop_type, symptom, disease_type, confidence, explanation):
         """
@@ -225,8 +225,8 @@ class KnowledgeBaseManager:
     def list_treatments(self):
         return self.treatment_kb.list_treatments()
 
-    def upsert_treatment_plan(self, disease, treatment, prevention):
-        self.treatment_kb.upsert_treatment_plan(disease, treatment, prevention)
+    def upsert_treatment_plan(self, disease, treatment, prevention, actions=None, ingredients=None):
+        self.treatment_kb.upsert_treatment_plan(disease, treatment, prevention, actions=actions, ingredients=ingredients)
 
     def delete_treatment_plan(self, disease):
         return self.treatment_kb.delete_treatment_plan(disease)

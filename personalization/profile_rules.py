@@ -48,6 +48,38 @@ def filter_treatment_by_constraints(
 CHEMICAL_KEYWORDS = ["百菌清", "代森锰锌", "嘧菌酯", "戊唑醇", "苯醚甲环唑"]
 
 
+def normalize_filter_outputs(outputs: Optional[Dict[str, object]] = None) -> Dict[str, object]:
+    """规范过滤字段语义，避免 filtered 与 reasons/components 自相矛盾。
+
+    语义约定：
+    - filtered: 个性化过滤器对最终文本做过任何干预（删除/替换/插入提示/增加警示）。
+    - filtered_reasons: 发生干预的原因。
+    - filtered_components: 被删除/替换/涉及的成分或关键词（可为空）。
+
+    因此：只要 filtered_reasons 非空，filtered 必须为 True；
+    仅插入提示/警示时，filtered_components 可以为空。
+    """
+    outputs = dict(outputs or {})
+    reasons = [str(item).strip() for item in (outputs.get("filtered_reasons") or []) if str(item).strip()]
+    components = [str(item).strip() for item in (outputs.get("filtered_components") or []) if str(item).strip()]
+    filtered = bool(outputs.get("filtered"))
+
+    reasons = sorted(set(reasons))
+    components = sorted(set(components))
+
+    if reasons:
+        filtered = True
+    elif not filtered:
+        # 无干预时，理由必须为空，避免出现 filtered=False 但 reasons 非空的矛盾状态。
+        reasons = []
+
+    outputs["filtered"] = filtered
+    outputs["filtered_reasons"] = reasons
+    outputs["filtered_components"] = components
+    outputs["personalization_applied"] = bool(outputs.get("personalization_applied") or filtered or reasons)
+    return outputs
+
+
 def apply_personalization_to_treatment(
     plan: str,
     prevention: str,
@@ -87,7 +119,7 @@ def apply_personalization_to_treatment(
             prevention_lines.append(line)
 
     if prefer_organic:
-        reasons.append("偏好有机/低残留：过滤化学农药")
+        reasons.append("有机偏好：避免化学农药措辞")
     if banned_ingredients:
         reasons.append(f"禁用成分：{', '.join(sorted(set(banned_ingredients)))}")
 
@@ -99,16 +131,15 @@ def apply_personalization_to_treatment(
     if harvest_days_value is not None and harvest_days_value <= 7:
         if top_notice not in plan_lines:
             plan_lines.insert(0, top_notice)
-        reasons.append("距采收较近：降低残留风险")
+        reasons.append("临近采收：插入安全间隔提示")
 
-    filtered_components = sorted(set(filtered_components))
-    filtered = bool(filtered_components)
     outputs: Dict[str, object] = {
-        "personalization_applied": bool(reasons or filtered),
-        "filtered": filtered,
+        "personalization_applied": bool(reasons or filtered_components),
+        "filtered": bool(filtered_components),
         "filtered_reasons": reasons,
-        "filtered_components": filtered_components,
+        "filtered_components": sorted(set(filtered_components)),
     }
+    outputs = normalize_filter_outputs(outputs)
     return "\n".join([line for line in plan_lines if line.strip()]).strip(), "\n".join(
         [line for line in prevention_lines if line.strip()]
     ).strip(), outputs

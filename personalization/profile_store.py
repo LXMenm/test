@@ -39,12 +39,16 @@ def load_profile(farmer_id: str) -> Optional[FarmerProfile]:
         profile = FarmerProfile.model_validate(data)
     except Exception:
         return None
+    if profile.schema_version == "1.0":
+        profile.schema_version = "1.1"
     profile.ensure_timestamp()
     return profile
 
 
 def save_profile(profile: FarmerProfile) -> Path:
     """保存农户档案到 JSON。"""
+    if profile.schema_version == "1.0":
+        profile.schema_version = "1.1"
     profile.ensure_timestamp()
     path = get_profile_path(profile.farmer_id)
     with path.open("w", encoding="utf-8") as f:
