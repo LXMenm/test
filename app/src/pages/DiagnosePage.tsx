@@ -31,6 +31,8 @@ interface DiagnosisResult {
   personalization_applied?: boolean;
   filtered?: boolean;
   filtered_reasons?: string[];
+  follow_up_questions?: string[];
+  missing_profile_fields?: string[];
   profile_farm_scale?: string;
   profile_pesticide_access_level?: string;
   profile_equipment?: string[];
@@ -289,6 +291,8 @@ export function DiagnosePage() {
     personalization_applied: payload.personalization_applied === true,
     filtered: payload.filtered === true,
     filtered_reasons: Array.isArray(payload.filtered_reasons) ? payload.filtered_reasons.map((item) => String(item)) : [],
+    follow_up_questions: Array.isArray(payload.follow_up_questions) ? payload.follow_up_questions.map((item) => String(item)) : [],
+    missing_profile_fields: Array.isArray(payload.missing_profile_fields) ? payload.missing_profile_fields.map((item) => String(item)) : [],
     profile_farm_scale: typeof payload.profile_farm_scale === 'string' ? payload.profile_farm_scale : undefined,
     profile_pesticide_access_level: typeof payload.profile_pesticide_access_level === 'string' ? payload.profile_pesticide_access_level : undefined,
     profile_equipment: Array.isArray(payload.profile_equipment) ? payload.profile_equipment.map((item) => String(item)) : [],
@@ -862,6 +866,32 @@ export function DiagnosePage() {
                       ) : (
                         <p className="text-white/50">暂无过滤说明</p>
                       )}
+                    </div>
+                  </div>
+
+                  <div>
+                    <h4 className="text-white/80 font-medium mb-2">待补充信息（用于提升个性化精度）</h4>
+                    <div className="bg-white/5 rounded-xl p-4 border border-[#c8f7c5]/20 text-sm text-white/80 space-y-2">
+                      <div className="flex items-center gap-2">
+                        <Badge className="bg-[#c8f7c5]/20 text-[#c8f7c5] border border-[#c8f7c5]/40">建议补齐</Badge>
+                      </div>
+                      {Array.isArray(result.follow_up_questions) && result.follow_up_questions.length > 0 ? (
+                        <ul className="list-disc pl-5 space-y-1">
+                          {result.follow_up_questions.map((question, idx) => (
+                            <li key={`${question}-${idx}`}>{question}</li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <p className="text-white/50">暂无待补充信息</p>
+                      )}
+                      {Array.isArray(result.missing_profile_fields) && result.missing_profile_fields.length > 0 ? (
+                        <div className="flex flex-wrap gap-2 pt-1">
+                          {result.missing_profile_fields.map((field) => (
+                            <Badge key={field} variant="outline" className="border-[#c8f7c5]/40 text-[#c8f7c5]">{field}</Badge>
+                          ))}
+                        </div>
+                      ) : null}
+                      <p className="text-xs text-white/60">可前往【农户档案管理】补齐设备/生育期等信息，以获得更精准的可执行方案。</p>
                     </div>
                   </div>
 
