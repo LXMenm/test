@@ -15,10 +15,25 @@ interface Disease {
   description: string;
 }
 
+interface TreatmentActions {
+  immediate_actions?: string[];
+  treatment_plan?: {
+    FAMILY?: string[];
+    MID?: string[];
+    ENTERPRISE?: string[];
+  };
+  prevention_plan?: string[];
+  resistance_management?: string[];
+  safety_notes?: string[];
+  follow_up?: string[];
+}
+
 interface Treatment {
   disease: string;
   treatment: string;
   prevention: string;
+  actions?: TreatmentActions;
+  ingredients?: string[];
 }
 
 interface Rule {
@@ -74,6 +89,9 @@ export function KBPage() {
   const [symptomDialogMode, setSymptomDialogMode] = useState<'create' | 'edit'>('create');
   const [editingDiseaseOriginalName, setEditingDiseaseOriginalName] = useState('');
   const [editingSymptomOriginalName, setEditingSymptomOriginalName] = useState('');
+  const [editingTreatmentActionsJson, setEditingTreatmentActionsJson] = useState('');
+  const [editingTreatmentActionsError, setEditingTreatmentActionsError] = useState('');
+  const [showActionsEditor, setShowActionsEditor] = useState(false);
 
   const fetchDiseases = async () => {
     try {
@@ -179,19 +197,42 @@ export function KBPage() {
 
   const saveTreatment = async () => {
     if (!editingTreatment) return;
-    
+
+    let parsedActions: TreatmentActions | undefined;
+    if (editingTreatmentActionsJson.trim()) {
+      try {
+        const parsed: unknown = JSON.parse(editingTreatmentActionsJson);
+        parsedActions = (parsed && typeof parsed === 'object' ? parsed : {}) as TreatmentActions;
+        setEditingTreatmentActionsError('');
+      } catch {
+        setEditingTreatmentActionsError('actions JSON 格式不合法');
+        return;
+      }
+    }
+
+    const payload: Treatment = {
+      ...editingTreatment,
+      actions: parsedActions,
+      ingredients: Array.isArray(editingTreatment.ingredients)
+        ? editingTreatment.ingredients.map((item) => String(item).trim()).filter(Boolean)
+        : [],
+    };
+
     const isNew = !treatments.find(t => t.disease === editingTreatment.disease);
     try {
       const resp = await fetch(`/api/kb/treatments${isNew ? '' : '/' + encodeURIComponent(editingTreatment.disease)}`, {
         method: isNew ? 'POST' : 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(editingTreatment)
+        body: JSON.stringify(payload)
       });
-      
+
       if (resp.ok) {
         fetchData('treatments');
         setShowTreatmentDialog(false);
         setEditingTreatment(null);
+        setEditingTreatmentActionsJson('');
+        setEditingTreatmentActionsError('');
+        setShowActionsEditor(false);
       }
     } catch (error) {
       console.error('Failed to save treatment:', error);
@@ -467,7 +508,7 @@ export function KBPage() {
               </CardTitle>
               <div className="flex gap-2">
                 <Button
-                  onClick={() => { setEditingTreatment({ disease: '', treatment: '', prevention: '' }); setShowTreatmentDialog(true); }}
+                  onClick={() => { setEditingTreatment({ disease: '', treatment: '', prevention: '', actions: undefined, ingredients: [] }); setEditingTreatmentActionsJson(''); setEditingTreatmentActionsError(''); setShowActionsEditor(false); setShowTreatmentDialog(true); }}
                   className="bg-[#c8f7c5] text-black hover:bg-[#b8e7b5]"
                 >
                   <Plus className="w-4 h-4 mr-1" />
@@ -513,7 +554,7 @@ export function KBPage() {
                           <Badge className="bg-[#c8f7c5]/20 text-[#c8f7c5]">{treatment.disease}</Badge>
                         </div>
                         <Button
-                          onClick={() => { setEditingTreatment(treatment); setShowTreatmentDialog(true); }}
+                          onClick={() => { setEditingTreatment(treatment); setEditingTreatmentActionsJson(JSON.stringify(treatment.actions || {}, null, 2)); setEditingTreatmentActionsError(''); setShowActionsEditor(false); setShowTreatmentDialog(true); }}
                           variant="ghost"
                           size="sm"
                           className="text-[#c8f7c5] hover:bg-[#c8f7c5]/10"
@@ -530,6 +571,14 @@ export function KBPage() {
                           <p className="text-white/60 text-xs mb-1">预防措施</p>
                           <p className="text-white/80 text-sm line-clamp-2">{treatment.prevention}</p>
                         </div>
+                      </div>
+                      <div className="mt-2 flex flex-wrap gap-2 text-xs">
+                        {Array.isArray(treatment.ingredients) && treatment.ingredients.length > 0 ? (
+                          <Badge className="bg-emerald-900/40 border border-emerald-600/50 text-emerald-100">成分: {treatment.ingredients.join('、')}</Badge>
+                        ) : null}
+                        {treatment.actions ? (
+                          <Badge className="bg-white/10 border border-white/20 text-white/80">含结构化 actions</Badge>
+                        ) : null}
                       </div>
                     </div>
                   ))}
@@ -813,6 +862,35 @@ export function KBPage() {
                   rows={3}
                   className="w-full bg-white/5 border border-white/20 rounded-lg p-3 text-white focus:border-[#c8f7c5] outline-none resize-none"
                 />
+              </div>
+              <div className="space-y-2">
+                <Label>成分关键词（逗号分隔）</Label>
+                <Input
+                  value={(editingTreatment.ingredients || []).join(',')}
+                  onChange={(e) => setEditingTreatment({
+                    ...editingTreatment,
+                    ingredients: e.target.value.split(',').map((item) => item.trim()).filter(Boolean),
+                  })}
+                  className="bg-white/5 border-white/20 text-white focus:border-[#c8f7c5]"
+                />
+              </div>
+              <div className="space-y-2">
+                <button
+                  type="button"
+                  onClick={() => setShowActionsEditor((v) => !v)}
+                  className="text-xs text-[#c8f7c5] hover:underline"
+                >
+                  {showActionsEditor ? '收起 actions JSON 编辑器' : '展开 actions JSON 编辑器'}
+                </button>
+                {showActionsEditor ? (
+                  <textarea
+                    value={editingTreatmentActionsJson}
+                    onChange={(e) => setEditingTreatmentActionsJson(e.target.value)}
+                    rows={12}
+                    className="w-full font-mono text-xs bg-white/5 border border-white/20 rounded-lg p-3 text-white focus:border-[#c8f7c5] outline-none resize-y"
+                  />
+                ) : null}
+                {editingTreatmentActionsError ? <p className="text-xs text-red-400">{editingTreatmentActionsError}</p> : null}
               </div>
             </div>
           )}
