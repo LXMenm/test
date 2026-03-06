@@ -95,7 +95,10 @@ class DiagnoseResponse(BaseModel):
     filtered_components: list[str]
     personalization_reasons: list[str]
     follow_up_questions: list[str] = []
+<<<<<<< codex/set-project-rules-for-next-phase-seblys
     missing_profile_fields: list[str] = []
+=======
+>>>>>>> main
     profile_farm_scale: str | None = None
     profile_pesticide_access_level: str | None = None
     profile_equipment: list[str] = []
@@ -588,25 +591,41 @@ async def diagnose_image(
             workflow_degraded = True
             degraded_reason = degraded_reason or "EMPTY_TREATMENT_FROM_GRAPH"
 
+<<<<<<< codex/set-project-rules-for-next-phase-seblys
     follow_up_questions = normalize_follow_up_questions(flags.get("follow_up_questions") or [])
     flags["follow_up_questions"] = follow_up_questions
     missing_profile_fields = sorted({str(item).strip() for item in (flags.get("missing_profile_fields") or []) if str(item).strip()})
 
+=======
+>>>>>>> main
     personalization_state = final_state if isinstance(final_state, dict) else {
         "farmer_id": farmer_id,
         "personalization_context": personalization_context,
         "personalization_reasons": personalization_reasons,
         "follow_up_questions": follow_up_questions,
+<<<<<<< codex/set-project-rules-for-next-phase-seblys
         "missing_profile_fields": missing_profile_fields,
+=======
+>>>>>>> main
     }
     personalization_applied = compute_personalization_applied(personalization_state, flags)
     flags["personalization_applied"] = personalization_applied
     filtered, filtered_reasons, filtered_components = _normalize_filter_state(flags)
+<<<<<<< codex/set-project-rules-for-next-phase-seblys
+=======
+    follow_up_questions = normalize_follow_up_questions(flags.get("follow_up_questions") or [])
+    flags["follow_up_questions"] = follow_up_questions
+>>>>>>> main
     if not personalization_reasons:
         personalization_reasons = dedupe_reasons(flags.get("personalization_reasons") or [])
     else:
         personalization_reasons = dedupe_reasons(personalization_reasons)
     flags["personalization_reasons"] = dedupe_reasons(flags.get("personalization_reasons") or personalization_reasons)
+<<<<<<< codex/set-project-rules-for-next-phase-seblys
+=======
+    follow_up_questions = normalize_follow_up_questions(flags.get("follow_up_questions") or [])
+    flags["follow_up_questions"] = follow_up_questions
+>>>>>>> main
 
     trace_personalization_outputs = {
         "personalization_applied": personalization_applied,
@@ -617,7 +636,10 @@ async def diagnose_image(
         "filtered_components": filtered_components,
         "personalization_reasons": personalization_reasons,
         "follow_up_questions": follow_up_questions,
+<<<<<<< codex/set-project-rules-for-next-phase-seblys
         "missing_profile_fields": missing_profile_fields,
+=======
+>>>>>>> main
         "personalization_context": personalization_context,
         "personalization_flags_summary": personalization_meta,
     }
@@ -700,7 +722,10 @@ async def diagnose_image(
         filtered_components=filtered_components,
         personalization_reasons=personalization_reasons,
         follow_up_questions=follow_up_questions,
+<<<<<<< codex/set-project-rules-for-next-phase-seblys
         missing_profile_fields=missing_profile_fields,
+=======
+>>>>>>> main
         profile_farm_scale=flags.get("farm_scale"),
         profile_pesticide_access_level=flags.get("pesticide_access_level"),
         profile_equipment=[str(item) for item in (flags.get("equipment") or [])],
@@ -841,7 +866,10 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
     filtered, filtered_reasons, filtered_components = _normalize_filter_state(flags)
     follow_up_questions = normalize_follow_up_questions(flags.get("follow_up_questions") or [])
     flags["follow_up_questions"] = follow_up_questions
+<<<<<<< codex/set-project-rules-for-next-phase-seblys
     missing_profile_fields = sorted({str(item).strip() for item in (flags.get("missing_profile_fields") or []) if str(item).strip()})
+=======
+>>>>>>> main
     confirm_message = None
     if need_confirm:
         confirm_message = "置信度较低，建议补充症状或重新拍摄"
@@ -901,7 +929,10 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
         "filtered_reasons": filtered_reasons,
         "filtered_components": filtered_components,
         "follow_up_questions": follow_up_questions,
+<<<<<<< codex/set-project-rules-for-next-phase-seblys
         "missing_profile_fields": missing_profile_fields,
+=======
+>>>>>>> main
         "llm_failed": bool(flags.get("llm_failed")),
         "llm_failed_reason": flags.get("llm_failed_reason"),
         "meta": {
@@ -911,7 +942,10 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
             "filtered_reasons": filtered_reasons,
             "filtered_components": filtered_components,
             "follow_up_questions": follow_up_questions,
+<<<<<<< codex/set-project-rules-for-next-phase-seblys
             "missing_profile_fields": missing_profile_fields,
+=======
+>>>>>>> main
             "llm_failed": bool(flags.get("llm_failed")),
             "llm_failed_reason": flags.get("llm_failed_reason"),
         },
