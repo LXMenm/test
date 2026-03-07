@@ -7,22 +7,20 @@ import {
   CheckCircle2,
   ChevronDown,
   ChevronRight,
+  Flag,
   Headset,
   Loader2,
   Pill,
   Signal,
-  Sparkles,
   Stethoscope,
   Timer,
 } from 'lucide-react';
-import type { LucideIcon } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
+import type { LucideIcon } from 'lucide-react';
 
 type AgentStatus = 'pending' | 'running' | 'completed' | 'error';
-type FixedAgentId = 'supervisor' | 'reception' | 'diagnosis' | 'kb_retrieval' | 'treatment' | 'personalization';
-type EventKind = 'agent' | 'system';
-type SubstepLevel = 'info' | 'warn' | 'error';
+type FixedAgentId = 'supervisor' | 'reception' | 'diagnosis' | 'kb_retrieval' | 'treatment' | 'final';
 
 interface AgentWorkflowPanelProps {
   traceId?: string;
@@ -48,62 +46,147 @@ interface RawTraceEvent {
   decision?: Record<string, unknown>;
 }
 
-interface NormalizedTraceEvent {
-  seq: number;
-  ts: string;
+interface NormalizedEvent {
+  seq?: number;
+  ts?: string;
   tsMs?: number;
-  kind: EventKind;
-  agentId: string;
-  agentCn: string | null;
-  stepKey: string;
-  inputs: Record<string, unknown>;
-  outputs: Record<string, unknown>;
-  decision: Record<string, unknown>;
+  agentId: FixedAgentId;
+  nodeName: string;
+  status: AgentStatus | 'info';
   message: string;
-  isSystemNode: boolean;
-  raw: RawTraceEvent;
+  data: Record<string, unknown>;
 }
 
-interface Substep {
-  id: string;
-  text: string;
-  level?: SubstepLevel;
-  seq: number;
+
+interface AgentPhaseDurations {
+  phase1Ms: number;
+  phase2Ms: number;
 }
 
-interface AgentCardDef {
+const isSecondPhaseBoundaryEvent = (event: NormalizedEvent): boolean => {
+  const node = String(event.nodeName || '').toLowerCase();
+  if (node === 'confirmflow' && event.status === 'running') return true;
+  const agent = String((event.data && (event.data['agent'] ?? event.data['agent_id'])) || '').toLowerCase();
+  return agent === 'confirm_input' || node === 'confirm_input';
+};
+
+const calcPhaseDurationsByAgent = (
+  events: NormalizedEvent[],
+  nowMs: number,
+  workflowDone: boolean,
+): Record<FixedAgentId, AgentPhaseDurations> => {
+  const sorted = [...events].sort((a, b) => {
+    const sa = typeof a.seq === 'number' ? a.seq : Number.MAX_SAFE_INTEGER;
+    const sb = typeof b.seq === 'number' ? b.seq : Number.MAX_SAFE_INTEGER;
+    if (sa !== sb) return sa - sb;
+    return (a.tsMs ?? Number.MAX_SAFE_INTEGER) - (b.tsMs ?? Number.MAX_SAFE_INTEGER);
+  });
+
+  let phaseBoundaryIndex = -1;
+  for (let i = 0; i < sorted.length; i += 1) {
+    if (isSecondPhaseBoundaryEvent(sorted[i])) {
+      phaseBoundaryIndex = i;
+      break;
+    }
+  }
+
+  const phase1 = phaseBoundaryIndex >= 0 ? sorted.slice(0, phaseBoundaryIndex) : sorted;
+  const phase2 = phaseBoundaryIndex >= 0 ? sorted.slice(phaseBoundaryIndex) : [];
+
+  const calcForPhase = (phaseEvents: NormalizedEvent[]): Record<FixedAgentId, number> => {
+    const totals = FIXED_AGENTS.reduce((acc, def) => {
+      acc[def.id] = 0;
+      return acc;
+    }, {} as Record<FixedAgentId, number>);
+
+    if (!phaseEvents.length) return totals;
+
+    for (let i = 0; i < phaseEvents.length - 1; i += 1) {
+      const current = phaseEvents[i];
+      const next = phaseEvents[i + 1];
+      if (typeof current.tsMs !== 'number' || typeof next.tsMs !== 'number') continue;
+      totals[current.agentId] += Math.max(0, next.tsMs - current.tsMs);
+    }
+
+    const last = phaseEvents[phaseEvents.length - 1];
+    if (!workflowDone && typeof last.tsMs === 'number') {
+      totals[last.agentId] += Math.max(0, nowMs - last.tsMs);
+    }
+
+    return totals;
+  };
+
+  const phase1Totals = calcForPhase(phase1);
+  const phase2Totals = calcForPhase(phase2);
+
+  return FIXED_AGENTS.reduce((acc, def) => {
+    acc[def.id] = { phase1Ms: phase1Totals[def.id], phase2Ms: phase2Totals[def.id] };
+    return acc;
+  }, {} as Record<FixedAgentId, AgentPhaseDurations>);
+};
+
+const calcOverallPhaseDuration = (phaseDurations: Record<FixedAgentId, AgentPhaseDurations>): { phase1Ms: number; phase2Ms: number; totalMs: number } => {
+  let phase1Ms = 0;
+  let phase2Ms = 0;
+  FIXED_AGENTS.forEach((def) => {
+    phase1Ms += phaseDurations[def.id]?.phase1Ms ?? 0;
+    phase2Ms += phaseDurations[def.id]?.phase2Ms ?? 0;
+  });
+  return { phase1Ms, phase2Ms, totalMs: phase1Ms + phase2Ms };
+};
+
+interface AgentRowDef {
   id: FixedAgentId;
   name: string;
   description: string;
   icon: LucideIcon;
 }
 
-interface AgentCardView {
+interface AgentRowState {
   id: FixedAgentId;
-  name: string;
-  description: string;
-  icon: LucideIcon;
   status: AgentStatus;
-  duration: string;
-  keySteps: string[];
-  substeps: Substep[];
+  startTs?: number;
+  endTs?: number;
+  progress: number;
+  lastMessage: string;
+  steps: Array<{ seq?: number; node: string; message: string }>;
+  highlights: string[];
 }
 
-const FIXED_AGENTS: AgentCardDef[] = [
-  { id: 'supervisor', name: 'Supervisor', description: '监督与路由决策', icon: Bot },
-  { id: 'reception', name: 'Reception', description: '输入接待与要素提取', icon: Headset },
-  { id: 'diagnosis', name: 'Diagnosis', description: '病害诊断与置信度评估', icon: Stethoscope },
-  { id: 'kb_retrieval', name: 'KB Retrieval', description: '知识库检索与信息补全', icon: BookOpen },
-  { id: 'treatment', name: 'Treatment', description: '治疗方案生成与过滤解释', icon: Pill },
-  { id: 'personalization', name: 'Personalization', description: '个性化约束触发与变更', icon: Sparkles },
+const FIXED_AGENTS: AgentRowDef[] = [
+  { id: 'supervisor', name: 'supervisor', description: '监督与路由决策', icon: Bot },
+  { id: 'reception', name: 'reception', description: '输入接待与要素提取', icon: Headset },
+  { id: 'diagnosis', name: 'diagnosis', description: '病害诊断与置信度评估', icon: Stethoscope },
+  { id: 'kb_retrieval', name: 'kb_retrieval', description: '知识库检索与信息补全', icon: BookOpen },
+  { id: 'treatment', name: 'treatment', description: '治疗方案生成与校验落盘', icon: Pill },
+  { id: 'final', name: 'final', description: '流程结束与结果输出', icon: Flag },
 ];
 
-const STATUS_WEIGHT: Record<AgentStatus, number> = { pending: 0, running: 1, completed: 2, error: 3 };
+const DIRECT_SET = new Set<FixedAgentId>(['supervisor', 'reception', 'diagnosis', 'kb_retrieval', 'treatment', 'final']);
 
-const shortText = (value: unknown, max = 120): string => {
-  const raw = String(value ?? '').trim();
-  if (!raw) return '';
-  return raw.length <= max ? raw : `${raw.slice(0, max)}...`;
+const MERGE_MAP: Record<string, FixedAgentId> = {
+  parse_input: 'reception',
+  confirm_input: 'supervisor',
+  confidence_gate: 'diagnosis',
+  personalization: 'treatment',
+  prescription: 'treatment',
+  validator: 'treatment',
+  persist: 'treatment',
+  final: 'final',
+};
+
+const buildInitialState = (): Record<FixedAgentId, AgentRowState> => {
+  return FIXED_AGENTS.reduce((acc, row) => {
+    acc[row.id] = {
+      id: row.id,
+      status: 'pending',
+      progress: 0,
+      lastMessage: row.description,
+      steps: [],
+      highlights: [],
+    };
+    return acc;
+  }, {} as Record<FixedAgentId, AgentRowState>);
 };
 
 const parseTsMs = (ts?: string): number | undefined => {
@@ -112,366 +195,305 @@ const parseTsMs = (ts?: string): number | undefined => {
   return Number.isFinite(ms) ? ms : undefined;
 };
 
+const clamp = (v: number, min: number, max: number) => Math.max(min, Math.min(max, v));
+
+const softProgress = (elapsedMs: number) => clamp(Math.round((elapsedMs / 8000) * 90), 5, 90);
+
+const formatDuration = (ms: number): string => {
+  if (!Number.isFinite(ms) || ms <= 0) return '0.00s';
+  if (ms < 1000) return `${(ms / 1000).toFixed(2)}s`;
+
+  const seconds = ms / 1000;
+  if (seconds >= 60) {
+    const minutes = Math.floor(seconds / 60);
+    const remainSeconds = seconds - minutes * 60;
+    return `${minutes}m${remainSeconds.toFixed(1)}s`;
+  }
+
+  return `${seconds.toFixed(2)}s`;
+};
+
+const shortText = (value: unknown, max = 80): string => {
+  const raw = String(value ?? '').trim();
+  if (!raw) return '';
+  return raw.length <= max ? raw : `${raw.slice(0, max)}...`;
+};
+
 const toArray = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
+
 const isRecord = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
-const toStringArray = (value: unknown): string[] => toArray(value).map((x) => String(x ?? '').trim()).filter(Boolean);
-const asBool = (value: unknown): boolean => value === true || String(value).toLowerCase() === 'true';
 
 const normalizeStatus = (status: unknown): AgentStatus | 'info' => {
   const text = String(status || '').toLowerCase();
-  if (['start', 'started', 'begin', 'running', '执行中', '开始', 'processing', 'progress', '进行中'].includes(text)) return 'running';
+  if (['start', 'started', 'begin', 'running', '执行中', '开始'].includes(text)) return 'running';
+  if (['progress', 'processing', '进行中'].includes(text)) return 'running';
   if (['end', 'done', 'completed', 'finish', '结束', '完成'].includes(text)) return 'completed';
   if (['error', 'failed', '错误', 'fail'].includes(text)) return 'error';
   return 'info';
 };
 
-const mapToCardId = (event: NormalizedTraceEvent): FixedAgentId => {
-  const aid = event.agentId.toLowerCase();
-  const step = event.stepKey.toLowerCase();
+const mapToFixedAgent = (agentId: string | undefined, node: string | undefined): FixedAgentId => {
+  const aid = String(agentId || '').toLowerCase();
+  if (DIRECT_SET.has(aid as FixedAgentId)) return aid as FixedAgentId;
+  if (MERGE_MAP[aid]) return MERGE_MAP[aid];
 
-  if (aid.includes('supervisor')) return 'supervisor';
-  if (aid.includes('reception') || step.includes('parse_input')) return 'reception';
-  if (aid.includes('diagnosis') || step.includes('diagnosis') || step.includes('confidence')) return 'diagnosis';
-  if (aid.includes('kb') || aid.includes('retrieval') || step.includes('kb')) return 'kb_retrieval';
-  if (aid.includes('personalizationagent') || aid === 'personalization') return 'personalization';
-  if (aid.includes('treatment') || aid.includes('prescription')) return 'treatment';
-
+  const nodeLower = String(node || '').toLowerCase();
+  if (nodeLower === 'final') return 'final';
+  if (nodeLower.includes('final')) return 'final';
+  if (nodeLower.includes('retrieve') || nodeLower.includes('kb')) return 'kb_retrieval';
+  if (nodeLower.includes('diagnosis') || nodeLower.includes('confidence')) return 'diagnosis';
+  if (nodeLower.includes('persist') || nodeLower.includes('validator') || nodeLower.includes('prescription') || nodeLower.includes('personalization') || nodeLower.includes('treatment')) return 'treatment';
+  if (nodeLower.includes('parse') || nodeLower.includes('input') || nodeLower.includes('reception')) return 'reception';
   return 'supervisor';
 };
 
-const isSystemNode = (agentId: string, stepKey: string, message: string): boolean => {
-  const aid = agentId.toLowerCase();
-  const step = stepKey.toLowerCase();
-  const msg = message.toLowerCase();
-  return aid.includes('validator')
-    || aid.includes('persist')
-    || aid.includes('confirmflow')
-    || step.includes('validator')
-    || step.includes('persist')
-    || step.includes('confirmflow')
-    || msg.includes('校验')
-    || msg.includes('落盘');
+const compareEvents = (a: RawTraceEvent, b: RawTraceEvent): number => {
+  const aHasSeq = typeof a.seq === 'number' && Number.isFinite(a.seq);
+  const bHasSeq = typeof b.seq === 'number' && Number.isFinite(b.seq);
+  if (aHasSeq && bHasSeq) return (a.seq as number) - (b.seq as number);
+
+  const aTs = parseTsMs(a.ts) ?? Number.MAX_SAFE_INTEGER;
+  const bTs = parseTsMs(b.ts) ?? Number.MAX_SAFE_INTEGER;
+  if (aTs !== bTs) return aTs - bTs;
+
+  if (aHasSeq && !bHasSeq) return -1;
+  if (!aHasSeq && bHasSeq) return 1;
+  return 0;
 };
 
-const normalizeTraceEvent = (evt: RawTraceEvent): NormalizedTraceEvent => {
-  const payload = isRecord(evt.payload) ? evt.payload : {};
-  const inputs = isRecord(evt.inputs)
-    ? evt.inputs
-    : (isRecord(payload.inputs) ? payload.inputs as Record<string, unknown> : {});
-  const outputs = isRecord(evt.outputs)
-    ? evt.outputs
-    : (isRecord(payload.outputs) ? payload.outputs as Record<string, unknown> : payload);
-  const decision = isRecord(evt.decision)
-    ? evt.decision
-    : (isRecord(payload.decision) ? payload.decision as Record<string, unknown> : {});
 
-  const kind: EventKind = (evt.agent || evt.inputs || evt.outputs) ? 'agent' : 'system';
-  const seq = typeof evt.seq === 'number' && Number.isFinite(evt.seq) ? evt.seq : Number.POSITIVE_INFINITY;
-  const ts = String(evt.ts || '');
-  const stepKey = String(evt.step || evt.status || evt.node || 'event');
-  const agentId = String(evt.agent_id || evt.agent || evt.node || 'unknown');
-  const message = shortText(evt.step_cn || evt.message || String(payload.message || stepKey), 180);
+const shouldIncludeEvent = (event: RawTraceEvent, phaseStartMs?: number): boolean => {
+  if (!phaseStartMs || !Number.isFinite(phaseStartMs)) return true;
+  const tsMs = parseTsMs(event.ts);
+  // 若事件无时间戳，不做截断，避免误丢关键结束事件
+  if (typeof tsMs !== 'number') return true;
+  // 允许 2 分钟时钟偏差，避免前后端时钟不同步导致整段事件被过滤为 0
+  return tsMs >= (phaseStartMs - 120_000);
+};
 
+const sliceCurrentPhaseEvents = (events: RawTraceEvent[], phaseStartMs?: number): RawTraceEvent[] => {
+  const sorted = [...events].sort(compareEvents);
+  if (!phaseStartMs || !Number.isFinite(phaseStartMs)) return sorted;
+
+  // 优先按二次确认分段标记截取（与服务器时钟无关）
+  let startIndex = -1;
+  for (let i = sorted.length - 1; i >= 0; i -= 1) {
+    const e = sorted[i];
+    const node = String(e.node || '').toLowerCase();
+    const status = String(e.status || '').toLowerCase();
+    const agent = String(e.agent || e.agent_id || '').toLowerCase();
+    if ((node === 'confirmflow' && ['start', 'started', 'begin', 'running', '开始'].includes(status)) || agent === 'confirm_input') {
+      startIndex = i;
+      break;
+    }
+  }
+  if (startIndex >= 0) return sorted.slice(startIndex);
+
+  // 没有确认分段时回退到时间窗口过滤
+  const filtered = sorted.filter((raw) => shouldIncludeEvent(raw, phaseStartMs));
+  return filtered.length ? filtered : sorted;
+};
+
+const normalizeEvent = (raw: RawTraceEvent): NormalizedEvent => {
+  const ts = raw.ts;
+  const tsMs = parseTsMs(ts);
+
+  if (raw.agent) {
+    const agentId = mapToFixedAgent(String(raw.agent_id || raw.agent), undefined);
+    const outputs = isRecord(raw.outputs) ? raw.outputs : undefined;
+    const decision = isRecord(raw.decision) ? raw.decision : undefined;
+    const isComplete = String(raw.step || '').toLowerCase().endsWith('_complete') || outputs?.['is_complete'] === true;
+    const status = isComplete ? 'completed' : 'running';
+
+    const reasons = toArray(decision?.['reasons_cn'] ?? decision?.['reasons']).map((item) => String(item));
+    const reasonText = shortText(decision?.['reason_str'] ?? reasons.join('、'), 120);
+    const message = shortText(raw.step_cn || raw.step || reasonText || `${raw.agent} ${status === 'completed' ? '完成' : '执行中'}`, 140);
+
+    return {
+      seq: raw.seq,
+      ts,
+      tsMs,
+      agentId,
+      nodeName: String(raw.step || raw.agent),
+      status,
+      message,
+      data: {
+        agent: raw.agent,
+        agent_cn: raw.agent_cn,
+        step: raw.step,
+        step_cn: raw.step_cn,
+        inputs: isRecord(raw.inputs) ? raw.inputs : undefined,
+        outputs,
+        decision,
+      },
+    };
+  }
+
+  const payload = isRecord(raw.payload) ? raw.payload : {};
+  const status = normalizeStatus(raw.status);
   return {
-    seq,
+    seq: raw.seq,
     ts,
-    tsMs: parseTsMs(ts),
-    kind,
-    agentId,
-    agentCn: evt.agent_cn ? String(evt.agent_cn) : null,
-    stepKey,
-    inputs,
-    outputs,
-    decision,
-    message,
-    isSystemNode: isSystemNode(agentId, stepKey, message),
-    raw: evt,
+    tsMs,
+    agentId: mapToFixedAgent(String(payload['agent_id'] || raw.agent_id || ''), raw.node),
+    nodeName: String(raw.node || raw.agent || 'trace'),
+    status,
+    message: shortText(raw.message || payload['message'] || raw.node || 'trace', 140),
+    data: payload,
   };
 };
 
-const stableEventKey = (e: NormalizedTraceEvent): string => {
-  const outSig = JSON.stringify(e.outputs || {}).slice(0, 160);
-  return `${e.agentId}|${e.stepKey}|${e.ts}|${outSig}|${e.message}`;
+const isSystemNodeEvent = (event: NormalizedEvent): boolean => {
+  const node = String(event.nodeName || '').toLowerCase();
+  const message = String(event.message || '').toLowerCase();
+  return node.includes('persist')
+    || node.includes('validator')
+    || message.includes('写入事件日志')
+    || message.includes('事件落盘完成')
+    || message.includes('校验完成');
 };
 
-const dedupeEvents = (events: NormalizedTraceEvent[]): NormalizedTraceEvent[] => {
-  const seqMap = new Map<number, NormalizedTraceEvent>();
-  const keyMap = new Map<string, NormalizedTraceEvent>();
+const toStringArray = (value: unknown): string[] => toArray(value).map((item) => String(item)).filter(Boolean);
 
-  events.forEach((event) => {
-    if (Number.isFinite(event.seq)) {
-      // seq 优先去重：同 seq 只保留最新
-      seqMap.set(event.seq, event);
-      return;
-    }
-    keyMap.set(stableEventKey(event), event);
-  });
-
-  return [...seqMap.values(), ...keyMap.values()].sort((a, b) => {
-    if (a.seq !== b.seq) return a.seq - b.seq;
-    return (a.tsMs ?? Number.MAX_SAFE_INTEGER) - (b.tsMs ?? Number.MAX_SAFE_INTEGER);
-  });
+const getOutputs = (event: NormalizedEvent): Record<string, unknown> => {
+  const data = isRecord(event.data) ? event.data : {};
+  if (isRecord(data['outputs'])) return data['outputs'];
+  if (isRecord(data['payload']) && isRecord((data['payload'] as Record<string, unknown>)['outputs'])) {
+    return (data['payload'] as Record<string, unknown>)['outputs'] as Record<string, unknown>;
+  }
+  return data;
 };
 
-const uniqSubsteps = (substeps: Substep[], min = 3, max = 5): Substep[] => {
-  const dedup = new Map<string, Substep>();
-  substeps.forEach((item) => {
-    dedup.set(item.id, item); // 同 id 保留最新
-  });
-  const ordered = [...dedup.values()].sort((a, b) => a.seq - b.seq);
-  if (ordered.length <= max) return ordered;
-  return ordered.slice(-Math.max(min, max));
-};
+const extractHighlights = (agentId: FixedAgentId, events: NormalizedEvent[], showSystemNodes: boolean): string[] => {
+  if (!events.length) return [];
 
-const formatDuration = (ms: number): string => {
-  if (!Number.isFinite(ms) || ms <= 0) return '0.00s';
-  const seconds = ms / 1000;
-  if (seconds < 60) return `${seconds.toFixed(2)}s`;
-  const minutes = Math.floor(seconds / 60);
-  return `${minutes}m${(seconds - minutes * 60).toFixed(1)}s`;
-};
+  const viewEvents = showSystemNodes ? events : events.filter((event) => !isSystemNodeEvent(event));
+  const latest = (viewEvents.length ? viewEvents : events)[(viewEvents.length ? viewEvents : events).length - 1];
+  const outputs = getOutputs(latest);
+  const lines: string[] = [];
 
-const eventStatus = (event: NormalizedTraceEvent): AgentStatus | 'info' => {
-  const fromRaw = normalizeStatus(event.raw.status);
-  if (fromRaw !== 'info') return fromRaw;
-  const step = event.stepKey.toLowerCase();
-  if (step.endsWith('_complete') || step.includes('complete') || step.includes('finish')) return 'completed';
-  if (step.includes('error') || step.includes('fail')) return 'error';
-  return event.kind === 'agent' ? 'running' : 'info';
-};
+  if (agentId === 'reception') {
+    const missing = toStringArray(outputs['missing_profile_fields']);
+    if (missing.length) lines.push(`待补齐：${missing.join('、')}`);
+  }
 
-const detectDegradedReason = (text: string): string | null => {
-  if (!text) return null;
-  const pairs: Array<{ k: RegExp; reason: string }> = [
-    { k: /api调用失败/i, reason: 'API调用失败' },
-    { k: /connection/i, reason: '连接异常' },
-    { k: /access denied/i, reason: '访问被拒绝' },
-    { k: /timeout|timed out|超时/i, reason: '请求超时' },
-  ];
-  const hit = pairs.find((item) => item.k.test(text));
-  return hit ? hit.reason : null;
-};
+  if (agentId === 'diagnosis') {
+    const disease = String(outputs['final_disease'] ?? outputs['disease_type'] ?? outputs['disease'] ?? '').trim();
+    const source = String(outputs['final_source'] ?? '').trim();
+    const confidenceRaw = Number(outputs['final_confidence'] ?? outputs['confidence_pct'] ?? outputs['confidence']);
+    const confidence = Number.isFinite(confidenceRaw) ? (confidenceRaw <= 1 ? confidenceRaw * 100 : confidenceRaw) : undefined;
+    if (disease) {
+      lines.push(`诊断=${disease}${typeof confidence === 'number' ? ` 置信度=${confidence.toFixed(2)}%` : ''}${source ? ` 来源=${source}` : ''}`);
+    }
+    if (outputs['need_confirm'] === true) lines.push('需要二次确认');
+  }
 
-const collectSystemEvents = (events: NormalizedTraceEvent[]): Substep[] => {
-  return events
-    .filter((event) => event.isSystemNode)
-    .map((event) => ({
-      id: `system:${event.seq}:${event.agentId}:${event.stepKey}`,
-      text: `${event.agentId} · ${event.message || event.stepKey}`,
-      seq: event.seq,
-      level: 'info',
-    }));
-};
+  if (agentId === 'kb_retrieval') {
+    const actions = isRecord(outputs['actions']) ? outputs['actions'] : undefined;
+    const ingredients = toStringArray(outputs['ingredients']);
+    const actionCount = actions ? 1 : 0;
+    lines.push(`已加载 KB actions + ingredients（${ingredients.length} 项）`);
+    if (actionCount > 0 && isRecord(actions?.['treatment_plan'])) {
+      const tp = actions?.['treatment_plan'] as Record<string, unknown>;
+      lines.push(`actions分支：FAMILY ${toStringArray(tp['FAMILY']).length} / MID ${toStringArray(tp['MID']).length} / ENTERPRISE ${toStringArray(tp['ENTERPRISE']).length}`);
+    }
+  }
 
-const buildCardsFromEvents = (normalizedEvents: NormalizedTraceEvent[], showSystemNodes: boolean, nowMs: number): { cards: AgentCardView[]; systemSubsteps: Substep[] } => {
-  const mainEvents = normalizedEvents.filter((event) => !event.isSystemNode || event.agentId.toLowerCase().includes('personalizationagent'));
-
-  const eventsByCard = FIXED_AGENTS.reduce((acc, card) => {
-    acc[card.id] = mainEvents.filter((event) => mapToCardId(event) === card.id);
-    return acc;
-  }, {} as Record<FixedAgentId, NormalizedTraceEvent[]>);
-
-  const systemSubsteps = showSystemNodes ? uniqSubsteps(collectSystemEvents(normalizedEvents), 3, 8) : [];
-
-  const cards = FIXED_AGENTS.map((card): AgentCardView => {
-    const cardEvents = eventsByCard[card.id] || [];
-    const latest = cardEvents[cardEvents.length - 1];
-    const outputs = latest?.outputs || {};
-    const inputs = latest?.inputs || {};
-
-    let status: AgentStatus = 'pending';
-    cardEvents.forEach((event) => {
-      const s = eventStatus(event);
-      if (s !== 'info' && STATUS_WEIGHT[s] >= STATUS_WEIGHT[status]) status = s;
-    });
-
-    const startTs = cardEvents.find((event) => typeof event.tsMs === 'number')?.tsMs;
-    const endTs = [...cardEvents].reverse().find((event) => typeof event.tsMs === 'number')?.tsMs;
-    const duration = formatDuration(startTs ? Math.max(0, (endTs ?? nowMs) - startTs) : 0);
-
-    let keySteps: string[] = ['暂无事件/未执行'];
-    let substeps: Substep[] = [];
-
-    if (card.id === 'supervisor' && cardEvents.length) {
-      const decision = latest?.decision || {};
-      const nextAction = String(decision.next_action || outputs.next_action || '').trim();
-      const reasons = toStringArray(decision.reasons_cn ?? decision.reasons);
-      keySteps = [
-        nextAction === 'end'
-          ? `流程结束（${String(decision.reason_str || reasons.join(',') || 'all_required_outputs_ready')}）`
-          : `决策：下一步 = ${nextAction || 'unknown'}（原因：${reasons.join(',') || '无'}）`,
-      ];
-
-      substeps = uniqSubsteps(cardEvents.filter((event) => Object.keys(event.decision).length > 0).map((event) => {
-        const d = event.decision;
-        const current = String(event.inputs.current_step || 'unknown');
-        const next = String(d.next_action || 'unknown');
-        const rs = toStringArray(d.reasons_cn ?? d.reasons);
-        return {
-          id: `${current}|${next}|${rs.join(',')}`,
-          text: `${current} → ${next}（${rs.join(',') || '无'}）`,
-          seq: event.seq,
-        };
-      }), 3, 5);
+  if (agentId === 'treatment') {
+    const selectedBranch = String(outputs['selected_branch'] ?? '').trim();
+    const llmFailed = outputs['llm_failed'] === true;
+    const llmReason = String(outputs['llm_failed_reason'] ?? '').trim();
+    if (selectedBranch || outputs['llm_failed'] !== undefined) {
+      lines.push(`档位=${selectedBranch || '-'}；LLM=${llmFailed ? '失败' : '成功'}${llmFailed && llmReason ? `（${llmReason}）` : ''}`);
     }
 
-    if (card.id === 'reception' && cardEvents.length) {
-      const cropType = String(outputs.crop_type ?? inputs.crop_type ?? '未知');
-      const imagePath = String(outputs.image_path ?? outputs.image_url ?? inputs.file ?? '').trim();
-      const symptoms = toStringArray(outputs.symptoms ?? inputs.symptoms);
-      const missingFields = toStringArray(outputs.missing_profile_fields);
-      keySteps = [`结构化抽取：作物=${cropType} / 图像=${imagePath ? '已识别' : '缺失'} / 症状=${symptoms.length}项 / 缺失字段=${missingFields.join(',') || '无'}（${missingFields.length}项）`];
-
-      const lookaheadSupervisor = mainEvents.find((event) => event.seq > (latest?.seq ?? 0) && mapToCardId(event) === 'supervisor');
-      const followUps = toStringArray(outputs.follow_up_questions ?? lookaheadSupervisor?.inputs.follow_up_questions);
-
-      substeps = uniqSubsteps([
-        ...(Object.keys(inputs).length ? [{ id: `parse_input:${latest.seq}`, text: '解析输入（crop_type/symptoms/file）', seq: latest.seq }] : []),
-        ...(cropType ? [{ id: `normalize:${cropType}`, text: `规范化字段（crop_type=${cropType}）`, seq: latest.seq }] : []),
-        { id: `extract_image:${imagePath ? 'ok' : 'missing'}`, text: `提取 image_path：${imagePath ? '已生成' : '缺失'}`, seq: latest.seq, level: (imagePath ? 'info' : 'warn') as SubstepLevel },
-        ...(missingFields.length ? [{ id: `missing_fields:${missingFields.join(',')}`, text: `检测缺失字段 → ${missingFields.join(',')}`, seq: latest.seq, level: 'warn' as SubstepLevel }] : []),
-        ...(followUps.length ? [{ id: `map_followup:${followUps.length}`, text: `缺失字段映射追问（${followUps.length}条）`, seq: latest.seq }] : []),
-      ], 3, 5);
+    const filtered = outputs['filtered'] === true;
+    const filteredReasons = toStringArray(outputs['filtered_reasons']);
+    const filteredComponents = toStringArray(outputs['filtered_components']);
+    const personalizationApplied = outputs['personalization_applied'] === true;
+    if (personalizationApplied) lines.push('已应用个性化');
+    if (filtered) {
+      lines.push(`触发过滤：${filteredReasons.length ? filteredReasons.join('；') : '已触发'}`);
+      if (filteredComponents.length) lines.push(`过滤成分：${filteredComponents.join('、')}`);
+    } else {
+      lines.push('未触发过滤');
     }
 
-    if (card.id === 'diagnosis' && cardEvents.length) {
-      const disease = String(outputs.final_disease ?? outputs.disease_type ?? outputs.disease ?? '未知');
-      const confRaw = Number(outputs.final_confidence ?? outputs.disease_confidence ?? outputs.confidence);
-      const conf = Number.isFinite(confRaw) ? (confRaw <= 1 ? `${(confRaw * 100).toFixed(2)}%` : `${confRaw.toFixed(2)}%`) : '-';
-      const source = String(outputs.final_source ?? 'unknown');
-      const needConfirm = asBool(outputs.need_confirm);
-      keySteps = [`诊断：病害=${disease} / 置信度=${conf} / 来源=${source} / need_confirm=${needConfirm ? '是' : '否'}`];
+    const reasons = toStringArray(outputs['personalization_reasons']);
+    if (reasons.length) lines.push(`原因概览：${reasons.slice(0, 3).join('；')}`);
 
-      const fallbackReasons = toStringArray(outputs.fallback_reason);
-      const degradedReason = detectDegradedReason(String(outputs.disease_description ?? outputs.detail ?? ''));
-      substeps = uniqSubsteps([
-        { id: 'infer', text: '模型推理完成（top1/top3）', seq: latest.seq },
-        { id: `gate:${needConfirm ? 'low' : 'pass'}`, text: `置信度门控：${needConfirm ? '低置信度' : '通过'}${fallbackReasons.length ? `（原因：${fallbackReasons.join('；')}）` : ''}`, seq: latest.seq, level: (needConfirm ? 'warn' : 'info') as SubstepLevel },
-        { id: `confirm:${needConfirm}`, text: needConfirm ? 'need_confirm=是，建议二次确认' : 'need_confirm=否', seq: latest.seq, level: (needConfirm ? 'warn' : 'info') as SubstepLevel },
-        { id: `personalized_hint:${degradedReason || 'ok'}`, text: degradedReason ? `个性化诊断提示：已降级（${degradedReason}）` : '个性化诊断提示：成功', seq: latest.seq, level: (degradedReason ? 'warn' : 'info') as SubstepLevel },
-      ], 3, 5);
+    const planText = String(outputs['treatment_plan'] ?? outputs['plan'] ?? '');
+    const immediateCount = (planText.match(/【立即行动】/g) || []).length > 0 ? 1 : 0;
+    const branchCount = (planText.match(/【差异化处置-/g) || []).length;
+    if (immediateCount || branchCount) lines.push(`引用KB/结构化动作：立即行动${immediateCount}段，差异化处置${branchCount}段`);
+  }
+
+  if (agentId === 'supervisor') {
+    const decision = isRecord((isRecord(latest.data) ? latest.data['decision'] : undefined)) ? (latest.data as Record<string, unknown>)['decision'] as Record<string, unknown> : undefined;
+    const nextAction = decision?.['next_action'] ?? outputs['next_action'];
+    if (nextAction) lines.push(`下一步：${String(nextAction)}`);
+    const followUps = toStringArray(outputs['follow_up_questions']);
+    if (followUps.length) lines.push(`待补充问题：${followUps.slice(0, 2).join('；')}`);
+  }
+
+  if (agentId === 'final') {
+    const finalDisease = String(outputs['final_disease'] ?? outputs['disease'] ?? '').trim();
+    if (finalDisease) lines.push(`最终病害：${finalDisease}`);
+    lines.push('流程完成');
+  }
+
+  if (!showSystemNodes) {
+    const systemLines = lines.filter((line) => /校验|落盘|事件日志/.test(line));
+    if (systemLines.length) {
+      // 降噪：默认隐藏系统执行细节，由“显示系统节点”开关控制。
     }
+  }
 
-    if (card.id === 'kb_retrieval' && cardEvents.length) {
-      const disease = String(outputs.disease ?? outputs.final_disease ?? '未知');
-      const actions = isRecord(outputs.actions) ? outputs.actions : null;
-      const ingredients = toStringArray(outputs.ingredients);
-      keySteps = [`检索：命中 KB=${disease}（actions=${actions ? '是' : '否'} / ingredients=${ingredients.length}）`];
-
-      substeps = uniqSubsteps([
-        { id: `load_desc:${latest.seq}`, text: '读取 diseases.json → 获取描述', seq: latest.seq },
-        { id: `load_plan:${latest.seq}`, text: '读取 treatments.json → 获取 treatment/prevention', seq: latest.seq },
-        ...(actions ? [{ id: `load_actions:${latest.seq}`, text: '读取 actions（immediate + treatment_plan 三档 + follow_up）', seq: latest.seq }] : []),
-        { id: `load_ingredients:${ingredients.length}`, text: `读取 ingredients（${ingredients.length}项）`, seq: latest.seq },
-        { id: `pack_snapshot:${latest.seq}`, text: '打包 kb_snapshot → 供治疗智能体使用', seq: latest.seq },
-      ], 3, 5);
-    }
-
-    if (card.id === 'treatment' && cardEvents.length) {
-      const pEvent = [...mainEvents].reverse().find((event) => event.agentId.toLowerCase().includes('personalizationagent'));
-      const pOut = pEvent?.outputs || {};
-
-      const selectedBranch = String(outputs.selected_branch || pOut.selected_branch || 'unknown');
-      const llmFailed = asBool(outputs.llm_failed);
-      const outputSource = llmFailed ? 'KB后备' : 'LLM';
-      const personalizationApplied = asBool(outputs.personalization_applied ?? pOut.personalization_applied);
-      const filtered = asBool(pOut.filtered ?? outputs.filtered);
-      const filteredReasons = toStringArray(pOut.filtered_reasons ?? outputs.filtered_reasons);
-      const filteredComponents = toStringArray(pOut.filtered_components ?? outputs.filtered_components);
-      const reasons = [...new Set(toStringArray(pOut.personalization_reasons ?? outputs.personalization_reasons))];
-      const reasonsPreview = `${reasons.slice(0, 3).join('；')}${reasons.length > 3 ? '…' : ''}`;
-
-      keySteps = [
-        `档位=${selectedBranch}；LLM=${llmFailed ? '失败' : '成功'}；输出来源=${outputSource}`,
-        `已应用个性化：${personalizationApplied ? '是' : '否'}`,
-        filtered
-          ? `触发过滤：${filteredReasons.join('；') || '已触发'}${filteredComponents.length ? `（过滤成分：${filteredComponents.join('、')}）` : ''}`
-          : '未触发过滤',
-        `原因概览：${reasonsPreview || '无'}`,
-        ...(!filtered && filteredReasons.length ? ['（提示：filtered_reasons 存在但 filtered=false，可能为后端一致性问题）'] : []),
-      ];
-
-      const summary = isRecord(pOut.personalization_flags_summary)
-        ? pOut.personalization_flags_summary as Record<string, unknown>
-        : (isRecord(outputs.personalization_flags_summary) ? outputs.personalization_flags_summary as Record<string, unknown> : {});
-      const farmScale = String(summary.farm_scale || '');
-      const pesticideAccess = String(summary.pesticide_access_level || '');
-      const equipment = toStringArray(summary.equipment);
-
-      const kbSnapshot = isRecord(outputs.kb_snapshot) ? outputs.kb_snapshot as Record<string, unknown> : {};
-      const kbActions = isRecord(kbSnapshot.actions) ? kbSnapshot.actions as Record<string, unknown> : {};
-      const immediate = toStringArray(kbActions.immediate).length;
-      const tp = isRecord(kbActions.treatment_plan) ? kbActions.treatment_plan as Record<string, unknown> : {};
-      const diff = toStringArray(tp.FAMILY).length + toStringArray(tp.MID).length + toStringArray(tp.ENTERPRISE).length;
-      const resist = toStringArray(kbActions.resistance_management).length;
-      const llmReason = shortText(outputs.llm_failed_reason || outputs.llm_failed || '', 60);
-
-      substeps = uniqSubsteps([
-        {
-          id: 'branch_select',
-          text: farmScale || pesticideAccess || equipment.length
-            ? `档位判定：${farmScale || '-'} + ${pesticideAccess || '-'} + ${equipment.join('、') || '-'} → ${selectedBranch}`
-            : '档位判定：依据档案规模/购药/设备',
-          seq: latest.seq,
-        },
-        ...(immediate || diff || resist
-          ? [{ id: 'kb_fuse', text: `融合 KB actions：立即行动${immediate}条 / 差异化处置${diff}条 / 抗性管理${resist}条`, seq: latest.seq }]
-          : []),
-        { id: 'llm_call', text: `LLM 调用：${llmFailed ? `失败${llmReason ? `（${llmReason}）` : ''}` : '成功'}`, seq: latest.seq, level: (llmFailed ? 'warn' : 'info') as SubstepLevel },
-        ...(llmFailed ? [{ id: 'fallback', text: '回退策略：使用 KB 后备组装', seq: latest.seq, level: 'warn' as SubstepLevel }] : []),
-        { id: 'apply_constraints', text: `强约束后处理：有机/禁用成分/采收窗口 → filtered=${filtered}${filteredReasons.length ? `（${filteredReasons.join('；')}）` : ''}`, seq: latest.seq },
-      ], 3, 5);
-    }
-
-    if (card.id === 'personalization' && cardEvents.length) {
-      const pEvent = [...mainEvents].reverse().find((event) => event.agentId.toLowerCase().includes('personalizationagent'));
-      const pOut = pEvent?.outputs || outputs;
-      const filtered = asBool(pOut.filtered);
-      const filteredReasons = toStringArray(pOut.filtered_reasons);
-      const filteredComponents = toStringArray(pOut.filtered_components);
-      const reasons = toStringArray(pOut.personalization_reasons);
-      const context = isRecord(pOut.personalization_context) ? pOut.personalization_context as Record<string, unknown> : {};
-      const preferOrganic = asBool(context.prefer_organic);
-
-      keySteps = [`检测到约束：有机偏好=${preferOrganic ? '是' : '否'} → ${filtered ? `触发过滤：${filteredReasons.join('；') || '已触发'}${filteredComponents.length ? `（过滤成分：${filteredComponents.join('、')}）` : ''}` : '未触发过滤'}`];
-      substeps = uniqSubsteps([
-        { id: 'hit_organic', text: `命中 prefer_organic → ${preferOrganic ? '开启低残留策略' : '未开启低残留策略'}`, seq: latest.seq },
-        ...(filteredComponents.length ? [{ id: 'scan_ingredients', text: `扫描命中 ingredients：${filteredComponents.join('、')} → 执行替换/删除`, seq: latest.seq }] : []),
-        { id: 'build_reasons', text: `生成 filtered_reasons（${filteredReasons.length}条）`, seq: latest.seq },
-        { id: 'explain', text: `personalization_reasons：${reasons.slice(0, 3).join('；')}${reasons.length > 3 ? '…' : ''}`, seq: latest.seq },
-      ], 3, 5);
-    }
-
-    return {
-      ...card,
-      status,
-      duration,
-      keySteps,
-      substeps,
-    };
-  });
-
-  return { cards, systemSubsteps };
+  if (!lines.length) lines.push(shortText(latest.message, 100) || '等待事件');
+  return lines.filter(Boolean).slice(0, 6);
 };
 
 export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refreshToken }: AgentWorkflowPanelProps) {
-  const [showSystemNodes, setShowSystemNodes] = useState(false);
+  const [rows, setRows] = useState<Record<FixedAgentId, AgentRowState>>(buildInitialState());
   const [connectionState, setConnectionState] = useState<'idle' | 'connecting' | 'connected' | 'disconnected'>('idle');
   const [connectionHint, setConnectionHint] = useState('');
   const [replayedCount, setReplayedCount] = useState(0);
   const [nowMs, setNowMs] = useState(() => Date.now());
-  const [events, setEvents] = useState<NormalizedTraceEvent[]>([]);
+  const [workflowDone, setWorkflowDone] = useState(false);
+  const [diagnosisConfidencePct, setDiagnosisConfidencePct] = useState<number | undefined>(undefined);
+  const [allEvents, setAllEvents] = useState<NormalizedEvent[]>([]);
+  const [showSystemNodes, setShowSystemNodes] = useState(false);
   const [debugOpen, setDebugOpen] = useState<Record<FixedAgentId, boolean>>({
     supervisor: false,
     reception: false,
     diagnosis: false,
     kb_retrieval: false,
     treatment: false,
-    personalization: false,
+    final: false,
   });
 
   const esRef = useRef<EventSource | null>(null);
-  const tickerRef = useRef<number | null>(null);
+  const tickerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const lastSeqRef = useRef(-1);
+  const workflowDoneRef = useRef(false);
+  const replayedCountRef = useRef(0);
+  const finalTsRef = useRef<number | undefined>(undefined);
+  const eventHistoryRef = useRef<Record<FixedAgentId, NormalizedEvent[]>>({
+    supervisor: [],
+    reception: [],
+    diagnosis: [],
+    kb_retrieval: [],
+    treatment: [],
+    final: [],
+  });
+  const allEventsRef = useRef<NormalizedEvent[]>([]);
+
+  const clearTicker = useCallback(() => {
+    if (tickerRef.current) {
+      clearInterval(tickerRef.current);
+      tickerRef.current = null;
+    }
+  }, []);
 
   const closeStream = useCallback(() => {
     if (esRef.current) {
@@ -480,64 +502,231 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
     }
   }, []);
 
-  const clearTicker = useCallback(() => {
-    if (tickerRef.current) {
-      window.clearInterval(tickerRef.current);
-      tickerRef.current = null;
-    }
+  const clearExternal = useCallback(() => {
+    closeStream();
+    clearTicker();
+  }, [closeStream, clearTicker]);
+
+  const stopPolling = useCallback(() => {
+    // 保留明确入口，便于在流程结束时统一停止后续轮询/流更新
   }, []);
 
-  const mergeRawEvents = useCallback((rawEvents: RawTraceEvent[]) => {
-    setEvents((prev) => {
-      const normalized = rawEvents
-        .map(normalizeTraceEvent)
-        .filter((event) => {
-          if (!phaseStartMs || !Number.isFinite(phaseStartMs)) return true;
-          if (typeof event.tsMs !== 'number') return true;
-          return event.tsMs >= (phaseStartMs - 120_000);
-        });
-      return dedupeEvents([...prev, ...normalized]);
+  const maybeStartTicker = useCallback((snapshot: Record<FixedAgentId, AgentRowState>, done: boolean) => {
+    const hasRunning = FIXED_AGENTS.some((agent) => snapshot[agent.id].status === 'running');
+    const hasPhaseTimer = typeof phaseStartMs === 'number' && Number.isFinite(phaseStartMs);
+    if (!done && (hasRunning || hasPhaseTimer)) {
+      if (!tickerRef.current) {
+        tickerRef.current = setInterval(() => setNowMs(Date.now()), 100);
+      }
+    } else {
+      clearTicker();
+    }
+  }, [phaseStartMs, clearTicker]);
+
+  const completeSupervisorOnDone = useCallback((doneTs?: number) => {
+    setRows((prev) => {
+      if (prev.supervisor.status !== 'running') return prev;
+      const next = { ...prev };
+      next.supervisor = {
+        ...next.supervisor,
+        status: 'completed',
+        progress: 100,
+        endTs: doneTs ?? next.supervisor.endTs,
+      };
+      return next;
     });
-  }, [phaseStartMs]);
+  }, []);
+
+  const applyNormalizedEvent = useCallback((event: NormalizedEvent): boolean => {
+    if (workflowDoneRef.current) return false;
+
+    const seq = event.seq;
+    if (typeof seq === 'number' && Number.isFinite(seq) && seq <= lastSeqRef.current) {
+      return false;
+    }
+    if (typeof seq === 'number' && Number.isFinite(seq)) {
+      lastSeqRef.current = seq;
+    }
+
+    if (event.status === 'info') return false;
+
+    const agentId = event.agentId;
+    eventHistoryRef.current[agentId] = [...eventHistoryRef.current[agentId], event].slice(-20);
+    allEventsRef.current = [...allEventsRef.current, event].sort((a, b) => {
+      const sa = typeof a.seq === 'number' ? a.seq : Number.MAX_SAFE_INTEGER;
+      const sb = typeof b.seq === 'number' ? b.seq : Number.MAX_SAFE_INTEGER;
+      if (sa !== sb) return sa - sb;
+      return (a.tsMs ?? Number.MAX_SAFE_INTEGER) - (b.tsMs ?? Number.MAX_SAFE_INTEGER);
+    });
+    setAllEvents(allEventsRef.current);
+
+    if (agentId === 'diagnosis') {
+      const data = isRecord(event.data) ? event.data : undefined;
+      const outputs = isRecord(data?.['outputs']) ? data['outputs'] : undefined;
+      const rawConfidence = Number(
+        (isRecord(data) ? data['confidence_pct'] : undefined)
+        ?? (isRecord(data) ? data['confidence'] : undefined)
+        ?? (isRecord(outputs) ? outputs['confidence_pct'] : undefined)
+        ?? (isRecord(outputs) ? outputs['confidence'] : undefined),
+      );
+      if (Number.isFinite(rawConfidence)) {
+        setDiagnosisConfidencePct(rawConfidence <= 1 ? rawConfidence * 100 : rawConfidence);
+      }
+    }
+
+    let markDone = false;
+    setRows((prev) => {
+      const next = { ...prev };
+      const current = { ...next[agentId] };
+
+      const fallbackMessage = event.status === 'completed'
+        ? `${agentId} 执行完成`
+        : event.status === 'error'
+          ? `${agentId} 执行错误`
+          : `${agentId} 执行中`;
+      const message = shortText(event.message || fallbackMessage, 140) || fallbackMessage;
+
+      current.steps = [...current.steps, { seq: event.seq, node: event.nodeName, message }]
+        .sort((a, b) => {
+          const sa = typeof a.seq === 'number' ? a.seq : Number.MAX_SAFE_INTEGER;
+          const sb = typeof b.seq === 'number' ? b.seq : Number.MAX_SAFE_INTEGER;
+          return sa - sb;
+        })
+        .slice(-3);
+      current.lastMessage = message;
+      current.highlights = extractHighlights(agentId, eventHistoryRef.current[agentId], showSystemNodes);
+
+      if (event.status === 'running') {
+        current.status = 'running';
+        if (typeof event.tsMs === 'number') {
+          current.startTs = current.startTs ?? event.tsMs;
+        }
+        const data = isRecord(event.data) ? event.data : undefined;
+        const outputs = isRecord(data?.['outputs']) ? data['outputs'] : undefined;
+        const explicit = Number(
+          (isRecord(data) ? data['progress'] : undefined)
+          ?? (isRecord(outputs) ? outputs['progress'] : undefined),
+        );
+        if (Number.isFinite(explicit)) {
+          current.progress = clamp(explicit, 0, 90);
+        } else if (typeof event.tsMs === 'number' && typeof current.startTs === 'number') {
+          current.progress = Math.max(current.progress, softProgress(Math.max(0, event.tsMs - current.startTs)));
+        } else {
+          current.progress = Math.max(current.progress, 5);
+        }
+      } else if (event.status === 'completed') {
+        current.status = 'completed';
+        if (typeof event.tsMs === 'number') {
+          current.startTs = current.startTs ?? event.tsMs;
+          current.endTs = event.tsMs;
+        }
+        current.progress = 100;
+      } else if (event.status === 'error') {
+        current.status = 'error';
+        if (typeof event.tsMs === 'number') {
+          current.startTs = current.startTs ?? event.tsMs;
+          current.endTs = event.tsMs;
+        }
+        current.progress = 100;
+      }
+
+      next[agentId] = current;
+
+      const finalDone = agentId === 'final' && event.status === 'completed';
+      if (finalDone) {
+        markDone = true;
+        if (typeof event.tsMs === 'number') {
+          finalTsRef.current = event.tsMs;
+        }
+      }
+
+      maybeStartTicker(next, markDone || workflowDoneRef.current);
+      return next;
+    });
+
+    if (markDone) {
+      workflowDoneRef.current = true;
+      setWorkflowDone(true);
+      stopPolling();
+      closeStream();
+      clearTicker();
+      completeSupervisorOnDone(finalTsRef.current);
+    }
+
+    return true;
+
+  }, [maybeStartTicker, stopPolling, closeStream, clearTicker, completeSupervisorOnDone, showSystemNodes]);
+
 
   useEffect(() => {
     if (!traceId) {
-      queueMicrotask(() => {
-        setEvents([]);
-        setReplayedCount(0);
-        setConnectionHint('');
-        setConnectionState('idle');
-      });
-      closeStream();
-      clearTicker();
+      clearExternal();
+      replayedCountRef.current = 0;
+      workflowDoneRef.current = false;
+      lastSeqRef.current = -1;
+      finalTsRef.current = undefined;
+      eventHistoryRef.current = {
+        supervisor: [],
+        reception: [],
+        diagnosis: [],
+        kb_retrieval: [],
+        treatment: [],
+        final: [],
+      };
+      allEventsRef.current = [];
+      queueMicrotask(() => setAllEvents([]));
       return;
     }
 
     let cancelled = false;
+
+    clearExternal();
     queueMicrotask(() => {
-      setEvents([]);
-      setReplayedCount(0);
+      if (cancelled) return;
       setConnectionState('connecting');
       setConnectionHint('正在回放历史事件...');
+      setReplayedCount(0);
+      setWorkflowDone(false);
     });
+    replayedCountRef.current = 0;
+    workflowDoneRef.current = false;
+    lastSeqRef.current = -1;
+    finalTsRef.current = undefined;
+    eventHistoryRef.current = {
+      supervisor: [],
+      reception: [],
+      diagnosis: [],
+      kb_retrieval: [],
+      treatment: [],
+      final: [],
+    };
+    allEventsRef.current = [];
+    queueMicrotask(() => setAllEvents([]));
 
     const openStream = () => {
-      if (cancelled) return;
-      closeStream();
+      if (cancelled || workflowDoneRef.current) return;
+
       const es = new EventSource(`/api/traces/${encodeURIComponent(traceId)}/stream`);
       esRef.current = es;
 
       es.addEventListener('trace', (messageEvent) => {
-        if (cancelled) return;
+        if (cancelled || workflowDoneRef.current) return;
         const raw = JSON.parse(messageEvent.data || '{}') as RawTraceEvent;
-        mergeRawEvents([raw]);
+        if (!shouldIncludeEvent(raw, phaseStartMs)) return;
+        const normalized = normalizeEvent(raw);
+        const seq = normalized.seq;
+        if (typeof seq === 'number' && Number.isFinite(seq) && seq <= lastSeqRef.current) {
+          return;
+        }
+        applyNormalizedEvent(normalized);
         setConnectionState('connected');
+        setConnectionHint(`已回放 ${replayedCountRef.current} 条事件 + 实时连接中`);
       });
 
       es.onerror = () => {
-        if (cancelled) return;
+        if (cancelled || workflowDoneRef.current) return;
         setConnectionState('disconnected');
-        setConnectionHint('实时连接断开');
+        setConnectionHint(`实时连接断开（已回放 ${replayedCountRef.current} 条）`);
         closeStream();
       };
     };
@@ -546,17 +735,41 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
       try {
         const response = await fetch(`/api/trace-events?trace_id=${encodeURIComponent(traceId)}`);
         if (!response.ok) {
-          setConnectionHint('历史回放失败，尝试实时连接');
+          setConnectionHint('历史回放失败，尝试直接连接实时流...');
           openStream();
           return;
         }
         const payload = await response.json();
-        const rawEvents = Array.isArray(payload?.events) ? payload.events as RawTraceEvent[] : [];
-        mergeRawEvents(rawEvents);
-        setReplayedCount(rawEvents.length);
-        setConnectionHint(`已回放 ${rawEvents.length} 条事件，正在连接实时流...`);
+        const events = Array.isArray(payload?.events) ? payload.events : [];
+        const sorted = sliceCurrentPhaseEvents(events as RawTraceEvent[], phaseStartMs);
+
+        if (cancelled) return;
+
+        let replayed = 0;
+        sorted.forEach((raw) => {
+          const normalized = normalizeEvent(raw as RawTraceEvent);
+          if (applyNormalizedEvent(normalized)) replayed += 1;
+        });
+
+        const maxSeq = sorted.reduce((max: number, eventLike: RawTraceEvent) => {
+          const seq = eventLike?.seq;
+          return typeof seq === 'number' && Number.isFinite(seq) ? Math.max(max, seq) : max;
+        }, -1);
+        lastSeqRef.current = Math.max(lastSeqRef.current, maxSeq);
+
+        setReplayedCount(replayed);
+        replayedCountRef.current = replayed;
+
+        if (workflowDoneRef.current) {
+          setConnectionState('disconnected');
+          setConnectionHint(`已回放 ${replayed} 条事件，流程已结束`);
+          return;
+        }
+
+        setConnectionHint(`已回放 ${replayed} 条事件，正在连接实时流...`);
         openStream();
       } catch {
+        if (cancelled) return;
         setConnectionState('disconnected');
         setConnectionHint('历史回放异常，实时连接未建立');
       }
@@ -566,43 +779,80 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
 
     return () => {
       cancelled = true;
-      closeStream();
+      clearExternal();
     };
-  }, [traceId, refreshToken, closeStream, clearTicker, mergeRawEvents]);
-
-  const workflowDone = useMemo(() => events.some((event) => event.agentId.toLowerCase() === 'final' && eventStatus(event) === 'completed'), [events]);
+  }, [traceId, phaseStartMs, refreshToken, applyNormalizedEvent, clearExternal, closeStream]);
 
   useEffect(() => {
-    clearTicker();
-    if (!workflowDone) tickerRef.current = window.setInterval(() => setNowMs(Date.now()), 200);
-    return clearTicker;
-  }, [workflowDone, clearTicker]);
+    if (workflowDone) {
+      clearTicker();
+      closeStream();
+      completeSupervisorOnDone(finalTsRef.current);
+    }
+  }, [workflowDone, clearTicker, closeStream, completeSupervisorOnDone]);
 
-  const diagnosisConfidencePct = useMemo(() => {
-    const diagnosisEvents = events.filter((event) => mapToCardId(event) === 'diagnosis');
-    const latest = diagnosisEvents[diagnosisEvents.length - 1];
-    const raw = Number(latest?.outputs.final_confidence ?? latest?.outputs.disease_confidence ?? latest?.outputs.confidence);
-    if (!Number.isFinite(raw)) return undefined;
-    return raw <= 1 ? raw * 100 : raw;
-  }, [events]);
+  useEffect(() => {
+    if (workflowDone) return;
+    if (typeof phaseStartMs === 'number' && Number.isFinite(phaseStartMs) && !tickerRef.current) {
+      tickerRef.current = setInterval(() => setNowMs(Date.now()), 100);
+    }
+  }, [phaseStartMs, workflowDone]);
 
-  const { cards: cardViews, systemSubsteps } = useMemo(() => buildCardsFromEvents(events, showSystemNodes, nowMs), [events, showSystemNodes, nowMs]);
 
-  const completedCount = useMemo(() => cardViews.filter((row) => row.status === 'completed').length, [cardViews]);
+  const phaseDurationsByAgent = useMemo(
+    () => calcPhaseDurationsByAgent(allEvents, nowMs, workflowDone),
+    [allEvents, nowMs, workflowDone],
+  );
+
+  const renderedRows = useMemo(() => {
+    return FIXED_AGENTS.map((def) => {
+      const row = rows[def.id];
+      const elapsedMs = row.startTs ? Math.max(0, (row.endTs ?? nowMs) - row.startTs) : 0;
+      const progress = row.status === 'running' && !workflowDone
+        ? Math.max(row.progress, softProgress(elapsedMs))
+        : row.progress;
+      return {
+        ...def,
+        ...row,
+        progress,
+        duration: formatDuration((phaseDurationsByAgent[def.id]?.phase1Ms ?? 0) + (phaseDurationsByAgent[def.id]?.phase2Ms ?? 0)),
+        phase1Duration: formatDuration(phaseDurationsByAgent[def.id]?.phase1Ms ?? 0),
+        phase2Duration: formatDuration(phaseDurationsByAgent[def.id]?.phase2Ms ?? 0),
+      };
+    });
+  }, [rows, nowMs, workflowDone, phaseDurationsByAgent]);
+
+  const completedCount = useMemo(() => renderedRows.filter((row) => row.status === 'completed').length, [renderedRows]);
+
   const totalProgress = Math.round((completedCount / FIXED_AGENTS.length) * 100);
-  const displayConfidencePct = Number.isFinite(confidencePct) ? confidencePct : diagnosisConfidencePct;
+
+  const overallDuration = useMemo(
+    () => calcOverallPhaseDuration(phaseDurationsByAgent),
+    [phaseDurationsByAgent],
+  );
+
+  const displayConfidencePct =
+    (typeof confidencePct === 'number' && Number.isFinite(confidencePct)) ? confidencePct : diagnosisConfidencePct;
 
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-2">
         <Badge variant="outline" className="border-[#c8f7c5]/50 text-[#c8f7c5]">
           <Signal className="w-3 h-3 mr-1" />
-          {connectionState === 'connected' ? 'SSE 已连接' : connectionState === 'connecting' ? 'SSE 连接中' : connectionState === 'disconnected' ? 'SSE 已断开' : '等待 trace'}
+          {connectionState === 'connected'
+            ? 'SSE 已连接'
+            : connectionState === 'connecting'
+              ? 'SSE 连接中'
+              : connectionState === 'disconnected'
+                ? 'SSE 已断开'
+                : '等待 trace'}
         </Badge>
         {connectionHint && <span className="text-xs text-white/50">{connectionHint}</span>}
         {replayedCount > 0 && <span className="text-xs text-[#c8f7c5]/70">已回放 {replayedCount} 条</span>}
         {typeof displayConfidencePct === 'number' && (
-          <Badge className="bg-[#c8f7c5]/20 text-[#c8f7c5] border border-[#c8f7c5]/30">诊断置信度 {displayConfidencePct.toFixed(2)}%</Badge>
+          <Badge className="bg-[#c8f7c5]/20 text-[#c8f7c5] border border-[#c8f7c5]/30">
+            诊断置信度 {displayConfidencePct.toFixed(2)}%
+          </Badge>
         )}
         {workflowDone && (
           <Badge className="bg-green-500/20 text-green-300 border border-green-400/40">
@@ -613,8 +863,10 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
           type="button"
           onClick={() => setShowSystemNodes((v) => !v)}
           className={cn(
-            'text-xs px-2 py-1 rounded border',
-            showSystemNodes ? 'border-[#c8f7c5]/60 text-[#c8f7c5] bg-[#c8f7c5]/10' : 'border-white/20 text-white/60 hover:text-white/80',
+            "text-xs px-2 py-1 rounded border",
+            showSystemNodes
+              ? "border-[#c8f7c5]/60 text-[#c8f7c5] bg-[#c8f7c5]/10"
+              : "border-white/20 text-white/60 hover:text-white/80"
           )}
         >
           显示系统节点（校验/落盘）
@@ -622,7 +874,7 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
       </div>
 
       <div className="space-y-0">
-        {cardViews.map((row, idx) => {
+        {renderedRows.map((row, idx) => {
           const Icon = row.icon;
           const running = row.status === 'running' && !workflowDone;
           return (
@@ -638,11 +890,23 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
                       row.status === 'pending' && 'bg-white/5 border-white/20 text-white/50',
                     )}
                   >
-                    {row.status === 'completed' ? <CheckCircle2 className="w-5 h-5" /> : row.status === 'error' ? <AlertTriangle className="w-5 h-5" /> : running ? <Loader2 className="w-5 h-5 animate-spin" /> : <Icon className="w-5 h-5" />}
+                    {row.status === 'completed'
+                      ? <CheckCircle2 className="w-5 h-5" />
+                      : row.status === 'error'
+                        ? <AlertTriangle className="w-5 h-5" />
+                        : running
+                          ? <Loader2 className="w-5 h-5 animate-spin" />
+                          : <Icon className="w-5 h-5" />}
                   </div>
-                  {idx < cardViews.length - 1 && (
+
+                  {idx < renderedRows.length - 1 && (
                     <div className="w-[2px] h-10 mt-1 rounded-full bg-white/10 overflow-hidden">
-                      <div className={cn('w-full transition-all duration-500', row.status === 'completed' ? 'h-full bg-green-400 progress-shine' : 'h-0')} />
+                      <div
+                        className={cn(
+                          'w-full transition-all duration-500',
+                          row.status === 'completed' ? 'h-full bg-green-400 progress-shine' : 'h-0',
+                        )}
+                      />
                     </div>
                   )}
                 </div>
@@ -667,22 +931,37 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
                       </div>
                       <div className="text-xs text-white/50 flex items-center gap-1">
                         <Timer className="w-3 h-3" />
-                        {row.status === 'completed' ? `✓ 完成 (${row.duration})` : row.status === 'running' ? `进行中 (${row.duration})` : row.status === 'error' ? `中断 (${row.duration})` : '等待执行'}
+                        {row.startTs
+                          ? row.status === 'completed'
+                            ? `✓ 完成 (${row.duration})`
+                            : row.status === 'running'
+                              ? `进行中 (${row.duration})`
+                              : row.status === 'error'
+                                ? `中断 (${row.duration})`
+                                : row.duration
+                          : '等待执行'}
+                        <span className="text-white/35">（一诊 {row.phase1Duration} / 二诊 {row.phase2Duration}）</span>
                       </div>
                     </div>
 
-                    <p className={cn('text-sm mt-2 text-white/70', running && 'animate-pulse')}>{row.description}</p>
+                    <p className={cn('text-sm mt-2 text-white/70', running && 'animate-pulse')}>
+                      {row.lastMessage || row.description}
+                    </p>
 
                     <div className="mt-3 rounded-md bg-black/25 border border-white/10 p-2">
                       <p className="text-xs text-[#c8f7c5] mb-1">关键步骤</p>
-                      <ul className="space-y-1">
-                        {row.keySteps.map((line, index) => (
-                          <li key={`${row.id}-k-${index}`} className="text-xs text-white/70 flex items-start gap-1">
-                            <span className="text-[#c8f7c5] mt-[2px]">•</span>
-                            <span>{line}</span>
-                          </li>
-                        ))}
-                      </ul>
+                      {row.highlights.length ? (
+                        <ul className="space-y-1">
+                          {row.highlights.map((highlight, index) => (
+                            <li key={`${row.id}-h-${index}`} className="text-xs text-white/70 flex items-start gap-1">
+                              <span className="text-[#c8f7c5] mt-[2px]">•</span>
+                              <span>{highlight}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <p className="text-xs text-white/40">暂无关键步骤</p>
+                      )}
                     </div>
 
                     <button
@@ -691,14 +970,24 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
                       onClick={() => setDebugOpen((prev) => ({ ...prev, [row.id]: !prev[row.id] }))}
                     >
                       {debugOpen[row.id] ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
-                      最近子步骤（最近3~5条）
+                      最近子步骤（最近3条）
                     </button>
 
                     {debugOpen[row.id] && (
                       <div className="mt-1 space-y-1">
-                        {row.substeps.length ? row.substeps.map((step) => (
-                          <div key={step.id} className={cn('text-xs', step.level === 'error' ? 'text-red-300' : step.level === 'warn' ? 'text-yellow-200' : 'text-white/50')}>
-                            {step.text}
+                        {(showSystemNodes ? row.steps : row.steps.filter((step) => {
+                          const node = String(step.node || '').toLowerCase();
+                          const msg = String(step.message || '').toLowerCase();
+                          return !(node.includes('persist') || node.includes('validator') || msg.includes('落盘') || msg.includes('校验'));
+                        })).length ? (showSystemNodes ? row.steps : row.steps.filter((step) => {
+                          const node = String(step.node || '').toLowerCase();
+                          const msg = String(step.message || '').toLowerCase();
+                          return !(node.includes('persist') || node.includes('validator') || msg.includes('落盘') || msg.includes('校验'));
+                        })).map((step, index) => (
+                          <div key={`${step.seq ?? 'na'}-${index}`} className="text-xs text-white/50">
+                            <span className="text-white/70">{step.node}</span>
+                            <span className="mx-1">·</span>
+                            <span>{step.message}</span>
                           </div>
                         )) : <div className="text-xs text-white/40">暂无子步骤</div>}
                       </div>
@@ -708,7 +997,7 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
                       <div
                         className="h-full rounded-full transition-all duration-500 progress-shine"
                         style={{
-                          width: `${Math.max(0, Math.min(100, row.status === 'completed' ? 100 : row.status === 'running' ? 60 : row.status === 'error' ? 100 : 0))}%`,
+                          width: `${Math.max(0, Math.min(100, row.progress))}%`,
                           backgroundColor: row.status === 'error' ? '#f87171' : '#c8f7c5',
                         }}
                       />
@@ -721,19 +1010,6 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
         })}
       </div>
 
-      {showSystemNodes && (
-        <div className="bg-white/5 border border-white/10 rounded-xl p-3">
-          <p className="text-xs text-[#c8f7c5] mb-2">系统节点（校验/落盘等）</p>
-          {systemSubsteps.length ? (
-            <div className="space-y-1">
-              {systemSubsteps.map((step) => (
-                <div key={step.id} className="text-xs text-white/50">{step.text}</div>
-              ))}
-            </div>
-          ) : <p className="text-xs text-white/40">暂无系统节点事件</p>}
-        </div>
-      )}
-
       <div className="bg-white/5 border border-white/10 rounded-xl p-4">
         <div className="flex items-center justify-between text-sm mb-2">
           <span className="text-white/70">总体进度</span>
@@ -742,6 +1018,9 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
         <div className="h-2 rounded-full bg-white/10 overflow-hidden">
           <div className="h-full bg-[#4ade80] transition-all duration-500 progress-shine" style={{ width: `${totalProgress}%` }} />
         </div>
+        <p className="text-xs text-white/50 mt-2">
+          总耗时：{formatDuration(overallDuration.totalMs)}（一诊 {formatDuration(overallDuration.phase1Ms)} + 二诊 {formatDuration(overallDuration.phase2Ms)}） {workflowDone ? '· 已结束' : ''}
+        </p>
       </div>
     </div>
   );
