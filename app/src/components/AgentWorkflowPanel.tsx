@@ -399,6 +399,42 @@ const getOutputs = (event: NormalizedEvent): Record<string, unknown> => {
   return data;
 };
 
+const TREATMENT_OUTPUT_KEYS = [
+  'selected_branch',
+  'llm_failed',
+  'personalization_applied',
+  'filtered',
+  'filtered_reasons',
+  'filtered_components',
+  'personalization_reasons',
+] as const;
+
+const hasTreatmentOutputFields = (outputs: Record<string, unknown>): boolean => {
+  return TREATMENT_OUTPUT_KEYS.some((key) => outputs[key] !== undefined && outputs[key] !== null);
+};
+
+const getPreferredTreatmentOutputs = (allEvents: NormalizedEvent[], fallbackOutputs: Record<string, unknown>): Record<string, unknown> => {
+  const deduped = dedupBySeq(allEvents);
+
+  const treatmentAgentEvents = deduped.filter((event) => {
+    const data = isRecord(event.data) ? event.data : {};
+    return String(data['agent'] ?? data['agent_id'] ?? '').toLowerCase() === 'treatment';
+  });
+  const treatmentFromAgent = [...treatmentAgentEvents].reverse().find((event) => hasTreatmentOutputFields(getOutputs(event)));
+  if (treatmentFromAgent) return getOutputs(treatmentFromAgent);
+
+  const personalizationEvent = [...deduped].reverse().find((event) => {
+    const node = String(event.nodeName || '').toLowerCase();
+    return node === 'personalizationagent' || node === 'personalization';
+  });
+  if (personalizationEvent) {
+    const outputs = getOutputs(personalizationEvent);
+    if (hasTreatmentOutputFields(outputs)) return outputs;
+  }
+
+  return fallbackOutputs;
+};
+
 const extractHighlights = (agentId: FixedAgentId, allEvents: NormalizedEvent[]): string[] => {
   const events = getEventsByAgent(allEvents, agentId);
   if (!events.length) return [];
@@ -439,21 +475,25 @@ const extractHighlights = (agentId: FixedAgentId, allEvents: NormalizedEvent[]):
   }
 
   if (agentId === 'treatment') {
-    const personalizationOutputs = getOutputs(getSystemNodeEvents(allEvents, 'personalization').slice(-1)[0] ?? latest);
-    const merged = { ...personalizationOutputs, ...outputs };
-    const selectedBranch = String(merged['selected_branch'] ?? '-');
-    const llmFailed = merged['llm_failed'] === true;
-    const personalizationApplied = merged['personalization_applied'] === true;
-    const filtered = merged['filtered'] === true;
-    const filteredReasons = toStringArray(merged['filtered_reasons']);
-    const filteredComponents = toStringArray(merged['filtered_components']);
-    const reasons = toStringArray(merged['personalization_reasons']);
+    const treatmentOutputs = getPreferredTreatmentOutputs(allEvents, outputs);
+    const selectedBranch = String(treatmentOutputs['selected_branch'] ?? '-').trim() || '-';
+    const llmFailed = treatmentOutputs['llm_failed'] === true;
+    const personalizationApplied = treatmentOutputs['personalization_applied'] === true;
+    const filtered = treatmentOutputs['filtered'] === true;
+    const filteredReasons = toStringArray(treatmentOutputs['filtered_reasons']);
+    const filteredComponents = toStringArray(treatmentOutputs['filtered_components']);
+    const reasons = toStringArray(treatmentOutputs['personalization_reasons']);
+
+    const filterLine = (() => {
+      if (!filtered) return '未触发过滤';
+      if (!filteredReasons.length) return '触发过滤';
+      return `触发过滤：${filteredReasons.join('；')}${filteredComponents.length ? `（过滤成分：${filteredComponents.join('、')}）` : ''}`;
+    })();
+
     return [
-      `档位=${selectedBranch}；LLM=${llmFailed ? '失败' : '成功'}；输出来源=${llmFailed ? 'KB回退' : 'LLM'}`,
+      `档位=${selectedBranch}；LLM=${llmFailed ? '失败' : '成功'}；输出来源=${llmFailed ? 'KB后备' : 'LLM'}`,
       personalizationApplied ? '已应用个性化' : '未应用个性化',
-      filtered
-        ? `触发过滤：${filteredReasons.length ? filteredReasons.join('；') : '触发了过滤策略'}${filteredComponents.length ? `（过滤成分：${filteredComponents.join('、')}）` : '（未命中具体成分，主要为措辞改写）'}`
-        : '未触发过滤',
+      filterLine,
       `原因概览：${reasons.length ? reasons.slice(0, 3).join('；') : '无'}`,
     ];
   }
