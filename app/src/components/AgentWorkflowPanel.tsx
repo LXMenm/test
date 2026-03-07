@@ -343,17 +343,52 @@ const normalizeEvent = (raw: RawTraceEvent): NormalizedEvent => {
   };
 };
 
-const isSystemNodeEvent = (event: NormalizedEvent): boolean => {
-  const node = String(event.nodeName || '').toLowerCase();
-  const message = String(event.message || '').toLowerCase();
-  return node.includes('persist')
-    || node.includes('validator')
-    || message.includes('写入事件日志')
-    || message.includes('事件落盘完成')
-    || message.includes('校验完成');
-};
 
 const toStringArray = (value: unknown): string[] => toArray(value).map((item) => String(item)).filter(Boolean);
+
+const toPercent = (value: unknown): string => {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return '-';
+  const pct = n <= 1 ? n * 100 : n;
+  return `${pct.toFixed(2)}%`;
+};
+
+const sortNormalizedEvents = (events: NormalizedEvent[]): NormalizedEvent[] => {
+  return [...events].sort((a, b) => {
+    const sa = typeof a.seq === 'number' ? a.seq : Number.MAX_SAFE_INTEGER;
+    const sb = typeof b.seq === 'number' ? b.seq : Number.MAX_SAFE_INTEGER;
+    if (sa !== sb) return sa - sb;
+    return (a.tsMs ?? Number.MAX_SAFE_INTEGER) - (b.tsMs ?? Number.MAX_SAFE_INTEGER);
+  });
+};
+
+const dedupBySeq = (events: NormalizedEvent[]): NormalizedEvent[] => {
+  const sorted = sortNormalizedEvents(events);
+  const seen = new Set<number>();
+  const result: NormalizedEvent[] = [];
+  sorted.forEach((event) => {
+    if (typeof event.seq === 'number' && Number.isFinite(event.seq)) {
+      if (seen.has(event.seq)) return;
+      seen.add(event.seq);
+    }
+    result.push(event);
+  });
+  return result;
+};
+
+const getEventsByAgent = (events: NormalizedEvent[], agentId: FixedAgentId): NormalizedEvent[] => {
+  const target = agentId.toLowerCase();
+  return dedupBySeq(events).filter((event) => {
+    const data = isRecord(event.data) ? event.data : {};
+    const rawAgent = String(data['agent_id'] ?? data['agent'] ?? '').toLowerCase();
+    return event.agentId === agentId || rawAgent === target;
+  });
+};
+
+const getSystemNodeEvents = (events: NormalizedEvent[], nodeName: string): NormalizedEvent[] => {
+  const target = nodeName.toLowerCase();
+  return dedupBySeq(events).filter((event) => String(event.nodeName || '').toLowerCase() === target);
+};
 
 const getOutputs = (event: NormalizedEvent): Record<string, unknown> => {
   const data = isRecord(event.data) ? event.data : {};
@@ -364,93 +399,145 @@ const getOutputs = (event: NormalizedEvent): Record<string, unknown> => {
   return data;
 };
 
-const extractHighlights = (agentId: FixedAgentId, events: NormalizedEvent[], showSystemNodes: boolean): string[] => {
+const extractHighlights = (agentId: FixedAgentId, allEvents: NormalizedEvent[]): string[] => {
+  const events = getEventsByAgent(allEvents, agentId);
   if (!events.length) return [];
-
-  const viewEvents = showSystemNodes ? events : events.filter((event) => !isSystemNodeEvent(event));
-  const latest = (viewEvents.length ? viewEvents : events)[(viewEvents.length ? viewEvents : events).length - 1];
+  const latest = events[events.length - 1];
   const outputs = getOutputs(latest);
-  const lines: string[] = [];
-
-  if (agentId === 'reception') {
-    const missing = toStringArray(outputs['missing_profile_fields']);
-    if (missing.length) lines.push(`待补齐：${missing.join('、')}`);
-  }
-
-  if (agentId === 'diagnosis') {
-    const disease = String(outputs['final_disease'] ?? outputs['disease_type'] ?? outputs['disease'] ?? '').trim();
-    const source = String(outputs['final_source'] ?? '').trim();
-    const confidenceRaw = Number(outputs['final_confidence'] ?? outputs['confidence_pct'] ?? outputs['confidence']);
-    const confidence = Number.isFinite(confidenceRaw) ? (confidenceRaw <= 1 ? confidenceRaw * 100 : confidenceRaw) : undefined;
-    if (disease) {
-      lines.push(`诊断=${disease}${typeof confidence === 'number' ? ` 置信度=${confidence.toFixed(2)}%` : ''}${source ? ` 来源=${source}` : ''}`);
-    }
-    if (outputs['need_confirm'] === true) lines.push('需要二次确认');
-  }
-
-  if (agentId === 'kb_retrieval') {
-    const actions = isRecord(outputs['actions']) ? outputs['actions'] : undefined;
-    const ingredients = toStringArray(outputs['ingredients']);
-    const actionCount = actions ? 1 : 0;
-    lines.push(`已加载 KB actions + ingredients（${ingredients.length} 项）`);
-    if (actionCount > 0 && isRecord(actions?.['treatment_plan'])) {
-      const tp = actions?.['treatment_plan'] as Record<string, unknown>;
-      lines.push(`actions分支：FAMILY ${toStringArray(tp['FAMILY']).length} / MID ${toStringArray(tp['MID']).length} / ENTERPRISE ${toStringArray(tp['ENTERPRISE']).length}`);
-    }
-  }
-
-  if (agentId === 'treatment') {
-    const selectedBranch = String(outputs['selected_branch'] ?? '').trim();
-    const llmFailed = outputs['llm_failed'] === true;
-    const llmReason = String(outputs['llm_failed_reason'] ?? '').trim();
-    if (selectedBranch || outputs['llm_failed'] !== undefined) {
-      lines.push(`档位=${selectedBranch || '-'}；LLM=${llmFailed ? '失败' : '成功'}${llmFailed && llmReason ? `（${llmReason}）` : ''}`);
-    }
-
-    const filtered = outputs['filtered'] === true;
-    const filteredReasons = toStringArray(outputs['filtered_reasons']);
-    const filteredComponents = toStringArray(outputs['filtered_components']);
-    const personalizationApplied = outputs['personalization_applied'] === true;
-    if (personalizationApplied) lines.push('已应用个性化');
-    if (filtered) {
-      lines.push(`触发过滤：${filteredReasons.length ? filteredReasons.join('；') : '已触发'}`);
-      if (filteredComponents.length) lines.push(`过滤成分：${filteredComponents.join('、')}`);
-    } else {
-      lines.push('未触发过滤');
-    }
-
-    const reasons = toStringArray(outputs['personalization_reasons']);
-    if (reasons.length) lines.push(`原因概览：${reasons.slice(0, 3).join('；')}`);
-
-    const planText = String(outputs['treatment_plan'] ?? outputs['plan'] ?? '');
-    const immediateCount = (planText.match(/【立即行动】/g) || []).length > 0 ? 1 : 0;
-    const branchCount = (planText.match(/【差异化处置-/g) || []).length;
-    if (immediateCount || branchCount) lines.push(`引用KB/结构化动作：立即行动${immediateCount}段，差异化处置${branchCount}段`);
-  }
 
   if (agentId === 'supervisor') {
     const decision = isRecord((isRecord(latest.data) ? latest.data['decision'] : undefined)) ? (latest.data as Record<string, unknown>)['decision'] as Record<string, unknown> : undefined;
-    const nextAction = decision?.['next_action'] ?? outputs['next_action'];
-    if (nextAction) lines.push(`下一步：${String(nextAction)}`);
-    const followUps = toStringArray(outputs['follow_up_questions']);
-    if (followUps.length) lines.push(`待补充问题：${followUps.slice(0, 2).join('；')}`);
+    const nextAction = String(decision?.['next_action'] ?? outputs['next_action'] ?? '').trim();
+    const reasons = toStringArray(decision?.['reasons_cn'] ?? decision?.['reasons']);
+    const reasonText = String(decision?.['reason_str'] ?? '').trim();
+    const reason = reasons.length ? reasons.join(',') : reasonText;
+    if (nextAction) return [`决策：下一步 = ${nextAction}${reason ? `（原因：${reason}）` : ''}`];
+    return [reasonText ? `流程结束（${reasonText}）` : '流程结束'];
   }
 
-  if (agentId === 'final') {
-    const finalDisease = String(outputs['final_disease'] ?? outputs['disease'] ?? '').trim();
-    if (finalDisease) lines.push(`最终病害：${finalDisease}`);
-    lines.push('流程完成');
+  if (agentId === 'reception') {
+    const cropType = String(outputs['crop_type'] ?? '-');
+    const imagePath = String(outputs['image_path'] ?? '').trim();
+    const symptoms = toArray(outputs['symptoms']).length;
+    const missing = toStringArray(outputs['missing_profile_fields']);
+    return [`结构化抽取：作物=${cropType} / 图像=${imagePath ? '已识别' : '未识别'} / 症状=${symptoms}项 / 缺失字段=${missing.length ? `${missing.join(',')}（${missing.length}项）` : '0项'}`];
   }
 
-  if (!showSystemNodes) {
-    const systemLines = lines.filter((line) => /校验|落盘|事件日志/.test(line));
-    if (systemLines.length) {
-      // 降噪：默认隐藏系统执行细节，由“显示系统节点”开关控制。
+  if (agentId === 'diagnosis') {
+    const disease = String(outputs['disease_type'] ?? outputs['final_disease'] ?? '-');
+    const confidence = toPercent(outputs['final_confidence'] ?? outputs['disease_confidence'] ?? outputs['confidence_pct'] ?? outputs['confidence']);
+    const source = String(outputs['final_source'] ?? '-');
+    const needConfirm = outputs['need_confirm'] === true ? '是' : '否';
+    return [`诊断：${disease} / 置信度=${confidence} / 来源=${source} / need_confirm=${needConfirm}`];
+  }
+
+  if (agentId === 'kb_retrieval') {
+    const disease = String(outputs['disease'] ?? outputs['final_disease'] ?? '-');
+    const hasActions = isRecord(outputs['actions']);
+    const ingredients = toStringArray(outputs['ingredients']).length;
+    return [`检索：命中 KB=${disease}（actions=${hasActions ? '是' : '否'} / ingredients=${ingredients}）`];
+  }
+
+  if (agentId === 'treatment') {
+    const personalizationOutputs = getOutputs(getSystemNodeEvents(allEvents, 'personalization').slice(-1)[0] ?? latest);
+    const merged = { ...personalizationOutputs, ...outputs };
+    const selectedBranch = String(merged['selected_branch'] ?? '-');
+    const llmFailed = merged['llm_failed'] === true;
+    const personalizationApplied = merged['personalization_applied'] === true;
+    const filtered = merged['filtered'] === true;
+    const filteredReasons = toStringArray(merged['filtered_reasons']);
+    const filteredComponents = toStringArray(merged['filtered_components']);
+    const reasons = toStringArray(merged['personalization_reasons']);
+    return [
+      `档位=${selectedBranch}；LLM=${llmFailed ? '失败' : '成功'}；输出来源=${llmFailed ? 'KB回退' : 'LLM'}`,
+      personalizationApplied ? '已应用个性化' : '未应用个性化',
+      filtered
+        ? `触发过滤：${filteredReasons.length ? filteredReasons.join('；') : '触发了过滤策略'}${filteredComponents.length ? `（过滤成分：${filteredComponents.join('、')}）` : '（未命中具体成分，主要为措辞改写）'}`
+        : '未触发过滤',
+      `原因概览：${reasons.length ? reasons.slice(0, 3).join('；') : '无'}`,
+    ];
+  }
+
+  if (agentId === 'final') return ['流程完成'];
+  return [shortText(latest.message, 100) || '等待事件'];
+};
+
+const extractSubsteps = (agentId: FixedAgentId, allEvents: NormalizedEvent[]): Array<{ seq?: number; node: string; message: string }> => {
+  const events = getEventsByAgent(allEvents, agentId);
+  if (!events.length) return [];
+  const map = new Map<string, { seq?: number; node: string; message: string }>();
+  const push = (key: string, item: { seq?: number; node: string; message: string }) => {
+    if (!map.has(key)) map.set(key, item);
+  };
+
+  events.forEach((event) => {
+    const data = isRecord(event.data) ? event.data : {};
+    const inputs = isRecord(data['inputs']) ? data['inputs'] : {};
+    const outputs = getOutputs(event);
+    const decision = isRecord(data['decision']) ? data['decision'] : {};
+
+    if (agentId === 'supervisor') {
+      const currentStep = String(inputs['current_step'] ?? '-');
+      const nextAction = String(decision['next_action'] ?? outputs['next_action'] ?? '-');
+      const reasons = toStringArray(decision['reasons_cn'] ?? decision['reasons']);
+      const key = `${currentStep}|${nextAction}|${reasons.join(',')}`;
+      push(key, { seq: event.seq, node: 'route', message: `${currentStep} → ${nextAction}${reasons.length ? `（${reasons.join(',')}）` : ''}` });
+      return;
     }
-  }
 
-  if (!lines.length) lines.push(shortText(latest.message, 100) || '等待事件');
-  return lines.filter(Boolean).slice(0, 6);
+    if (agentId === 'reception') {
+      push('parse', { seq: event.seq, node: 'parse_input', message: '解析输入（file/symptoms/crop_type）' });
+      if (outputs['crop_type']) push('normalize', { seq: event.seq, node: 'normalize', message: `规范化字段：crop_type=${String(outputs['crop_type'])}` });
+      push('extract_image', { seq: event.seq, node: 'extract_image', message: `提取 image_path：${outputs['image_path'] ? '已生成' : '未生成'}` });
+      const missing = toStringArray(outputs['missing_profile_fields']);
+      push('missing_fields', { seq: event.seq, node: 'missing_fields', message: `检测缺失字段：${missing.length ? missing.join(',') : '无'}` });
+      const followUps = toArray(outputs['follow_up_questions']).length;
+      if (followUps) push('followup_map', { seq: event.seq, node: 'followup_map', message: `缺失字段映射为追问：follow_up_questions=${followUps}条` });
+      return;
+    }
+
+    if (agentId === 'diagnosis') {
+      const top1 = String(outputs['top1_disease'] ?? outputs['disease_type'] ?? outputs['final_disease'] ?? '-');
+      const top3 = toStringArray(outputs['top3_diseases'] ?? outputs['top3']).join(',') || '-';
+      push('infer', { seq: event.seq, node: 'infer', message: `模型推理完成：top1=${top1}，top3=${top3}` });
+      const conf = toPercent(outputs['final_confidence'] ?? outputs['disease_confidence'] ?? outputs['confidence_pct'] ?? outputs['confidence']);
+      const gateReason = String(outputs['gate_reason'] ?? outputs['need_confirm_reason'] ?? '').trim();
+      push('gate', { seq: event.seq, node: 'gate', message: outputs['need_confirm'] === true ? `低置信度（${gateReason || conf}）` : `置信度门控：通过（${conf}）` });
+      push('confirm', { seq: event.seq, node: 'confirm', message: `need_confirm：${outputs['need_confirm'] === true ? '是（生成二次确认候选）' : '否'}` });
+      const hintFailed = outputs['personalized_hint_failed'] === true;
+      push('personalized_hint', { seq: event.seq, node: 'personalized_hint', message: `个性化诊断提示：${hintFailed ? '失败（已降级）' : '成功'}` });
+      return;
+    }
+
+    if (agentId === 'kb_retrieval') {
+      push('load_desc', { seq: event.seq, node: 'load_desc', message: '读取 diseases.json：获取描述' });
+      push('load_plan', { seq: event.seq, node: 'load_plan', message: '读取 treatments.json：获取 treatment/prevention' });
+      push('load_actions', { seq: event.seq, node: 'load_actions', message: '读取 actions：immediate + 三档处置（FAMILY/MID/ENTERPRISE）+ follow_up' });
+      push('load_ingredients', { seq: event.seq, node: 'load_ingredients', message: `读取 ingredients：${toStringArray(outputs['ingredients']).length}项` });
+      push('pack_snapshot', { seq: event.seq, node: 'pack_snapshot', message: '打包 kb_snapshot：供治疗智能体使用' });
+      return;
+    }
+
+    if (agentId === 'treatment') {
+      const personalizationOutputs = getOutputs(getSystemNodeEvents(allEvents, 'personalization').slice(-1)[0] ?? event);
+      const merged = { ...personalizationOutputs, ...outputs };
+      const flags = isRecord(merged['personalization_flags_summary']) ? merged['personalization_flags_summary'] : {};
+      const selectedBranch = String(merged['selected_branch'] ?? '-');
+      push('branch_select', { seq: event.seq, node: 'branch_select', message: `档位判定：${String(flags['farm_scale'] ?? '-')} + ${String(flags['pesticide_access'] ?? '-')} + ${String(flags['equipment'] ?? '-')} → ${selectedBranch}` });
+      const actions = isRecord(merged['actions']) ? merged['actions'] : {};
+      push('kb_fuse', { seq: event.seq, node: 'kb_fuse', message: `融合 KB actions：立即行动${toArray(actions['immediate_actions']).length}条 / 差异化处置${toArray(actions['treatment_plan']).length || 3}条 / 抗性管理${toArray(actions['resistance_management']).length}条` });
+      const llmFailed = merged['llm_failed'] === true;
+      const llmReason = String(merged['llm_failed_reason'] ?? '').trim();
+      push('llm_call', { seq: event.seq, node: 'llm_call', message: `LLM 调用：${llmFailed ? `失败（${llmReason || 'JSON解析为空'}）` : '成功'}` });
+      if (llmFailed) push('fallback', { seq: event.seq, node: 'fallback', message: '回退策略：使用 KB 后备组装' });
+      push('apply_constraints', { seq: event.seq, node: 'apply_constraints', message: `强约束后处理：有机/禁用成分/采收窗口 → filtered=${merged['filtered'] === true ? 'true' : 'false'}` });
+      return;
+    }
+
+    if (agentId === 'final') push('final', { seq: event.seq, node: event.nodeName, message: shortText(event.message, 100) || '流程结束' });
+  });
+
+  return Array.from(map.values()).slice(-5);
 };
 
 export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refreshToken }: AgentWorkflowPanelProps) {
@@ -551,13 +638,8 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
     if (event.status === 'info') return false;
 
     const agentId = event.agentId;
-    eventHistoryRef.current[agentId] = [...eventHistoryRef.current[agentId], event].slice(-20);
-    allEventsRef.current = [...allEventsRef.current, event].sort((a, b) => {
-      const sa = typeof a.seq === 'number' ? a.seq : Number.MAX_SAFE_INTEGER;
-      const sb = typeof b.seq === 'number' ? b.seq : Number.MAX_SAFE_INTEGER;
-      if (sa !== sb) return sa - sb;
-      return (a.tsMs ?? Number.MAX_SAFE_INTEGER) - (b.tsMs ?? Number.MAX_SAFE_INTEGER);
-    });
+    eventHistoryRef.current[agentId] = dedupBySeq([...eventHistoryRef.current[agentId], event]).slice(-20);
+    allEventsRef.current = dedupBySeq([...allEventsRef.current, event]);
     setAllEvents(allEventsRef.current);
 
     if (agentId === 'diagnosis') {
@@ -586,15 +668,9 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
           : `${agentId} 执行中`;
       const message = shortText(event.message || fallbackMessage, 140) || fallbackMessage;
 
-      current.steps = [...current.steps, { seq: event.seq, node: event.nodeName, message }]
-        .sort((a, b) => {
-          const sa = typeof a.seq === 'number' ? a.seq : Number.MAX_SAFE_INTEGER;
-          const sb = typeof b.seq === 'number' ? b.seq : Number.MAX_SAFE_INTEGER;
-          return sa - sb;
-        })
-        .slice(-3);
+      current.steps = extractSubsteps(agentId, allEventsRef.current).slice(-5);
       current.lastMessage = message;
-      current.highlights = extractHighlights(agentId, eventHistoryRef.current[agentId], showSystemNodes);
+      current.highlights = extractHighlights(agentId, allEventsRef.current);
 
       if (event.status === 'running') {
         current.status = 'running';
@@ -655,7 +731,7 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
 
     return true;
 
-  }, [maybeStartTicker, stopPolling, closeStream, clearTicker, completeSupervisorOnDone, showSystemNodes]);
+  }, [maybeStartTicker, stopPolling, closeStream, clearTicker, completeSupervisorOnDone]);
 
 
   useEffect(() => {
@@ -970,7 +1046,7 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
                       onClick={() => setDebugOpen((prev) => ({ ...prev, [row.id]: !prev[row.id] }))}
                     >
                       {debugOpen[row.id] ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
-                      最近子步骤（最近3条）
+                      最近子步骤（最近5条）
                     </button>
 
                     {debugOpen[row.id] && (
