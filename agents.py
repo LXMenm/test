@@ -935,12 +935,8 @@ def treatment_agent(state: CropDiseaseState) -> CropDiseaseState:
     kb_ingredients = [str(item).strip() for item in (kb_snapshot.get("ingredients") or []) if str(item).strip()]
     banned_set = {str(x).strip().lower() for x in (hard_constraints.get("banned_ingredients") or flags.get("banned_ingredients") or []) if str(x).strip()}
     ingredient_hits = sorted({item for item in kb_ingredients if item.lower() in banned_set})
-    if ingredient_hits:
+    if ingredient_hits and flags.get("filtered"):
         flags["filtered_components"] = sorted(set([*(flags.get("filtered_components") or []), *ingredient_hits]))
-        flags["filtered_reasons"] = [
-            *(flags.get("filtered_reasons") or []),
-            f"禁用成分命中：{', '.join(ingredient_hits)}",
-        ]
     flags.update(normalize_filter_outputs(flags))
     if llm_output.personalization_reasons:
         flags["personalization_reasons"] = dedupe_reasons(list(llm_output.personalization_reasons) + policy_reasons)
@@ -978,6 +974,7 @@ def treatment_agent(state: CropDiseaseState) -> CropDiseaseState:
             "filtered": flags.get("filtered", False),
             "filtered_reasons": flags.get("filtered_reasons") or [],
             "filtered_components": flags.get("filtered_components") or [],
+            "filtered_actions": flags.get("filtered_actions") or [],
         },
     )
     return state
