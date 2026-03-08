@@ -647,7 +647,7 @@ async def diagnose_image(
 
     event = {
         "id": uuid.uuid4().hex,
-        "ts": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        "ts": datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
         "trace_id": trace_id,
         "crop_type": crop_type,
         "symptoms": symptoms_list,
@@ -950,7 +950,7 @@ def list_profiles() -> dict[str, list[dict[str, str | None]]]:
 
 
 def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 

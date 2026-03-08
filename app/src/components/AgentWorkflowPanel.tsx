@@ -200,8 +200,8 @@ const clamp = (v: number, min: number, max: number) => Math.max(min, Math.min(ma
 const softProgress = (elapsedMs: number) => clamp(Math.round((elapsedMs / 8000) * 90), 5, 90);
 
 const formatDuration = (ms: number): string => {
-  if (!Number.isFinite(ms) || ms <= 0) return '0.00s';
-  if (ms < 1000) return `${(ms / 1000).toFixed(2)}s`;
+  if (!Number.isFinite(ms) || ms <= 0) return '0.000s';
+  if (ms < 1000) return `${(ms / 1000).toFixed(3)}s`;
 
   const seconds = ms / 1000;
   if (seconds >= 60) {

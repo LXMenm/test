@@ -25,7 +25,7 @@ def _ensure_dir() -> None:
 
 
 def _now_iso() -> str:
-    return datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+    return datetime.utcnow().isoformat(timespec="milliseconds") + "Z"
 
 
 def _parse_ts(value: Any) -> datetime | None:

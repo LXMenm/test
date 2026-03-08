@@ -53,7 +53,7 @@ def append_trace(
         "inputs": inputs,
         "outputs": outputs,
         "step": state.get("current_step"),
-        "ts": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        "ts": datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
         "trace_id": trace_id,
     }
     if decision is not None:
