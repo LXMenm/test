@@ -935,12 +935,8 @@ def treatment_agent(state: CropDiseaseState) -> CropDiseaseState:
     kb_ingredients = [str(item).strip() for item in (kb_snapshot.get("ingredients") or []) if str(item).strip()]
     banned_set = {str(x).strip().lower() for x in (hard_constraints.get("banned_ingredients") or flags.get("banned_ingredients") or []) if str(x).strip()}
     ingredient_hits = sorted({item for item in kb_ingredients if item.lower() in banned_set})
-    if ingredient_hits:
+    if ingredient_hits and flags.get("filtered"):
         flags["filtered_components"] = sorted(set([*(flags.get("filtered_components") or []), *ingredient_hits]))
-        flags["filtered_reasons"] = [
-            *(flags.get("filtered_reasons") or []),
-            f"禁用成分命中：{', '.join(ingredient_hits)}",
-        ]
     flags.update(normalize_filter_outputs(flags))
     if llm_output.personalization_reasons:
         flags["personalization_reasons"] = dedupe_reasons(list(llm_output.personalization_reasons) + policy_reasons)
@@ -978,6 +974,7 @@ def treatment_agent(state: CropDiseaseState) -> CropDiseaseState:
             "filtered": flags.get("filtered", False),
             "filtered_reasons": flags.get("filtered_reasons") or [],
             "filtered_components": flags.get("filtered_components") or [],
+            "filtered_actions": flags.get("filtered_actions") or [],
         },
     )
     return state
@@ -1014,18 +1011,27 @@ def _fill_missing_from_profile(state: CropDiseaseState, base_profile: Optional[B
         state["environment"] = base_profile.environment
     if not state.get("crop_growth_stage") and base_profile.growth_stage:
         state["crop_growth_stage"] = base_profile.growth_stage
+REQUIRED_PROFILE_FIELDS = ["farm_scale", "pesticide_access_level", "prefer_organic", "harvest_window_days"]
+OPTIONAL_PROFILE_FIELDS = ["equipment", "growth_stage", "experience_level", "cultivation_mode", "risk_preference", "environment"]
+
+
 def _find_missing_profile_fields(
     profile: Optional[FarmerProfile],
     base_profile: Optional[BaseProfile],
     policy: Optional[dict] = None,
 ) -> list[str]:
-    """检查档案中缺少的关键字段，提示追问。"""
+    """检查档案中缺少字段，缺失仅提示追问，不阻断番茄治疗方案生成。"""
     if not profile:
-        return ["farm_scale", "pesticide_access_level", "cultivation_mode", "base_id", "location", "growth_stage"]
+        return ["farm_scale", "pesticide_access_level", "prefer_organic", "base_id", "location", "growth_stage"]
     missing = []
     for field in ["farm_scale", "pesticide_access_level", "cultivation_mode", "experience_level", "risk_preference"]:
         if not getattr(profile, field, None):
             missing.append(field)
+    constraints = getattr(profile, "constraints", None)
+    if constraints is None or getattr(constraints, "prefer_organic", None) is None:
+        missing.append("prefer_organic")
+    if constraints is None or getattr(constraints, "harvest_window_days", None) is None:
+        missing.append("harvest_window_days")
     scale = getattr(profile, "farm_scale", None)
     equipment = list(getattr(profile, "equipment", []) or [])
     if scale in {"GREENHOUSE_LARGE", "LARGE"} and not equipment:

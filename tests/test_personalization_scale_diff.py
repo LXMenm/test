@@ -125,6 +125,15 @@ def test_personalization_scale_diff_endpoint(monkeypatch, tmp_path):
             cultivation_mode="SOIL",
         )
     )
+    save_profile(
+        _make_profile(
+            "FC",
+            farm_scale="MEDIUM",
+            pesticide_access_level="LIMITED",
+            equipment=["BACKPACK_SPRAYER"],
+            cultivation_mode="SOIL",
+        )
+    )
 
     monkeypatch.setattr(app_module, "get_diagnosis_engine", lambda **kwargs: _DummyEngine())
     monkeypatch.setattr(agents_module, "get_diagnosis_engine", lambda **kwargs: _DummyEngine())
@@ -134,6 +143,7 @@ def test_personalization_scale_diff_endpoint(monkeypatch, tmp_path):
     client = TestClient(app_module.app)
     resp_a = _run_once(client, "FA")
     resp_b = _run_once(client, "FB")
+    resp_c = _run_once(client, "FC")
 
     reasons_a = resp_a.get("personalization_reasons") or []
     reasons_b = resp_b.get("personalization_reasons") or []
@@ -143,16 +153,23 @@ def test_personalization_scale_diff_endpoint(monkeypatch, tmp_path):
     assert any("规模" in r or "购药" in r or "设备" in r for r in reasons_b)
 
     assert resp_a.get("selected_branch") == "FAMILY"
+    assert resp_c.get("selected_branch") == "MID"
     assert resp_b.get("selected_branch") == "ENTERPRISE"
 
     treatment_a = ((resp_a.get("treatment") or {}).get("plan") or "")
     treatment_b = ((resp_b.get("treatment") or {}).get("plan") or "")
+    treatment_c = ((resp_c.get("treatment") or {}).get("plan") or "")
 
     forbidden_a = ["无人机", "DRONE", "规模化喷施", "机械化"]
     for kw in forbidden_a:
         assert kw not in treatment_a
 
+    expected_c = ["分区", "复查", "人工"]
+    assert any(kw in treatment_c for kw in expected_c)
+
     expected_b = ["无人机", "喷施流程", "规模化", "SOP", "监测"]
     assert any(kw in treatment_b for kw in expected_b)
 
     assert treatment_a != treatment_b
+    assert treatment_a != treatment_c
+    assert treatment_b != treatment_c
