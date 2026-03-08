@@ -903,17 +903,6 @@ export function DiagnosePage() {
                     </div>
                   </div>
 
-                  <div>
-                    <h4 className="text-white/80 font-medium mb-2">Profile Snapshot</h4>
-                    <div className="bg-white/5 rounded-xl p-4 text-sm text-white/80 space-y-1">
-                      <p>规模: {getFarmScaleLabel(result.profile_farm_scale || 'SMALL')}</p>
-                      <p>购药能力: {getPesticideAccessLevelLabel(result.profile_pesticide_access_level || 'LIMITED')}</p>
-                      <p>设备: {(result.profile_equipment || []).map((item) => getEquipmentLabel(item)).join('、') || '无'}</p>
-                      <p>栽培模式: {getCultivationModeLabel(result.profile_cultivation_mode || 'SOIL')}</p>
-                      <p>方案档位: {getSelectedBranchLabel(result.selected_branch)}</p>
-                    </div>
-                  </div>
-
                   {confirmMode ? (
                     <div className="bg-[#c8f7c5]/10 border border-[#c8f7c5]/30 rounded-xl p-4 space-y-4">
                       <h4 className="text-[#c8f7c5] font-medium">二次诊断 / 确认入口</h4>
@@ -995,15 +984,6 @@ export function DiagnosePage() {
                     </div>
                   )}
 
-                  {/* Prevention */}
-                  {Boolean(result.prevention) && !shouldHideTreatment && (
-                    <div>
-                      <h4 className="text-white/80 font-medium mb-2">预防建议</h4>
-                      <div className="bg-white/5 rounded-xl p-4 text-white/80 text-sm leading-relaxed whitespace-pre-line">
-                        {renderRichValue(result.prevention)}
-                      </div>
-                    </div>
-                  )}
                 </div>
               ) : (
                 <div className="text-center py-12 text-white/40">
