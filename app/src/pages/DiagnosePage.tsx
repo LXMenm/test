@@ -31,6 +31,7 @@ interface DiagnosisResult {
   personalization_applied?: boolean;
   filtered?: boolean;
   filtered_reasons?: string[];
+  personalization_reasons?: string[];
   follow_up_questions?: string[];
   missing_profile_fields?: string[];
   profile_farm_scale?: string;
@@ -291,6 +292,7 @@ export function DiagnosePage() {
     personalization_applied: payload.personalization_applied === true,
     filtered: payload.filtered === true,
     filtered_reasons: Array.isArray(payload.filtered_reasons) ? payload.filtered_reasons.map((item) => String(item)) : [],
+    personalization_reasons: Array.isArray(payload.personalization_reasons) ? payload.personalization_reasons.map((item) => String(item)) : [],
     follow_up_questions: Array.isArray(payload.follow_up_questions) ? payload.follow_up_questions.map((item) => String(item)) : [],
     missing_profile_fields: Array.isArray(payload.missing_profile_fields) ? payload.missing_profile_fields.map((item) => String(item)) : [],
     profile_farm_scale: typeof payload.profile_farm_scale === 'string' ? payload.profile_farm_scale : undefined,
@@ -846,7 +848,7 @@ export function DiagnosePage() {
                   ) : null}
 
                   <div>
-                    <h4 className="text-white/80 font-medium mb-2">个性化影响</h4>
+                    <h4 className="text-white/80 font-medium mb-2">个性化影响（生成阶段）</h4>
                     <div className="bg-white/5 rounded-xl p-4 text-sm text-white/80 space-y-2">
                       <div className="flex items-center gap-2">
                         <span>已应用个性化：</span>
@@ -854,17 +856,23 @@ export function DiagnosePage() {
                           {result.personalization_applied ? '是' : '否'}
                         </Badge>
                         {result.filtered && (
-                          <Badge className="bg-yellow-400 text-black">已过滤</Badge>
+                          <Badge className="bg-yellow-400 text-black">后处理已过滤</Badge>
                         )}
                       </div>
-                      {Array.isArray(result.filtered_reasons) && result.filtered_reasons.length > 0 ? (
+                      {Array.isArray(result.personalization_reasons) && result.personalization_reasons.length > 0 ? (
+                        <ul className="list-disc pl-5 space-y-1">
+                          {result.personalization_reasons.map((reason: string, idx: number) => (
+                            <li key={`${reason}-${idx}`}>{reason}</li>
+                          ))}
+                        </ul>
+                      ) : Array.isArray(result.filtered_reasons) && result.filtered_reasons.length > 0 ? (
                         <ul className="list-disc pl-5 space-y-1">
                           {result.filtered_reasons.map((reason, idx) => (
                             <li key={`${reason}-${idx}`}>{reason}</li>
                           ))}
                         </ul>
                       ) : (
-                        <p className="text-white/50">暂无过滤说明</p>
+                        <p className="text-white/50">暂无个性化影响说明</p>
                       )}
                     </div>
                   </div>
@@ -892,17 +900,6 @@ export function DiagnosePage() {
                         </div>
                       ) : null}
                       <p className="text-xs text-white/60">可前往【农户档案管理】补齐设备/生育期等信息，以获得更精准的可执行方案。</p>
-                    </div>
-                  </div>
-
-                  <div>
-                    <h4 className="text-white/80 font-medium mb-2">Profile Snapshot</h4>
-                    <div className="bg-white/5 rounded-xl p-4 text-sm text-white/80 space-y-1">
-                      <p>规模: {getFarmScaleLabel(result.profile_farm_scale || 'SMALL')}</p>
-                      <p>购药能力: {getPesticideAccessLevelLabel(result.profile_pesticide_access_level || 'LIMITED')}</p>
-                      <p>设备: {(result.profile_equipment || []).map((item) => getEquipmentLabel(item)).join('、') || '无'}</p>
-                      <p>栽培模式: {getCultivationModeLabel(result.profile_cultivation_mode || 'SOIL')}</p>
-                      <p>方案档位: {getSelectedBranchLabel(result.selected_branch)}</p>
                     </div>
                   </div>
 
@@ -987,15 +984,6 @@ export function DiagnosePage() {
                     </div>
                   )}
 
-                  {/* Prevention */}
-                  {Boolean(result.prevention) && !shouldHideTreatment && (
-                    <div>
-                      <h4 className="text-white/80 font-medium mb-2">预防建议</h4>
-                      <div className="bg-white/5 rounded-xl p-4 text-white/80 text-sm leading-relaxed whitespace-pre-line">
-                        {renderRichValue(result.prevention)}
-                      </div>
-                    </div>
-                  )}
                 </div>
               ) : (
                 <div className="text-center py-12 text-white/40">

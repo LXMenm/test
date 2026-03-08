@@ -93,6 +93,7 @@ class DiagnoseResponse(BaseModel):
     filtered: bool
     filtered_reasons: list[str]
     filtered_components: list[str]
+    filtered_actions: list[str] = []
     personalization_reasons: list[str]
     follow_up_questions: list[str] = []
     missing_profile_fields: list[str] = []
@@ -281,24 +282,29 @@ def _build_personalization_meta(flags: dict, farmer_id: str | None, base_id: str
     }
 
 
-def _normalize_filter_state(flags: dict) -> tuple[bool, list[str], list[str]]:
+def _normalize_filter_state(flags: dict) -> tuple[bool, list[str], list[str], list[str]]:
     """在 API 层做 filtered/filtered_reasons 的最终一致性兜底。
 
     语义约定：
-    - filtered 表示个性化过滤器是否对最终文本做过任何干预（删除/替换/插入提示/增加警示）。
-    - filtered_reasons 表示发生干预的原因。
-    - filtered_components 表示被删除/替换/涉及的成分或关键词（可为空）。
-
-    只要 filtered_reasons 非空，filtered 必须为 True。
+    - filtered 表示最终文本是否发生了个性化后处理变更。
+    - filtered_reasons 表示发生变更的原因。
+    - filtered_components 表示被删除/替换/弱化命中的成分或关键词（可为空）。
+    - filtered_actions 表示变更动作类型。
     """
     normalized = profile_rules.normalize_filter_outputs({
         "filtered": flags.get("filtered", False),
         "filtered_reasons": flags.get("filtered_reasons") or [],
         "filtered_components": flags.get("filtered_components") or [],
         "personalization_applied": flags.get("personalization_applied", False),
+        "filtered_actions": flags.get("filtered_actions") or [],
     })
     flags.update(normalized)
-    return bool(normalized["filtered"]), list(normalized["filtered_reasons"]), list(normalized["filtered_components"])
+    return (
+        bool(normalized["filtered"]),
+        list(normalized["filtered_reasons"]),
+        list(normalized["filtered_components"]),
+        list(normalized.get("filtered_actions") or []),
+    )
 
 
 
@@ -600,7 +606,7 @@ async def diagnose_image(
     }
     personalization_applied = compute_personalization_applied(personalization_state, flags)
     flags["personalization_applied"] = personalization_applied
-    filtered, filtered_reasons, filtered_components = _normalize_filter_state(flags)
+    filtered, filtered_reasons, filtered_components, filtered_actions = _normalize_filter_state(flags)
     if not personalization_reasons:
         personalization_reasons = dedupe_reasons(flags.get("personalization_reasons") or [])
     else:
@@ -614,6 +620,7 @@ async def diagnose_image(
         "filtered": filtered,
         "filtered_reasons": filtered_reasons,
         "filtered_components": filtered_components,
+        "filtered_actions": filtered_actions,
         "personalization_reasons": personalization_reasons,
         "follow_up_questions": follow_up_questions,
         "missing_profile_fields": missing_profile_fields,
@@ -640,7 +647,7 @@ async def diagnose_image(
 
     event = {
         "id": uuid.uuid4().hex,
-        "ts": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        "ts": datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
         "trace_id": trace_id,
         "crop_type": crop_type,
         "symptoms": symptoms_list,
@@ -664,6 +671,7 @@ async def diagnose_image(
             "filtered": filtered,
             "filtered_reasons": filtered_reasons,
             "filtered_components": filtered_components,
+            "filtered_actions": filtered_actions,
             "model_id": model_meta.get("model_id"),
             "model_display_name": model_meta.get("model_display_name"),
             "model_backend": model_meta.get("backend"),
@@ -697,6 +705,7 @@ async def diagnose_image(
         filtered=filtered,
         filtered_reasons=filtered_reasons,
         filtered_components=filtered_components,
+        filtered_actions=filtered_actions,
         personalization_reasons=personalization_reasons,
         follow_up_questions=follow_up_questions,
         missing_profile_fields=missing_profile_fields,
@@ -837,7 +846,7 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
     personalization_meta = _build_personalization_meta(flags, farmer_id, state.get("base_id"))
     personalization_applied = compute_personalization_applied(state, flags)
     flags["personalization_applied"] = personalization_applied
-    filtered, filtered_reasons, filtered_components = _normalize_filter_state(flags)
+    filtered, filtered_reasons, filtered_components, filtered_actions = _normalize_filter_state(flags)
     follow_up_questions = normalize_follow_up_questions(flags.get("follow_up_questions") or [])
     flags["follow_up_questions"] = follow_up_questions
     missing_profile_fields = sorted({str(item).strip() for item in (flags.get("missing_profile_fields") or []) if str(item).strip()})
@@ -899,6 +908,7 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
         "filtered": filtered,
         "filtered_reasons": filtered_reasons,
         "filtered_components": filtered_components,
+        "filtered_actions": filtered_actions,
         "follow_up_questions": follow_up_questions,
         "missing_profile_fields": missing_profile_fields,
         "llm_failed": bool(flags.get("llm_failed")),
@@ -909,6 +919,7 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
             "filtered": filtered,
             "filtered_reasons": filtered_reasons,
             "filtered_components": filtered_components,
+            "filtered_actions": filtered_actions,
             "follow_up_questions": follow_up_questions,
             "missing_profile_fields": missing_profile_fields,
             "llm_failed": bool(flags.get("llm_failed")),
@@ -939,7 +950,7 @@ def list_profiles() -> dict[str, list[dict[str, str | None]]]:
 
 
 def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 
