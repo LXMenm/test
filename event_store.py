@@ -255,3 +255,24 @@ def geo_points_range(start: str | None = None, end: str | None = None) -> List[D
         reverse=True,
     )
     return points
+
+
+def model_usage_range(start: str | None = None, end: str | None = None) -> Dict[str, int]:
+    """Aggregate model usage counts within a date range."""
+    start_date = _parse_date_str(start)
+    end_date = _parse_date_str(end)
+    counts: Dict[str, int] = {}
+    for event in _read_events():
+        ts = _parse_ts(event.get("ts"))
+        if ts is None or not _in_date_range(ts, start_date, end_date):
+            continue
+        meta = event.get("meta") if isinstance(event.get("meta"), dict) else {}
+        label = (
+            str(meta.get("model_display_name") or "").strip()
+            or str(meta.get("model_id") or "").strip()
+            or str(event.get("model_display_name") or "").strip()
+            or str(event.get("model_id") or "").strip()
+            or "未知模型"
+        )
+        counts[label] = counts.get(label, 0) + 1
+    return counts
