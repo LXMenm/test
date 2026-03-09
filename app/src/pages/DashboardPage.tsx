@@ -1,8 +1,9 @@
 import { useState, useEffect } from 'react';
-import { BarChart3, Calendar, RefreshCw, Image as ImageIcon, TrendingUp, AlertCircle } from 'lucide-react';
+import { BarChart3, Calendar, RefreshCw, Image as ImageIcon, TrendingUp, AlertCircle, LineChart as LineChartIcon, Cpu } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { ResponsiveContainer, LineChart, Line, CartesianGrid, XAxis, YAxis, Tooltip, BarChart, Bar } from 'recharts';
 
 import { cn } from '@/lib/utils';
 
@@ -20,6 +21,18 @@ interface DiagnosisEvent {
   modelName: string;
   treatment?: unknown;
   top3?: Array<{ disease: string; confidence: number }>;
+}
+
+interface TimeseriesPoint {
+  date: string;
+  count: number;
+}
+
+interface SummaryCards {
+  total: number;
+  today: number;
+  last7Days: number;
+  diseaseKinds: number;
 }
 
 function formatDate(date: Date): string {
@@ -142,12 +155,20 @@ function renderTreatment(value: unknown) {
   return <div className="whitespace-pre-wrap">{String(value)}</div>;
 }
 
+function toCount(value: unknown): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
 export function DashboardPage() {
   const defaultRange = getDefaultDateRange(7);
   const [startDate, setStartDate] = useState(defaultRange.start);
   const [endDate, setEndDate] = useState(defaultRange.end);
   const [stats, setStats] = useState<DiseaseStat[]>([]);
   const [events, setEvents] = useState<DiagnosisEvent[]>([]);
+  const [timeseries, setTimeseries] = useState<TimeseriesPoint[]>([]);
+  const [modelStats, setModelStats] = useState<Array<{ model: string; count: number }>>([]);
+  const [summary, setSummary] = useState<SummaryCards>({ total: 0, today: 0, last7Days: 0, diseaseKinds: 0 });
   const [selectedEvent, setSelectedEvent] = useState<DiagnosisEvent | null>(null);
   const [loading, setLoading] = useState(false);
   const hasTreatment = selectedEvent
@@ -172,16 +193,22 @@ export function DashboardPage() {
     const { start: safeStart, end: safeEnd } = sanitizeDateRange();
 
     try {
-      const [statsResp, eventsResp] = await Promise.all([
+      const [statsResp, eventsResp, timeseriesResp, modelStatsResp] = await Promise.all([
         fetch(`/api/stats/disease?start=${safeStart}&end=${safeEnd}`),
-        fetch(`/api/events?start=${safeStart}&end=${safeEnd}&limit=50`)
+        fetch(`/api/events?start=${safeStart}&end=${safeEnd}&limit=50`),
+        fetch(`/api/stats/timeseries?start=${safeStart}&end=${safeEnd}`),
+        fetch(`/api/stats/models?start=${safeStart}&end=${safeEnd}`),
       ]);
 
       const statsData = await statsResp.json();
       const eventsData = await eventsResp.json();
+      const timeseriesData = await timeseriesResp.json();
+      const modelStatsData = await modelStatsResp.json();
 
       console.log('[Dashboard] /api/stats/disease response:', statsData);
       console.log('[Dashboard] /api/events response:', eventsData);
+      console.log('[Dashboard] /api/stats/timeseries response:', timeseriesData);
+      console.log('[Dashboard] /api/stats/models response:', modelStatsData);
 
       const statsList = Array.isArray(statsData)
         ? statsData
@@ -207,13 +234,61 @@ export function DashboardPage() {
         ? eventsList.map((eventLike, index) => normalizeEvent(eventLike, index))
         : [];
 
+      const safeTimeseriesRaw = Array.isArray(timeseriesData)
+        ? timeseriesData
+        : timeseriesData?.items ?? timeseriesData?.data ?? [];
+      const safeTimeseries = Array.isArray(safeTimeseriesRaw)
+        ? safeTimeseriesRaw.map((item: unknown) => {
+            const row = item && typeof item === 'object' ? item as Record<string, unknown> : {};
+            return {
+              date: typeof row.date === 'string' ? row.date : '-',
+              count: toCount(row.count),
+            };
+          })
+        : [];
+
+      const modelEntries = modelStatsData && typeof modelStatsData === 'object'
+        ? Object.entries(modelStatsData as Record<string, unknown>)
+        : [];
+      const safeModelStats = modelEntries
+        .map(([model, count]) => ({ model, count: toCount(count) }))
+        .sort((a, b) => b.count - a.count)
+        .slice(0, 10);
+
+      const total = safeStats.reduce((acc, item) => acc + toCount(item.count), 0);
+      const today = safeTimeseries
+        .find((item) => item.date === formatDate(new Date()))?.count ?? 0;
+      const last7Days = safeTimeseries
+        .filter((item) => {
+          const ts = Date.parse(`${item.date}T00:00:00`);
+          if (!Number.isFinite(ts)) return false;
+          const now = new Date();
+          const date = new Date(ts);
+          const diff = (now.getTime() - date.getTime()) / (1000 * 60 * 60 * 24);
+          return diff >= 0 && diff < 7;
+        })
+        .reduce((acc, item) => acc + item.count, 0);
+
+      const nextSummary: SummaryCards = {
+        total,
+        today,
+        last7Days,
+        diseaseKinds: safeStats.filter((item) => item.count > 0).length,
+      };
+
       setStats(safeStats);
       setEvents(safeEvents);
+      setTimeseries(safeTimeseries);
+      setModelStats(safeModelStats);
+      setSummary(nextSummary);
       setSelectedEvent(safeEvents.length > 0 ? safeEvents[0] : null);
     } catch (error) {
       console.error('Failed to fetch dashboard data:', error);
       setStats([]);
       setEvents([]);
+      setTimeseries([]);
+      setModelStats([]);
+      setSummary({ total: 0, today: 0, last7Days: 0, diseaseKinds: 0 });
       setSelectedEvent(null);
     } finally {
       setLoading(false);
@@ -283,6 +358,71 @@ export function DashboardPage() {
             <RefreshCw className={cn("w-4 h-4", loading && "animate-spin")} />
           </Button>
         </div>
+      </div>
+
+      <div className="grid sm:grid-cols-2 xl:grid-cols-4 gap-6">
+        <Card className="glass-card">
+          <CardHeader><CardTitle className="text-white/80 text-sm">总诊断次数</CardTitle></CardHeader>
+          <CardContent><p className="text-3xl font-bold text-[#c8f7c5]">{summary.total}</p></CardContent>
+        </Card>
+        <Card className="glass-card">
+          <CardHeader><CardTitle className="text-white/80 text-sm">今日诊断次数</CardTitle></CardHeader>
+          <CardContent><p className="text-3xl font-bold text-[#c8f7c5]">{summary.today}</p></CardContent>
+        </Card>
+        <Card className="glass-card">
+          <CardHeader><CardTitle className="text-white/80 text-sm">近7天诊断次数</CardTitle></CardHeader>
+          <CardContent><p className="text-3xl font-bold text-[#c8f7c5]">{summary.last7Days}</p></CardContent>
+        </Card>
+        <Card className="glass-card">
+          <CardHeader><CardTitle className="text-white/80 text-sm">病害种类数（窗口内）</CardTitle></CardHeader>
+          <CardContent><p className="text-3xl font-bold text-[#c8f7c5]">{summary.diseaseKinds}</p></CardContent>
+        </Card>
+      </div>
+
+      <div className="grid lg:grid-cols-2 gap-6">
+        <Card className="glass-card">
+          <CardHeader>
+            <CardTitle className="text-white flex items-center gap-2">
+              <LineChartIcon className="w-5 h-5 text-[#c8f7c5]" />
+              诊断趋势（按日）
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="h-72">
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={timeseries} margin={{ left: 8, right: 8, top: 10, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.15)" />
+                <XAxis dataKey="date" stroke="rgba(255,255,255,0.65)" tick={{ fontSize: 12 }} />
+                <YAxis stroke="rgba(255,255,255,0.65)" allowDecimals={false} tick={{ fontSize: 12 }} />
+                <Tooltip contentStyle={{ background: '#111', border: '1px solid rgba(255,255,255,0.2)' }} />
+                <Line type="monotone" dataKey="count" stroke="#c8f7c5" strokeWidth={3} dot={{ r: 3 }} />
+              </LineChart>
+            </ResponsiveContainer>
+          </CardContent>
+        </Card>
+
+        <Card className="glass-card">
+          <CardHeader>
+            <CardTitle className="text-white flex items-center gap-2">
+              <Cpu className="w-5 h-5 text-[#c8f7c5]" />
+              模型调用统计
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="h-72">
+            {modelStats.length > 0 ? (
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={modelStats} margin={{ left: 8, right: 8, top: 10, bottom: 20 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.15)" />
+                  <XAxis dataKey="model" stroke="rgba(255,255,255,0.65)" tick={{ fontSize: 11 }} interval={0} angle={-18} textAnchor="end" height={60} />
+                  <YAxis stroke="rgba(255,255,255,0.65)" allowDecimals={false} tick={{ fontSize: 12 }} />
+                  <Tooltip contentStyle={{ background: '#111', border: '1px solid rgba(255,255,255,0.2)' }} />
+                  <Bar dataKey="count" fill="#4ade80" radius={[6, 6, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className="h-full flex items-center justify-center text-white/40 text-sm">暂无模型调用数据</div>
+            )}
+          </CardContent>
+        </Card>
       </div>
 
       <div className="grid lg:grid-cols-3 gap-6">
