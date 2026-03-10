@@ -36,6 +36,15 @@ interface DiagnosisEvent {
   missingProfileFields: string[];
   llmFailed: boolean;
   workflowDegraded: boolean;
+  finalSource: string;
+  farmerId: string;
+  baseId: string;
+  farmScale: string;
+  pesticideAccessLevel: string;
+  equipment: string[];
+  cultivationMode: string;
+  personalizationReasons: string[];
+  elapsedMs: number | null;
   treatment?: unknown;
   top3?: Array<{ disease: string; confidence: number }>;
 }
@@ -64,6 +73,17 @@ interface KbDetail {
   prevention: string;
   actions?: Record<string, unknown> | null;
   ingredients?: string[];
+}
+
+interface ProfileListItem {
+  id: string;
+  name?: string;
+}
+
+interface ProfileDetail {
+  farmer_id: string;
+  name?: string;
+  bases?: Record<string, { base_id?: string; name?: string }>;
 }
 
 function formatDate(date: Date): string {
@@ -173,6 +193,17 @@ function normalizeEvent(eventLike: unknown, index: number): DiagnosisEvent {
       : (Array.isArray(meta?.missing_profile_fields) ? meta.missing_profile_fields.map((item) => String(item)) : []),
     llmFailed: event.llm_failed === true || meta?.llm_failed === true,
     workflowDegraded: event.workflow_degraded === true || meta?.workflow_degraded === true,
+    finalSource: typeof event.final_source === 'string' ? event.final_source : 'image',
+    farmerId: typeof meta?.farmer_id === 'string' ? meta.farmer_id : '',
+    baseId: typeof meta?.base_id === 'string' ? meta.base_id : '',
+    farmScale: typeof meta?.farm_scale === 'string' ? meta.farm_scale : '',
+    pesticideAccessLevel: typeof meta?.pesticide_access_level === 'string' ? meta.pesticide_access_level : '',
+    equipment: Array.isArray(meta?.equipment) ? meta.equipment.map((item) => String(item)) : [],
+    cultivationMode: typeof meta?.cultivation_mode === 'string' ? meta.cultivation_mode : '',
+    personalizationReasons: Array.isArray(event.personalization_reasons)
+      ? event.personalization_reasons.map((item) => String(item))
+      : [],
+    elapsedMs: Number.isFinite(Number(event.elapsed_ms ?? meta?.elapsed_ms)) ? Number(event.elapsed_ms ?? meta?.elapsed_ms) : null,
     confidencePct: getConfidencePct(event),
     treatment: event.treatment,
     top3,
@@ -226,6 +257,10 @@ export function DashboardPage() {
   const [selectedRound, setSelectedRound] = useState('ALL');
   const [selectedPersonalizationStatus, setSelectedPersonalizationStatus] = useState('ALL');
   const [selectedModel, setSelectedModel] = useState('ALL');
+  const [profiles, setProfiles] = useState<ProfileListItem[]>([]);
+  const [selectedFarmerId, setSelectedFarmerId] = useState('ALL');
+  const [selectedBaseId, setSelectedBaseId] = useState('ALL');
+  const [farmerBases, setFarmerBases] = useState<Array<{ id: string; name?: string }>>([]);
   const [kbDetail, setKbDetail] = useState<KbDetail | null>(null);
   const [traceSummary, setTraceSummary] = useState<Array<{ agent: string; message: string; status: string }>>([]);
   const [loading, setLoading] = useState(false);
@@ -277,6 +312,48 @@ export function DashboardPage() {
     fetchData();
   }, []);
 
+  useEffect(() => {
+    const run = async () => {
+      try {
+        const resp = await fetch('/api/profiles');
+        const data = await resp.json();
+        const rows: unknown[] = Array.isArray(data?.profiles) ? data.profiles : [];
+        setProfiles(
+          rows
+            .map((item: unknown) => {
+              const row = item && typeof item === 'object' ? item as Record<string, unknown> : {};
+              return { id: String(row.id ?? ''), name: typeof row.name === 'string' ? row.name : undefined };
+            })
+            .filter((item: ProfileListItem) => item.id)
+        );
+      } catch {
+        setProfiles([]);
+      }
+    };
+    run();
+  }, []);
+
+  useEffect(() => {
+    if (!selectedFarmerId || selectedFarmerId === 'ALL') {
+      setFarmerBases([]);
+      setSelectedBaseId('ALL');
+      return;
+    }
+    const run = async () => {
+      try {
+        const resp = await fetch(`/api/profiles/${encodeURIComponent(selectedFarmerId)}`);
+        const data = await resp.json() as ProfileDetail;
+        const bases = data?.bases && typeof data.bases === 'object'
+          ? Object.entries(data.bases).map(([id, value]) => ({ id, name: value?.name }))
+          : [];
+        setFarmerBases(bases);
+      } catch {
+        setFarmerBases([]);
+      }
+    };
+    run();
+  }, [selectedFarmerId]);
+
   const diseaseOptions = useMemo(() => {
     return Array.from(new Set(allEvents.map((event) => event.disease).filter(Boolean))).sort((a, b) => a.localeCompare(b, 'zh-CN'));
   }, [allEvents]);
@@ -294,9 +371,11 @@ export function DashboardPage() {
       if (selectedPersonalizationStatus === 'APPLIED' && !event.personalizationApplied) return false;
       if (selectedPersonalizationStatus === 'FILTERED' && !event.filtered) return false;
       if (selectedModel !== 'ALL' && (event.modelName || event.modelId) !== selectedModel) return false;
+      if (selectedFarmerId !== 'ALL' && event.farmerId !== selectedFarmerId) return false;
+      if (selectedBaseId !== 'ALL' && event.baseId !== selectedBaseId) return false;
       return true;
     });
-  }, [allEvents, selectedDisease, selectedBranch, selectedRound, selectedPersonalizationStatus, selectedModel]);
+  }, [allEvents, selectedDisease, selectedBranch, selectedRound, selectedPersonalizationStatus, selectedModel, selectedFarmerId, selectedBaseId]);
 
   const stats = useMemo<DiseaseStat[]>(() => {
     const map = new Map<string, number>();
@@ -317,14 +396,67 @@ export function DashboardPage() {
     return Array.from(map.entries()).map(([date, count]) => ({ date, count })).sort((a, b) => a.date.localeCompare(b.date));
   }, [filteredEvents]);
 
+  const timeseriesBreakdown = useMemo(() => {
+    const map = new Map<string, Record<string, number>>();
+    filteredEvents.forEach((event) => {
+      const ts = Date.parse(event.ts);
+      if (!Number.isFinite(ts)) return;
+      const day = formatDate(new Date(ts));
+      const current = map.get(day) ?? {};
+      current[event.disease] = (current[event.disease] ?? 0) + 1;
+      map.set(day, current);
+    });
+    return map;
+  }, [filteredEvents]);
+
+  const diseaseTrendData = useMemo(() => {
+    const topDiseases = stats.slice(0, 6).map((item) => item.disease);
+    return timeseries.map((row) => {
+      const breakdown = timeseriesBreakdown.get(row.date) ?? {};
+      const payload: Record<string, number | string> = { date: row.date, total: row.count };
+      topDiseases.forEach((disease) => {
+        payload[disease] = breakdown[disease] ?? 0;
+      });
+      return payload;
+    });
+  }, [stats, timeseries, timeseriesBreakdown]);
+
   const modelStats = useMemo(() => {
-    const map = new Map<string, number>();
+    const map = new Map<string, { count: number; success: number; fallback: number; degraded: number; llmFailed: number; elapsedSum: number; elapsedCount: number }>();
     filteredEvents.forEach((event) => {
       const label = event.modelName || event.modelId || '未知模型';
-      map.set(label, (map.get(label) ?? 0) + 1);
+      const current = map.get(label) ?? { count: 0, success: 0, fallback: 0, degraded: 0, llmFailed: 0, elapsedSum: 0, elapsedCount: 0 };
+      current.count += 1;
+      if (event.workflowDegraded) current.degraded += 1;
+      if (event.finalSource === 'rule' || event.needConfirm) current.fallback += 1;
+      if (!event.workflowDegraded && !(event.finalSource === 'rule' || event.needConfirm)) current.success += 1;
+      if (event.llmFailed) current.llmFailed += 1;
+      if (event.elapsedMs !== null) {
+        current.elapsedSum += event.elapsedMs;
+        current.elapsedCount += 1;
+      }
+      map.set(label, current);
     });
-    return Array.from(map.entries()).map(([model, count]) => ({ model, count })).sort((a, b) => b.count - a.count).slice(0, 10);
+    return Array.from(map.entries())
+      .map(([model, values]) => ({
+        model,
+        ...values,
+        avgElapsedMs: values.elapsedCount > 0 ? values.elapsedSum / values.elapsedCount : 0,
+        llmFailedRate: values.count > 0 ? (values.llmFailed / values.count) * 100 : 0,
+      }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 10);
   }, [filteredEvents]);
+
+  const modelSummary = useMemo(() => {
+    const total = modelStats.reduce((acc, item) => acc + item.count, 0);
+    const elapsedSum = modelStats.reduce((acc, item) => acc + item.avgElapsedMs * item.count, 0);
+    const llmFailed = modelStats.reduce((acc, item) => acc + item.llmFailed, 0);
+    return {
+      avgResponseMs: total > 0 ? elapsedSum / total : 0,
+      llmFailedRate: total > 0 ? (llmFailed / total) * 100 : 0,
+    };
+  }, [modelStats]);
 
   const summary = useMemo<SummaryCards>(() => {
     const total = filteredEvents.length;
@@ -355,30 +487,11 @@ export function DashboardPage() {
     };
   }, [filteredEvents]);
 
-  const branchDistribution = useMemo(() => {
-    const map = new Map<string, number>();
-    filteredEvents.forEach((event) => {
-      const key = event.selectedBranch || 'UNKNOWN';
-      map.set(key, (map.get(key) ?? 0) + 1);
-    });
-    return Array.from(map.entries()).map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count);
-  }, [filteredEvents]);
-
   const filteredReasonDistribution = useMemo(() => {
     const map = new Map<string, number>();
     filteredEvents.forEach((event) => {
       event.filteredReasons.forEach((reason) => {
         map.set(reason, (map.get(reason) ?? 0) + 1);
-      });
-    });
-    return Array.from(map.entries()).map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count).slice(0, 8);
-  }, [filteredEvents]);
-
-  const missingFieldDistribution = useMemo(() => {
-    const map = new Map<string, number>();
-    filteredEvents.forEach((event) => {
-      event.missingProfileFields.forEach((field) => {
-        map.set(field, (map.get(field) ?? 0) + 1);
       });
     });
     return Array.from(map.entries()).map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count).slice(0, 8);
@@ -433,9 +546,15 @@ export function DashboardPage() {
               message: String(event.message ?? event.step_cn ?? event.step ?? '-'),
               status: String(event.status ?? 'info'),
             };
+          });
+        const keyNodes = ['reception', 'diagnosis', 'kb_retrieval', 'treatment', 'personalization'];
+        const picked = keyNodes
+          .map((key) => {
+            const matched = [...summaryRows].reverse().find((row) => row.agent.toLowerCase().includes(key) || row.message.toLowerCase().includes(key));
+            return matched;
           })
-          .slice(-8);
-        setTraceSummary(summaryRows);
+          .filter((row): row is { agent: string; message: string; status: string } => Boolean(row));
+        setTraceSummary(picked.length > 0 ? picked : summaryRows.slice(-8));
       } catch {
         setTraceSummary([]);
       }
@@ -481,7 +600,7 @@ export function DashboardPage() {
             <PopoverTrigger asChild>
               <Button
                 variant="outline"
-                className="border-white/20 text-white/80 hover:bg-white/10"
+                className="bg-green-600 text-white border-green-500 hover:bg-green-500"
               >
                 <Calendar className="w-4 h-4 mr-2" />
                 {startDate} - {endDate}
@@ -504,7 +623,7 @@ export function DashboardPage() {
                 variant="outline"
                 size="sm"
                 onClick={() => setQuickRange(days)}
-                className="border-white/20 text-white/70 hover:text-white hover:bg-white/10"
+                className="bg-green-600/90 text-white border-green-500 hover:bg-green-500"
               >
                 近{days}天
               </Button>
@@ -522,28 +641,36 @@ export function DashboardPage() {
 
       <Card className="glass-card">
         <CardContent className="pt-6">
-          <div className="grid md:grid-cols-2 xl:grid-cols-5 gap-3">
-            <select value={selectedDisease} onChange={(e) => setSelectedDisease(e.target.value)} className="bg-white/5 border border-white/20 rounded-lg px-3 py-2 text-white">
-              <option value="ALL" className="bg-black">病害：全部</option>
-              {diseaseOptions.map((item) => <option key={item} value={item} className="bg-black">{item}</option>)}
+          <div className="grid md:grid-cols-2 xl:grid-cols-7 gap-3">
+            <select value={selectedFarmerId} onChange={(e) => setSelectedFarmerId(e.target.value)} className="bg-green-600 border border-green-500 rounded-lg px-3 py-2 text-white font-medium">
+              <option value="ALL">农户：全部</option>
+              {profiles.map((item) => <option key={item.id} value={item.id}>{item.name ? `${item.id} · ${item.name}` : item.id}</option>)}
             </select>
-            <select value={selectedBranch} onChange={(e) => setSelectedBranch(e.target.value)} className="bg-white/5 border border-white/20 rounded-lg px-3 py-2 text-white">
-              <option value="ALL" className="bg-black">档位：全部</option>
-              {['FAMILY', 'MID', 'ENTERPRISE', 'UNKNOWN'].map((item) => <option key={item} value={item} className="bg-black">{item}</option>)}
+            <select value={selectedBaseId} onChange={(e) => setSelectedBaseId(e.target.value)} className="bg-green-600 border border-green-500 rounded-lg px-3 py-2 text-white font-medium" disabled={selectedFarmerId === 'ALL'}>
+              <option value="ALL">基地：全部</option>
+              {farmerBases.map((item) => <option key={item.id} value={item.id}>{item.name ? `${item.id} · ${item.name}` : item.id}</option>)}
             </select>
-            <select value={selectedRound} onChange={(e) => setSelectedRound(e.target.value)} className="bg-white/5 border border-white/20 rounded-lg px-3 py-2 text-white">
-              <option value="ALL" className="bg-black">轮次：全部</option>
-              <option value="INITIAL" className="bg-black">首轮</option>
-              <option value="CONFIRM" className="bg-black">确认轮</option>
+            <select value={selectedDisease} onChange={(e) => setSelectedDisease(e.target.value)} className="bg-green-600 border border-green-500 rounded-lg px-3 py-2 text-white font-medium">
+              <option value="ALL" className="bg-green-600 text-white">病害：全部</option>
+              {diseaseOptions.map((item) => <option key={item} value={item} className="bg-green-600 text-white">{item}</option>)}
             </select>
-            <select value={selectedPersonalizationStatus} onChange={(e) => setSelectedPersonalizationStatus(e.target.value)} className="bg-white/5 border border-white/20 rounded-lg px-3 py-2 text-white">
-              <option value="ALL" className="bg-black">个性化：全部</option>
-              <option value="APPLIED" className="bg-black">已应用个性化</option>
-              <option value="FILTERED" className="bg-black">触发过滤</option>
+            <select value={selectedBranch} onChange={(e) => setSelectedBranch(e.target.value)} className="bg-green-600 border border-green-500 rounded-lg px-3 py-2 text-white font-medium">
+              <option value="ALL" className="bg-green-600 text-white">档位：全部</option>
+              {['FAMILY', 'MID', 'ENTERPRISE', 'UNKNOWN'].map((item) => <option key={item} value={item} className="bg-green-600 text-white">{item}</option>)}
             </select>
-            <select value={selectedModel} onChange={(e) => setSelectedModel(e.target.value)} className="bg-white/5 border border-white/20 rounded-lg px-3 py-2 text-white">
-              <option value="ALL" className="bg-black">模型：全部</option>
-              {modelOptions.map((item) => <option key={item} value={item} className="bg-black">{item}</option>)}
+            <select value={selectedRound} onChange={(e) => setSelectedRound(e.target.value)} className="bg-green-600 border border-green-500 rounded-lg px-3 py-2 text-white font-medium">
+              <option value="ALL" className="bg-green-600 text-white">轮次：全部</option>
+              <option value="INITIAL" className="bg-green-600 text-white">首轮</option>
+              <option value="CONFIRM" className="bg-green-600 text-white">确认轮</option>
+            </select>
+            <select value={selectedPersonalizationStatus} onChange={(e) => setSelectedPersonalizationStatus(e.target.value)} className="bg-green-600 border border-green-500 rounded-lg px-3 py-2 text-white font-medium">
+              <option value="ALL" className="bg-green-600 text-white">个性化：全部</option>
+              <option value="APPLIED" className="bg-green-600 text-white">已应用个性化</option>
+              <option value="FILTERED" className="bg-green-600 text-white">触发过滤</option>
+            </select>
+            <select value={selectedModel} onChange={(e) => setSelectedModel(e.target.value)} className="bg-green-600 border border-green-500 rounded-lg px-3 py-2 text-white font-medium">
+              <option value="ALL" className="bg-green-600 text-white">模型：全部</option>
+              {modelOptions.map((item) => <option key={item} value={item} className="bg-green-600 text-white">{item}</option>)}
             </select>
           </div>
         </CardContent>
@@ -598,7 +725,25 @@ export function DashboardPage() {
                 <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.15)" />
                 <XAxis dataKey="date" stroke="rgba(255,255,255,0.65)" tick={{ fontSize: 12 }} />
                 <YAxis stroke="rgba(255,255,255,0.65)" allowDecimals={false} tick={{ fontSize: 12 }} />
-                <Tooltip contentStyle={{ background: '#111', border: '1px solid rgba(255,255,255,0.2)' }} />
+                <Tooltip
+                  contentStyle={{ background: '#111', border: '1px solid rgba(255,255,255,0.2)' }}
+                  content={({ active, payload, label }) => {
+                    if (!active || !payload || payload.length === 0) return null;
+                    const day = String(label ?? '');
+                    const total = Number(payload[0]?.value ?? 0);
+                    const breakdown = timeseriesBreakdown.get(day) ?? {};
+                    const rows = Object.entries(breakdown).sort((a, b) => b[1] - a[1]).slice(0, 6);
+                    return (
+                      <div className="bg-[#111] border border-white/20 rounded-lg p-2 text-xs text-white/90 max-w-[300px]">
+                        <div className="font-semibold">{day}</div>
+                        <div className="text-[#c8f7c5] mb-1">总诊断数：{total}</div>
+                        {rows.map(([name, count]) => (
+                          <div key={name} className="flex justify-between gap-3"><span>{name}</span><span>{count}</span></div>
+                        ))}
+                      </div>
+                    );
+                  }}
+                />
                 <Line type="monotone" dataKey="count" stroke="#c8f7c5" strokeWidth={3} dot={{ r: 3 }} />
               </LineChart>
             </ResponsiveContainer>
@@ -620,60 +765,66 @@ export function DashboardPage() {
                   <XAxis dataKey="model" stroke="rgba(255,255,255,0.65)" tick={{ fontSize: 11 }} interval={0} angle={-18} textAnchor="end" height={60} />
                   <YAxis stroke="rgba(255,255,255,0.65)" allowDecimals={false} tick={{ fontSize: 12 }} />
                   <Tooltip contentStyle={{ background: '#111', border: '1px solid rgba(255,255,255,0.2)' }} />
-                  <Bar dataKey="count" fill="#4ade80" radius={[6, 6, 0, 0]} />
+                  <Bar dataKey="success" stackId="a" fill="#4ade80" />
+                  <Bar dataKey="fallback" stackId="a" fill="#facc15" />
+                  <Bar dataKey="degraded" stackId="a" fill="#f97316" />
                 </BarChart>
               </ResponsiveContainer>
             ) : (
               <div className="h-full flex items-center justify-center text-white/40 text-sm">暂无模型调用数据</div>
             )}
+            <div className="mt-2 text-xs text-white/70 flex items-center justify-between">
+              <span>平均响应时间：{modelSummary.avgResponseMs > 0 ? `${modelSummary.avgResponseMs.toFixed(0)} ms` : '—'}</span>
+              <span>LLM 失败率：{modelSummary.llmFailedRate.toFixed(1)}%</span>
+            </div>
           </CardContent>
         </Card>
       </div>
 
-      <div className="grid lg:grid-cols-3 gap-6">
-        <Card className="glass-card">
-          <CardHeader><CardTitle className="text-white">档位分布</CardTitle></CardHeader>
-          <CardContent>
-            <div className="space-y-2">
-              {branchDistribution.map((item) => (
-                <div key={item.name} className="flex items-center justify-between text-sm">
-                  <span className="text-white/70">{item.name}</span>
-                  <span className="text-[#c8f7c5]">{item.count}</span>
-                </div>
+      <Card className="glass-card">
+        <CardHeader>
+          <CardTitle className="text-white flex items-center gap-2">
+            <TrendingUp className="w-5 h-5 text-[#c8f7c5]" />
+            病害趋势（按日堆叠）
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="h-72">
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={diseaseTrendData} margin={{ left: 8, right: 8, top: 10, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.15)" />
+              <XAxis dataKey="date" stroke="rgba(255,255,255,0.65)" tick={{ fontSize: 12 }} />
+              <YAxis stroke="rgba(255,255,255,0.65)" allowDecimals={false} tick={{ fontSize: 12 }} />
+              <Tooltip contentStyle={{ background: '#111', border: '1px solid rgba(255,255,255,0.2)' }} />
+              {stats.slice(0, 6).map((item, index) => (
+                <Bar key={item.disease} dataKey={item.disease} stackId="disease" fill={['#22c55e', '#84cc16', '#facc15', '#fb7185', '#38bdf8', '#a78bfa'][index % 6]} />
               ))}
-              {branchDistribution.length === 0 && <p className="text-white/40 text-sm">暂无档位统计</p>}
-            </div>
-          </CardContent>
-        </Card>
-        <Card className="glass-card">
-          <CardHeader><CardTitle className="text-white">过滤原因分布</CardTitle></CardHeader>
-          <CardContent>
-            <div className="space-y-2">
-              {filteredReasonDistribution.map((item) => (
-                <div key={item.name} className="flex items-center justify-between text-sm">
-                  <span className="text-white/70 truncate pr-2">{item.name}</span>
-                  <span className="text-[#c8f7c5]">{item.count}</span>
+            </BarChart>
+          </ResponsiveContainer>
+        </CardContent>
+      </Card>
+
+      <Card className="glass-card">
+        <CardHeader><CardTitle className="text-white">过滤原因统计</CardTitle></CardHeader>
+        <CardContent>
+          <div className="space-y-3">
+            {filteredReasonDistribution.map((item) => {
+              const max = Math.max(...filteredReasonDistribution.map((x) => x.count), 1);
+              return (
+                <div key={item.name} className="space-y-1">
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="text-white/70 truncate pr-2">{item.name}</span>
+                    <span className="text-[#c8f7c5]">{item.count}</span>
+                  </div>
+                  <div className="h-2 bg-white/10 rounded-full overflow-hidden">
+                    <div className="h-full bg-[#4ade80]" style={{ width: `${(item.count / max) * 100}%` }} />
+                  </div>
                 </div>
-              ))}
-              {filteredReasonDistribution.length === 0 && <p className="text-white/40 text-sm">暂无过滤原因统计</p>}
-            </div>
-          </CardContent>
-        </Card>
-        <Card className="glass-card">
-          <CardHeader><CardTitle className="text-white">缺失字段分布</CardTitle></CardHeader>
-          <CardContent>
-            <div className="space-y-2">
-              {missingFieldDistribution.map((item) => (
-                <div key={item.name} className="flex items-center justify-between text-sm">
-                  <span className="text-white/70">{item.name}</span>
-                  <span className="text-[#c8f7c5]">{item.count}</span>
-                </div>
-              ))}
-              {missingFieldDistribution.length === 0 && <p className="text-white/40 text-sm">暂无缺失字段统计</p>}
-            </div>
-          </CardContent>
-        </Card>
-      </div>
+              );
+            })}
+            {filteredReasonDistribution.length === 0 && <p className="text-white/40 text-sm">暂无过滤原因统计</p>}
+          </div>
+        </CardContent>
+      </Card>
 
       <div className="grid lg:grid-cols-3 gap-6">
         {/* Disease Stats Chart */}
@@ -719,7 +870,7 @@ export function DashboardPage() {
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="space-y-2 max-h-[400px] overflow-y-auto">
+            <div className="space-y-2 max-h-[400px] overflow-y-auto dashboard-scrollbar">
               {filteredEvents.slice(0, 80).map((event) => (
                 <div
                   key={event.id}
@@ -799,16 +950,20 @@ export function DashboardPage() {
                   <div className="bg-white/5 rounded-lg p-3">
                     <p className="text-white/60 text-xs mb-1">模型 / 时间 / 档位</p>
                     <p className="text-white text-sm">{selectedEvent.modelName || selectedEvent.modelId}</p>
-                    <p className="text-white/60 text-xs mt-1">{safeDisplayTime(selectedEvent.ts)} · {selectedEvent.selectedBranch}</p>
+                    <p className="text-white/60 text-xs mt-1">{safeDisplayTime(selectedEvent.ts)} · {selectedEvent.selectedBranch} · {selectedEvent.confirmRound ? '确认轮' : '首轮'} · 来源:{selectedEvent.finalSource}</p>
                   </div>
-                  {hasTreatment && <div className="bg-white/5 rounded-lg p-3 text-white/80 text-sm max-h-36 overflow-y-auto">{renderTreatment(selectedEvent?.treatment)}</div>}
+                  {hasTreatment && <div className="bg-white/5 rounded-lg p-3 text-white/80 text-sm max-h-36 overflow-y-auto dashboard-scrollbar">{renderTreatment(selectedEvent?.treatment)}</div>}
                 </TabsContent>
                 <TabsContent value="personal" className="space-y-2 mt-3 text-sm text-white/80">
                   <div>已应用个性化：{selectedEvent.personalizationApplied ? '是' : '否'}</div>
                   <div>触发过滤：{selectedEvent.filtered ? '是' : '否'}</div>
                   <div>轮次：{selectedEvent.confirmRound ? '确认轮' : '首轮'}</div>
-                  <div>过滤原因：{selectedEvent.filteredReasons.join('；') || '无'}</div>
-                  <div>过滤成分：{selectedEvent.filteredComponents.join('；') || '无'}</div>
+                  <div>个性化原因：{selectedEvent.personalizationReasons.join('；') || '无'}</div>
+                  <div>农户/基地：{selectedEvent.farmerId || '未知'} / {selectedEvent.baseId || '未知'}</div>
+                  <div>农场规模/购药能力：{selectedEvent.farmScale || '未知'} / {selectedEvent.pesticideAccessLevel || '未知'}</div>
+                  <div>设备/栽培模式：{selectedEvent.equipment.join('、') || '未知'} / {selectedEvent.cultivationMode || '未知'}</div>
+                  <div>过滤原因：{selectedEvent.filtered ? (selectedEvent.filteredReasons.join('；') || '策略改写') : '未触发过滤'}</div>
+                  <div>过滤成分：{selectedEvent.filtered ? (selectedEvent.filteredComponents.join('；') || '无（措辞级过滤/策略改写）') : '无'}</div>
                   <div>缺失字段：{selectedEvent.missingProfileFields.join('；') || '无'}</div>
                   <div>追问问题：{selectedEvent.followUpQuestions.join('；') || '无'}</div>
                 </TabsContent>

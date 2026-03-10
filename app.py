@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import time
 import uuid
 from datetime import datetime, timezone
 from io import BytesIO
@@ -391,6 +392,7 @@ async def diagnose_image(
     lat: float | None = Form(None),
     lon: float | None = Form(None),
 ) -> DiagnoseResponse:
+    request_started = time.perf_counter()
     trace_id = uuid.uuid4().hex
     emit_node_event(trace_id, node="ParseInput", status="start", message="开始解析上传请求")
     if not file.filename:
@@ -665,6 +667,7 @@ async def diagnose_image(
         "confirm_round": False,
         "source_stage": "initial",
         "selected_branch": flags.get("selected_branch"),
+        "elapsed_ms": round((time.perf_counter() - request_started) * 1000, 2),
         "image_confidence": final_state.get("image_confidence") if final_state else None,
         "treatment": treatment_or_none,
         "meta": {
@@ -677,6 +680,7 @@ async def diagnose_image(
             "filtered_components": filtered_components,
             "filtered_actions": filtered_actions,
             "selected_branch": flags.get("selected_branch"),
+            "elapsed_ms": round((time.perf_counter() - request_started) * 1000, 2),
             "model_id": model_meta.get("model_id"),
             "model_display_name": model_meta.get("model_display_name"),
             "model_backend": model_meta.get("backend"),
@@ -736,6 +740,7 @@ async def diagnose_image(
 
 @app.post("/api/diagnose-confirm")
 def diagnose_confirm(payload: dict = Body(...)) -> dict:
+    request_started = time.perf_counter()
     trace_id = payload.get("trace_id")
     previous_trace_id = payload.get("previous_trace_id")
     image_id = payload.get("image_id")
@@ -911,6 +916,7 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
         "confirm_round": True,
         "source_stage": "confirm",
         "selected_branch": flags.get("selected_branch"),
+        "elapsed_ms": round((time.perf_counter() - request_started) * 1000, 2),
         "treatment": {
             "plan": state.get("treatment_plan"),
             "prevention": state.get("prevention_advice"),
@@ -923,6 +929,7 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
             "filtered_components": filtered_components,
             "filtered_actions": filtered_actions,
             "selected_branch": flags.get("selected_branch"),
+            "elapsed_ms": round((time.perf_counter() - request_started) * 1000, 2),
             "model_id": model_meta.get("model_id"),
             "model_display_name": model_meta.get("model_display_name"),
             "model_backend": model_meta.get("backend"),
