@@ -17,8 +17,6 @@ import { Badge } from '@/components/ui/badge';
 import { Calendar as DateCalendar } from '@/components/ui/calendar';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Switch } from '@/components/ui/switch';
-import { Label } from '@/components/ui/label';
 import { ResponsiveContainer, LineChart, Line, CartesianGrid, XAxis, YAxis, Tooltip, BarChart, Bar } from 'recharts';
 import type { DateRange } from 'react-day-picker';
 import type { ReactNode } from 'react';
@@ -738,109 +736,138 @@ export function DashboardPage() {
 
   return (
     <div className="space-y-6 animate-fadeIn overflow-visible">
-      <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between overflow-visible">
-        <div>
-          <h1 className="text-3xl font-bold text-white">番茄病害<span className="text-[#b9dbc7]">诊疗联动分析看板</span></h1>
-          <p className="text-white/60 mt-1">面向基地诊疗过程的趋势、案例与可解释分析</p>
+      <div className="flex flex-col xl:flex-row xl:items-center xl:justify-between gap-4">
+        <div className="max-w-[620px]">
+          <h1 className="text-[28px] md:text-[30px] leading-tight font-bold text-white md:whitespace-nowrap">番茄病害<span className="text-[#b9dbc7]">诊疗联动分析看板</span></h1>
+          <p className="text-white/60 mt-1 text-sm">面向基地诊疗过程的趋势、案例与可解释分析</p>
         </div>
 
-        <div className="flex flex-col gap-3 w-full xl:w-auto overflow-visible xl:min-w-[640px]">
-          <div className="flex flex-wrap items-center gap-2">
-            <Popover>
-              <PopoverTrigger asChild>
-                <Button variant="outline" className="bg-[#145c45] text-white border-[#2e7d63] hover:bg-[#1a6c51] min-w-[270px] justify-start">
-                  <Calendar className="w-4 h-4 mr-2" />
-                  {startDate} - {endDate}
-                </Button>
-              </PopoverTrigger>
-              <PopoverContent
-                side="bottom"
-                align="start"
-                sideOffset={10}
-                className="z-[1200] w-auto max-w-[calc(100vw-1.5rem)] overflow-auto p-0 bg-[#0a1512] border border-[#2e7d63]/70 shadow-[0_10px_40px_rgba(20,92,69,0.35)]"
-              >
-                <DateCalendar
-                  mode="range"
-                  numberOfMonths={calendarMonths}
-                  selected={calendarRange}
-                  onSelect={onCalendarRangeSelect}
-                  defaultMonth={calendarRange?.from}
-                  className="text-[#dcf6e7]"
-                />
-              </PopoverContent>
-            </Popover>
-            <div className="flex gap-1">
-              {[7, 30, 90].map((days) => (
-                <Button key={days} variant="outline" size="sm" onClick={() => setQuickRange(days)} className="bg-[#145c45]/90 text-white border-[#2e7d63] hover:bg-[#1a6c51]">近{days}天</Button>
-              ))}
-            </div>
-            <Button onClick={fetchData} disabled={loading} className="bg-[#1f7a59] text-white hover:bg-[#228664]">
-              <RefreshCw className={cn('w-4 h-4', loading && 'animate-spin')} />
-            </Button>
-            <Popover>
-              <PopoverTrigger asChild>
-                <Button variant="outline" className="border-[#2b5f4d] text-white/80 hover:bg-[#19352b]">
-                  <Settings2 className="w-4 h-4 mr-1" /> 页面设置
-                </Button>
-              </PopoverTrigger>
-              <PopoverContent className="z-[1100] bg-[#0d1f19] border border-[#2e7d63]/60 text-white w-72">
-                <div className="space-y-3">
-                  {Object.entries({
-                    kpi: 'KPI 总览区',
-                    trend: '趋势图区域',
-                    model: '模型调用统计',
-                    filter: '过滤原因统计',
-                    recent: '最近诊断',
-                    detail: '详情区',
-                    disease: '病害 Top / 补充图表',
-                  }).map(([key, label]) => (
-                    <div key={key} className="flex items-center justify-between">
-                      <Label htmlFor={`switch-${key}`} className="text-sm text-white/90">{label}</Label>
-                      <Switch
-                        id={`switch-${key}`}
-                        checked={modulePrefs[key as ModuleKey]}
-                        onCheckedChange={(checked) => setModulePrefs((prev) => ({ ...prev, [key]: checked }))}
-                      />
-                    </div>
-                  ))}
-                </div>
-              </PopoverContent>
-            </Popover>
+        <div className="flex flex-wrap xl:flex-nowrap items-center justify-end gap-2 xl:gap-2.5">
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button variant="outline" className="h-10 bg-[#1f7558] text-white border-[#3b8a6c] hover:bg-[#287f61] min-w-[280px] justify-start">
+                <Calendar className="w-4 h-4 mr-2" />
+                {startDate} - {endDate}
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent
+              side="bottom"
+              align="end"
+              sideOffset={10}
+              className="z-[1200] w-auto max-w-[calc(100vw-1.5rem)] overflow-auto p-0 bg-[#b7d8c0] text-[#111f18] border border-[#7bab92] shadow-[0_12px_42px_rgba(20,92,69,0.28)] rounded-xl"
+            >
+              <DateCalendar
+                mode="range"
+                numberOfMonths={calendarMonths}
+                selected={calendarRange}
+                onSelect={onCalendarRangeSelect}
+                defaultMonth={calendarRange?.from}
+                className="text-[#111f18]"
+                classNames={{
+                  root: 'text-[#111f18]',
+                  month_caption: 'text-[#0f1d16] font-semibold',
+                  weekday: 'text-[#254638]',
+                  day: 'text-[#112018]',
+                  outside: 'text-[#426b59] opacity-70',
+                  today: 'bg-[#95c2a8] text-[#0f1d16]',
+                  range_middle: 'bg-[#9fc9b0]/70 text-[#0f1d16]',
+                  range_start: 'bg-[#5f997c] text-[#0f1d16]',
+                  range_end: 'bg-[#5f997c] text-[#0f1d16]',
+                  day_button: 'hover:bg-[#a5ccb5] data-[selected-single=true]:bg-[#5f997c] data-[selected-single=true]:text-[#0f1d16] data-[range-middle=true]:bg-[#9fc9b0] data-[range-middle=true]:text-[#0f1d16] data-[range-start=true]:bg-[#5f997c] data-[range-start=true]:text-[#0f1d16] data-[range-end=true]:bg-[#5f997c] data-[range-end=true]:text-[#0f1d16]',
+                }}
+              />
+            </PopoverContent>
+          </Popover>
+
+          <div className="flex items-center gap-1.5">
+            {[7, 30, 90].map((days) => (
+              <Button key={days} variant="outline" size="sm" onClick={() => setQuickRange(days)} className="h-10 bg-[#1f7558]/95 text-white border-[#3b8a6c] hover:bg-[#287f61]">近{days}天</Button>
+            ))}
           </div>
 
-          <Card className="glass-card">
-            <CardContent className="pt-5">
-              <div className="grid sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3">
-                <select value={selectedFarmerId} onChange={(e) => setSelectedFarmerId(e.target.value)} className="bg-[#114a38] border border-[#2e7d63] rounded-lg px-3 py-2 text-[#e8fff0] font-medium w-full">
-                  <option value="ALL">农户：全部（先选农户）</option>
-                  {profiles.map((item) => <option key={item.id} value={item.id}>{item.name ? `${item.id} · ${item.name}` : item.id}</option>)}
-                </select>
-                <select value={selectedBaseId} onChange={(e) => setSelectedBaseId(e.target.value)} className="bg-[#114a38] border border-[#2e7d63] rounded-lg px-3 py-2 text-[#e8fff0] font-medium disabled:opacity-50 w-full" disabled={selectedFarmerId === 'ALL'}>
-                  <option value="ALL">基地：全部</option>
-                  {farmerBases.map((item) => <option key={item.id} value={item.id}>{item.name ? `${item.id} · ${item.name}` : item.id}</option>)}
-                </select>
-                <select value={selectedDisease} onChange={(e) => setSelectedDisease(e.target.value)} className="bg-[#114a38] border border-[#2e7d63] rounded-lg px-3 py-2 text-[#e8fff0] font-medium w-full">
-                  <option value="ALL" className="bg-[#0b241b] text-[#e8fff0]">病害：全部</option>
-                  {diseaseOptions.map((item) => <option key={item} value={item} className="bg-[#0b241b] text-[#e8fff0]">{item}</option>)}
-                </select>
-                <select value={selectedBranch} onChange={(e) => setSelectedBranch(e.target.value)} className="bg-[#114a38] border border-[#2e7d63] rounded-lg px-3 py-2 text-[#e8fff0] font-medium w-full">
-                  <option value="ALL" className="bg-[#0b241b] text-[#e8fff0]">档位：全部</option>
-                  {['家庭档', '专业档', '规模档', '未分档'].map((item) => <option key={item} value={item} className="bg-[#0b241b] text-[#e8fff0]">{item}</option>)}
-                </select>
-                <select value={selectedPersonalizationStatus} onChange={(e) => setSelectedPersonalizationStatus(e.target.value)} className="bg-[#114a38] border border-[#2e7d63] rounded-lg px-3 py-2 text-[#e8fff0] font-medium w-full">
-                  <option value="ALL" className="bg-[#0b241b] text-[#e8fff0]">个性化：全部</option>
-                  <option value="APPLIED" className="bg-[#0b241b] text-[#e8fff0]">已应用个性化</option>
-                  <option value="FILTERED" className="bg-[#0b241b] text-[#e8fff0]">触发过滤</option>
-                </select>
-                <select value={selectedModel} onChange={(e) => setSelectedModel(e.target.value)} className="bg-[#114a38] border border-[#2e7d63] rounded-lg px-3 py-2 text-[#e8fff0] font-medium w-full">
-                  <option value="ALL" className="bg-[#0b241b] text-[#e8fff0]">模型：全部</option>
-                  {modelOptions.map((item) => <option key={item} value={item} className="bg-[#0b241b] text-[#e8fff0]">{item}</option>)}
-                </select>
+          <Button onClick={fetchData} disabled={loading} className="h-10 bg-[#1f7a59] text-white hover:bg-[#228664]">
+            <RefreshCw className={cn('w-4 h-4', loading && 'animate-spin')} />
+          </Button>
+
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button variant="outline" className="h-10 border-[#3b8a6c] bg-[#1f7558] text-white hover:bg-[#287f61]">
+                <Settings2 className="w-4 h-4 mr-1" /> 页面设置
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent className="z-[1100] w-[320px] max-h-[420px] overflow-y-auto dashboard-scrollbar bg-[#b7d8c0] border border-[#7bab92] text-[#12211a] shadow-[0_10px_34px_rgba(15,40,28,0.22)]">
+              <div className="space-y-2">
+                {Object.entries({
+                  kpi: 'KPI 总览区',
+                  trend: '趋势图区域',
+                  model: '模型调用统计',
+                  filter: '过滤原因统计',
+                  recent: '最近诊断',
+                  detail: '详情区',
+                  disease: '病害 Top / 补充图表',
+                }).map(([key, label]) => {
+                  const visible = modulePrefs[key as ModuleKey];
+                  return (
+                    <div key={key} className="rounded-lg border border-[#90bda5] bg-[#c3e0cd]/70 px-3 py-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="min-w-0">
+                          <p className="text-sm font-medium text-[#12211a] truncate">{label}</p>
+                          <p className="text-xs text-[#2b4b3d]">{visible ? '已显示 · 点击 - 从页面移除' : '已隐藏 · 点击 + 添加到页面'}</p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setModulePrefs((prev) => ({ ...prev, [key]: !visible }))}
+                          className={cn(
+                            'h-8 w-8 rounded-md border font-bold text-lg leading-none transition-colors',
+                            visible
+                              ? 'bg-[#d6eadc] border-[#7ea78f] text-[#1e3a2e] hover:bg-[#c7e0d0]'
+                              : 'bg-[#6c9c7f] border-[#5f8c72] text-[#0f1a14] hover:bg-[#78a98a]'
+                          )}
+                          aria-label={visible ? `从页面移除${label}` : `添加${label}到页面`}
+                        >
+                          {visible ? '−' : '+'}
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
-            </CardContent>
-          </Card>
+            </PopoverContent>
+          </Popover>
         </div>
       </div>
+
+      <Card className="glass-card mt-1">
+        <CardContent className="pt-5">
+          <div className="grid sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3">
+            <select value={selectedFarmerId} onChange={(e) => setSelectedFarmerId(e.target.value)} className="h-10 bg-[#114a38] border border-[#2e7d63] rounded-lg px-3 text-[#e8fff0] font-medium w-full leading-none">
+              <option value="ALL">农户：全部（先选农户）</option>
+              {profiles.map((item) => <option key={item.id} value={item.id}>{item.name ? `${item.id} · ${item.name}` : item.id}</option>)}
+            </select>
+            <select value={selectedBaseId} onChange={(e) => setSelectedBaseId(e.target.value)} className="h-10 bg-[#114a38] border border-[#2e7d63] rounded-lg px-3 text-[#e8fff0] font-medium disabled:opacity-50 w-full leading-none" disabled={selectedFarmerId === 'ALL'}>
+              <option value="ALL">基地：全部</option>
+              {farmerBases.map((item) => <option key={item.id} value={item.id}>{item.name ? `${item.id} · ${item.name}` : item.id}</option>)}
+            </select>
+            <select value={selectedDisease} onChange={(e) => setSelectedDisease(e.target.value)} className="h-10 bg-[#114a38] border border-[#2e7d63] rounded-lg px-3 text-[#e8fff0] font-medium w-full leading-none">
+              <option value="ALL" className="bg-[#0b241b] text-[#e8fff0]">病害：全部</option>
+              {diseaseOptions.map((item) => <option key={item} value={item} className="bg-[#0b241b] text-[#e8fff0]">{item}</option>)}
+            </select>
+            <select value={selectedBranch} onChange={(e) => setSelectedBranch(e.target.value)} className="h-10 bg-[#114a38] border border-[#2e7d63] rounded-lg px-3 text-[#e8fff0] font-medium w-full leading-none">
+              <option value="ALL" className="bg-[#0b241b] text-[#e8fff0]">档位：全部</option>
+              {['家庭档', '专业档', '规模档', '未分档'].map((item) => <option key={item} value={item} className="bg-[#0b241b] text-[#e8fff0]">{item}</option>)}
+            </select>
+            <select value={selectedPersonalizationStatus} onChange={(e) => setSelectedPersonalizationStatus(e.target.value)} className="h-10 bg-[#114a38] border border-[#2e7d63] rounded-lg px-3 text-[#e8fff0] font-medium w-full leading-none">
+              <option value="ALL" className="bg-[#0b241b] text-[#e8fff0]">个性化：全部</option>
+              <option value="APPLIED" className="bg-[#0b241b] text-[#e8fff0]">已应用个性化</option>
+              <option value="FILTERED" className="bg-[#0b241b] text-[#e8fff0]">触发过滤</option>
+            </select>
+            <select value={selectedModel} onChange={(e) => setSelectedModel(e.target.value)} className="h-10 bg-[#114a38] border border-[#2e7d63] rounded-lg px-3 text-[#e8fff0] font-medium w-full leading-none">
+              <option value="ALL" className="bg-[#0b241b] text-[#e8fff0]">模型：全部</option>
+              {modelOptions.map((item) => <option key={item} value={item} className="bg-[#0b241b] text-[#e8fff0]">{item}</option>)}
+            </select>
+          </div>
+        </CardContent>
+      </Card>
 
       {modulePrefs.kpi && (
         <Card className="border border-[#2e7d63]/45 bg-[#12231d] shadow-[0_0_0_1px_rgba(121,185,150,0.08),0_14px_40px_rgba(5,18,12,0.4)]">
