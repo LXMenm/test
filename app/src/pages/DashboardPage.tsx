@@ -423,7 +423,7 @@ export function DashboardPage() {
     from: new Date(`${defaultRange.start}T00:00:00`),
     to: new Date(`${defaultRange.end}T00:00:00`),
   }));
-  const calendarMonths = 1;
+  const [calendarMonths, setCalendarMonths] = useState(2);
   const [allEvents, setAllEvents] = useState<DiagnosisEvent[]>([]);
   const [selectedEvent, setSelectedEvent] = useState<DiagnosisEvent | null>(null);
   const [selectedDisease, setSelectedDisease] = useState('ALL');
@@ -448,7 +448,10 @@ export function DashboardPage() {
   useEffect(() => {
     setModulePrefs(loadLocalRecord(DASHBOARD_PREFS_KEY, defaultModulePrefs));
     setModuleCollapse(loadLocalRecord(DASHBOARD_COLLAPSE_KEY, defaultCollapse));
-
+    const updateMonths = () => setCalendarMonths(window.innerWidth < 1100 ? 1 : 2);
+    updateMonths();
+    window.addEventListener('resize', updateMonths);
+    return () => window.removeEventListener('resize', updateMonths);
   }, []);
 
   useEffect(() => {
@@ -759,15 +762,12 @@ export function DashboardPage() {
                 selected={calendarRange}
                 onSelect={onCalendarRangeSelect}
                 defaultMonth={calendarRange?.from}
-                className="!bg-[#b7d8c0] text-[#12211a] rounded-xl p-3"
+                className="!bg-[#b7d8c0] text-[#12211a] rounded-xl p-3 [&_button]:text-[#12211a] [&_button:hover]:bg-[#9ec7ae] [&_button[data-selected-single=true]]:bg-[#5f997c] [&_button[data-selected-single=true]]:text-[#0f1d16] [&_button[data-range-middle=true]]:bg-[#9fc9b0] [&_button[data-range-middle=true]]:text-[#0f1d16] [&_button[data-range-start=true]]:bg-[#5f997c] [&_button[data-range-start=true]]:text-[#0f1d16] [&_button[data-range-end=true]]:bg-[#5f997c] [&_button[data-range-end=true]]:text-[#0f1d16]"
                 classNames={{
                   root: 'text-[#12211a]',
-                  month: 'gap-3',
                   month_caption: 'text-[#0f1d16] font-semibold',
-                  nav: 'text-[#1b3e31]',
                   weekday: 'text-[#1f4536] font-medium',
                   day: 'text-[#12211a]',
-                  day_button: 'text-[#12211a] hover:bg-[#a6ccb5] data-[selected-single=true]:bg-[#5f997c] data-[selected-single=true]:text-[#0f1d16] data-[range-middle=true]:bg-[#9fc9b0] data-[range-middle=true]:text-[#0f1d16] data-[range-start=true]:bg-[#5f997c] data-[range-start=true]:text-[#0f1d16] data-[range-end=true]:bg-[#5f997c] data-[range-end=true]:text-[#0f1d16]',
                   outside: 'text-[#3d6a57] opacity-80',
                   today: 'bg-[#95c2a8] text-[#0f1d16]',
                   range_middle: 'bg-[#9fc9b0] text-[#0f1d16]',
