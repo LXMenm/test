@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import time
 import uuid
 from datetime import datetime, timezone
 from io import BytesIO
@@ -29,6 +30,7 @@ from event_store import (
     stats_by_disease_range,
     timeseries_range,
     geo_points_range,
+    model_usage_range,
 )
 from knowledge_base import get_kb_manager
 from personalization import profile_rules
@@ -390,6 +392,7 @@ async def diagnose_image(
     lat: float | None = Form(None),
     lon: float | None = Form(None),
 ) -> DiagnoseResponse:
+    request_started = time.perf_counter()
     trace_id = uuid.uuid4().hex
     emit_node_event(trace_id, node="ParseInput", status="start", message="开始解析上传请求")
     if not file.filename:
@@ -661,6 +664,10 @@ async def diagnose_image(
         "need_confirm": need_confirm,
         "final_confidence": final_confidence,
         "final_source": final_source,
+        "confirm_round": False,
+        "source_stage": "initial",
+        "selected_branch": flags.get("selected_branch"),
+        "elapsed_ms": round((time.perf_counter() - request_started) * 1000, 2),
         "image_confidence": final_state.get("image_confidence") if final_state else None,
         "treatment": treatment_or_none,
         "meta": {
@@ -672,6 +679,8 @@ async def diagnose_image(
             "filtered_reasons": filtered_reasons,
             "filtered_components": filtered_components,
             "filtered_actions": filtered_actions,
+            "selected_branch": flags.get("selected_branch"),
+            "elapsed_ms": round((time.perf_counter() - request_started) * 1000, 2),
             "model_id": model_meta.get("model_id"),
             "model_display_name": model_meta.get("model_display_name"),
             "model_backend": model_meta.get("backend"),
@@ -731,6 +740,7 @@ async def diagnose_image(
 
 @app.post("/api/diagnose-confirm")
 def diagnose_confirm(payload: dict = Body(...)) -> dict:
+    request_started = time.perf_counter()
     trace_id = payload.get("trace_id")
     previous_trace_id = payload.get("previous_trace_id")
     image_id = payload.get("image_id")
@@ -887,6 +897,54 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
     )
 
     model_meta = state.get("diagnosis_model_meta") or {}
+    event = {
+        "id": uuid.uuid4().hex,
+        "ts": datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+        "trace_id": trace_id,
+        "crop_type": crop_type,
+        "symptoms": state.get("symptoms") or [],
+        "image_id": image_id,
+        "image_url": f"/uploads/{image_id}",
+        "image_result": image_result,
+        "fallback_used": False,
+        "fallback_reason": None,
+        "rule_result": None,
+        "final_disease": state.get("final_disease"),
+        "need_confirm": need_confirm,
+        "final_confidence": image_result.get("confidence_pct"),
+        "final_source": "confirm",
+        "confirm_round": True,
+        "source_stage": "confirm",
+        "selected_branch": flags.get("selected_branch"),
+        "elapsed_ms": round((time.perf_counter() - request_started) * 1000, 2),
+        "treatment": {
+            "plan": state.get("treatment_plan"),
+            "prevention": state.get("prevention_advice"),
+        },
+        "meta": {
+            **personalization_meta,
+            "personalization_applied": personalization_applied,
+            "filtered": filtered,
+            "filtered_reasons": filtered_reasons,
+            "filtered_components": filtered_components,
+            "filtered_actions": filtered_actions,
+            "selected_branch": flags.get("selected_branch"),
+            "elapsed_ms": round((time.perf_counter() - request_started) * 1000, 2),
+            "model_id": model_meta.get("model_id"),
+            "model_display_name": model_meta.get("model_display_name"),
+            "model_backend": model_meta.get("backend"),
+            "resolved_model_path": model_meta.get("resolved_model_path"),
+            "model_fallback_reason": model_meta.get("model_fallback_reason"),
+        },
+    }
+    emit_node_event(trace_id, node="Persist", status="start", message="写入确认轮事件日志")
+    try:
+        append_event(event)
+        emit_node_event(trace_id, node="Persist", status="end", message="确认轮事件落盘完成")
+    except Exception as exc:
+        print(f"Warning: failed to append confirm event: {exc}")
+        emit_node_event(trace_id, node="Persist", status="error", message=f"确认轮事件落盘失败: {exc}")
+
     return {
         "trace_id": trace_id,
         "previous_trace_id": previous_trace_id,
@@ -1219,6 +1277,16 @@ def get_geo_stats(
     return geo_points(safe_days)
 
 
+@app.get("/api/stats/models")
+def get_model_stats(
+    start: str | None = None,
+    end: str | None = None,
+) -> dict[str, int]:
+    if (start and not validate_date_str(start)) or (end and not validate_date_str(end)):
+        raise HTTPException(status_code=400, detail="日期格式应为 YYYY-MM-DD")
+    return model_usage_range(start, end)
+
+
 @app.get("/dashboard")
 def get_dashboard() -> Response:
     return serve_frontend_index()
@@ -1237,6 +1305,24 @@ def get_kb_page() -> Response:
 @app.get("/api/kb/diseases")
 def list_kb_diseases() -> dict:
     return {"items": kb.list_diseases()}
+
+
+@app.get("/api/kb/diseases/{name}")
+def get_kb_disease_detail(name: str) -> dict:
+    target_name = name.strip()
+    diseases = {item["name"]: item for item in kb.list_diseases()}
+    if target_name not in diseases:
+        raise HTTPException(status_code=404, detail="病害不存在")
+    detail = diseases[target_name]
+    plan = kb.get_treatment_plan(target_name) or {}
+    return {
+        "name": target_name,
+        "description": detail.get("description", ""),
+        "treatment": plan.get("treatment", ""),
+        "prevention": plan.get("prevention", ""),
+        "actions": plan.get("actions") if isinstance(plan.get("actions"), dict) else None,
+        "ingredients": plan.get("ingredients") if isinstance(plan.get("ingredients"), list) else [],
+    }
 
 
 @app.post("/api/kb/diseases")
