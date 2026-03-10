@@ -752,9 +752,9 @@ export function DashboardPage() {
             </PopoverTrigger>
             <PopoverContent
               side="bottom"
-              align="start"
+              align="end"
               sideOffset={10}
-              className="z-[9999] w-auto max-w-[calc(100vw-1.5rem)] overflow-visible p-0 bg-[#b7d8c0] text-[#111f18] border border-[#7bab92] shadow-[0_12px_42px_rgba(20,92,69,0.28)] rounded-xl"
+              className="z-[1200] w-auto max-w-[calc(100vw-1.5rem)] overflow-auto p-0 bg-[#b7d8c0] text-[#111f18] border border-[#7bab92] shadow-[0_12px_42px_rgba(20,92,69,0.28)] rounded-xl"
             >
               <DateCalendar
                 mode="range"
@@ -762,7 +762,7 @@ export function DashboardPage() {
                 selected={calendarRange}
                 onSelect={onCalendarRangeSelect}
                 defaultMonth={calendarRange?.from}
-                className="!bg-[#b7d8c0] text-[#12211a] rounded-xl p-3 [&_button]:text-[#12211a] [&_button:hover]:bg-[#9ec7ae] [&_button[data-selected-single=true]]:bg-[#5f997c] [&_button[data-selected-single=true]]:text-[#0f1d16] [&_button[data-range-middle=true]]:bg-[#9fc9b0] [&_button[data-range-middle=true]]:text-[#0f1d16] [&_button[data-range-start=true]]:bg-[#5f997c] [&_button[data-range-start=true]]:text-[#0f1d16] [&_button[data-range-end=true]]:bg-[#5f997c] [&_button[data-range-end=true]]:text-[#0f1d16]"
+                className="bg-[#b7d8c0] text-[#12211a] rounded-xl p-3 [&_button]:text-[#12211a] [&_button:hover]:bg-[#9ec7ae] [&_button[data-selected-single=true]]:bg-[#5f997c] [&_button[data-selected-single=true]]:text-[#0f1d16] [&_button[data-range-middle=true]]:bg-[#9fc9b0] [&_button[data-range-middle=true]]:text-[#0f1d16] [&_button[data-range-start=true]]:bg-[#5f997c] [&_button[data-range-start=true]]:text-[#0f1d16] [&_button[data-range-end=true]]:bg-[#5f997c] [&_button[data-range-end=true]]:text-[#0f1d16]"
                 classNames={{
                   root: 'text-[#12211a]',
                   month_caption: 'text-[#0f1d16] font-semibold',
