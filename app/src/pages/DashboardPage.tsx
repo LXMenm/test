@@ -1,5 +1,5 @@
-import { useState, useEffect, useMemo } from 'react';
-import { BarChart3, Calendar, RefreshCw, Image as ImageIcon, TrendingUp, AlertCircle, LineChart as LineChartIcon, Cpu } from 'lucide-react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
+import { BarChart3, Calendar, RefreshCw, Image as ImageIcon, TrendingUp, AlertCircle, LineChart as LineChartIcon, Cpu, ArrowRight } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -7,8 +7,6 @@ import { Calendar as DateCalendar } from '@/components/ui/calendar';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { ResponsiveContainer, LineChart, Line, CartesianGrid, XAxis, YAxis, Tooltip, BarChart, Bar } from 'recharts';
-import type { DateRange } from 'react-day-picker';
-
 import { cn } from '@/lib/utils';
 
 interface DiseaseStat {
@@ -89,6 +87,20 @@ function safeDisplayTime(value: string): string {
   const parsed = Date.parse(value);
   if (!Number.isFinite(parsed)) return '—';
   return new Date(parsed).toLocaleString();
+}
+
+
+function formatDisplayDate(value: string): string {
+  if (!isValidDateString(value)) return '—';
+  const parsed = new Date(`${value}T00:00:00`);
+  return parsed.toLocaleDateString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' });
+}
+
+function navigateToKbDisease(diseaseName: string) {
+  const name = diseaseName.trim();
+  if (!name || name === '—') return;
+  window.history.pushState(null, '', `/kb/${encodeURIComponent(name)}`);
+  window.dispatchEvent(new PopStateEvent('popstate'));
 }
 
 function getConfidencePct(source: Record<string, unknown>): number | null {
@@ -211,19 +223,13 @@ function renderTreatment(value: unknown) {
   return <div className="whitespace-pre-wrap">{String(value)}</div>;
 }
 
-function toCount(value: unknown): number {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : 0;
-}
-
 export function DashboardPage() {
   const defaultRange = getDefaultDateRange(7);
   const [startDate, setStartDate] = useState(defaultRange.start);
   const [endDate, setEndDate] = useState(defaultRange.end);
-  const [calendarRange, setCalendarRange] = useState<DateRange | undefined>(() => ({
-    from: new Date(`${defaultRange.start}T00:00:00`),
-    to: new Date(`${defaultRange.end}T00:00:00`),
-  }));
+  const [datePickerOpen, setDatePickerOpen] = useState(false);
+  const [draftStartDate, setDraftStartDate] = useState<Date | undefined>(() => new Date(`${defaultRange.start}T00:00:00`));
+  const [draftEndDate, setDraftEndDate] = useState<Date | undefined>(() => new Date(`${defaultRange.end}T00:00:00`));
   const [allEvents, setAllEvents] = useState<DiagnosisEvent[]>([]);
   const [selectedEvent, setSelectedEvent] = useState<DiagnosisEvent | null>(null);
   const [selectedDisease, setSelectedDisease] = useState('ALL');
@@ -239,28 +245,24 @@ export function DashboardPage() {
       || (selectedEvent.treatment !== null && typeof selectedEvent.treatment === 'object')
     : false;
 
-  const sanitizeDateRange = (): { start: string; end: string } => {
-    const fallbackRange = getDefaultDateRange(7);
-    const invalid = !isValidDateString(startDate) || !isValidDateString(endDate) || startDate > endDate;
-    if (invalid) {
-      setStartDate(fallbackRange.start);
-      setEndDate(fallbackRange.end);
-      return fallbackRange;
-    }
-    return { start: startDate, end: endDate };
-  };
-
-  const fetchData = async () => {
+  const fetchData = useCallback(async () => {
     setLoading(true);
 
-    const { start: safeStart, end: safeEnd } = sanitizeDateRange();
+    const fallbackRange = getDefaultDateRange(7);
+    const invalidRange = !isValidDateString(startDate) || !isValidDateString(endDate) || startDate > endDate;
+    const safeStart = invalidRange ? fallbackRange.start : startDate;
+    const safeEnd = invalidRange ? fallbackRange.end : endDate;
+    if (invalidRange) {
+      setStartDate(fallbackRange.start);
+      setEndDate(fallbackRange.end);
+      setDraftStartDate(new Date(`${fallbackRange.start}T00:00:00`));
+      setDraftEndDate(new Date(`${fallbackRange.end}T00:00:00`));
+    }
 
     try {
       const eventsResp = await fetch(`/api/events?start=${safeStart}&end=${safeEnd}&limit=5000`);
       const eventsData = await eventsResp.json();
       console.log('[Dashboard] /api/events response:', eventsData);
-      console.log('[Dashboard] /api/stats/timeseries response:', timeseriesData);
-      console.log('[Dashboard] /api/stats/models response:', modelStatsData);
 
       const eventsList = Array.isArray(eventsData)
         ? eventsData
@@ -278,11 +280,7 @@ export function DashboardPage() {
     } finally {
       setLoading(false);
     }
-  };
-
-  useEffect(() => {
-    fetchData();
-  }, []);
+  }, [startDate, endDate]);
 
   const diseaseOptions = useMemo(() => {
     return Array.from(new Set(allEvents.map((event) => event.disease).filter(Boolean))).sort((a, b) => a.localeCompare(b, 'zh-CN'));
@@ -452,24 +450,66 @@ export function DashboardPage() {
 
   const maxCount = Math.max(...stats.map(s => s.count), 1);
 
+  const applyDateRange = (fromDate: Date, toDate: Date) => {
+    const from = formatDate(fromDate);
+    const to = formatDate(toDate);
+    setStartDate(from);
+    setEndDate(to);
+    setDatePickerOpen(false);
+  };
+
   const setQuickRange = (days: number) => {
     const end = new Date();
     const start = new Date();
     start.setDate(end.getDate() - (days - 1));
-    setEndDate(formatDate(end));
-    setStartDate(formatDate(start));
-    setCalendarRange({ from: start, to: end });
+    setDraftStartDate(start);
+    setDraftEndDate(end);
+    applyDateRange(start, end);
   };
 
-  const onCalendarRangeSelect = (range: DateRange | undefined) => {
-    setCalendarRange(range);
-    if (range?.from) {
-      setStartDate(formatDate(range.from));
+  const onStartDateSelect = (nextStart: Date | undefined) => {
+    if (!nextStart) return;
+    setDraftStartDate(nextStart);
+    if (!draftEndDate || nextStart > draftEndDate) {
+      setDraftEndDate(undefined);
+      return;
     }
-    if (range?.to) {
-      setEndDate(formatDate(range.to));
-    }
+    applyDateRange(nextStart, draftEndDate);
   };
+
+  const onEndDateSelect = (nextEnd: Date | undefined) => {
+    if (!nextEnd || !draftStartDate) return;
+    if (nextEnd < draftStartDate) {
+      setDraftStartDate(nextEnd);
+      setDraftEndDate(undefined);
+      return;
+    }
+    setDraftEndDate(nextEnd);
+    applyDateRange(draftStartDate, nextEnd);
+  };
+
+  const selectedQuickRange = useMemo(() => {
+    const today = new Date();
+    const end = formatDate(today);
+    const daysDiff = (from: string, to: string) => {
+      const fromMs = Date.parse(`${from}T00:00:00`);
+      const toMs = Date.parse(`${to}T00:00:00`);
+      if (!Number.isFinite(fromMs) || !Number.isFinite(toMs)) return null;
+      return Math.floor((toMs - fromMs) / (24 * 60 * 60 * 1000)) + 1;
+    };
+    if (endDate !== end) return null;
+    const diff = daysDiff(startDate, endDate);
+    return diff === 7 || diff === 30 || diff === 90 ? diff : null;
+  }, [startDate, endDate]);
+
+  useEffect(() => {
+    setDraftStartDate(new Date(`${startDate}T00:00:00`));
+    setDraftEndDate(new Date(`${endDate}T00:00:00`));
+  }, [startDate, endDate]);
+
+  useEffect(() => {
+    fetchData();
+  }, [fetchData]);
 
   return (
     <div className="space-y-6 animate-fadeIn">
@@ -484,24 +524,67 @@ export function DashboardPage() {
 
         {/* Date Range Controls */}
         <div className="flex items-center gap-2 flex-wrap">
-          <Popover>
+          <Popover open={datePickerOpen} onOpenChange={setDatePickerOpen}>
             <PopoverTrigger asChild>
               <Button
                 variant="outline"
-                className="border-white/20 text-white/80 hover:bg-white/10"
+                className="border-white/20 bg-white/5 text-white hover:bg-white/10 min-w-[280px] justify-start"
               >
-                <Calendar className="w-4 h-4 mr-2" />
-                {startDate} - {endDate}
+                <Calendar className="w-4 h-4 mr-2 text-[#c8f7c5]" />
+                <span className="text-white/70 mr-2">开始</span>
+                <span>{formatDisplayDate(startDate)}</span>
+                <ArrowRight className="w-3 h-3 mx-2 text-white/40" />
+                <span className="text-white/70 mr-2">结束</span>
+                <span>{formatDisplayDate(endDate)}</span>
               </Button>
             </PopoverTrigger>
-            <PopoverContent className="w-auto p-0 bg-[#121212] border border-white/20">
-              <DateCalendar
-                mode="range"
-                numberOfMonths={2}
-                selected={calendarRange}
-                onSelect={onCalendarRangeSelect}
-                defaultMonth={calendarRange?.from}
-              />
+            <PopoverContent align="end" className="z-50 w-auto max-w-[95vw] p-4 bg-[#d7edd4] text-black border border-[#a7c7a1] shadow-2xl rounded-2xl">
+              <div className="space-y-3">
+                <div className="grid grid-cols-2 gap-3 text-xs">
+                  <div className="rounded-lg border border-black/10 bg-white/50 px-3 py-2">
+                    <p className="text-black/60">开始日期</p>
+                    <p className="font-semibold">{draftStartDate ? formatDisplayDate(formatDate(draftStartDate)) : '请选择开始日期'}</p>
+                  </div>
+                  <div className="rounded-lg border border-black/10 bg-white/50 px-3 py-2">
+                    <p className="text-black/60">结束日期</p>
+                    <p className="font-semibold">{draftEndDate ? formatDisplayDate(formatDate(draftEndDate)) : '请选择结束日期'}</p>
+                  </div>
+                </div>
+                <div className="grid md:grid-cols-2 gap-4">
+                  <div>
+                    <p className="text-xs text-black/60 mb-2">开始日期</p>
+                    <DateCalendar
+                      mode="single"
+                      selected={draftStartDate}
+                      onSelect={onStartDateSelect}
+                      month={draftStartDate}
+                      className="rounded-xl border border-black/10 bg-white/60"
+                      classNames={{
+                        day: 'text-black',
+                        day_button: 'hover:bg-[#c8f7c5]/60 data-[selected=true]:bg-[#7fbf7b] data-[selected=true]:text-black',
+                        range_middle: 'bg-[#b2d8ac]',
+                      }}
+                    />
+                  </div>
+                  <div>
+                    <p className="text-xs text-black/60 mb-2">结束日期</p>
+                    <DateCalendar
+                      mode="single"
+                      selected={draftEndDate}
+                      onSelect={onEndDateSelect}
+                      month={draftEndDate ?? draftStartDate}
+                      disabled={(day) => (draftStartDate ? day < draftStartDate : false)}
+                      modifiers={{ range_middle: draftStartDate && draftEndDate ? { from: draftStartDate, to: draftEndDate } : undefined }}
+                      className="rounded-xl border border-black/10 bg-white/60"
+                      classNames={{
+                        day: 'text-black',
+                        day_button: 'hover:bg-[#c8f7c5]/60 data-[selected=true]:bg-[#7fbf7b] data-[selected=true]:text-black',
+                        range_middle: 'bg-[#b2d8ac]',
+                      }}
+                    />
+                  </div>
+                </div>
+              </div>
             </PopoverContent>
           </Popover>
           <div className="flex gap-1">
@@ -511,7 +594,7 @@ export function DashboardPage() {
                 variant="outline"
                 size="sm"
                 onClick={() => setQuickRange(days)}
-                className="border-white/20 text-white/70 hover:text-white hover:bg-white/10"
+                className={cn('border-white/20 text-white/70 hover:text-white hover:bg-white/10', selectedQuickRange === days && 'border-[#c8f7c5] text-[#c8f7c5] bg-[#c8f7c5]/10')}
               >
                 近{days}天
               </Button>
@@ -521,6 +604,7 @@ export function DashboardPage() {
             onClick={fetchData}
             disabled={loading}
             className="bg-[#c8f7c5] text-black hover:bg-[#b8e7b5]"
+            title="手动刷新"
           >
             <RefreshCw className={cn("w-4 h-4", loading && "animate-spin")} />
           </Button>
@@ -695,10 +779,14 @@ export function DashboardPage() {
             <div className="space-y-3">
               {stats.slice(0, 8).map((stat, index) => (
                 <div key={stat.disease} className="space-y-1">
-                  <button className="flex items-center justify-between text-sm w-full text-left" onClick={() => setSelectedDisease(stat.disease)}>
-                    <span className="text-white/80 truncate flex-1">#{index + 1} {stat.disease}</span>
-                    <span className="text-[#c8f7c5] font-mono ml-2">({stat.count})</span>
-                  </button>
+                  <div className="flex items-center justify-between text-sm gap-2">
+                    <button className="text-white/80 truncate flex-1 text-left hover:text-[#c8f7c5]" onClick={() => navigateToKbDisease(stat.disease)}>
+                      #{index + 1} {stat.disease}
+                    </button>
+                    <button className="text-[#c8f7c5] font-mono ml-2" onClick={() => setSelectedDisease(stat.disease)}>
+                      ({stat.count})
+                    </button>
+                  </div>
                   <div className="h-2 bg-white/10 rounded-full overflow-hidden">
                     <div
                       className="h-full bg-gradient-to-r from-[#c8f7c5] to-[#4ade80] rounded-full transition-all duration-500"
@@ -756,7 +844,16 @@ export function DashboardPage() {
                       {event.confidencePct !== null ? `${event.confidencePct.toFixed(2)}%` : '—'}
                     </Badge>
                   </div>
-                  <p className="text-white font-medium mt-1">{event.disease}</p>
+                  <button
+                    type="button"
+                    onClick={(evt) => {
+                      evt.stopPropagation();
+                      navigateToKbDisease(event.disease);
+                    }}
+                    className="text-white font-medium mt-1 hover:text-[#c8f7c5] text-left"
+                  >
+                    {event.disease}
+                  </button>
                   <div className="mt-2 flex flex-wrap gap-1">
                     <Badge variant="outline" className="text-[10px] border-white/30 text-white/70">{event.selectedBranch || 'UNKNOWN'}</Badge>
                     {event.personalizationApplied && <Badge className="text-[10px] bg-[#c8f7c5] text-black">个性化</Badge>}
@@ -800,7 +897,13 @@ export function DashboardPage() {
                   ) : null}
                   <div className="bg-white/5 rounded-lg p-3">
                     <p className="text-white/60 text-xs mb-1">最终病害 / 置信度</p>
-                    <p className="text-lg font-bold text-[#c8f7c5]">{selectedEvent.disease}</p>
+                    <button
+                      type="button"
+                      className="text-lg font-bold text-[#c8f7c5] hover:underline"
+                      onClick={() => navigateToKbDisease(selectedEvent.disease)}
+                    >
+                      {selectedEvent.disease}
+                    </button>
                     <p className="text-white/80 text-sm">{selectedEvent.confidencePct !== null ? `${selectedEvent.confidencePct.toFixed(2)}%` : '—'}</p>
                   </div>
                   <div className="bg-white/5 rounded-lg p-3">
@@ -831,23 +934,47 @@ export function DashboardPage() {
                 <TabsContent value="kb" className="space-y-2 mt-3 text-sm text-white/80">
                   {kbDetail ? (
                     <>
-                      <div className="text-[#c8f7c5] font-semibold">{kbDetail.name}</div>
-                      <div className="bg-white/5 rounded-lg p-2 whitespace-pre-wrap">{kbDetail.description || '暂无描述'}</div>
-                      <div className="bg-white/5 rounded-lg p-2 whitespace-pre-wrap">治疗：{kbDetail.treatment || '暂无'}</div>
-                      <div className="bg-white/5 rounded-lg p-2 whitespace-pre-wrap">预防：{kbDetail.prevention || '暂无'}</div>
-                      <div className="flex flex-wrap gap-1">
-                        <Badge className={cn('text-xs', kbDetail.description ? 'bg-[#c8f7c5] text-black' : 'bg-white/10 text-white')}>description</Badge>
-                        <Badge className={cn('text-xs', kbDetail.treatment ? 'bg-[#c8f7c5] text-black' : 'bg-white/10 text-white')}>treatment</Badge>
-                        <Badge className={cn('text-xs', kbDetail.prevention ? 'bg-[#c8f7c5] text-black' : 'bg-white/10 text-white')}>prevention</Badge>
-                        <Badge className={cn('text-xs', kbDetail.actions ? 'bg-[#c8f7c5] text-black' : 'bg-white/10 text-white')}>actions</Badge>
-                        <Badge className={cn('text-xs', (kbDetail.ingredients?.length ?? 0) > 0 ? 'bg-[#c8f7c5] text-black' : 'bg-white/10 text-white')}>ingredients</Badge>
+                      <button type="button" className="text-[#c8f7c5] font-semibold hover:underline" onClick={() => navigateToKbDisease(kbDetail.name)}>
+                        {kbDetail.name}
+                      </button>
+                      <div className="bg-white/5 rounded-lg p-2 whitespace-pre-wrap">
+                        <div className="text-xs text-white/60 mb-1">病害描述</div>
+                        {kbDetail.description || '暂无描述'}
                       </div>
-                      <Button size="sm" variant="outline" className="border-white/20 text-white" onClick={() => {
-                        window.history.pushState(null, '', `/kb/${encodeURIComponent(selectedEvent.disease)}`);
-                        window.dispatchEvent(new PopStateEvent('popstate'));
-                      }}>跳转知识库详情</Button>
+                      <div className="bg-white/5 rounded-lg p-2 whitespace-pre-wrap">
+                        <div className="text-xs text-white/60 mb-1">治疗方案</div>
+                        {kbDetail.treatment || '暂无'}
+                      </div>
+                      <div className="bg-white/5 rounded-lg p-2 whitespace-pre-wrap">
+                        <div className="text-xs text-white/60 mb-1">预防建议</div>
+                        {kbDetail.prevention || '暂无'}
+                      </div>
+                      <div className="bg-white/5 rounded-lg p-2">
+                        <div className="text-xs text-white/60 mb-2">处置动作</div>
+                        <div className="flex flex-wrap gap-1">
+                          {Object.entries(kbDetail.actions ?? {}).length > 0 ? Object.entries(kbDetail.actions ?? {}).map(([key, value]) => (
+                            <Badge key={key} variant="outline" className="border-[#c8f7c5]/60 text-[#c8f7c5]">{key}：{Array.isArray(value) ? `${value.length}项` : '已配置'}</Badge>
+                          )) : <span className="text-white/40">暂无 actions</span>}
+                        </div>
+                      </div>
+                      <div className="bg-white/5 rounded-lg p-2">
+                        <div className="text-xs text-white/60 mb-2">推荐成分</div>
+                        <div className="flex flex-wrap gap-1">
+                          {(kbDetail.ingredients?.length ?? 0) > 0 ? kbDetail.ingredients?.map((ingredient) => (
+                            <Badge key={ingredient} className="bg-[#c8f7c5]/20 text-[#c8f7c5]">{ingredient}</Badge>
+                          )) : <span className="text-white/40">暂无 ingredients</span>}
+                        </div>
+                      </div>
+                      <Button size="sm" variant="outline" className="border-white/20 text-white" onClick={() => navigateToKbDisease(kbDetail.name)}>
+                        查看知识库详情
+                      </Button>
                     </>
-                  ) : <p className="text-white/40">暂无知识库摘要</p>}
+                  ) : (
+                    <div className="bg-white/5 rounded-lg p-3 space-y-2">
+                      <p className="text-white/50">暂无知识库详情</p>
+                      <Button size="sm" variant="outline" disabled className="border-white/20 text-white/50">查看知识库详情</Button>
+                    </div>
+                  )}
                 </TabsContent>
               </Tabs>
             ) : (

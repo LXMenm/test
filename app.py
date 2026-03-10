@@ -1295,6 +1295,13 @@ def get_kb_page() -> Response:
     return serve_frontend_index()
 
 
+@app.get("/kb/{name:path}")
+def get_kb_detail_page(name: str) -> Response:
+    if not name.strip():
+        raise HTTPException(status_code=404, detail="Not Found")
+    return serve_frontend_index()
+
+
 @app.get("/api/kb/diseases")
 def list_kb_diseases() -> dict:
     return {"items": kb.list_diseases()}
