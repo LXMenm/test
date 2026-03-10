@@ -664,6 +664,7 @@ async def diagnose_image(
         "final_source": final_source,
         "confirm_round": False,
         "source_stage": "initial",
+        "selected_branch": flags.get("selected_branch"),
         "image_confidence": final_state.get("image_confidence") if final_state else None,
         "treatment": treatment_or_none,
         "meta": {
@@ -675,6 +676,7 @@ async def diagnose_image(
             "filtered_reasons": filtered_reasons,
             "filtered_components": filtered_components,
             "filtered_actions": filtered_actions,
+            "selected_branch": flags.get("selected_branch"),
             "model_id": model_meta.get("model_id"),
             "model_display_name": model_meta.get("model_display_name"),
             "model_backend": model_meta.get("backend"),
@@ -908,6 +910,7 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
         "final_source": "confirm",
         "confirm_round": True,
         "source_stage": "confirm",
+        "selected_branch": flags.get("selected_branch"),
         "treatment": {
             "plan": state.get("treatment_plan"),
             "prevention": state.get("prevention_advice"),
@@ -919,6 +922,7 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
             "filtered_reasons": filtered_reasons,
             "filtered_components": filtered_components,
             "filtered_actions": filtered_actions,
+            "selected_branch": flags.get("selected_branch"),
             "model_id": model_meta.get("model_id"),
             "model_display_name": model_meta.get("model_display_name"),
             "model_backend": model_meta.get("backend"),
