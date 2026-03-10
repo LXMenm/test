@@ -653,12 +653,12 @@ export function DashboardPage() {
         </div>
 
         {/* Date Range Controls */}
-        <div className="relative z-20 flex items-center gap-2 flex-wrap overflow-visible">
+        <div className="flex items-center gap-2 flex-wrap">
           <Popover open={datePickerOpen} onOpenChange={setDatePickerOpen}>
             <PopoverTrigger asChild>
               <Button
                 variant="outline"
-                className="min-w-[280px] justify-start border-[#3b8a6c] bg-[#1f7558] text-white hover:bg-[#287f61]"
+                className="border-white/20 bg-white/5 text-white hover:bg-white/10 min-w-[280px] justify-start"
               >
                 <Calendar className="w-4 h-4 mr-2 text-[#c8f7c5]" />
                 <span className="text-white/70 mr-2">开始</span>
@@ -668,12 +668,7 @@ export function DashboardPage() {
                 <span>{formatDisplayDate(endDate)}</span>
               </Button>
             </PopoverTrigger>
-            <PopoverContent
-              side="bottom"
-              align="end"
-              sideOffset={10}
-              className="z-[1200] w-[min(96vw,760px)] max-h-[85vh] overflow-auto rounded-2xl border border-[#a7c7a1] bg-[#d7edd4] p-4 text-black shadow-2xl"
-            >
+            <PopoverContent align="end" className="z-50 w-auto max-w-[95vw] p-4 bg-[#d7edd4] text-black border border-[#a7c7a1] shadow-2xl rounded-2xl">
               <div className="space-y-3">
                 <div className="grid grid-cols-2 gap-3 text-xs">
                   <div className="rounded-lg border border-black/10 bg-white/50 px-3 py-2">
@@ -685,7 +680,7 @@ export function DashboardPage() {
                     <p className="font-semibold">{draftEndDate ? formatDisplayDate(formatDate(draftEndDate)) : '请选择结束日期'}</p>
                   </div>
                 </div>
-                <div className="grid grid-cols-1 2xl:grid-cols-2 gap-4">
+                <div className="grid md:grid-cols-2 gap-4">
                   <div>
                     <p className="text-xs text-black/60 mb-2">开始日期</p>
                     <DateCalendar
