@@ -211,11 +211,6 @@ function renderTreatment(value: unknown) {
   return <div className="whitespace-pre-wrap">{String(value)}</div>;
 }
 
-function toCount(value: unknown): number {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : 0;
-}
-
 export function DashboardPage() {
   const defaultRange = getDefaultDateRange(7);
   const [startDate, setStartDate] = useState(defaultRange.start);
@@ -259,8 +254,6 @@ export function DashboardPage() {
       const eventsResp = await fetch(`/api/events?start=${safeStart}&end=${safeEnd}&limit=5000`);
       const eventsData = await eventsResp.json();
       console.log('[Dashboard] /api/events response:', eventsData);
-      console.log('[Dashboard] /api/stats/timeseries response:', timeseriesData);
-      console.log('[Dashboard] /api/stats/models response:', modelStatsData);
 
       const eventsList = Array.isArray(eventsData)
         ? eventsData
