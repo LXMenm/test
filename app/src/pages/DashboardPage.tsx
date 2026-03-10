@@ -1,16 +1,5 @@
-import { useState, useEffect, useMemo } from 'react';
-import {
-  BarChart3,
-  Calendar,
-  RefreshCw,
-  Image as ImageIcon,
-  TrendingUp,
-  LineChart as LineChartIcon,
-  Cpu,
-  ChevronDown,
-  ChevronUp,
-  Settings2,
-} from 'lucide-react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
+import { BarChart3, Calendar, RefreshCw, Image as ImageIcon, TrendingUp, AlertCircle, LineChart as LineChartIcon, Cpu, ArrowRight } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -18,9 +7,6 @@ import { Calendar as DateCalendar } from '@/components/ui/calendar';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { ResponsiveContainer, LineChart, Line, CartesianGrid, XAxis, YAxis, Tooltip, BarChart, Bar } from 'recharts';
-import type { DateRange } from 'react-day-picker';
-import type { ReactNode } from 'react';
-
 import { cn } from '@/lib/utils';
 
 interface DiseaseStat {
@@ -165,34 +151,18 @@ function safeDisplayTime(value: string): string {
   return new Date(parsed).toLocaleString();
 }
 
-function readableText(value: unknown, fallback: string): string {
-  if (typeof value !== 'string') return fallback;
-  const text = value.trim();
-  if (!text) return fallback;
-  if (['UNKNOWN', 'unknown', 'null', 'undefined', '-'].includes(text)) return fallback;
-  return text;
+
+function formatDisplayDate(value: string): string {
+  if (!isValidDateString(value)) return '—';
+  const parsed = new Date(`${value}T00:00:00`);
+  return parsed.toLocaleDateString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' });
 }
 
-function branchLabel(value: string): string {
-  const val = readableText(value, '未分档').toUpperCase();
-  const map: Record<string, string> = {
-    FAMILY: '家庭档',
-    MID: '专业档',
-    ENTERPRISE: '规模档',
-    '未分档': '未分档',
-  };
-  return map[val] || '未分档';
-}
-
-function sourceLabel(value: string): string {
-  const val = readableText(value, '图像识别');
-  const map: Record<string, string> = {
-    image: '图像识别',
-    symptom: '症状补充',
-    confirm: '二次确认',
-    fallback: '规则兜底',
-  };
-  return map[val] || val;
+function navigateToKbDisease(diseaseName: string) {
+  const name = diseaseName.trim();
+  if (!name || name === '—') return;
+  window.history.pushState(null, '', `/kb/${encodeURIComponent(name)}`);
+  window.dispatchEvent(new PopStateEvent('popstate'));
 }
 
 function getConfidencePct(source: Record<string, unknown>): number | null {
@@ -291,139 +261,13 @@ function renderTreatment(value: unknown) {
   return <div className="whitespace-pre-wrap">{String(value)}</div>;
 }
 
-function getNestedRecord(source: unknown, key: string): Record<string, unknown> {
-  if (!source || typeof source !== 'object') return {};
-  const value = (source as Record<string, unknown>)[key];
-  if (!value || typeof value !== 'object') return {};
-  return value as Record<string, unknown>;
-}
-
-function summarizeTraceRows(rows: unknown[]): TraceSummaryItem[] {
-  const safeRows = rows.filter((item) => item && typeof item === 'object') as Record<string, unknown>[];
-  if (safeRows.length === 0) return [];
-
-  const findLatest = (needle: string[]) => {
-    return [...safeRows].reverse().find((row) => {
-      const agent = String(row.agent ?? row.agent_id ?? row.node ?? '').toLowerCase();
-      const step = String(row.step ?? row.step_cn ?? row.message ?? '').toLowerCase();
-      return needle.some((key) => agent.includes(key) || step.includes(key));
-    });
-  };
-
-  const reception = findLatest(['reception']);
-  const diagnosis = findLatest(['diagnosis']);
-  const kb = findLatest(['kb_retrieval', 'kb']);
-  const treatment = findLatest(['treatment', 'prescription']);
-  const personalization = findLatest(['personalization']);
-
-  const summary: TraceSummaryItem[] = [];
-
-  if (reception) {
-    const inputs = getNestedRecord(reception, 'inputs');
-    const outputs = getNestedRecord(reception, 'outputs');
-    const symptoms = Array.isArray(inputs.symptoms) ? inputs.symptoms.map(String).filter(Boolean) : [];
-    const missing = Array.isArray(outputs.missing_profile_fields) ? outputs.missing_profile_fields.map(String).filter(Boolean) : [];
-    summary.push({
-      key: 'reception',
-      agent: '接待智能体',
-      title: `抽取症状 ${symptoms.length > 0 ? symptoms.slice(0, 3).join('、') : '未记录'}`,
-      detail: `档案缺失字段：${missing.length > 0 ? missing.join('、') : '无'}`,
-    });
-  }
-
-  if (diagnosis) {
-    const payload = getNestedRecord(diagnosis, 'payload');
-    const disease = readableText(payload.disease, '未明确病害');
-    const conf = Number(payload.confidence);
-    const needConfirm = payload.need_confirm === true || String(diagnosis.message ?? '').includes('确认');
-    summary.push({
-      key: 'diagnosis',
-      agent: '诊断智能体',
-      title: `判定病害：${disease}，置信度：${Number.isFinite(conf) ? `${(conf * 100).toFixed(1)}%` : '未记录'}`,
-      detail: `诊断结论${needConfirm ? '建议继续确认' : '可直接输出'}。`,
-    });
-  }
-
-  if (kb) {
-    const outputs = getNestedRecord(kb, 'outputs');
-    const payload = getNestedRecord(kb, 'payload');
-    const disease = readableText(outputs.kb_disease ?? payload.kb_disease ?? payload.disease, '未命中');
-    const hasActions = outputs.actions || payload.actions;
-    const ingredients = Array.isArray(outputs.ingredients)
-      ? outputs.ingredients.length
-      : (Array.isArray(payload.ingredients) ? payload.ingredients.length : 0);
-    summary.push({
-      key: 'kb',
-      agent: '知识检索智能体',
-      title: `知识命中：${disease}`,
-      detail: `措施字段：${hasActions ? '有' : '无'}；药剂成分：${ingredients > 0 ? `${ingredients} 项` : '无'}`,
-    });
-  }
-
-  if (treatment) {
-    const outputs = getNestedRecord(treatment, 'outputs');
-    const payload = getNestedRecord(treatment, 'payload');
-    const branch = branchLabel(String(outputs.selected_branch ?? payload.selected_branch ?? ''));
-    const llmFailed = outputs.llm_failed === true || payload.llm_failed === true;
-    const filtered = outputs.filtered === true || payload.filtered === true;
-    summary.push({
-      key: 'treatment',
-      agent: '治疗方案智能体',
-      title: `按${branch}生成方案，LLM${llmFailed ? '失败转兜底' : '生成成功'}`,
-      detail: filtered ? '方案触发个性化过滤，已做安全改写。' : '方案按个性化信息直接输出。',
-    });
-  }
-
-  if (personalization) {
-    const payload = getNestedRecord(personalization, 'payload');
-    const outputs = getNestedRecord(payload, 'outputs');
-    const reasons = Array.isArray(outputs.personalization_reasons) ? outputs.personalization_reasons.map(String).filter(Boolean) : [];
-    const filteredReasons = Array.isArray(outputs.filtered_reasons) ? outputs.filtered_reasons.map(String).filter(Boolean) : [];
-    summary.push({
-      key: 'personalization',
-      agent: '个性化节点',
-      title: `个性化${outputs.personalization_applied ? '已应用' : '未应用'}，命中约束 ${reasons.length}`,
-      detail: `触发过滤原因：${filteredReasons.length > 0 ? filteredReasons.join('、') : '无'}`,
-    });
-  }
-
-  if (summary.length > 0) return summary;
-
-  return safeRows
-    .slice(-4)
-    .map((row, index) => ({
-      key: `fallback-${index}`,
-      agent: readableText(row.agent_cn ?? row.agent, '流程节点'),
-      title: readableText(row.step_cn ?? row.message, '流程执行'),
-      detail: '该节点缺少结构化信息，暂展示原始摘要。',
-    }));
-}
-
-function loadLocalRecord<T extends Record<string, boolean>>(key: string, fallback: T): T {
-  if (typeof window === 'undefined') return fallback;
-  try {
-    const raw = window.localStorage.getItem(key);
-    if (!raw) return fallback;
-    const parsed = JSON.parse(raw) as Record<string, unknown>;
-    const merged = { ...fallback } as Record<string, boolean>;
-    Object.keys(merged).forEach((k) => {
-      if (typeof parsed[k] === 'boolean') merged[k] = parsed[k] as boolean;
-    });
-    return merged as T;
-  } catch {
-    return fallback;
-  }
-}
-
 export function DashboardPage() {
   const defaultRange = getDefaultDateRange(7);
   const [startDate, setStartDate] = useState(defaultRange.start);
   const [endDate, setEndDate] = useState(defaultRange.end);
-  const [calendarRange, setCalendarRange] = useState<DateRange | undefined>(() => ({
-    from: new Date(`${defaultRange.start}T00:00:00`),
-    to: new Date(`${defaultRange.end}T00:00:00`),
-  }));
-  const [calendarMonths, setCalendarMonths] = useState(2);
+  const [datePickerOpen, setDatePickerOpen] = useState(false);
+  const [draftStartDate, setDraftStartDate] = useState<Date | undefined>(() => new Date(`${defaultRange.start}T00:00:00`));
+  const [draftEndDate, setDraftEndDate] = useState<Date | undefined>(() => new Date(`${defaultRange.end}T00:00:00`));
   const [allEvents, setAllEvents] = useState<DiagnosisEvent[]>([]);
   const [selectedEvent, setSelectedEvent] = useState<DiagnosisEvent | null>(null);
   const [selectedDisease, setSelectedDisease] = useState('ALL');
@@ -445,42 +289,25 @@ export function DashboardPage() {
       || (selectedEvent.treatment !== null && typeof selectedEvent.treatment === 'object')
     : false;
 
-  useEffect(() => {
-    setModulePrefs(loadLocalRecord(DASHBOARD_PREFS_KEY, defaultModulePrefs));
-    setModuleCollapse(loadLocalRecord(DASHBOARD_COLLAPSE_KEY, defaultCollapse));
-    const updateMonths = () => setCalendarMonths(window.innerWidth < 1100 ? 1 : 2);
-    updateMonths();
-    window.addEventListener('resize', updateMonths);
-    return () => window.removeEventListener('resize', updateMonths);
-  }, []);
+  const fetchData = useCallback(async () => {
+    setLoading(true);
 
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    window.localStorage.setItem(DASHBOARD_PREFS_KEY, JSON.stringify(modulePrefs));
-  }, [modulePrefs]);
-
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    window.localStorage.setItem(DASHBOARD_COLLAPSE_KEY, JSON.stringify(moduleCollapse));
-  }, [moduleCollapse]);
-
-  const sanitizeDateRange = (): { start: string; end: string } => {
     const fallbackRange = getDefaultDateRange(7);
-    const invalid = !isValidDateString(startDate) || !isValidDateString(endDate) || startDate > endDate;
-    if (invalid) {
+    const invalidRange = !isValidDateString(startDate) || !isValidDateString(endDate) || startDate > endDate;
+    const safeStart = invalidRange ? fallbackRange.start : startDate;
+    const safeEnd = invalidRange ? fallbackRange.end : endDate;
+    if (invalidRange) {
       setStartDate(fallbackRange.start);
       setEndDate(fallbackRange.end);
-      return fallbackRange;
+      setDraftStartDate(new Date(`${fallbackRange.start}T00:00:00`));
+      setDraftEndDate(new Date(`${fallbackRange.end}T00:00:00`));
     }
-    return { start: startDate, end: endDate };
-  };
 
-  const fetchData = async () => {
-    setLoading(true);
-    const { start: safeStart, end: safeEnd } = sanitizeDateRange();
     try {
       const eventsResp = await fetch(`/api/events?start=${safeStart}&end=${safeEnd}&limit=5000`);
       const eventsData = await eventsResp.json();
+      console.log('[Dashboard] /api/events response:', eventsData);
+
       const eventsList = Array.isArray(eventsData)
         ? eventsData
         : eventsData?.events ?? eventsData?.items ?? eventsData?.data ?? [];
@@ -495,30 +322,7 @@ export function DashboardPage() {
     } finally {
       setLoading(false);
     }
-  };
-
-  useEffect(() => { fetchData(); }, []);
-
-  useEffect(() => {
-    const run = async () => {
-      try {
-        const resp = await fetch('/api/profiles');
-        const data = await resp.json();
-        const rows: unknown[] = Array.isArray(data?.profiles) ? data.profiles : [];
-        setProfiles(
-          rows
-            .map((item: unknown) => {
-              const row = item && typeof item === 'object' ? item as Record<string, unknown> : {};
-              return { id: String(row.id ?? ''), name: typeof row.name === 'string' ? row.name : undefined };
-            })
-            .filter((item: ProfileListItem) => item.id)
-        );
-      } catch {
-        setProfiles([]);
-      }
-    };
-    run();
-  }, []);
+  }, [startDate, endDate]);
 
   useEffect(() => {
     if (!selectedFarmerId || selectedFarmerId === 'ALL') {
@@ -703,36 +507,66 @@ export function DashboardPage() {
 
   const maxCount = Math.max(...stats.map((s) => s.count), 1);
 
+  const applyDateRange = (fromDate: Date, toDate: Date) => {
+    const from = formatDate(fromDate);
+    const to = formatDate(toDate);
+    setStartDate(from);
+    setEndDate(to);
+    setDatePickerOpen(false);
+  };
+
   const setQuickRange = (days: number) => {
     const end = new Date();
     const start = new Date();
     start.setDate(end.getDate() - (days - 1));
-    setEndDate(formatDate(end));
-    setStartDate(formatDate(start));
-    setCalendarRange({ from: start, to: end });
+    setDraftStartDate(start);
+    setDraftEndDate(end);
+    applyDateRange(start, end);
   };
 
-  const onCalendarRangeSelect = (range: DateRange | undefined) => {
-    setCalendarRange(range);
-    if (range?.from) setStartDate(formatDate(range.from));
-    if (range?.to) setEndDate(formatDate(range.to));
+  const onStartDateSelect = (nextStart: Date | undefined) => {
+    if (!nextStart) return;
+    setDraftStartDate(nextStart);
+    if (!draftEndDate || nextStart > draftEndDate) {
+      setDraftEndDate(undefined);
+      return;
+    }
+    applyDateRange(nextStart, draftEndDate);
   };
 
-  const renderModuleHeader = (key: ModuleKey, title: string, icon?: ReactNode) => (
-    <CardHeader className="pb-3">
-      <div className="flex items-center justify-between gap-3">
-        <CardTitle className="text-white flex items-center gap-2 text-base">{icon}{title}</CardTitle>
-        <Button
-          size="sm"
-          variant="outline"
-          className="border-[#2b5f4d] text-white/80 hover:bg-[#183229]"
-          onClick={() => setModuleCollapse((prev) => ({ ...prev, [key]: !prev[key] }))}
-        >
-          {moduleCollapse[key] ? <ChevronDown className="w-4 h-4" /> : <ChevronUp className="w-4 h-4" />}
-        </Button>
-      </div>
-    </CardHeader>
-  );
+  const onEndDateSelect = (nextEnd: Date | undefined) => {
+    if (!nextEnd || !draftStartDate) return;
+    if (nextEnd < draftStartDate) {
+      setDraftStartDate(nextEnd);
+      setDraftEndDate(undefined);
+      return;
+    }
+    setDraftEndDate(nextEnd);
+    applyDateRange(draftStartDate, nextEnd);
+  };
+
+  const selectedQuickRange = useMemo(() => {
+    const today = new Date();
+    const end = formatDate(today);
+    const daysDiff = (from: string, to: string) => {
+      const fromMs = Date.parse(`${from}T00:00:00`);
+      const toMs = Date.parse(`${to}T00:00:00`);
+      if (!Number.isFinite(fromMs) || !Number.isFinite(toMs)) return null;
+      return Math.floor((toMs - fromMs) / (24 * 60 * 60 * 1000)) + 1;
+    };
+    if (endDate !== end) return null;
+    const diff = daysDiff(startDate, endDate);
+    return diff === 7 || diff === 30 || diff === 90 ? diff : null;
+  }, [startDate, endDate]);
+
+  useEffect(() => {
+    setDraftStartDate(new Date(`${startDate}T00:00:00`));
+    setDraftEndDate(new Date(`${endDate}T00:00:00`));
+  }, [startDate, endDate]);
+
+  useEffect(() => {
+    fetchData();
+  }, [fetchData]);
 
   return (
     <div className="space-y-6 animate-fadeIn overflow-visible">
@@ -742,51 +576,92 @@ export function DashboardPage() {
           <p className="text-white/60 mt-1 text-sm">面向基地诊疗过程的趋势、案例与可解释分析</p>
         </div>
 
-        <div className="flex flex-wrap xl:flex-nowrap items-center justify-end gap-2 xl:gap-2.5">
-          <Popover>
+        {/* Date Range Controls */}
+        <div className="flex items-center gap-2 flex-wrap">
+          <Popover open={datePickerOpen} onOpenChange={setDatePickerOpen}>
             <PopoverTrigger asChild>
-              <Button variant="outline" className="h-10 bg-[#1f7558] text-white border-[#3b8a6c] hover:bg-[#287f61] min-w-[280px] justify-start">
-                <Calendar className="w-4 h-4 mr-2" />
-                {startDate} - {endDate}
+              <Button
+                variant="outline"
+                className="border-white/20 bg-white/5 text-white hover:bg-white/10 min-w-[280px] justify-start"
+              >
+                <Calendar className="w-4 h-4 mr-2 text-[#c8f7c5]" />
+                <span className="text-white/70 mr-2">开始</span>
+                <span>{formatDisplayDate(startDate)}</span>
+                <ArrowRight className="w-3 h-3 mx-2 text-white/40" />
+                <span className="text-white/70 mr-2">结束</span>
+                <span>{formatDisplayDate(endDate)}</span>
               </Button>
             </PopoverTrigger>
-            <PopoverContent
-              side="bottom"
-              align="end"
-              sideOffset={10}
-              className="z-[1200] w-auto max-w-[calc(100vw-1.5rem)] overflow-auto p-0 bg-[#b7d8c0] text-[#111f18] border border-[#7bab92] shadow-[0_12px_42px_rgba(20,92,69,0.28)] rounded-xl"
-            >
-              <DateCalendar
-                mode="range"
-                numberOfMonths={calendarMonths}
-                selected={calendarRange}
-                onSelect={onCalendarRangeSelect}
-                defaultMonth={calendarRange?.from}
-                className="text-[#111f18]"
-                classNames={{
-                  root: 'text-[#111f18]',
-                  month_caption: 'text-[#0f1d16] font-semibold',
-                  weekday: 'text-[#254638]',
-                  day: 'text-[#112018]',
-                  outside: 'text-[#426b59] opacity-70',
-                  today: 'bg-[#95c2a8] text-[#0f1d16]',
-                  range_middle: 'bg-[#9fc9b0]/70 text-[#0f1d16]',
-                  range_start: 'bg-[#5f997c] text-[#0f1d16]',
-                  range_end: 'bg-[#5f997c] text-[#0f1d16]',
-                  day_button: 'hover:bg-[#a5ccb5] data-[selected-single=true]:bg-[#5f997c] data-[selected-single=true]:text-[#0f1d16] data-[range-middle=true]:bg-[#9fc9b0] data-[range-middle=true]:text-[#0f1d16] data-[range-start=true]:bg-[#5f997c] data-[range-start=true]:text-[#0f1d16] data-[range-end=true]:bg-[#5f997c] data-[range-end=true]:text-[#0f1d16]',
-                }}
-              />
+            <PopoverContent align="end" className="z-50 w-auto max-w-[95vw] p-4 bg-[#d7edd4] text-black border border-[#a7c7a1] shadow-2xl rounded-2xl">
+              <div className="space-y-3">
+                <div className="grid grid-cols-2 gap-3 text-xs">
+                  <div className="rounded-lg border border-black/10 bg-white/50 px-3 py-2">
+                    <p className="text-black/60">开始日期</p>
+                    <p className="font-semibold">{draftStartDate ? formatDisplayDate(formatDate(draftStartDate)) : '请选择开始日期'}</p>
+                  </div>
+                  <div className="rounded-lg border border-black/10 bg-white/50 px-3 py-2">
+                    <p className="text-black/60">结束日期</p>
+                    <p className="font-semibold">{draftEndDate ? formatDisplayDate(formatDate(draftEndDate)) : '请选择结束日期'}</p>
+                  </div>
+                </div>
+                <div className="grid md:grid-cols-2 gap-4">
+                  <div>
+                    <p className="text-xs text-black/60 mb-2">开始日期</p>
+                    <DateCalendar
+                      mode="single"
+                      selected={draftStartDate}
+                      onSelect={onStartDateSelect}
+                      month={draftStartDate}
+                      className="rounded-xl border border-black/10 bg-white/60"
+                      classNames={{
+                        day: 'text-black',
+                        day_button: 'hover:bg-[#c8f7c5]/60 data-[selected=true]:bg-[#7fbf7b] data-[selected=true]:text-black',
+                        range_middle: 'bg-[#b2d8ac]',
+                      }}
+                    />
+                  </div>
+                  <div>
+                    <p className="text-xs text-black/60 mb-2">结束日期</p>
+                    <DateCalendar
+                      mode="single"
+                      selected={draftEndDate}
+                      onSelect={onEndDateSelect}
+                      month={draftEndDate ?? draftStartDate}
+                      disabled={(day) => (draftStartDate ? day < draftStartDate : false)}
+                      modifiers={{ range_middle: draftStartDate && draftEndDate ? { from: draftStartDate, to: draftEndDate } : undefined }}
+                      className="rounded-xl border border-black/10 bg-white/60"
+                      classNames={{
+                        day: 'text-black',
+                        day_button: 'hover:bg-[#c8f7c5]/60 data-[selected=true]:bg-[#7fbf7b] data-[selected=true]:text-black',
+                        range_middle: 'bg-[#b2d8ac]',
+                      }}
+                    />
+                  </div>
+                </div>
+              </div>
             </PopoverContent>
           </Popover>
 
           <div className="flex items-center gap-1.5">
             {[7, 30, 90].map((days) => (
-              <Button key={days} variant="outline" size="sm" onClick={() => setQuickRange(days)} className="h-10 bg-[#1f7558]/95 text-white border-[#3b8a6c] hover:bg-[#287f61]">近{days}天</Button>
+              <Button
+                key={days}
+                variant="outline"
+                size="sm"
+                onClick={() => setQuickRange(days)}
+                className={cn('border-white/20 text-white/70 hover:text-white hover:bg-white/10', selectedQuickRange === days && 'border-[#c8f7c5] text-[#c8f7c5] bg-[#c8f7c5]/10')}
+              >
+                近{days}天
+              </Button>
             ))}
           </div>
-
-          <Button onClick={fetchData} disabled={loading} className="h-10 bg-[#1f7a59] text-white hover:bg-[#228664]">
-            <RefreshCw className={cn('w-4 h-4', loading && 'animate-spin')} />
+          <Button
+            onClick={fetchData}
+            disabled={loading}
+            className="bg-[#c8f7c5] text-black hover:bg-[#b8e7b5]"
+            title="手动刷新"
+          >
+            <RefreshCw className={cn("w-4 h-4", loading && "animate-spin")} />
           </Button>
 
           <Popover>
@@ -989,21 +864,32 @@ export function DashboardPage() {
         </Card>
       )}
 
-      {modulePrefs.disease && (
-        <Card className="glass-card">
-          {renderModuleHeader('disease', `病害 Top ${Math.min(8, stats.length)}`, <TrendingUp className="w-5 h-5 text-[#b8ddc7]" />)}
-          {!moduleCollapse.disease && (
-            <CardContent>
-              <div className="space-y-3">
-                {stats.slice(0, 8).map((stat, index) => (
-                  <div key={stat.disease} className="space-y-1">
-                    <button className="flex items-center justify-between text-sm w-full text-left" onClick={() => setSelectedDisease(stat.disease)}>
-                      <span className="text-white/80 truncate flex-1">#{index + 1} {stat.disease}</span>
-                      <span className="text-[#b8ddc7] font-mono ml-2">({stat.count})</span>
+      <div className="grid lg:grid-cols-3 gap-6">
+        {/* Disease Stats Chart */}
+        <Card className="glass-card lg:col-span-1">
+          <CardHeader>
+            <CardTitle className="text-white flex items-center gap-2">
+              <TrendingUp className="w-5 h-5 text-[#c8f7c5]" />
+              病害 Top {Math.min(8, stats.length)}
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-3">
+              {stats.slice(0, 8).map((stat, index) => (
+                <div key={stat.disease} className="space-y-1">
+                  <div className="flex items-center justify-between text-sm gap-2">
+                    <button className="text-white/80 truncate flex-1 text-left hover:text-[#c8f7c5]" onClick={() => navigateToKbDisease(stat.disease)}>
+                      #{index + 1} {stat.disease}
                     </button>
-                    <div className="h-2 bg-white/10 rounded-full overflow-hidden">
-                      <div className="h-full bg-gradient-to-r from-[#94c7aa] to-[#5f967b] rounded-full" style={{ width: `${(stat.count / maxCount) * 100}%` }} />
-                    </div>
+                    <button className="text-[#c8f7c5] font-mono ml-2" onClick={() => setSelectedDisease(stat.disease)}>
+                      ({stat.count})
+                    </button>
+                  </div>
+                  <div className="h-2 bg-white/10 rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-gradient-to-r from-[#c8f7c5] to-[#4ade80] rounded-full transition-all duration-500"
+                      style={{ width: `${(stat.count / maxCount) * 100}%` }}
+                    />
                   </div>
                 ))}
               </div>
@@ -1025,98 +911,147 @@ export function DashboardPage() {
                       onClick={() => setSelectedEvent(event)}
                       className={cn('p-3 rounded-xl cursor-pointer transition-all duration-300 border', selectedEvent?.id === event.id ? 'bg-[#203b31] border-[#84b89d]' : 'bg-white/5 hover:bg-white/10 border-transparent')}
                     >
-                      <div className="flex items-center justify-between">
-                        <span className="text-white/45 text-xs font-mono">{safeDisplayTime(event.ts)}</span>
-                        <Badge variant="outline" className={cn('text-xs', (event.confidencePct ?? -1) >= 80 ? 'border-[#79b996] text-[#bde4cf]' : (event.confidencePct ?? -1) >= 50 ? 'border-[#c3b277] text-[#e4dbb5]' : 'border-[#b1837e] text-[#d7b4af]')}>
-                          {event.confidencePct !== null ? `${event.confidencePct.toFixed(2)}%` : '未记录'}
-                        </Badge>
-                      </div>
-                      <p className="text-white font-medium mt-1">{event.disease}</p>
-                      <div className="mt-2 flex flex-wrap gap-1">
-                        <Badge variant="outline" className="text-[10px] border-white/25 text-white/70">{event.selectedBranch}</Badge>
-                        {event.personalizationApplied && <Badge className="text-[10px] bg-[#7aa88e] text-[#0d1712]">个性化</Badge>}
-                        {event.filtered && <Badge className="text-[10px] bg-[#8e9561] text-[#0d1712]">已过滤</Badge>}
-                        {event.confirmRound && <Badge className="text-[10px] bg-[#698997] text-[#0d1712]">确认轮</Badge>}
-                      </div>
+                      {event.confidencePct !== null ? `${event.confidencePct.toFixed(2)}%` : '—'}
+                    </Badge>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={(evt) => {
+                      evt.stopPropagation();
+                      navigateToKbDisease(event.disease);
+                    }}
+                    className="text-white font-medium mt-1 hover:text-[#c8f7c5] text-left"
+                  >
+                    {event.disease}
+                  </button>
+                  <div className="mt-2 flex flex-wrap gap-1">
+                    <Badge variant="outline" className="text-[10px] border-white/30 text-white/70">{event.selectedBranch || 'UNKNOWN'}</Badge>
+                    {event.personalizationApplied && <Badge className="text-[10px] bg-[#c8f7c5] text-black">个性化</Badge>}
+                    {event.filtered && <Badge className="text-[10px] bg-yellow-400 text-black">已过滤</Badge>}
+                    {event.confirmRound && <Badge className="text-[10px] bg-blue-400 text-black">确认轮</Badge>}
+                  </div>
+                </div>
+              ))}
+              {filteredEvents.length === 0 && (
+                <div className="text-center py-8 text-white/40">
+                  <Calendar className="w-10 h-10 mx-auto mb-2 opacity-50" />
+                  <p className="text-sm">暂无数据（请先完成一次诊断或调整日期范围）</p>
+                </div>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Detail Panel */}
+        <Card className="glass-card lg:col-span-1">
+          <CardHeader>
+            <CardTitle className="text-white flex items-center gap-2">
+              <AlertCircle className="w-5 h-5 text-[#c8f7c5]" />
+              详情
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            {selectedEvent ? (
+              <Tabs defaultValue="case" className="w-full">
+                <TabsList className="bg-white/5 border border-white/10 grid grid-cols-4">
+                  <TabsTrigger value="case">病例</TabsTrigger>
+                  <TabsTrigger value="personal">个性化</TabsTrigger>
+                  <TabsTrigger value="trace">Trace</TabsTrigger>
+                  <TabsTrigger value="kb">知识库</TabsTrigger>
+                </TabsList>
+                <TabsContent value="case" className="space-y-3 mt-3">
+                  {selectedEvent.imageUrl ? (
+                    <div className="rounded-xl overflow-hidden bg-black/30">
+                      <img src={selectedEvent.imageUrl} alt="Diagnosis" className="w-full max-h-40 object-contain" />
+                    </div>
+                  ) : null}
+                  <div className="bg-white/5 rounded-lg p-3">
+                    <p className="text-white/60 text-xs mb-1">最终病害 / 置信度</p>
+                    <button
+                      type="button"
+                      className="text-lg font-bold text-[#c8f7c5] hover:underline"
+                      onClick={() => navigateToKbDisease(selectedEvent.disease)}
+                    >
+                      {selectedEvent.disease}
+                    </button>
+                    <p className="text-white/80 text-sm">{selectedEvent.confidencePct !== null ? `${selectedEvent.confidencePct.toFixed(2)}%` : '—'}</p>
+                  </div>
+                  <div className="bg-white/5 rounded-lg p-3">
+                    <p className="text-white/60 text-xs mb-1">模型 / 时间 / 档位</p>
+                    <p className="text-white text-sm">{selectedEvent.modelName || selectedEvent.modelId}</p>
+                    <p className="text-white/60 text-xs mt-1">{safeDisplayTime(selectedEvent.ts)} · {selectedEvent.selectedBranch}</p>
+                  </div>
+                  {hasTreatment && <div className="bg-white/5 rounded-lg p-3 text-white/80 text-sm max-h-36 overflow-y-auto">{renderTreatment(selectedEvent?.treatment)}</div>}
+                </TabsContent>
+                <TabsContent value="personal" className="space-y-2 mt-3 text-sm text-white/80">
+                  <div>已应用个性化：{selectedEvent.personalizationApplied ? '是' : '否'}</div>
+                  <div>触发过滤：{selectedEvent.filtered ? '是' : '否'}</div>
+                  <div>轮次：{selectedEvent.confirmRound ? '确认轮' : '首轮'}</div>
+                  <div>过滤原因：{selectedEvent.filteredReasons.join('；') || '无'}</div>
+                  <div>过滤成分：{selectedEvent.filteredComponents.join('；') || '无'}</div>
+                  <div>缺失字段：{selectedEvent.missingProfileFields.join('；') || '无'}</div>
+                  <div>追问问题：{selectedEvent.followUpQuestions.join('；') || '无'}</div>
+                </TabsContent>
+                <TabsContent value="trace" className="space-y-2 mt-3">
+                  {traceSummary.map((item, index) => (
+                    <div key={`${item.agent}-${index}`} className="bg-white/5 rounded-lg p-2 text-xs">
+                      <div className="text-[#c8f7c5]">{item.agent} · {item.status}</div>
+                      <div className="text-white/80 mt-1">{item.message}</div>
                     </div>
                   ))}
-                  {filteredEvents.length === 0 && <p className="text-center py-8 text-white/40 text-sm">暂无数据（可调整日期或筛选条件）</p>}
-                </div>
-              </CardContent>
-            )}
-          </Card>
-        )}
-
-        {modulePrefs.detail && (
-          <Card className="glass-card">
-            {renderModuleHeader('detail', '详情', <ImageIcon className="w-5 h-5 text-[#b8ddc7]" />)}
-            {!moduleCollapse.detail && (
-              <CardContent>
-                {selectedEvent ? (
-                  <Tabs defaultValue="case" className="w-full">
-                    <TabsList className="bg-white/5 border border-white/10 grid grid-cols-4">
-                      <TabsTrigger value="case">病例</TabsTrigger>
-                      <TabsTrigger value="personal">个性化</TabsTrigger>
-                      <TabsTrigger value="trace">Trace</TabsTrigger>
-                      <TabsTrigger value="kb">知识库</TabsTrigger>
-                    </TabsList>
-                    <TabsContent value="case" className="space-y-3 mt-3">
-                      {selectedEvent.imageUrl ? <div className="rounded-xl overflow-hidden bg-black/30"><img src={selectedEvent.imageUrl} alt="Diagnosis" className="w-full max-h-44 object-contain" /></div> : null}
-                      <div className="bg-white/5 rounded-lg p-3">
-                        <p className="text-white/60 text-xs mb-1">最终病害 / 置信度</p>
-                        <p className="text-lg font-bold text-[#b8ddc7]">{selectedEvent.disease}</p>
-                        <p className="text-white/80 text-sm">{selectedEvent.confidencePct !== null ? `${selectedEvent.confidencePct.toFixed(2)}%` : '未记录'}</p>
+                  {traceSummary.length === 0 && <p className="text-white/40 text-sm">暂无 Trace 摘要</p>}
+                </TabsContent>
+                <TabsContent value="kb" className="space-y-2 mt-3 text-sm text-white/80">
+                  {kbDetail ? (
+                    <>
+                      <button type="button" className="text-[#c8f7c5] font-semibold hover:underline" onClick={() => navigateToKbDisease(kbDetail.name)}>
+                        {kbDetail.name}
+                      </button>
+                      <div className="bg-white/5 rounded-lg p-2 whitespace-pre-wrap">
+                        <div className="text-xs text-white/60 mb-1">病害描述</div>
+                        {kbDetail.description || '暂无描述'}
                       </div>
-                      <div className="bg-white/5 rounded-lg p-3">
-                        <p className="text-white/60 text-xs mb-1">模型 / 时间 / 档位</p>
-                        <p className="text-white text-sm">{selectedEvent.modelName || selectedEvent.modelId}</p>
-                        <p className="text-white/65 text-xs mt-1">{safeDisplayTime(selectedEvent.ts)} · {selectedEvent.selectedBranch} · {selectedEvent.confirmRound ? '确认轮' : '首轮'} · 来源：{selectedEvent.finalSource}</p>
+                      <div className="bg-white/5 rounded-lg p-2 whitespace-pre-wrap">
+                        <div className="text-xs text-white/60 mb-1">治疗方案</div>
+                        {kbDetail.treatment || '暂无'}
                       </div>
-                      {hasTreatment && <div className="bg-white/5 rounded-lg p-3 text-white/80 text-sm max-h-36 overflow-y-auto dashboard-scrollbar">{renderTreatment(selectedEvent?.treatment)}</div>}
-                    </TabsContent>
-                    <TabsContent value="personal" className="space-y-2 mt-3 text-sm text-white/80">
-                      <p className="text-white/60">该部分用于案例分析：解释该病例为何输出当前方案。</p>
-                      <div>已应用个性化：{selectedEvent.personalizationApplied ? '是' : '否'}</div>
-                      <div>触发过滤：{selectedEvent.filtered ? '是' : '否'}</div>
-                      <div>个性化原因：{selectedEvent.personalizationReasons.join('；') || '无'}</div>
-                      <div>农户/基地：{selectedEvent.farmerId} / {selectedEvent.baseId}</div>
-                      <div>农场规模/购药能力：{selectedEvent.farmScale} / {selectedEvent.pesticideAccessLevel}</div>
-                      <div>设备/栽培模式：{selectedEvent.equipment.join('、') || '未记录'} / {selectedEvent.cultivationMode}</div>
-                      <div>过滤原因：{selectedEvent.filtered ? (selectedEvent.filteredReasons.join('；') || '策略改写') : '未触发过滤'}</div>
-                      <div>追问问题：{selectedEvent.followUpQuestions.join('；') || '无'}</div>
-                    </TabsContent>
-                    <TabsContent value="trace" className="space-y-2 mt-3">
-                      {traceSummary.map((item) => (
-                        <div key={item.key} className="bg-white/5 rounded-lg p-3 text-xs">
-                          <div className="text-[#b8ddc7] text-sm font-medium">{item.agent}</div>
-                          <div className="text-white mt-1">{item.title}</div>
-                          <div className="text-white/70 mt-1">{item.detail}</div>
+                      <div className="bg-white/5 rounded-lg p-2 whitespace-pre-wrap">
+                        <div className="text-xs text-white/60 mb-1">预防建议</div>
+                        {kbDetail.prevention || '暂无'}
+                      </div>
+                      <div className="bg-white/5 rounded-lg p-2">
+                        <div className="text-xs text-white/60 mb-2">处置动作</div>
+                        <div className="flex flex-wrap gap-1">
+                          {Object.entries(kbDetail.actions ?? {}).length > 0 ? Object.entries(kbDetail.actions ?? {}).map(([key, value]) => (
+                            <Badge key={key} variant="outline" className="border-[#c8f7c5]/60 text-[#c8f7c5]">{key}：{Array.isArray(value) ? `${value.length}项` : '已配置'}</Badge>
+                          )) : <span className="text-white/40">暂无 actions</span>}
                         </div>
-                      ))}
-                      {traceSummary.length === 0 && <p className="text-white/40 text-sm">暂无可分析的关键节点</p>}
-                    </TabsContent>
-                    <TabsContent value="kb" className="space-y-2 mt-3 text-sm text-white/80">
-                      {kbDetail ? (
-                        <>
-                          <div className="text-[#b8ddc7] font-semibold">{kbDetail.name}</div>
-                          <div className="bg-white/5 rounded-lg p-2 whitespace-pre-wrap">{kbDetail.description || '暂无描述'}</div>
-                          <div className="bg-white/5 rounded-lg p-2 whitespace-pre-wrap">治疗：{kbDetail.treatment || '暂无'}</div>
-                          <div className="bg-white/5 rounded-lg p-2 whitespace-pre-wrap">预防：{kbDetail.prevention || '暂无'}</div>
-                          <div className="flex flex-wrap gap-1">
-                            <Badge className={cn('text-xs', kbDetail.actions ? 'bg-[#7aa88e] text-[#0d1712]' : 'bg-white/10 text-white')}>actions</Badge>
-                            <Badge className={cn('text-xs', (kbDetail.ingredients?.length ?? 0) > 0 ? 'bg-[#7aa88e] text-[#0d1712]' : 'bg-white/10 text-white')}>ingredients</Badge>
-                          </div>
-                        </>
-                      ) : <p className="text-white/40">暂无知识库摘要</p>}
-                    </TabsContent>
-                  </Tabs>
-                ) : (
-                  <div className="text-center py-12 text-white/40">
-                    <ImageIcon className="w-12 h-12 mx-auto mb-3 opacity-50" />
-                    <p className="text-sm">请选择左侧病例，查看案例分析详情</p>
-                  </div>
-                )}
-              </CardContent>
+                      </div>
+                      <div className="bg-white/5 rounded-lg p-2">
+                        <div className="text-xs text-white/60 mb-2">推荐成分</div>
+                        <div className="flex flex-wrap gap-1">
+                          {(kbDetail.ingredients?.length ?? 0) > 0 ? kbDetail.ingredients?.map((ingredient) => (
+                            <Badge key={ingredient} className="bg-[#c8f7c5]/20 text-[#c8f7c5]">{ingredient}</Badge>
+                          )) : <span className="text-white/40">暂无 ingredients</span>}
+                        </div>
+                      </div>
+                      <Button size="sm" variant="outline" className="border-white/20 text-white" onClick={() => navigateToKbDisease(kbDetail.name)}>
+                        查看知识库详情
+                      </Button>
+                    </>
+                  ) : (
+                    <div className="bg-white/5 rounded-lg p-3 space-y-2">
+                      <p className="text-white/50">暂无知识库详情</p>
+                      <Button size="sm" variant="outline" disabled className="border-white/20 text-white/50">查看知识库详情</Button>
+                    </div>
+                  )}
+                </TabsContent>
+              </Tabs>
+            ) : (
+              <div className="text-center py-12 text-white/40">
+                <ImageIcon className="w-12 h-12 mx-auto mb-3 opacity-50" />
+                <p className="text-sm">点击左侧记录查看详情</p>
+              </div>
             )}
           </Card>
         )}
