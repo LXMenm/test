@@ -1,5 +1,5 @@
-import { useState, useEffect, useMemo, useCallback } from 'react';
-import { BarChart3, Calendar, RefreshCw, Image as ImageIcon, TrendingUp, AlertCircle, LineChart as LineChartIcon, Cpu, ArrowRight } from 'lucide-react';
+import { useState, useEffect, useMemo, useCallback, type ReactNode } from 'react';
+import { BarChart3, Calendar, RefreshCw, Image as ImageIcon, TrendingUp, AlertCircle, LineChart as LineChartIcon, Cpu, ArrowRight, Settings2, ChevronDown, ChevronUp } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -84,17 +84,14 @@ interface ProfileDetail {
 interface TraceSummaryItem {
   key: string;
   agent: string;
-  title: string;
-  detail: string;
+  status: string;
+  message: string;
 }
 
 type ModuleKey = 'kpi' | 'trend' | 'model' | 'filter' | 'recent' | 'detail' | 'disease';
 
 type ModulePrefs = Record<ModuleKey, boolean>;
 type ModuleCollapse = Record<ModuleKey, boolean>;
-
-const DASHBOARD_PREFS_KEY = 'dashboard-module-prefs-v1';
-const DASHBOARD_COLLAPSE_KEY = 'dashboard-module-collapse-v1';
 
 const defaultModulePrefs: ModulePrefs = {
   kpi: true,
@@ -151,6 +148,45 @@ function safeDisplayTime(value: string): string {
   return new Date(parsed).toLocaleString();
 }
 
+
+function readableText(value: unknown, fallback = '—'): string {
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed || fallback;
+  }
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  return fallback;
+}
+
+function branchLabel(value: string): string {
+  const normalized = value.trim();
+  if (!normalized) return '未分档';
+  if (normalized === 'home') return '家庭档';
+  if (normalized === 'pro') return '专业档';
+  if (normalized === 'enterprise') return '规模档';
+  return normalized;
+}
+
+function sourceLabel(value: string): string {
+  const normalized = value.trim();
+  if (!normalized) return 'image';
+  if (normalized === 'llm') return 'LLM';
+  if (normalized === 'image') return '图像模型';
+  if (normalized === 'fallback') return '回退';
+  return normalized;
+}
+
+function summarizeTraceRows(rows: unknown[]): TraceSummaryItem[] {
+  return rows.slice(0, 12).map((row, index) => {
+    const rec = row && typeof row === 'object' ? row as Record<string, unknown> : {};
+    return {
+      key: readableText(rec.id ?? rec.ts ?? index, String(index)),
+      agent: readableText(rec.agent ?? rec.node ?? 'agent', 'agent'),
+      status: readableText(rec.status ?? rec.level ?? 'ok', 'ok'),
+      message: readableText(rec.message ?? rec.detail ?? rec.content, '—'),
+    };
+  });
+}
 
 function formatDisplayDate(value: string): string {
   if (!isValidDateString(value)) return '—';
@@ -284,6 +320,27 @@ export function DashboardPage() {
   const [modulePrefs, setModulePrefs] = useState<ModulePrefs>(defaultModulePrefs);
   const [moduleCollapse, setModuleCollapse] = useState<ModuleCollapse>(defaultCollapse);
 
+
+  const renderModuleHeader = (key: ModuleKey, title: string, icon: ReactNode) => (
+    <CardHeader className="pb-2">
+      <div className="flex items-center justify-between">
+        <CardTitle className="text-white flex items-center gap-2">
+          {icon}
+          {title}
+        </CardTitle>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          className="h-8 w-8 text-white/70 hover:text-white hover:bg-white/10"
+          onClick={() => setModuleCollapse((prev) => ({ ...prev, [key]: !prev[key] }))}
+        >
+          {moduleCollapse[key] ? <ChevronDown className="h-4 w-4" /> : <ChevronUp className="h-4 w-4" />}
+        </Button>
+      </div>
+    </CardHeader>
+  );
+
   const hasTreatment = selectedEvent
     ? typeof selectedEvent.treatment === 'string'
       || (selectedEvent.treatment !== null && typeof selectedEvent.treatment === 'object')
@@ -323,6 +380,25 @@ export function DashboardPage() {
       setLoading(false);
     }
   }, [startDate, endDate]);
+
+
+  useEffect(() => {
+    const run = async () => {
+      try {
+        const resp = await fetch('/api/profiles');
+        const data = await resp.json();
+        const items: Record<string, unknown>[] = Array.isArray(data)
+          ? data
+          : (Array.isArray(data?.items) ? data.items : []);
+        setProfiles(items
+          .map((item) => ({ id: String(item.id ?? item.farmer_id ?? ''), name: typeof item.name === 'string' ? item.name : undefined }))
+          .filter((item) => item.id));
+      } catch {
+        setProfiles([]);
+      }
+    };
+    run();
+  }, []);
 
   useEffect(() => {
     if (!selectedFarmerId || selectedFarmerId === 'ALL') {
@@ -577,12 +653,12 @@ export function DashboardPage() {
         </div>
 
         {/* Date Range Controls */}
-        <div className="flex items-center gap-2 flex-wrap">
+        <div className="relative z-20 flex items-center gap-2 flex-wrap overflow-visible">
           <Popover open={datePickerOpen} onOpenChange={setDatePickerOpen}>
             <PopoverTrigger asChild>
               <Button
                 variant="outline"
-                className="border-white/20 bg-white/5 text-white hover:bg-white/10 min-w-[280px] justify-start"
+                className="min-w-[280px] justify-start border-[#3b8a6c] bg-[#1f7558] text-white hover:bg-[#287f61]"
               >
                 <Calendar className="w-4 h-4 mr-2 text-[#c8f7c5]" />
                 <span className="text-white/70 mr-2">开始</span>
@@ -592,7 +668,12 @@ export function DashboardPage() {
                 <span>{formatDisplayDate(endDate)}</span>
               </Button>
             </PopoverTrigger>
-            <PopoverContent align="end" className="z-50 w-auto max-w-[95vw] p-4 bg-[#d7edd4] text-black border border-[#a7c7a1] shadow-2xl rounded-2xl">
+            <PopoverContent
+              side="bottom"
+              align="end"
+              sideOffset={10}
+              className="z-[1200] w-[min(96vw,760px)] max-h-[85vh] overflow-auto rounded-2xl border border-[#a7c7a1] bg-[#d7edd4] p-4 text-black shadow-2xl"
+            >
               <div className="space-y-3">
                 <div className="grid grid-cols-2 gap-3 text-xs">
                   <div className="rounded-lg border border-black/10 bg-white/50 px-3 py-2">
@@ -604,7 +685,7 @@ export function DashboardPage() {
                     <p className="font-semibold">{draftEndDate ? formatDisplayDate(formatDate(draftEndDate)) : '请选择结束日期'}</p>
                   </div>
                 </div>
-                <div className="grid md:grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 2xl:grid-cols-2 gap-4">
                   <div>
                     <p className="text-xs text-black/60 mb-2">开始日期</p>
                     <DateCalendar
@@ -891,12 +972,12 @@ export function DashboardPage() {
                       style={{ width: `${(stat.count / maxCount) * 100}%` }}
                     />
                   </div>
-                ))}
-              </div>
+                </div>
+              ))}
+            </div>
             </CardContent>
-          )}
-        </Card>
-      )}
+          </Card>
+      </div>
 
       <div className="grid lg:grid-cols-2 gap-6">
         {modulePrefs.recent && (
@@ -911,36 +992,41 @@ export function DashboardPage() {
                       onClick={() => setSelectedEvent(event)}
                       className={cn('p-3 rounded-xl cursor-pointer transition-all duration-300 border', selectedEvent?.id === event.id ? 'bg-[#203b31] border-[#84b89d]' : 'bg-white/5 hover:bg-white/10 border-transparent')}
                     >
-                      {event.confidencePct !== null ? `${event.confidencePct.toFixed(2)}%` : '—'}
-                    </Badge>
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-white/60 text-xs">{safeDisplayTime(event.ts)}</p>
+                        <Badge variant="outline" className="text-[10px] border-[#c8f7c5]/40 text-[#c8f7c5]">
+                          {event.confidencePct !== null ? `${event.confidencePct.toFixed(2)}%` : '—'}
+                        </Badge>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={(evt) => {
+                          evt.stopPropagation();
+                          navigateToKbDisease(event.disease);
+                        }}
+                        className="text-white font-medium mt-1 hover:text-[#c8f7c5] text-left"
+                      >
+                        {event.disease}
+                      </button>
+                      <div className="mt-2 flex flex-wrap gap-1">
+                        <Badge variant="outline" className="text-[10px] border-white/30 text-white/70">{event.selectedBranch || 'UNKNOWN'}</Badge>
+                        {event.personalizationApplied && <Badge className="text-[10px] bg-[#c8f7c5] text-black">个性化</Badge>}
+                        {event.filtered && <Badge className="text-[10px] bg-yellow-400 text-black">已过滤</Badge>}
+                        {event.confirmRound && <Badge className="text-[10px] bg-blue-400 text-black">确认轮</Badge>}
+                      </div>
+                    </div>
+                  ))}
+                  {filteredEvents.length === 0 && (
+                    <div className="text-center py-8 text-white/40">
+                      <Calendar className="w-10 h-10 mx-auto mb-2 opacity-50" />
+                      <p className="text-sm">暂无数据（请先完成一次诊断或调整日期范围）</p>
+                    </div>
+                  )}
                   </div>
-                  <button
-                    type="button"
-                    onClick={(evt) => {
-                      evt.stopPropagation();
-                      navigateToKbDisease(event.disease);
-                    }}
-                    className="text-white font-medium mt-1 hover:text-[#c8f7c5] text-left"
-                  >
-                    {event.disease}
-                  </button>
-                  <div className="mt-2 flex flex-wrap gap-1">
-                    <Badge variant="outline" className="text-[10px] border-white/30 text-white/70">{event.selectedBranch || 'UNKNOWN'}</Badge>
-                    {event.personalizationApplied && <Badge className="text-[10px] bg-[#c8f7c5] text-black">个性化</Badge>}
-                    {event.filtered && <Badge className="text-[10px] bg-yellow-400 text-black">已过滤</Badge>}
-                    {event.confirmRound && <Badge className="text-[10px] bg-blue-400 text-black">确认轮</Badge>}
-                  </div>
-                </div>
-              ))}
-              {filteredEvents.length === 0 && (
-                <div className="text-center py-8 text-white/40">
-                  <Calendar className="w-10 h-10 mx-auto mb-2 opacity-50" />
-                  <p className="text-sm">暂无数据（请先完成一次诊断或调整日期范围）</p>
-                </div>
-              )}
-            </div>
-          </CardContent>
-        </Card>
+              </CardContent>
+            )}
+          </Card>
+        )}
 
         {/* Detail Panel */}
         <Card className="glass-card lg:col-span-1">
@@ -1053,8 +1139,8 @@ export function DashboardPage() {
                 <p className="text-sm">点击左侧记录查看详情</p>
               </div>
             )}
-          </Card>
-        )}
+          </CardContent>
+        </Card>
       </div>
     </div>
   );
