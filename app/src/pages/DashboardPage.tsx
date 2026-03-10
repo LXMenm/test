@@ -600,13 +600,13 @@ export function DashboardPage() {
             <PopoverTrigger asChild>
               <Button
                 variant="outline"
-                className="bg-green-600 text-white border-green-500 hover:bg-green-500"
+                className="bg-[#145c45] text-white border-[#2e7d63] hover:bg-[#1a6c51]"
               >
                 <Calendar className="w-4 h-4 mr-2" />
                 {startDate} - {endDate}
               </Button>
             </PopoverTrigger>
-            <PopoverContent className="w-auto p-0 bg-[#121212] border border-white/20">
+            <PopoverContent className="w-auto p-0 bg-[#0a1512] border border-[#2e7d63]/70 shadow-[0_8px_30px_rgba(20,92,69,0.25)]">
               <DateCalendar
                 mode="range"
                 numberOfMonths={2}
@@ -623,7 +623,7 @@ export function DashboardPage() {
                 variant="outline"
                 size="sm"
                 onClick={() => setQuickRange(days)}
-                className="bg-green-600/90 text-white border-green-500 hover:bg-green-500"
+                className="bg-[#145c45]/90 text-white border-[#2e7d63] hover:bg-[#1a6c51]"
               >
                 近{days}天
               </Button>
@@ -632,7 +632,7 @@ export function DashboardPage() {
           <Button
             onClick={fetchData}
             disabled={loading}
-            className="bg-[#c8f7c5] text-black hover:bg-[#b8e7b5]"
+            className="bg-[#1f7a59] text-white hover:bg-[#228664]"
           >
             <RefreshCw className={cn("w-4 h-4", loading && "animate-spin")} />
           </Button>
@@ -642,35 +642,35 @@ export function DashboardPage() {
       <Card className="glass-card">
         <CardContent className="pt-6">
           <div className="grid md:grid-cols-2 xl:grid-cols-7 gap-3">
-            <select value={selectedFarmerId} onChange={(e) => setSelectedFarmerId(e.target.value)} className="bg-green-600 border border-green-500 rounded-lg px-3 py-2 text-white font-medium">
+            <select value={selectedFarmerId} onChange={(e) => setSelectedFarmerId(e.target.value)} className="bg-[#114a38] border border-[#2e7d63] rounded-lg px-3 py-2 text-[#e8fff0] font-medium">
               <option value="ALL">农户：全部</option>
               {profiles.map((item) => <option key={item.id} value={item.id}>{item.name ? `${item.id} · ${item.name}` : item.id}</option>)}
             </select>
-            <select value={selectedBaseId} onChange={(e) => setSelectedBaseId(e.target.value)} className="bg-green-600 border border-green-500 rounded-lg px-3 py-2 text-white font-medium" disabled={selectedFarmerId === 'ALL'}>
+            <select value={selectedBaseId} onChange={(e) => setSelectedBaseId(e.target.value)} className="bg-[#114a38] border border-[#2e7d63] rounded-lg px-3 py-2 text-[#e8fff0] font-medium disabled:opacity-50" disabled={selectedFarmerId === 'ALL'}>
               <option value="ALL">基地：全部</option>
               {farmerBases.map((item) => <option key={item.id} value={item.id}>{item.name ? `${item.id} · ${item.name}` : item.id}</option>)}
             </select>
-            <select value={selectedDisease} onChange={(e) => setSelectedDisease(e.target.value)} className="bg-green-600 border border-green-500 rounded-lg px-3 py-2 text-white font-medium">
-              <option value="ALL" className="bg-green-600 text-white">病害：全部</option>
-              {diseaseOptions.map((item) => <option key={item} value={item} className="bg-green-600 text-white">{item}</option>)}
+            <select value={selectedDisease} onChange={(e) => setSelectedDisease(e.target.value)} className="bg-[#114a38] border border-[#2e7d63] rounded-lg px-3 py-2 text-[#e8fff0] font-medium">
+              <option value="ALL" className="bg-[#0b241b] text-[#e8fff0]">病害：全部</option>
+              {diseaseOptions.map((item) => <option key={item} value={item} className="bg-[#0b241b] text-[#e8fff0]">{item}</option>)}
             </select>
-            <select value={selectedBranch} onChange={(e) => setSelectedBranch(e.target.value)} className="bg-green-600 border border-green-500 rounded-lg px-3 py-2 text-white font-medium">
-              <option value="ALL" className="bg-green-600 text-white">档位：全部</option>
-              {['FAMILY', 'MID', 'ENTERPRISE', 'UNKNOWN'].map((item) => <option key={item} value={item} className="bg-green-600 text-white">{item}</option>)}
+            <select value={selectedBranch} onChange={(e) => setSelectedBranch(e.target.value)} className="bg-[#114a38] border border-[#2e7d63] rounded-lg px-3 py-2 text-[#e8fff0] font-medium">
+              <option value="ALL" className="bg-[#0b241b] text-[#e8fff0]">档位：全部</option>
+              {['FAMILY', 'MID', 'ENTERPRISE', 'UNKNOWN'].map((item) => <option key={item} value={item} className="bg-[#0b241b] text-[#e8fff0]">{item}</option>)}
             </select>
-            <select value={selectedRound} onChange={(e) => setSelectedRound(e.target.value)} className="bg-green-600 border border-green-500 rounded-lg px-3 py-2 text-white font-medium">
-              <option value="ALL" className="bg-green-600 text-white">轮次：全部</option>
-              <option value="INITIAL" className="bg-green-600 text-white">首轮</option>
-              <option value="CONFIRM" className="bg-green-600 text-white">确认轮</option>
+            <select value={selectedRound} onChange={(e) => setSelectedRound(e.target.value)} className="bg-[#114a38] border border-[#2e7d63] rounded-lg px-3 py-2 text-[#e8fff0] font-medium">
+              <option value="ALL" className="bg-[#0b241b] text-[#e8fff0]">轮次：全部</option>
+              <option value="INITIAL" className="bg-[#0b241b] text-[#e8fff0]">首轮</option>
+              <option value="CONFIRM" className="bg-[#0b241b] text-[#e8fff0]">确认轮</option>
             </select>
-            <select value={selectedPersonalizationStatus} onChange={(e) => setSelectedPersonalizationStatus(e.target.value)} className="bg-green-600 border border-green-500 rounded-lg px-3 py-2 text-white font-medium">
-              <option value="ALL" className="bg-green-600 text-white">个性化：全部</option>
-              <option value="APPLIED" className="bg-green-600 text-white">已应用个性化</option>
-              <option value="FILTERED" className="bg-green-600 text-white">触发过滤</option>
+            <select value={selectedPersonalizationStatus} onChange={(e) => setSelectedPersonalizationStatus(e.target.value)} className="bg-[#114a38] border border-[#2e7d63] rounded-lg px-3 py-2 text-[#e8fff0] font-medium">
+              <option value="ALL" className="bg-[#0b241b] text-[#e8fff0]">个性化：全部</option>
+              <option value="APPLIED" className="bg-[#0b241b] text-[#e8fff0]">已应用个性化</option>
+              <option value="FILTERED" className="bg-[#0b241b] text-[#e8fff0]">触发过滤</option>
             </select>
-            <select value={selectedModel} onChange={(e) => setSelectedModel(e.target.value)} className="bg-green-600 border border-green-500 rounded-lg px-3 py-2 text-white font-medium">
-              <option value="ALL" className="bg-green-600 text-white">模型：全部</option>
-              {modelOptions.map((item) => <option key={item} value={item} className="bg-green-600 text-white">{item}</option>)}
+            <select value={selectedModel} onChange={(e) => setSelectedModel(e.target.value)} className="bg-[#114a38] border border-[#2e7d63] rounded-lg px-3 py-2 text-[#e8fff0] font-medium">
+              <option value="ALL" className="bg-[#0b241b] text-[#e8fff0]">模型：全部</option>
+              {modelOptions.map((item) => <option key={item} value={item} className="bg-[#0b241b] text-[#e8fff0]">{item}</option>)}
             </select>
           </div>
         </CardContent>
