@@ -16,7 +16,19 @@ const PATH_TO_PAGE: Record<string, Page> = {
 };
 
 function getPageFromPath(pathname: string): Page {
+  if (pathname.startsWith('/kb/')) return 'kb';
   return PATH_TO_PAGE[pathname] ?? 'diagnose';
+}
+
+function getKbDiseaseFromPath(pathname: string): string {
+  if (!pathname.startsWith('/kb/')) return '';
+  const raw = pathname.replace('/kb/', '').trim();
+  if (!raw) return '';
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
 }
 
 interface ErrorBoundaryProps {
@@ -70,10 +82,12 @@ class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
 
 function App() {
   const [currentPage, setCurrentPage] = useState<Page>(() => getPageFromPath(window.location.pathname));
+  const [kbDiseaseName, setKbDiseaseName] = useState<string>(() => getKbDiseaseFromPath(window.location.pathname));
 
   useEffect(() => {
     const handlePopState = () => {
       setCurrentPage(getPageFromPath(window.location.pathname));
+      setKbDiseaseName(getKbDiseaseFromPath(window.location.pathname));
     };
 
     window.addEventListener('popstate', handlePopState);
@@ -91,7 +105,7 @@ function App() {
       case 'profiles':
         return <ProfilesPage />;
       case 'kb':
-        return <KBPage />;
+        return <KBPage focusDiseaseName={kbDiseaseName} />;
       default:
         return <DiagnosePage />;
     }

@@ -52,7 +52,20 @@ interface SymptomMap {
 
 type TabType = 'diseases' | 'treatments' | 'rules' | 'symptom-map';
 
-export function KBPage() {
+interface DiseaseDetail {
+  name: string;
+  description: string;
+  treatment: string;
+  prevention: string;
+  actions?: TreatmentActions;
+  ingredients?: string[];
+}
+
+interface KBPageProps {
+  focusDiseaseName?: string;
+}
+
+export function KBPage({ focusDiseaseName = '' }: KBPageProps) {
   const [activeTab, setActiveTab] = useState<TabType>('diseases');
   const [, setLoading] = useState(false);
   
@@ -92,6 +105,18 @@ export function KBPage() {
   const [editingTreatmentActionsJson, setEditingTreatmentActionsJson] = useState('');
   const [editingTreatmentActionsError, setEditingTreatmentActionsError] = useState('');
   const [showActionsEditor, setShowActionsEditor] = useState(false);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState('');
+  const [focusDiseaseDetail, setFocusDiseaseDetail] = useState<DiseaseDetail | null>(null);
+
+  const clearFocusDisease = () => {
+    setFocusDiseaseDetail(null);
+    setDetailError('');
+    if (window.location.pathname.startsWith('/kb/')) {
+      window.history.pushState(null, '', '/kb');
+      window.dispatchEvent(new PopStateEvent('popstate'));
+    }
+  };
 
   const fetchDiseases = async () => {
     try {
@@ -151,6 +176,36 @@ export function KBPage() {
     fetchDiseases();
     fetchData(activeTab);
   }, [activeTab]);
+
+  useEffect(() => {
+    const diseaseName = focusDiseaseName.trim();
+    if (!diseaseName) {
+      setFocusDiseaseDetail(null);
+      setDetailError('');
+      return;
+    }
+
+    const fetchDetail = async () => {
+      setDetailLoading(true);
+      setDetailError('');
+      try {
+        const resp = await fetch(`/api/kb/diseases/${encodeURIComponent(diseaseName)}`);
+        const data = await resp.json();
+        if (!resp.ok) {
+          throw new Error(typeof data?.detail === 'string' ? data.detail : '获取病害详情失败');
+        }
+        setFocusDiseaseDetail(data as DiseaseDetail);
+      } catch (error) {
+        setFocusDiseaseDetail(null);
+        setDetailError(error instanceof Error ? error.message : '获取病害详情失败');
+      } finally {
+        setDetailLoading(false);
+      }
+    };
+
+    setActiveTab('diseases');
+    fetchDetail();
+  }, [focusDiseaseName]);
 
   // CRUD operations
   const saveDisease = async () => {
@@ -357,6 +412,65 @@ export function KBPage() {
 
   return (
     <div className="space-y-6 animate-fadeIn">
+      {(focusDiseaseName || focusDiseaseDetail || detailError) && (
+        <Card className="glass-card border-[#c8f7c5]/30">
+          <CardHeader className="flex flex-row items-start justify-between">
+            <div>
+              <CardTitle className="text-white">病害知识详情</CardTitle>
+              <p className="text-white/60 text-sm mt-1">来自 /api/kb/diseases/{'{name}'}，支持从诊断结果直达</p>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              className="border-white/20 text-white hover:bg-white/10"
+              onClick={clearFocusDisease}
+            >
+              返回知识库管理
+            </Button>
+          </CardHeader>
+          <CardContent>
+            {detailLoading && <p className="text-white/70 text-sm">正在加载病害详情...</p>}
+            {!detailLoading && detailError && <p className="text-red-300 text-sm">{detailError}</p>}
+            {!detailLoading && !detailError && focusDiseaseDetail && (
+              <div className="space-y-4 text-sm">
+                <div>
+                  <div className="text-white/60 mb-1">病害名称</div>
+                  <div className="text-[#c8f7c5] font-semibold text-lg">{focusDiseaseDetail.name}</div>
+                </div>
+                <div>
+                  <div className="text-white/60 mb-1">病害描述</div>
+                  <div className="text-white whitespace-pre-wrap">{focusDiseaseDetail.description || '暂无描述'}</div>
+                </div>
+                <div>
+                  <div className="text-white/60 mb-1">治疗建议</div>
+                  <div className="text-white whitespace-pre-wrap">{focusDiseaseDetail.treatment || '暂无治疗建议'}</div>
+                </div>
+                <div>
+                  <div className="text-white/60 mb-1">预防建议</div>
+                  <div className="text-white whitespace-pre-wrap">{focusDiseaseDetail.prevention || '暂无预防建议'}</div>
+                </div>
+                {focusDiseaseDetail.actions && (
+                  <div>
+                    <div className="text-white/60 mb-1">结构化 Actions</div>
+                    <pre className="bg-white/5 border border-white/10 rounded-lg p-3 text-white/80 whitespace-pre-wrap break-words">{JSON.stringify(focusDiseaseDetail.actions, null, 2)}</pre>
+                  </div>
+                )}
+                {Array.isArray(focusDiseaseDetail.ingredients) && focusDiseaseDetail.ingredients.length > 0 && (
+                  <div>
+                    <div className="text-white/60 mb-1">有效成分</div>
+                    <div className="flex flex-wrap gap-2">
+                      {focusDiseaseDetail.ingredients.map((item) => (
+                        <Badge key={item} className="bg-[#c8f7c5]/20 text-[#c8f7c5] border border-[#c8f7c5]/40">{item}</Badge>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
       {/* Header */}
       <div>
         <h1 className="text-3xl font-bold text-white">

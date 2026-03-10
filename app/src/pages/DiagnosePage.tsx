@@ -103,6 +103,13 @@ export function DiagnosePage() {
   const [selectedProfile, setSelectedProfile] = useState<ProfileDetail | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  const navigateToKbDisease = (disease: string) => {
+    const name = disease.trim();
+    if (!name || name === '未知' || name === '—') return;
+    window.history.pushState(null, '', `/kb/${encodeURIComponent(name)}`);
+    window.dispatchEvent(new PopStateEvent('popstate'));
+  };
+
   const handleFileChange = (e: ChangeEvent<HTMLInputElement>) => {
     const selectedFile = e.target.files?.[0];
     if (selectedFile) {
@@ -812,7 +819,13 @@ export function DiagnosePage() {
                   <div className="grid sm:grid-cols-3 gap-4">
                     <div className="bg-white/5 rounded-xl p-4">
                       <p className="text-white/60 text-sm mb-1">最终病害</p>
-                      <p className="text-xl font-bold text-[#c8f7c5]">{result.final_disease}</p>
+                      <button
+                        type="button"
+                        onClick={() => navigateToKbDisease(result.final_disease)}
+                        className="text-left text-xl font-bold text-[#c8f7c5] hover:underline underline-offset-4"
+                      >
+                        {result.final_disease}
+                      </button>
                     </div>
                     <div className="bg-white/5 rounded-xl p-4">
                       <p className="text-white/60 text-sm mb-1">置信度</p>
@@ -839,7 +852,13 @@ export function DiagnosePage() {
                             >
                               #{idx + 1}
                             </Badge>
-                            <span className="text-white flex-1">{item.disease}</span>
+                            <button
+                              type="button"
+                              onClick={() => navigateToKbDisease(item.disease)}
+                              className="text-white flex-1 text-left hover:text-[#c8f7c5] hover:underline underline-offset-4"
+                            >
+                              {item.disease}
+                            </button>
                             <span className="text-[#c8f7c5] font-mono">{item.probPct.toFixed(2)}%</span>
                           </div>
                         ))}
