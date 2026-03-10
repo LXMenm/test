@@ -762,17 +762,18 @@ export function DashboardPage() {
                 selected={calendarRange}
                 onSelect={onCalendarRangeSelect}
                 defaultMonth={calendarRange?.from}
-                className="bg-[#b7d8c0] text-[#12211a] rounded-xl p-3 [&_button]:text-[#12211a] [&_button:hover]:bg-[#9ec7ae] [&_button[data-selected-single=true]]:bg-[#5f997c] [&_button[data-selected-single=true]]:text-[#0f1d16] [&_button[data-range-middle=true]]:bg-[#9fc9b0] [&_button[data-range-middle=true]]:text-[#0f1d16] [&_button[data-range-start=true]]:bg-[#5f997c] [&_button[data-range-start=true]]:text-[#0f1d16] [&_button[data-range-end=true]]:bg-[#5f997c] [&_button[data-range-end=true]]:text-[#0f1d16]"
+                className="text-[#111f18]"
                 classNames={{
-                  root: 'text-[#12211a]',
+                  root: 'text-[#111f18]',
                   month_caption: 'text-[#0f1d16] font-semibold',
-                  weekday: 'text-[#1f4536] font-medium',
-                  day: 'text-[#12211a]',
-                  outside: 'text-[#3d6a57] opacity-80',
+                  weekday: 'text-[#254638]',
+                  day: 'text-[#112018]',
+                  outside: 'text-[#426b59] opacity-70',
                   today: 'bg-[#95c2a8] text-[#0f1d16]',
-                  range_middle: 'bg-[#9fc9b0] text-[#0f1d16]',
+                  range_middle: 'bg-[#9fc9b0]/70 text-[#0f1d16]',
                   range_start: 'bg-[#5f997c] text-[#0f1d16]',
                   range_end: 'bg-[#5f997c] text-[#0f1d16]',
+                  day_button: 'hover:bg-[#a5ccb5] data-[selected-single=true]:bg-[#5f997c] data-[selected-single=true]:text-[#0f1d16] data-[range-middle=true]:bg-[#9fc9b0] data-[range-middle=true]:text-[#0f1d16] data-[range-start=true]:bg-[#5f997c] data-[range-start=true]:text-[#0f1d16] data-[range-end=true]:bg-[#5f997c] data-[range-end=true]:text-[#0f1d16]',
                 }}
               />
             </PopoverContent>
