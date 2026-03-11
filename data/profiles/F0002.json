@@ -1,0 +1,33 @@
+{
+  "farmer_id": "F0002",
+  "name": "测试",
+  "schema_version": "1.0",
+  "updated_at": "2026-03-03T07:56:23Z",
+  "active_base_id": "B0001",
+  "confirm_when_low_confidence": true,
+  "farm_scale": "SMALL",
+  "pesticide_access_level": "LIMITED",
+  "equipment": [
+    "HAND_SPRAYER"
+  ],
+  "cultivation_mode": "SOIL",
+  "experience_level": "INTERMEDIATE",
+  "risk_preference": "BALANCED",
+  "bases": {
+    "B0001": {
+      "base_id": "B0001",
+      "name": "基地01",
+      "location": "广州",
+      "province": "广东省",
+      "facility": "温室大棚",
+      "environment": "最近一周连阴雨，高湿度",
+      "growth_stage": "",
+      "notes": ""
+    }
+  },
+  "constraints": {
+    "banned_ingredients": [],
+    "harvest_window_days": 30,
+    "prefer_organic": false
+  }
+}
