@@ -1133,14 +1133,10 @@ export function DashboardPage() {
         <div className="grid lg:grid-cols-3 gap-6">
           {/* Disease Stats Chart */}
           <Card className="glass-card lg:col-span-1">
-          <CardHeader>
-            <CardTitle className="text-white flex items-center gap-2">
-              <TrendingUp className="w-5 h-5 text-[#c8f7c5]" />
-              病害 Top {Math.min(8, stats.length)}
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-3">
+            {renderModuleHeader('disease', `病害 Top ${Math.min(8, stats.length)}`, <TrendingUp className="w-5 h-5 text-[#c8f7c5]" />)}
+            {!moduleCollapse.disease && (
+              <CardContent>
+                <div className="space-y-3">
               {stats.slice(0, 8).map((stat, index) => (
                 <div key={stat.disease} className="space-y-1">
                   <div className="flex items-center justify-between text-sm gap-2">
@@ -1159,8 +1155,9 @@ export function DashboardPage() {
                   </div>
                 </div>
               ))}
-            </div>
-            </CardContent>
+                </div>
+              </CardContent>
+            )}
           </Card>
         </div>
       )}
@@ -1195,7 +1192,6 @@ export function DashboardPage() {
                         {event.disease}
                       </button>
                       <div className="mt-2 flex flex-wrap gap-1">
-                        <Badge variant="outline" className="text-[10px] border-white/30 text-white/70">{event.selectedBranch || '未分档'}</Badge>
                         {event.personalizationApplied && <Badge className="text-[10px] bg-[#c8f7c5] text-black">个性化</Badge>}
                         {event.filtered && <Badge className="text-[10px] bg-yellow-400 text-black">已过滤</Badge>}
                         {event.confirmRound && <Badge className="text-[10px] bg-blue-400 text-black">确认轮</Badge>}
@@ -1217,14 +1213,10 @@ export function DashboardPage() {
         {/* Detail Panel */}
         {modulePrefs.detail && (
           <Card className="glass-card lg:col-span-1">
-          <CardHeader>
-            <CardTitle className="text-white flex items-center gap-2">
-              <AlertCircle className="w-5 h-5 text-[#c8f7c5]" />
-              详情
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            {selectedEvent ? (
+            {renderModuleHeader('detail', '详情', <AlertCircle className="w-5 h-5 text-[#c8f7c5]" />)}
+            {!moduleCollapse.detail && (
+              <CardContent>
+                {selectedEvent ? (
               <Tabs defaultValue="case" className="w-full">
                 <TabsList className="bg-white/5 border border-white/10 grid grid-cols-4">
                   <TabsTrigger value="case">病例</TabsTrigger>
@@ -1233,6 +1225,13 @@ export function DashboardPage() {
                   <TabsTrigger value="kb">知识库</TabsTrigger>
                 </TabsList>
                 <TabsContent value="case" className="space-y-3 mt-3">
+                  {selectedEvent.imageUrl ? (
+                    <div className="bg-white/5 rounded-lg p-3">
+                      <div className="rounded-md overflow-hidden bg-black/30">
+                        <img src={selectedEvent.imageUrl} alt="诊断图片" className="w-full max-h-56 object-contain" />
+                      </div>
+                    </div>
+                  ) : null}
                   <div className="bg-white/5 rounded-lg p-3">
                     <p className="text-white/60 text-xs mb-1">最终病害 / 置信度</p>
                     <button
@@ -1335,7 +1334,8 @@ export function DashboardPage() {
                 <p className="text-sm">点击左侧记录查看详情</p>
               </div>
             )}
-          </CardContent>
+              </CardContent>
+            )}
           </Card>
         )}
       </div>
