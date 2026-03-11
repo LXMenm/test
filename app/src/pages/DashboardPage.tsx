@@ -775,22 +775,6 @@ export function DashboardPage() {
     fetchData();
   }, [fetchData]);
 
-  const dashboardCalendarClassNames = {
-    month_caption: 'text-black font-semibold',
-    caption_label: 'text-black font-semibold',
-    weekday: 'text-black/70 font-medium',
-    nav: 'text-black',
-    button_previous: 'border border-[#5f9a7b] bg-[#bfe8c2] text-black hover:bg-[#a9dbaf] hover:text-black',
-    button_next: 'border border-[#5f9a7b] bg-[#bfe8c2] text-black hover:bg-[#a9dbaf] hover:text-black',
-    day: 'text-black',
-    day_button: 'text-black rounded-md transition-colors hover:bg-[#9fd5a6] hover:text-black data-[selected=true]:bg-[#7fbe8a] data-[selected=true]:text-black data-[selected=true]:hover:bg-[#74b680] data-[range-start=true]:bg-[#7fbe8a] data-[range-start=true]:text-black data-[range-end=true]:bg-[#7fbe8a] data-[range-end=true]:text-black data-[range-middle=true]:bg-[#a8dcb0] data-[range-middle=true]:text-black',
-    today: 'border border-[#4d8b6b] text-black',
-    outside: 'text-black/45',
-    disabled: 'text-black/35 opacity-45',
-    dropdown_root: 'border border-[#5f9a7b] bg-[#c8ebc8] text-black',
-    dropdown: 'bg-[#c8ebc8] text-black',
-  };
-
   return (
     <div className="space-y-6 animate-fadeIn overflow-visible">
       <div className="flex flex-col xl:flex-row xl:items-center xl:justify-between gap-4">
@@ -815,32 +799,36 @@ export function DashboardPage() {
                 <span>{formatDisplayDate(endDate)}</span>
               </Button>
             </PopoverTrigger>
-            <PopoverContent align="end" className="z-[1300] w-auto max-w-[95vw] p-4 bg-[#8dcf98] text-black border border-[#5f9a7b] shadow-[0_16px_34px_rgba(28,74,52,0.28)] rounded-2xl">
+            <PopoverContent align="end" className="z-50 w-auto max-w-[95vw] p-4 bg-[#d7edd4] text-black border border-[#a7c7a1] shadow-2xl rounded-2xl">
               <div className="space-y-3">
                 <div className="grid grid-cols-2 gap-3 text-xs">
-                  <div className="rounded-lg border border-[#5f9a7b] bg-[#b7e3bb] px-3 py-2">
-                    <p className="text-black/65">开始日期</p>
+                  <div className="rounded-lg border border-black/10 bg-white/50 px-3 py-2">
+                    <p className="text-black/60">开始日期</p>
                     <p className="font-semibold">{draftStartDate ? formatDisplayDate(formatDate(draftStartDate)) : '请选择开始日期'}</p>
                   </div>
-                  <div className="rounded-lg border border-[#5f9a7b] bg-[#b7e3bb] px-3 py-2">
-                    <p className="text-black/65">结束日期</p>
+                  <div className="rounded-lg border border-black/10 bg-white/50 px-3 py-2">
+                    <p className="text-black/60">结束日期</p>
                     <p className="font-semibold">{draftEndDate ? formatDisplayDate(formatDate(draftEndDate)) : '请选择结束日期'}</p>
                   </div>
                 </div>
                 <div className="grid md:grid-cols-2 gap-4">
                   <div>
-                    <p className="text-xs text-black/70 mb-2">开始日期</p>
+                    <p className="text-xs text-black/60 mb-2">开始日期</p>
                     <DateCalendar
                       mode="single"
                       selected={draftStartDate}
                       onSelect={onStartDateSelect}
                       month={draftStartDate}
-                      className="rounded-xl border border-[#5f9a7b] bg-[#bfe8c2] p-2 [[data-slot=popover-content]_&]:bg-[#bfe8c2]"
-                      classNames={dashboardCalendarClassNames}
+                      className="rounded-xl border border-black/10 bg-white/60"
+                      classNames={{
+                        day: 'text-black',
+                        day_button: 'hover:bg-[#c8f7c5]/60 data-[selected=true]:bg-[#7fbf7b] data-[selected=true]:text-black',
+                        range_middle: 'bg-[#b2d8ac]',
+                      }}
                     />
                   </div>
                   <div>
-                    <p className="text-xs text-black/70 mb-2">结束日期</p>
+                    <p className="text-xs text-black/60 mb-2">结束日期</p>
                     <DateCalendar
                       mode="single"
                       selected={draftEndDate}
@@ -848,8 +836,12 @@ export function DashboardPage() {
                       month={draftEndDate ?? draftStartDate}
                       disabled={(day) => (draftStartDate ? day < draftStartDate : false)}
                       modifiers={{ range_middle: draftStartDate && draftEndDate ? { from: draftStartDate, to: draftEndDate } : undefined }}
-                      className="rounded-xl border border-[#5f9a7b] bg-[#bfe8c2] p-2 [[data-slot=popover-content]_&]:bg-[#bfe8c2]"
-                      classNames={dashboardCalendarClassNames}
+                      className="rounded-xl border border-black/10 bg-white/60"
+                      classNames={{
+                        day: 'text-black',
+                        day_button: 'hover:bg-[#c8f7c5]/60 data-[selected=true]:bg-[#7fbf7b] data-[selected=true]:text-black',
+                        range_middle: 'bg-[#b2d8ac]',
+                      }}
                     />
                   </div>
                 </div>
