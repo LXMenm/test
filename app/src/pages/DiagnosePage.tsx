@@ -17,6 +17,7 @@ import {
   getPesticideAccessLevelLabel,
   getSelectedBranchLabel,
 } from '@/lib/profileLabels';
+import { resolveModelOptions } from '@/lib/modelOptions';
 
 interface DiagnosisResult {
   image_url: string;
@@ -78,6 +79,7 @@ interface TraceEvent {
 type Top3Candidate = { disease: string; probPct: number };
 
 export function DiagnosePage() {
+  const modelOptions = resolveModelOptions();
   const [file, setFile] = useState<File | null>(null);
   const [imagePreview, setImagePreview] = useState<string>('');
   const [symptoms, setSymptoms] = useState('');
@@ -716,8 +718,11 @@ export function DiagnosePage() {
                   sideOffset={6}
                   className="bg-[#111] text-white border-white/20"
                 >
-                  <SelectItem value="tf_default" className="text-white data-[highlighted]:bg-[#c8f7c5] data-[highlighted]:text-black">默认高精度模型 (tf)</SelectItem>
-                  <SelectItem value="tf_light_v1" className="text-white data-[highlighted]:bg-[#c8f7c5] data-[highlighted]:text-black">轻量模型V1 (tf)</SelectItem>
+                  {modelOptions.map((option) => (
+                    <SelectItem key={option.value} value={option.value} className="text-white data-[highlighted]:bg-[#c8f7c5] data-[highlighted]:text-black">
+                      {option.label}
+                    </SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
               <p className="text-xs text-white/60">将发送 model_id：{modelId}</p>
