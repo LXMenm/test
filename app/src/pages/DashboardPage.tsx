@@ -500,9 +500,9 @@ function renderTreatment(value: unknown) {
 }
 
 export function DashboardPage() {
-  const defaultRange = getDefaultDateRange(7);
-  const [startDate, setStartDate] = useState(defaultRange.start);
-  const [endDate, setEndDate] = useState(defaultRange.end);
+  const [queryMode, setQueryMode] = useState<'preset' | 'custom'>('preset');
+  const [presetKey, setPresetKey] = useState<'7d' | '30d' | '90d' | null>('7d');
+  const [customRange, setCustomRange] = useState<{ start: string | null; end: string | null }>({ start: null, end: null });
   const [allEvents, setAllEvents] = useState<DiagnosisEvent[]>([]);
   const [selectedEvent, setSelectedEvent] = useState<DiagnosisEvent | null>(null);
   const [selectedDisease, setSelectedDisease] = useState('ALL');
@@ -555,19 +555,26 @@ export function DashboardPage() {
       || (selectedEvent.treatment !== null && typeof selectedEvent.treatment === 'object')
     : false;
 
-  const fetchData = useCallback(async (range?: { start: string; end: string }) => {
-    setLoading(true);
+  const getPresetRange = useCallback((key: '7d' | '30d' | '90d' | null): { start: string; end: string } => {
+    const days = key === '30d' ? 30 : key === '90d' ? 90 : 7;
+    return getDefaultDateRange(days);
+  }, []);
 
-    const fallbackRange = getDefaultDateRange(7);
-    const rawStart = range?.start ?? startDate;
-    const rawEnd = range?.end ?? endDate;
-    const invalidRange = !isValidDateString(rawStart) || !isValidDateString(rawEnd) || rawStart > rawEnd;
-    const safeStart = invalidRange ? fallbackRange.start : rawStart;
-    const safeEnd = invalidRange ? fallbackRange.end : rawEnd;
-    if (invalidRange) {
-      setStartDate(fallbackRange.start);
-      setEndDate(fallbackRange.end);
+  const effectiveRange = useMemo(() => {
+    if (queryMode === 'custom') {
+      const customStart = customRange.start;
+      const customEnd = customRange.end;
+      if (customStart && customEnd && isValidDateString(customStart) && isValidDateString(customEnd) && customStart <= customEnd) {
+        return { start: customStart, end: customEnd };
+      }
     }
+    return getPresetRange(presetKey);
+  }, [customRange.end, customRange.start, getPresetRange, presetKey, queryMode]);
+
+  const fetchData = useCallback(async () => {
+    setLoading(true);
+    const safeStart = effectiveRange.start;
+    const safeEnd = effectiveRange.end;
 
     try {
       const eventsResp = await fetch(`/api/events?start=${safeStart}&end=${safeEnd}&limit=5000`);
@@ -588,7 +595,7 @@ export function DashboardPage() {
     } finally {
       setLoading(false);
     }
-  }, [startDate, endDate]);
+  }, [effectiveRange.end, effectiveRange.start]);
 
 
   useEffect(() => {
@@ -842,39 +849,34 @@ export function DashboardPage() {
     };
   }, [traceNodeMap, kbDetail, selectedEvent?.disease]);
 
+  const traceSummaryMap = useMemo(() => new Map(traceSummary.map((item) => [item.key, item])), [traceSummary]);
+
   const maxCount = Math.max(...stats.map((s) => s.count), 1);
 
-  const setQuickRange = (days: number) => {
-    const end = new Date();
-    const start = new Date();
-    start.setDate(end.getDate() - (days - 1));
-    const nextStart = formatDate(start);
-    const nextEnd = formatDate(end);
-    setStartDate(nextStart);
-    setEndDate(nextEnd);
-    void fetchData({ start: nextStart, end: nextEnd });
+  const setQuickRange = (key: '7d' | '30d' | '90d') => {
+    setQueryMode('preset');
+    setPresetKey(key);
   };
 
-  const displayStartDate = isValidDateString(startDate) ? startDate : defaultRange.start;
-  const displayEndDate = isValidDateString(endDate) ? endDate : defaultRange.end;
+  const handleCustomDateChange = (field: 'start' | 'end', value: string) => {
+    setQueryMode('custom');
+    setPresetKey(null);
+    setCustomRange((prev) => ({ ...prev, [field]: value || null }));
+  };
+
+  const displayStartDate = effectiveRange.start;
+  const displayEndDate = effectiveRange.end;
 
   const selectedQuickRange = useMemo(() => {
-
-    const today = new Date();
-    const end = formatDate(today);
-    const daysDiff = (from: string, to: string) => {
-      const fromMs = Date.parse(`${from}T00:00:00`);
-      const toMs = Date.parse(`${to}T00:00:00`);
-      if (!Number.isFinite(fromMs) || !Number.isFinite(toMs)) return null;
-      return Math.floor((toMs - fromMs) / (24 * 60 * 60 * 1000)) + 1;
-    };
-    if (endDate !== end) return null;
-    const diff = daysDiff(startDate, endDate);
-    return diff === 7 || diff === 30 || diff === 90 ? diff : null;
-  }, [startDate, endDate]);
+    if (queryMode !== 'preset') return null;
+    if (presetKey === '7d') return 7;
+    if (presetKey === '30d') return 30;
+    if (presetKey === '90d') return 90;
+    return null;
+  }, [presetKey, queryMode]);
 
   useEffect(() => {
-    fetchData();
+    void fetchData();
   }, [fetchData]);
 
   return (
@@ -902,12 +904,29 @@ export function DashboardPage() {
                 key={days}
                 variant="outline"
                 size="sm"
-                onClick={() => setQuickRange(days)}
+                onClick={() => setQuickRange(`${days}d` as '7d' | '30d' | '90d')}
                 className={cn('border-white/20 text-white/70 hover:text-white hover:bg-white/10', selectedQuickRange === days && 'border-[#c8f7c5] text-[#c8f7c5] bg-[#c8f7c5]/10')}
               >
                 近{days}天
               </Button>
             ))}
+          </div>
+
+          <div className="flex items-center gap-1.5">
+            <input
+              type="date"
+              value={customRange.start ?? ''}
+              onChange={(event) => handleCustomDateChange('start', event.target.value)}
+              className="h-9 rounded-md border border-white/20 bg-white/5 px-2 text-sm text-white"
+              aria-label="自定义开始日期"
+            />
+            <input
+              type="date"
+              value={customRange.end ?? ''}
+              onChange={(event) => handleCustomDateChange('end', event.target.value)}
+              className="h-9 rounded-md border border-white/20 bg-white/5 px-2 text-sm text-white"
+              aria-label="自定义结束日期"
+            />
           </div>
           <Button
             onClick={() => { void fetchData(); }}
@@ -1249,7 +1268,7 @@ export function DashboardPage() {
                     return (
                       <div key={key} className="bg-white/5 rounded-lg p-3 text-xs space-y-1">
                         <div className="text-[#c8f7c5]">{section.title}</div>
-                        {section.rows.map((row) => (
+                        {section.rows.map((row: { label: string; value: string }) => (
                           <div key={`${key}-${row.label}`} className="flex items-start justify-between gap-2">
                             <span className="text-white/60">{row.label}</span>
                             <span className="text-white text-right">{row.value || '无'}</span>
