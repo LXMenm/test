@@ -849,8 +849,6 @@ export function DashboardPage() {
     };
   }, [traceNodeMap, kbDetail, selectedEvent?.disease]);
 
-  const traceSummaryMap = useMemo(() => new Map(traceSummary.map((item) => [item.key, item])), [traceSummary]);
-
   const maxCount = Math.max(...stats.map((s) => s.count), 1);
 
   const setQuickRange = (key: '7d' | '30d' | '90d') => {
