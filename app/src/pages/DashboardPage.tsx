@@ -3,11 +3,12 @@ import { BarChart3, Calendar, RefreshCw, Image as ImageIcon, TrendingUp, AlertCi
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Calendar as DateCalendar } from '@/components/ui/calendar';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { ResponsiveContainer, LineChart, Line, CartesianGrid, XAxis, YAxis, Tooltip, BarChart, Bar } from 'recharts';
 import { cn } from '@/lib/utils';
+import { getCultivationModeLabel, getEquipmentLabel, getFarmScaleLabel, getPesticideAccessLevelLabel, getRiskPreferenceLabel, getSelectedBranchLabel as getProfileBranchLabel } from '@/lib/profileLabels';
+import { getModelLabel, resolveModelOptions } from '@/lib/modelOptions';
 
 interface DiseaseStat {
   disease: string;
@@ -24,6 +25,7 @@ interface DiagnosisEvent {
   modelId: string;
   modelName: string;
   selectedBranch: string;
+  selectedBranchRaw: string;
   confirmRound: boolean;
   needConfirm: boolean;
   personalizationApplied: boolean;
@@ -36,14 +38,20 @@ interface DiagnosisEvent {
   workflowDegraded: boolean;
   finalSource: string;
   farmerId: string;
+  farmerName: string;
   baseId: string;
+  baseName: string;
   farmScale: string;
   pesticideAccessLevel: string;
   equipment: string[];
   cultivationMode: string;
+  riskPreference: string;
+  preferOrganic: boolean | null;
+  harvestWindowDays: number | null;
   personalizationReasons: string[];
   elapsedMs: number | null;
   treatment?: unknown;
+  raw: Record<string, unknown>;
 }
 
 interface TimeseriesPoint {
@@ -66,7 +74,6 @@ interface KbDetail {
   description: string;
   treatment: string;
   prevention: string;
-  actions?: Record<string, unknown> | null;
   ingredients?: string[];
 }
 
@@ -83,9 +90,8 @@ interface ProfileDetail {
 
 interface TraceSummaryItem {
   key: string;
-  agent: string;
-  status: string;
-  message: string;
+  title: string;
+  rows: Array<{ label: string; value: string }>;
 }
 
 type ModuleKey = 'kpi' | 'trend' | 'model' | 'filter' | 'recent' | 'detail' | 'disease';
@@ -158,34 +164,208 @@ function readableText(value: unknown, fallback = '—'): string {
   return fallback;
 }
 
-function branchLabel(value: string): string {
-  const normalized = value.trim();
-  if (!normalized) return '未分档';
-  if (normalized === 'home') return '家庭档';
-  if (normalized === 'pro') return '专业档';
-  if (normalized === 'enterprise') return '规模档';
-  return normalized;
+function getSelectedBranchLabelOrFallback(value?: string | null): string {
+  const normalized = (value ?? '').trim().toUpperCase();
+  if (normalized === 'FAMILY') return '家庭';
+  if (normalized === 'MID') return '中型';
+  if (normalized === 'ENTERPRISE') return '企业级';
+  const label = getProfileBranchLabel(value ?? undefined);
+  return label === '—' ? '未分档' : label;
+}
+
+function toRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === 'object' ? value as Record<string, unknown> : undefined;
+}
+
+function resolveSelectedBranch(event: Record<string, unknown>): string {
+  const meta = toRecord(event.meta);
+  const treatment = toRecord(event.treatment);
+  const payload = toRecord(event.payload);
+  const outputs = toRecord(toRecord(event.outputs)?.treatment);
+  const candidates = [
+    event.selected_branch,
+    meta?.selected_branch,
+    treatment?.selected_branch,
+    payload?.selected_branch,
+    toRecord(payload?.treatment)?.selected_branch,
+    outputs?.selected_branch,
+  ];
+  const hit = candidates.find((item) => typeof item === 'string' && item.trim());
+  return typeof hit === 'string' ? hit.trim() : '';
+}
+
+function getSelectedBranchLabel(branch?: string | null): string {
+  return getSelectedBranchLabelOrFallback(branch);
 }
 
 function sourceLabel(value: string): string {
   const normalized = value.trim();
-  if (!normalized) return 'image';
+  if (!normalized) return '图像模型';
   if (normalized === 'llm') return 'LLM';
   if (normalized === 'image') return '图像模型';
+  if (normalized === 'rule') return '规则';
   if (normalized === 'fallback') return '回退';
   return normalized;
 }
 
-function summarizeTraceRows(rows: unknown[]): TraceSummaryItem[] {
-  return rows.slice(0, 12).map((row, index) => {
-    const rec = row && typeof row === 'object' ? row as Record<string, unknown> : {};
-    return {
-      key: readableText(rec.id ?? rec.ts ?? index, String(index)),
-      agent: readableText(rec.agent ?? rec.node ?? 'agent', 'agent'),
-      status: readableText(rec.status ?? rec.level ?? 'ok', 'ok'),
-      message: readableText(rec.message ?? rec.detail ?? rec.content, '—'),
-    };
+type TraceNodeMap = Record<string, Record<string, unknown>[]>;
+
+function toPercent(value: unknown): string {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return '未提取';
+  const pct = num <= 1 ? num * 100 : num;
+  return `${pct.toFixed(2)}%`;
+}
+
+function toYesNo(value: unknown, fallback = '否'): string {
+  if (typeof value === 'boolean') return value ? '是' : '否';
+  return fallback;
+}
+
+function normalizeNodeKey(event: Record<string, unknown>): string {
+  const raw = String(event.agent_id ?? event.agent ?? event.node ?? '').toLowerCase();
+  if (raw.includes('personalization')) return 'personalization';
+  if (raw.includes('reception') || raw.includes('接待')) return 'reception';
+  if (raw.includes('diagnosis') || raw.includes('诊断')) return 'diagnosis';
+  if (raw.includes('kb') || raw.includes('retrieval') || raw.includes('知识')) return 'kb_retrieval';
+  if (raw.includes('treatment') || raw.includes('治疗')) return 'treatment';
+  if (raw.includes('supervisor') || raw.includes('监督')) return 'supervisor';
+  return raw;
+}
+
+function buildTraceNodeMap(rows: unknown[]): TraceNodeMap {
+  const map: TraceNodeMap = {};
+  rows.forEach((row) => {
+    const rec = toRecord(row) ?? {};
+    const raw = toRecord(rec.raw) ?? rec;
+    const key = normalizeNodeKey(raw);
+    if (!key) return;
+    map[key] = map[key] ?? [];
+    map[key].push(raw);
   });
+  return map;
+}
+
+function getLatestNode(map: TraceNodeMap, key: string): Record<string, unknown> | undefined {
+  const list = map[key] ?? [];
+  return list.length > 0 ? list[list.length - 1] : undefined;
+}
+
+function getNodeOutputs(node?: Record<string, unknown>): Record<string, unknown> {
+  return toRecord(node?.outputs) ?? {};
+}
+
+function resolvePersonalizationInfo(event: DiagnosisEvent, nodeMap?: TraceNodeMap): Array<{ label: string; value: string }> {
+  const pNode = getLatestNode(nodeMap ?? {}, 'personalization');
+  const payload = toRecord(pNode?.payload);
+  const meta = toRecord(payload?.meta);
+  const pOutputs = toRecord(payload?.outputs);
+  const treatmentNode = getLatestNode(nodeMap ?? {}, 'treatment');
+  const treatmentOutputs = getNodeOutputs(treatmentNode);
+  const selectedBranch = String(
+    pOutputs?.selected_branch
+    ?? meta?.selected_branch
+    ?? treatmentOutputs?.selected_branch
+    ?? event.selectedBranchRaw
+    ?? ''
+  );
+
+  const equipment = Array.isArray(meta?.equipment)
+    ? meta!.equipment.map((item) => readableText(item, '')).filter(Boolean)
+    : event.equipment;
+
+  const preferOrganic = typeof meta?.prefer_organic === 'boolean'
+    ? meta.prefer_organic
+    : event.preferOrganic;
+  const harvestWindow = Number.isFinite(Number(meta?.harvest_window_days))
+    ? Number(meta?.harvest_window_days)
+    : event.harvestWindowDays;
+
+  return [
+    { label: '农户ID / 姓名', value: `${readableText(meta?.farmer_id, event.farmerId)}${event.farmerName !== '未设置' ? ` / ${event.farmerName}` : ''}` },
+    { label: '基地ID / 基地名称', value: `${readableText(meta?.base_id, event.baseId)}${event.baseName !== '未设置' ? ` / ${event.baseName}` : ''}` },
+    { label: '种植规模', value: getFarmScaleLabel(readableText(meta?.farm_scale, event.farmScale)) },
+    { label: '购药能力', value: getPesticideAccessLevelLabel(readableText(meta?.pesticide_access_level, event.pesticideAccessLevel)) },
+    { label: '设备', value: equipment.length > 0 ? equipment.map((item) => getEquipmentLabel(item)).join('、') : '未设置' },
+    { label: '栽培模式', value: getCultivationModeLabel(readableText(meta?.cultivation_mode, event.cultivationMode)) },
+    { label: '风险偏好', value: getRiskPreferenceLabel(readableText(meta?.risk_preference, event.riskPreference)) },
+    { label: '有机偏好', value: preferOrganic === null ? '未设置' : (preferOrganic ? '是' : '否') },
+    { label: '采收窗口', value: harvestWindow === null ? '未设置' : `${harvestWindow}天` },
+    { label: '当前判定档位', value: getSelectedBranchLabel(selectedBranch) },
+  ];
+}
+
+function toText(value: unknown): string {
+  if (typeof value === 'string') return value.trim();
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  return '';
+}
+
+function buildTraceSummary(rows: unknown[]): TraceSummaryItem[] {
+  const nodeMap = buildTraceNodeMap(rows);
+  const receptionOutputs = getNodeOutputs(getLatestNode(nodeMap, 'reception'));
+  const diagnosisOutputs = getNodeOutputs(getLatestNode(nodeMap, 'diagnosis'));
+  const imageDiagnosis = toRecord(diagnosisOutputs.image_diagnosis) ?? toRecord(diagnosisOutputs.image_result) ?? {};
+  const top3 = Array.isArray(imageDiagnosis?.top3) ? imageDiagnosis.top3 : (Array.isArray(diagnosisOutputs.top3) ? diagnosisOutputs.top3 : []);
+  const top1 = Array.isArray(top3) ? top3[0] : undefined;
+
+  const kbOutputs = getNodeOutputs(getLatestNode(nodeMap, 'kb_retrieval'));
+  const kbDoc = toRecord(kbOutputs.kb_disease) ?? toRecord(kbOutputs.disease) ?? {};
+  const ingredients = Array.isArray(kbDoc.ingredients)
+    ? kbDoc.ingredients
+    : (Array.isArray(kbOutputs.ingredients) ? kbOutputs.ingredients : []);
+
+  const treatmentOutputs = getNodeOutputs(getLatestNode(nodeMap, 'treatment'));
+  const supervisorHistory = (nodeMap.supervisor ?? []).map((node) => ({
+    step: toText(node.current_step),
+    decision: toRecord(node.decision) ?? getNodeOutputs(node),
+  }));
+  const lastSupervisor = supervisorHistory.length > 0 ? supervisorHistory[supervisorHistory.length - 1] : undefined;
+
+  const make = (key: string, title: string, rowsData: Array<{ label: string; value: string }>) => ({ key, title, rows: rowsData.filter((item) => item.value) });
+
+  return [
+    make('reception', '接入信息（reception）', [
+      { label: '作物类型', value: toText(receptionOutputs.crop_type) || '未提取' },
+      { label: '症状', value: Array.isArray(receptionOutputs.symptoms) ? receptionOutputs.symptoms.map(toText).filter(Boolean).join('、') : (toText(receptionOutputs.symptoms) || '未提取') },
+      { label: '图片', value: toText(receptionOutputs.image_path) ? '已上传' : ((receptionOutputs.has_image === true) ? '已上传' : '未上传') },
+      { label: '缺失字段', value: Array.isArray(receptionOutputs.missing_profile_fields) ? receptionOutputs.missing_profile_fields.map(toText).filter(Boolean).join('、') || '无' : '无' },
+    ]),
+    make('diagnosis', '识别结果（diagnosis）', [
+      { label: '最终病害', value: toText(diagnosisOutputs.final_disease ?? diagnosisOutputs.disease) || '未提取' },
+      { label: '置信度', value: toPercent(diagnosisOutputs.final_confidence ?? imageDiagnosis.confidence_pct ?? imageDiagnosis.confidence) },
+      { label: '来源', value: sourceLabel(toText(diagnosisOutputs.final_source ?? diagnosisOutputs.source) || 'image') },
+      { label: 'need_confirm', value: toYesNo(diagnosisOutputs.need_confirm) },
+      { label: 'top1', value: Array.isArray(top1)
+        ? `${toText(top1[0])} (${toPercent(top1[1])})`
+        : (() => {
+          const rec = toRecord(top1);
+          const d = toText(rec?.disease ?? diagnosisOutputs.image_top1);
+          const p = rec?.prob ?? rec?.prob_pct ?? rec?.confidence ?? diagnosisOutputs.final_confidence;
+          return d ? `${d} (${toPercent(p)})` : '无';
+        })() },
+    ]),
+    make('kb', '知识库命中（kb_retrieval）', [
+      { label: '命中病害', value: toText(kbOutputs.disease ?? kbOutputs.disease_name ?? kbDoc.name) || '未命中' },
+      { label: 'description/treatment/prevention', value: (toText(kbOutputs.description ?? kbDoc.description) || toText(kbOutputs.treatment ?? kbDoc.treatment) || toText(kbOutputs.prevention ?? kbDoc.prevention)) ? '已命中' : '缺失' },
+      { label: 'ingredients', value: ingredients.length > 0 ? ingredients.map(toText).filter(Boolean).join('、') : '无' },
+    ]),
+    make('treatment', '方案编排（treatment）', [
+      { label: 'selected_branch', value: getSelectedBranchLabel(toText(treatmentOutputs.selected_branch) || undefined) },
+      { label: 'LLM失败', value: toYesNo(treatmentOutputs.llm_failed) },
+      { label: '已应用个性化', value: toYesNo(treatmentOutputs.personalization_applied) },
+      { label: '触发过滤', value: toYesNo(treatmentOutputs.filtered) },
+      { label: '过滤原因', value: Array.isArray(treatmentOutputs.filtered_reasons) ? treatmentOutputs.filtered_reasons.map(toText).filter(Boolean).join('、') || '无' : '无' },
+      { label: '个性化理由', value: Array.isArray(treatmentOutputs.personalization_reasons) ? treatmentOutputs.personalization_reasons.map(toText).filter(Boolean).slice(0, 3).join('；') || '无' : '无' },
+    ]),
+    make('supervisor', '流程决策（supervisor）', [
+      { label: '决策历史', value: supervisorHistory.map((item) => {
+        const nextAction = toText(item.decision.next_action);
+        const reasons = Array.isArray(item.decision.reasons) ? item.decision.reasons.map(toText).filter(Boolean).join('、') : toText(item.decision.reasons);
+        return `${item.step || 'unknown'} -> ${nextAction || 'unknown'}（${reasons || '无'}）`;
+      }).join('；') || `${toText(lastSupervisor?.decision?.next_action) || '未提取'}（${Array.isArray(lastSupervisor?.decision?.reasons) ? lastSupervisor!.decision.reasons.map(toText).filter(Boolean).join('、') : toText(lastSupervisor?.decision?.reasons) || '无'}）` },
+    ]),
+  ].filter((item) => item.rows.length > 0);
 }
 
 function formatDisplayDate(value: string): string {
@@ -220,10 +400,11 @@ function getConfidencePct(source: Record<string, unknown>): number | null {
 
 function normalizeEvent(eventLike: unknown, index: number): DiagnosisEvent {
   const event = eventLike && typeof eventLike === 'object' ? eventLike as Record<string, unknown> : {};
-  const imageResult = event.image_result && typeof event.image_result === 'object'
-    ? event.image_result as Record<string, unknown>
-    : undefined;
-  const meta = event.meta && typeof event.meta === 'object' ? event.meta as Record<string, unknown> : undefined;
+  const imageResult = toRecord(event.image_result);
+  const meta = toRecord(event.meta);
+  const constraints = toRecord(meta?.constraints);
+  const selectedBranchRaw = resolveSelectedBranch(event);
+  const modelId = readableText(meta?.model_id ?? event.model_id, '未记录模型');
 
   return {
     id: typeof event.id === 'string' ? event.id : `${String(event.ts ?? event.timestamp ?? 'event')}-${index}`,
@@ -233,9 +414,10 @@ function normalizeEvent(eventLike: unknown, index: number): DiagnosisEvent {
     disease: readableText(event.final_disease ?? imageResult?.disease, '未识别病害'),
     traceId: typeof event.trace_id === 'string' ? event.trace_id : '',
     imageUrl: typeof event.image_url === 'string' ? event.image_url : '',
-    modelId: readableText(meta?.model_id ?? event.model_id, '未记录模型'),
-    modelName: readableText(meta?.model_display_name ?? event.model_display_name, '未记录模型'),
-    selectedBranch: branchLabel(String(event.selected_branch ?? meta?.selected_branch ?? '')),
+    modelId,
+    modelName: readableText(meta?.model_display_name ?? event.model_display_name, getModelLabel(modelId)),
+    selectedBranchRaw,
+    selectedBranch: getSelectedBranchLabel(selectedBranchRaw),
     confirmRound: event.confirm_round === true,
     needConfirm: event.need_confirm === true,
     personalizationApplied: event.personalization_applied === true || meta?.personalization_applied === true,
@@ -255,18 +437,24 @@ function normalizeEvent(eventLike: unknown, index: number): DiagnosisEvent {
     llmFailed: event.llm_failed === true || meta?.llm_failed === true,
     workflowDegraded: event.workflow_degraded === true || meta?.workflow_degraded === true,
     finalSource: sourceLabel(String(event.final_source ?? 'image')),
-    farmerId: readableText(meta?.farmer_id, '未记录农户'),
-    baseId: readableText(meta?.base_id, '未记录基地'),
-    farmScale: readableText(meta?.farm_scale, '未记录'),
-    pesticideAccessLevel: readableText(meta?.pesticide_access_level, '未记录'),
+    farmerId: readableText(meta?.farmer_id, '未设置'),
+    farmerName: readableText(meta?.farmer_name ?? meta?.name, '未设置'),
+    baseId: readableText(meta?.base_id, '未设置'),
+    baseName: readableText(meta?.base_name, '未设置'),
+    farmScale: readableText(meta?.farm_scale, ''),
+    pesticideAccessLevel: readableText(meta?.pesticide_access_level, ''),
     equipment: Array.isArray(meta?.equipment) ? meta.equipment.map((item) => readableText(item, '')).filter(Boolean) : [],
-    cultivationMode: readableText(meta?.cultivation_mode, '未记录'),
+    cultivationMode: readableText(meta?.cultivation_mode, ''),
+    riskPreference: readableText(meta?.risk_preference, ''),
+    preferOrganic: typeof constraints?.prefer_organic === 'boolean' ? constraints.prefer_organic : null,
+    harvestWindowDays: Number.isFinite(Number(constraints?.harvest_window_days)) ? Number(constraints?.harvest_window_days) : null,
     personalizationReasons: Array.isArray(event.personalization_reasons)
       ? event.personalization_reasons.map((item) => readableText(item, '')).filter(Boolean)
       : [],
     elapsedMs: Number.isFinite(Number(event.elapsed_ms ?? meta?.elapsed_ms)) ? Number(event.elapsed_ms ?? meta?.elapsed_ms) : null,
     confidencePct: getConfidencePct(event),
     treatment: event.treatment,
+    raw: event,
   };
 }
 
@@ -301,9 +489,6 @@ export function DashboardPage() {
   const defaultRange = getDefaultDateRange(7);
   const [startDate, setStartDate] = useState(defaultRange.start);
   const [endDate, setEndDate] = useState(defaultRange.end);
-  const [datePickerOpen, setDatePickerOpen] = useState(false);
-  const [draftStartDate, setDraftStartDate] = useState<Date | undefined>(() => new Date(`${defaultRange.start}T00:00:00`));
-  const [draftEndDate, setDraftEndDate] = useState<Date | undefined>(() => new Date(`${defaultRange.end}T00:00:00`));
   const [allEvents, setAllEvents] = useState<DiagnosisEvent[]>([]);
   const [selectedEvent, setSelectedEvent] = useState<DiagnosisEvent | null>(null);
   const [selectedDisease, setSelectedDisease] = useState('ALL');
@@ -316,8 +501,18 @@ export function DashboardPage() {
   const [farmerBases, setFarmerBases] = useState<Array<{ id: string; name?: string }>>([]);
   const [kbDetail, setKbDetail] = useState<KbDetail | null>(null);
   const [traceSummary, setTraceSummary] = useState<TraceSummaryItem[]>([]);
+  const [traceRawEvents, setTraceRawEvents] = useState<unknown[]>([]);
+  const [showRawTrace, setShowRawTrace] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [modulePrefs, setModulePrefs] = useState<ModulePrefs>(defaultModulePrefs);
+  const [modulePrefs, setModulePrefs] = useState<ModulePrefs>(() => {
+    try {
+      const raw = localStorage.getItem('dashboard:module-prefs');
+      if (!raw) return defaultModulePrefs;
+      return { ...defaultModulePrefs, ...(JSON.parse(raw) as Partial<ModulePrefs>) };
+    } catch {
+      return defaultModulePrefs;
+    }
+  });
   const [moduleCollapse, setModuleCollapse] = useState<ModuleCollapse>(defaultCollapse);
 
 
@@ -346,18 +541,18 @@ export function DashboardPage() {
       || (selectedEvent.treatment !== null && typeof selectedEvent.treatment === 'object')
     : false;
 
-  const fetchData = useCallback(async () => {
+  const fetchData = useCallback(async (range?: { start: string; end: string }) => {
     setLoading(true);
 
     const fallbackRange = getDefaultDateRange(7);
-    const invalidRange = !isValidDateString(startDate) || !isValidDateString(endDate) || startDate > endDate;
-    const safeStart = invalidRange ? fallbackRange.start : startDate;
-    const safeEnd = invalidRange ? fallbackRange.end : endDate;
+    const rawStart = range?.start ?? startDate;
+    const rawEnd = range?.end ?? endDate;
+    const invalidRange = !isValidDateString(rawStart) || !isValidDateString(rawEnd) || rawStart > rawEnd;
+    const safeStart = invalidRange ? fallbackRange.start : rawStart;
+    const safeEnd = invalidRange ? fallbackRange.end : rawEnd;
     if (invalidRange) {
       setStartDate(fallbackRange.start);
       setEndDate(fallbackRange.end);
-      setDraftStartDate(new Date(`${fallbackRange.start}T00:00:00`));
-      setDraftEndDate(new Date(`${fallbackRange.end}T00:00:00`));
     }
 
     try {
@@ -422,14 +617,14 @@ export function DashboardPage() {
   }, [selectedFarmerId]);
 
   const diseaseOptions = useMemo(() => Array.from(new Set(allEvents.map((event) => event.disease))).sort((a, b) => a.localeCompare(b, 'zh-CN')), [allEvents]);
-  const modelOptions = useMemo(() => Array.from(new Set(allEvents.map((event) => event.modelName || event.modelId))).sort((a, b) => a.localeCompare(b, 'zh-CN')), [allEvents]);
+  const modelOptions = useMemo(() => resolveModelOptions(), []);
 
   const filteredEvents = useMemo(() => allEvents.filter((event) => {
     if (selectedDisease !== 'ALL' && event.disease !== selectedDisease) return false;
     if (selectedBranch !== 'ALL' && event.selectedBranch !== selectedBranch) return false;
     if (selectedPersonalizationStatus === 'APPLIED' && !event.personalizationApplied) return false;
     if (selectedPersonalizationStatus === 'FILTERED' && !event.filtered) return false;
-    if (selectedModel !== 'ALL' && (event.modelName || event.modelId) !== selectedModel) return false;
+    if (selectedModel !== 'ALL' && event.modelId !== selectedModel) return false;
     if (selectedFarmerId !== 'ALL' && event.farmerId !== selectedFarmerId) return false;
     if (selectedBaseId !== 'ALL' && event.baseId !== selectedBaseId) return false;
     return true;
@@ -478,7 +673,7 @@ export function DashboardPage() {
   const modelStats = useMemo(() => {
     const map = new Map<string, { count: number; success: number; fallback: number; degraded: number; llmFailed: number; elapsedSum: number; elapsedCount: number }>();
     filteredEvents.forEach((event) => {
-      const label = event.modelName || event.modelId;
+      const label = getModelLabel(event.modelId);
       const current = map.get(label) ?? { count: 0, success: 0, fallback: 0, degraded: 0, llmFailed: 0, elapsedSum: 0, elapsedCount: 0 };
       current.count += 1;
       if (event.llmFailed || event.workflowDegraded) current.degraded += 1;
@@ -545,6 +740,10 @@ export function DashboardPage() {
   }, [filteredEvents]);
 
   useEffect(() => {
+    localStorage.setItem('dashboard:module-prefs', JSON.stringify(modulePrefs));
+  }, [modulePrefs]);
+
+  useEffect(() => {
     if (!selectedEvent && filteredEvents.length > 0) setSelectedEvent(filteredEvents[0]);
     if (selectedEvent && !filteredEvents.some((event) => event.id === selectedEvent.id)) setSelectedEvent(filteredEvents[0] ?? null);
   }, [filteredEvents, selectedEvent]);
@@ -567,61 +766,76 @@ export function DashboardPage() {
 
   useEffect(() => {
     const traceId = selectedEvent?.traceId;
-    if (!traceId) { setTraceSummary([]); return; }
+    if (!traceId) { setTraceSummary([]); setTraceRawEvents([]); return; }
     const run = async () => {
       try {
         const resp = await fetch(`/api/trace-events?trace_id=${encodeURIComponent(traceId)}`);
         const data = await resp.json();
         const rows = Array.isArray(data?.events) ? data.events : [];
-        setTraceSummary(summarizeTraceRows(rows));
+        setTraceRawEvents(rows);
+        setTraceSummary(buildTraceSummary(rows));
       } catch {
         setTraceSummary([]);
+        setTraceRawEvents([]);
       }
     };
     run();
   }, [selectedEvent?.traceId]);
 
-  const maxCount = Math.max(...stats.map((s) => s.count), 1);
+  const traceNodeMap = useMemo(() => buildTraceNodeMap(traceRawEvents), [traceRawEvents]);
+  const personalInfoRows = useMemo(() => (
+    selectedEvent ? resolvePersonalizationInfo(selectedEvent, traceNodeMap) : []
+  ), [selectedEvent, traceNodeMap]);
 
-  const applyDateRange = (fromDate: Date, toDate: Date) => {
-    const from = formatDate(fromDate);
-    const to = formatDate(toDate);
-    setStartDate(from);
-    setEndDate(to);
-    setDatePickerOpen(false);
-  };
+  const caseDiagnosis = useMemo(() => {
+    const diagnosisOutputs = getNodeOutputs(getLatestNode(traceNodeMap, 'diagnosis'));
+    const disease = toText(diagnosisOutputs.final_disease) || selectedEvent?.disease || '—';
+    const confidence = diagnosisOutputs.final_confidence ?? diagnosisOutputs.confidence_pct ?? selectedEvent?.confidencePct;
+    return {
+      disease,
+      confidenceText: confidence === undefined ? (selectedEvent?.confidencePct !== null && selectedEvent?.confidencePct !== undefined ? `${selectedEvent.confidencePct.toFixed(2)}%` : '—') : toPercent(confidence),
+    };
+  }, [traceNodeMap, selectedEvent]);
+
+  const kbSummary = useMemo(() => {
+    const kbOutputs = getNodeOutputs(getLatestNode(traceNodeMap, 'kb_retrieval'));
+    const kbDoc = toRecord(kbOutputs.kb_disease) ?? {};
+    const ingredients = Array.isArray(kbOutputs.ingredients)
+      ? kbOutputs.ingredients.map((item) => toText(item)).filter(Boolean)
+      : (Array.isArray(kbDoc.ingredients) ? kbDoc.ingredients.map((item) => toText(item)).filter(Boolean) : []);
+    return {
+      name: toText(kbOutputs.disease ?? kbOutputs.disease_name ?? kbDoc.name) || kbDetail?.name || selectedEvent?.disease || '',
+      description: toText(kbOutputs.description ?? kbDoc.description) || kbDetail?.description || '',
+      treatment: toText(kbOutputs.treatment ?? kbDoc.treatment) || kbDetail?.treatment || '',
+      prevention: toText(kbOutputs.prevention ?? kbDoc.prevention) || kbDetail?.prevention || '',
+      ingredients,
+    };
+  }, [traceNodeMap, kbDetail, selectedEvent?.disease]);
+
+  const traceSummaryMap = useMemo(() => {
+    const map = new Map<string, TraceSummaryItem>();
+    traceSummary.forEach((item) => map.set(item.key, item));
+    return map;
+  }, [traceSummary]);
+
+  const maxCount = Math.max(...stats.map((s) => s.count), 1);
 
   const setQuickRange = (days: number) => {
     const end = new Date();
     const start = new Date();
     start.setDate(end.getDate() - (days - 1));
-    setDraftStartDate(start);
-    setDraftEndDate(end);
-    applyDateRange(start, end);
+    const nextStart = formatDate(start);
+    const nextEnd = formatDate(end);
+    setStartDate(nextStart);
+    setEndDate(nextEnd);
+    void fetchData({ start: nextStart, end: nextEnd });
   };
 
-  const onStartDateSelect = (nextStart: Date | undefined) => {
-    if (!nextStart) return;
-    setDraftStartDate(nextStart);
-    if (!draftEndDate || nextStart > draftEndDate) {
-      setDraftEndDate(undefined);
-      return;
-    }
-    applyDateRange(nextStart, draftEndDate);
-  };
-
-  const onEndDateSelect = (nextEnd: Date | undefined) => {
-    if (!nextEnd || !draftStartDate) return;
-    if (nextEnd < draftStartDate) {
-      setDraftStartDate(nextEnd);
-      setDraftEndDate(undefined);
-      return;
-    }
-    setDraftEndDate(nextEnd);
-    applyDateRange(draftStartDate, nextEnd);
-  };
+  const displayStartDate = isValidDateString(startDate) ? startDate : defaultRange.start;
+  const displayEndDate = isValidDateString(endDate) ? endDate : defaultRange.end;
 
   const selectedQuickRange = useMemo(() => {
+
     const today = new Date();
     const end = formatDate(today);
     const daysDiff = (from: string, to: string) => {
@@ -633,11 +847,6 @@ export function DashboardPage() {
     if (endDate !== end) return null;
     const diff = daysDiff(startDate, endDate);
     return diff === 7 || diff === 30 || diff === 90 ? diff : null;
-  }, [startDate, endDate]);
-
-  useEffect(() => {
-    setDraftStartDate(new Date(`${startDate}T00:00:00`));
-    setDraftEndDate(new Date(`${endDate}T00:00:00`));
   }, [startDate, endDate]);
 
   useEffect(() => {
@@ -654,69 +863,14 @@ export function DashboardPage() {
 
         {/* Date Range Controls */}
         <div className="flex items-center gap-2 flex-wrap">
-          <Popover open={datePickerOpen} onOpenChange={setDatePickerOpen}>
-            <PopoverTrigger asChild>
-              <Button
-                variant="outline"
-                className="border-white/20 bg-white/5 text-white hover:bg-white/10 min-w-[280px] justify-start"
-              >
-                <Calendar className="w-4 h-4 mr-2 text-[#c8f7c5]" />
-                <span className="text-white/70 mr-2">开始</span>
-                <span>{formatDisplayDate(startDate)}</span>
-                <ArrowRight className="w-3 h-3 mx-2 text-white/40" />
-                <span className="text-white/70 mr-2">结束</span>
-                <span>{formatDisplayDate(endDate)}</span>
-              </Button>
-            </PopoverTrigger>
-            <PopoverContent align="end" className="z-50 w-auto max-w-[95vw] p-4 bg-[#d7edd4] text-black border border-[#a7c7a1] shadow-2xl rounded-2xl">
-              <div className="space-y-3">
-                <div className="grid grid-cols-2 gap-3 text-xs">
-                  <div className="rounded-lg border border-black/10 bg-white/50 px-3 py-2">
-                    <p className="text-black/60">开始日期</p>
-                    <p className="font-semibold">{draftStartDate ? formatDisplayDate(formatDate(draftStartDate)) : '请选择开始日期'}</p>
-                  </div>
-                  <div className="rounded-lg border border-black/10 bg-white/50 px-3 py-2">
-                    <p className="text-black/60">结束日期</p>
-                    <p className="font-semibold">{draftEndDate ? formatDisplayDate(formatDate(draftEndDate)) : '请选择结束日期'}</p>
-                  </div>
-                </div>
-                <div className="grid md:grid-cols-2 gap-4">
-                  <div>
-                    <p className="text-xs text-black/60 mb-2">开始日期</p>
-                    <DateCalendar
-                      mode="single"
-                      selected={draftStartDate}
-                      onSelect={onStartDateSelect}
-                      month={draftStartDate}
-                      className="rounded-xl border border-black/10 bg-white/60"
-                      classNames={{
-                        day: 'text-black',
-                        day_button: 'hover:bg-[#c8f7c5]/60 data-[selected=true]:bg-[#7fbf7b] data-[selected=true]:text-black',
-                        range_middle: 'bg-[#b2d8ac]',
-                      }}
-                    />
-                  </div>
-                  <div>
-                    <p className="text-xs text-black/60 mb-2">结束日期</p>
-                    <DateCalendar
-                      mode="single"
-                      selected={draftEndDate}
-                      onSelect={onEndDateSelect}
-                      month={draftEndDate ?? draftStartDate}
-                      disabled={(day) => (draftStartDate ? day < draftStartDate : false)}
-                      modifiers={{ range_middle: draftStartDate && draftEndDate ? { from: draftStartDate, to: draftEndDate } : undefined }}
-                      className="rounded-xl border border-black/10 bg-white/60"
-                      classNames={{
-                        day: 'text-black',
-                        day_button: 'hover:bg-[#c8f7c5]/60 data-[selected=true]:bg-[#7fbf7b] data-[selected=true]:text-black',
-                        range_middle: 'bg-[#b2d8ac]',
-                      }}
-                    />
-                  </div>
-                </div>
-              </div>
-            </PopoverContent>
-          </Popover>
+          <div className="h-10 min-w-[280px] px-3 rounded-md border border-white/20 bg-white/5 text-white flex items-center justify-start text-sm">
+            <Calendar className="w-4 h-4 mr-2 text-[#c8f7c5]" />
+            <span className="text-white/70 mr-2">开始</span>
+            <span>{formatDisplayDate(displayStartDate)}</span>
+            <ArrowRight className="w-3 h-3 mx-2 text-white/40" />
+            <span className="text-white/70 mr-2">结束</span>
+            <span>{formatDisplayDate(displayEndDate)}</span>
+          </div>
 
           <div className="flex items-center gap-1.5">
             {[7, 30, 90].map((days) => (
@@ -732,7 +886,7 @@ export function DashboardPage() {
             ))}
           </div>
           <Button
-            onClick={fetchData}
+            onClick={() => { void fetchData(); }}
             disabled={loading}
             className="bg-[#c8f7c5] text-black hover:bg-[#b8e7b5]"
             title="手动刷新"
@@ -805,7 +959,7 @@ export function DashboardPage() {
             </select>
             <select value={selectedBranch} onChange={(e) => setSelectedBranch(e.target.value)} className="h-10 bg-[#114a38] border border-[#2e7d63] rounded-lg px-3 text-[#e8fff0] font-medium w-full leading-none">
               <option value="ALL" className="bg-[#0b241b] text-[#e8fff0]">档位：全部</option>
-              {['家庭档', '专业档', '规模档', '未分档'].map((item) => <option key={item} value={item} className="bg-[#0b241b] text-[#e8fff0]">{item}</option>)}
+              {['家庭', '中型', '企业级', '未分档'].map((item) => <option key={item} value={item} className="bg-[#0b241b] text-[#e8fff0]">{item}</option>)}
             </select>
             <select value={selectedPersonalizationStatus} onChange={(e) => setSelectedPersonalizationStatus(e.target.value)} className="h-10 bg-[#114a38] border border-[#2e7d63] rounded-lg px-3 text-[#e8fff0] font-medium w-full leading-none">
               <option value="ALL" className="bg-[#0b241b] text-[#e8fff0]">个性化：全部</option>
@@ -814,7 +968,7 @@ export function DashboardPage() {
             </select>
             <select value={selectedModel} onChange={(e) => setSelectedModel(e.target.value)} className="h-10 bg-[#114a38] border border-[#2e7d63] rounded-lg px-3 text-[#e8fff0] font-medium w-full leading-none">
               <option value="ALL" className="bg-[#0b241b] text-[#e8fff0]">模型：全部</option>
-              {modelOptions.map((item) => <option key={item} value={item} className="bg-[#0b241b] text-[#e8fff0]">{item}</option>)}
+              {modelOptions.map((item) => <option key={item.value} value={item.value} className="bg-[#0b241b] text-[#e8fff0]">{item.label}</option>)}
             </select>
           </div>
         </CardContent>
@@ -940,9 +1094,10 @@ export function DashboardPage() {
         </Card>
       )}
 
-      <div className="grid lg:grid-cols-3 gap-6">
-        {/* Disease Stats Chart */}
-        <Card className="glass-card lg:col-span-1">
+      {modulePrefs.disease && (
+        <div className="grid lg:grid-cols-3 gap-6">
+          {/* Disease Stats Chart */}
+          <Card className="glass-card lg:col-span-1">
           <CardHeader>
             <CardTitle className="text-white flex items-center gap-2">
               <TrendingUp className="w-5 h-5 text-[#c8f7c5]" />
@@ -972,7 +1127,8 @@ export function DashboardPage() {
             </div>
             </CardContent>
           </Card>
-      </div>
+        </div>
+      )}
 
       <div className="grid lg:grid-cols-2 gap-6">
         {modulePrefs.recent && (
@@ -1004,7 +1160,7 @@ export function DashboardPage() {
                         {event.disease}
                       </button>
                       <div className="mt-2 flex flex-wrap gap-1">
-                        <Badge variant="outline" className="text-[10px] border-white/30 text-white/70">{event.selectedBranch || 'UNKNOWN'}</Badge>
+                        <Badge variant="outline" className="text-[10px] border-white/30 text-white/70">{event.selectedBranch || '未分档'}</Badge>
                         {event.personalizationApplied && <Badge className="text-[10px] bg-[#c8f7c5] text-black">个性化</Badge>}
                         {event.filtered && <Badge className="text-[10px] bg-yellow-400 text-black">已过滤</Badge>}
                         {event.confirmRound && <Badge className="text-[10px] bg-blue-400 text-black">确认轮</Badge>}
@@ -1024,7 +1180,8 @@ export function DashboardPage() {
         )}
 
         {/* Detail Panel */}
-        <Card className="glass-card lg:col-span-1">
+        {modulePrefs.detail && (
+          <Card className="glass-card lg:col-span-1">
           <CardHeader>
             <CardTitle className="text-white flex items-center gap-2">
               <AlertCircle className="w-5 h-5 text-[#c8f7c5]" />
@@ -1053,70 +1210,90 @@ export function DashboardPage() {
                       className="text-lg font-bold text-[#c8f7c5] hover:underline"
                       onClick={() => navigateToKbDisease(selectedEvent.disease)}
                     >
-                      {selectedEvent.disease}
+                      {caseDiagnosis.disease}
                     </button>
-                    <p className="text-white/80 text-sm">{selectedEvent.confidencePct !== null ? `${selectedEvent.confidencePct.toFixed(2)}%` : '—'}</p>
+                    <p className="text-white/80 text-sm">{caseDiagnosis.confidenceText}</p>
                   </div>
                   <div className="bg-white/5 rounded-lg p-3">
                     <p className="text-white/60 text-xs mb-1">模型 / 时间 / 档位</p>
                     <p className="text-white text-sm">{selectedEvent.modelName || selectedEvent.modelId}</p>
                     <p className="text-white/60 text-xs mt-1">{safeDisplayTime(selectedEvent.ts)} · {selectedEvent.selectedBranch}</p>
                   </div>
+                  {['reception', 'diagnosis', 'kb', 'treatment', 'supervisor'].map((key) => {
+                    const section = traceSummaryMap.get(key);
+                    if (!section) return null;
+                    return (
+                      <div key={key} className="bg-white/5 rounded-lg p-3 text-xs space-y-1">
+                        <div className="text-[#c8f7c5]">{section.title}</div>
+                        {section.rows.map((row) => (
+                          <div key={`${key}-${row.label}`} className="flex items-start justify-between gap-2">
+                            <span className="text-white/60">{row.label}</span>
+                            <span className="text-white text-right">{row.value || '无'}</span>
+                          </div>
+                        ))}
+                      </div>
+                    );
+                  })}
                   {hasTreatment && <div className="bg-white/5 rounded-lg p-3 text-white/80 text-sm max-h-36 overflow-y-auto">{renderTreatment(selectedEvent?.treatment)}</div>}
                 </TabsContent>
                 <TabsContent value="personal" className="space-y-2 mt-3 text-sm text-white/80">
-                  <div>已应用个性化：{selectedEvent.personalizationApplied ? '是' : '否'}</div>
-                  <div>触发过滤：{selectedEvent.filtered ? '是' : '否'}</div>
-                  <div>轮次：{selectedEvent.confirmRound ? '确认轮' : '首轮'}</div>
-                  <div>过滤原因：{selectedEvent.filteredReasons.join('；') || '无'}</div>
-                  <div>过滤成分：{selectedEvent.filteredComponents.join('；') || '无'}</div>
-                  <div>缺失字段：{selectedEvent.missingProfileFields.join('；') || '无'}</div>
-                  <div>追问问题：{selectedEvent.followUpQuestions.join('；') || '无'}</div>
+                  <div className="bg-[#1a3329] border border-[#2e7d63]/40 rounded-lg px-3 py-2 text-[#c8f7c5] text-xs">影响分档的主要因素</div>
+                  <div className="grid grid-cols-1 gap-2">
+                    {personalInfoRows.map((item) => (
+                      <div key={item.label} className="bg-white/5 rounded-lg p-2">
+                        <div className="text-white/60 text-xs">{item.label}</div>
+                        <div className="text-white mt-1">{item.value || '未设置'}</div>
+                      </div>
+                    ))}
+                  </div>
                 </TabsContent>
                 <TabsContent value="trace" className="space-y-2 mt-3">
-                  {traceSummary.map((item, index) => (
-                    <div key={`${item.agent}-${index}`} className="bg-white/5 rounded-lg p-2 text-xs">
-                      <div className="text-[#c8f7c5]">{item.agent} · {item.status}</div>
-                      <div className="text-white/80 mt-1">{item.message}</div>
+                  {traceSummary.map((item) => (
+                    <div key={item.key} className="bg-white/5 rounded-lg p-3 text-xs">
+                      <div className="text-[#c8f7c5] mb-2">{item.title}</div>
+                      <div className="space-y-1">
+                        {item.rows.map((row) => (
+                          <div key={`${item.key}-${row.label}`} className="flex items-start justify-between gap-2">
+                            <span className="text-white/60">{row.label}</span>
+                            <span className="text-white text-right">{row.value || '未提取'}</span>
+                          </div>
+                        ))}
+                      </div>
                     </div>
                   ))}
-                  {traceSummary.length === 0 && <p className="text-white/40 text-sm">暂无 Trace 摘要</p>}
+                  {traceSummary.length === 0 && <p className="text-white/40 text-sm">暂无可提炼的 Trace 摘要</p>}
+                  <Button size="sm" variant="outline" className="border-white/20 text-white" onClick={() => setShowRawTrace((prev) => !prev)}>{showRawTrace ? '收起原始 Trace' : '查看原始 Trace'}</Button>
+                  {showRawTrace && (
+                    <pre className="bg-black/30 rounded-lg p-2 text-[11px] text-white/70 max-h-40 overflow-auto">{JSON.stringify(traceRawEvents, null, 2)}</pre>
+                  )}
                 </TabsContent>
                 <TabsContent value="kb" className="space-y-2 mt-3 text-sm text-white/80">
-                  {kbDetail ? (
+                  {kbSummary.name ? (
                     <>
-                      <button type="button" className="text-[#c8f7c5] font-semibold hover:underline" onClick={() => navigateToKbDisease(kbDetail.name)}>
-                        {kbDetail.name}
+                      <button type="button" className="text-[#c8f7c5] font-semibold hover:underline" onClick={() => navigateToKbDisease(kbSummary.name)}>
+                        {kbSummary.name}
                       </button>
                       <div className="bg-white/5 rounded-lg p-2 whitespace-pre-wrap">
                         <div className="text-xs text-white/60 mb-1">病害描述</div>
-                        {kbDetail.description || '暂无描述'}
+                        {kbSummary.description || '暂无描述'}
                       </div>
                       <div className="bg-white/5 rounded-lg p-2 whitespace-pre-wrap">
                         <div className="text-xs text-white/60 mb-1">治疗方案</div>
-                        {kbDetail.treatment || '暂无'}
+                        {kbSummary.treatment || '暂无'}
                       </div>
                       <div className="bg-white/5 rounded-lg p-2 whitespace-pre-wrap">
                         <div className="text-xs text-white/60 mb-1">预防建议</div>
-                        {kbDetail.prevention || '暂无'}
+                        {kbSummary.prevention || '暂无'}
                       </div>
-                      <div className="bg-white/5 rounded-lg p-2">
-                        <div className="text-xs text-white/60 mb-2">处置动作</div>
-                        <div className="flex flex-wrap gap-1">
-                          {Object.entries(kbDetail.actions ?? {}).length > 0 ? Object.entries(kbDetail.actions ?? {}).map(([key, value]) => (
-                            <Badge key={key} variant="outline" className="border-[#c8f7c5]/60 text-[#c8f7c5]">{key}：{Array.isArray(value) ? `${value.length}项` : '已配置'}</Badge>
-                          )) : <span className="text-white/40">暂无 actions</span>}
-                        </div>
-                      </div>
-                      <div className="bg-white/5 rounded-lg p-2">
+                                            <div className="bg-white/5 rounded-lg p-2">
                         <div className="text-xs text-white/60 mb-2">推荐成分</div>
                         <div className="flex flex-wrap gap-1">
-                          {(kbDetail.ingredients?.length ?? 0) > 0 ? kbDetail.ingredients?.map((ingredient) => (
+                          {(kbSummary.ingredients.length ?? 0) > 0 ? kbSummary.ingredients.map((ingredient) => (
                             <Badge key={ingredient} className="bg-[#c8f7c5]/20 text-[#c8f7c5]">{ingredient}</Badge>
                           )) : <span className="text-white/40">暂无 ingredients</span>}
                         </div>
                       </div>
-                      <Button size="sm" variant="outline" className="border-white/20 text-white" onClick={() => navigateToKbDisease(kbDetail.name)}>
+                      <Button size="sm" variant="outline" className="border-white/20 text-white" onClick={() => navigateToKbDisease(kbSummary.name)}>
                         查看知识库详情
                       </Button>
                     </>
@@ -1135,7 +1312,8 @@ export function DashboardPage() {
               </div>
             )}
           </CardContent>
-        </Card>
+          </Card>
+        )}
       </div>
     </div>
   );
