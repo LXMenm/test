@@ -857,8 +857,8 @@ export function DashboardPage() {
     <div className="space-y-6 animate-fadeIn overflow-visible">
       <div className="flex flex-col xl:flex-row xl:items-center xl:justify-between gap-4">
         <div className="max-w-[620px]">
-          <h1 className="text-[28px] md:text-[30px] leading-tight font-bold text-white md:whitespace-nowrap">番茄病害<span className="text-[#b9dbc7]">诊疗联动分析看板</span></h1>
-          <p className="text-white/60 mt-1 text-sm">面向基地诊疗过程的趋势、案例与可解释分析</p>
+          <h1 className="text-[28px] md:text-[30px] leading-tight font-bold text-white md:whitespace-nowrap">番茄病害<span className="text-[#b9dbc7]">诊疗分析看板</span></h1>
+          <p className="text-white/60 mt-1 text-sm">诊疗过程的趋势、案例与可解释分析</p>
         </div>
 
         {/* Date Range Controls */}
