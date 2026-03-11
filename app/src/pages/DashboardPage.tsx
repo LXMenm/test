@@ -208,18 +208,90 @@ function sourceLabel(value: string): string {
   return normalized;
 }
 
-function resolvePersonalizationInfo(event: DiagnosisEvent): Array<{ label: string; value: string }> {
+type TraceNodeMap = Record<string, Record<string, unknown>[]>;
+
+function toPercent(value: unknown): string {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return '未提取';
+  const pct = num <= 1 ? num * 100 : num;
+  return `${pct.toFixed(2)}%`;
+}
+
+function toYesNo(value: unknown, fallback = '否'): string {
+  if (typeof value === 'boolean') return value ? '是' : '否';
+  return fallback;
+}
+
+function normalizeNodeKey(event: Record<string, unknown>): string {
+  const raw = String(event.agent_id ?? event.agent ?? event.node ?? '').toLowerCase();
+  if (raw.includes('personalization')) return 'personalization';
+  if (raw.includes('reception') || raw.includes('接待')) return 'reception';
+  if (raw.includes('diagnosis') || raw.includes('诊断')) return 'diagnosis';
+  if (raw.includes('kb') || raw.includes('retrieval') || raw.includes('知识')) return 'kb_retrieval';
+  if (raw.includes('treatment') || raw.includes('治疗')) return 'treatment';
+  if (raw.includes('supervisor') || raw.includes('监督')) return 'supervisor';
+  return raw;
+}
+
+function buildTraceNodeMap(rows: unknown[]): TraceNodeMap {
+  const map: TraceNodeMap = {};
+  rows.forEach((row) => {
+    const rec = toRecord(row) ?? {};
+    const raw = toRecord(rec.raw) ?? rec;
+    const key = normalizeNodeKey(raw);
+    if (!key) return;
+    map[key] = map[key] ?? [];
+    map[key].push(raw);
+  });
+  return map;
+}
+
+function getLatestNode(map: TraceNodeMap, key: string): Record<string, unknown> | undefined {
+  const list = map[key] ?? [];
+  return list.length > 0 ? list[list.length - 1] : undefined;
+}
+
+function getNodeOutputs(node?: Record<string, unknown>): Record<string, unknown> {
+  return toRecord(node?.outputs) ?? {};
+}
+
+function resolvePersonalizationInfo(event: DiagnosisEvent, nodeMap?: TraceNodeMap): Array<{ label: string; value: string }> {
+  const pNode = getLatestNode(nodeMap ?? {}, 'personalization');
+  const payload = toRecord(pNode?.payload);
+  const meta = toRecord(payload?.meta);
+  const pOutputs = toRecord(payload?.outputs);
+  const treatmentNode = getLatestNode(nodeMap ?? {}, 'treatment');
+  const treatmentOutputs = getNodeOutputs(treatmentNode);
+  const selectedBranch = String(
+    pOutputs?.selected_branch
+    ?? meta?.selected_branch
+    ?? treatmentOutputs?.selected_branch
+    ?? event.selectedBranchRaw
+    ?? ''
+  );
+
+  const equipment = Array.isArray(meta?.equipment)
+    ? meta!.equipment.map((item) => readableText(item, '')).filter(Boolean)
+    : event.equipment;
+
+  const preferOrganic = typeof meta?.prefer_organic === 'boolean'
+    ? meta.prefer_organic
+    : event.preferOrganic;
+  const harvestWindow = Number.isFinite(Number(meta?.harvest_window_days))
+    ? Number(meta?.harvest_window_days)
+    : event.harvestWindowDays;
+
   return [
-    { label: '农户ID / 姓名', value: `${event.farmerId}${event.farmerName !== '未设置' ? ` / ${event.farmerName}` : ''}` },
-    { label: '基地ID / 基地名称', value: `${event.baseId}${event.baseName !== '未设置' ? ` / ${event.baseName}` : ''}` },
-    { label: '种植规模', value: getFarmScaleLabel(event.farmScale) },
-    { label: '购药能力', value: getPesticideAccessLevelLabel(event.pesticideAccessLevel) },
-    { label: '设备', value: event.equipment.length > 0 ? event.equipment.map((item) => getEquipmentLabel(item)).join('、') : '未设置' },
-    { label: '栽培模式', value: getCultivationModeLabel(event.cultivationMode) },
-    { label: '风险偏好', value: getRiskPreferenceLabel(event.riskPreference) },
-    { label: '有机偏好', value: event.preferOrganic === null ? '未设置' : (event.preferOrganic ? '是' : '否') },
-    { label: '采收窗口', value: event.harvestWindowDays === null ? '未设置' : `${event.harvestWindowDays} 天` },
-    { label: '当前判定档位', value: event.selectedBranch },
+    { label: '农户ID / 姓名', value: `${readableText(meta?.farmer_id, event.farmerId)}${event.farmerName !== '未设置' ? ` / ${event.farmerName}` : ''}` },
+    { label: '基地ID / 基地名称', value: `${readableText(meta?.base_id, event.baseId)}${event.baseName !== '未设置' ? ` / ${event.baseName}` : ''}` },
+    { label: '种植规模', value: getFarmScaleLabel(readableText(meta?.farm_scale, event.farmScale)) },
+    { label: '购药能力', value: getPesticideAccessLevelLabel(readableText(meta?.pesticide_access_level, event.pesticideAccessLevel)) },
+    { label: '设备', value: equipment.length > 0 ? equipment.map((item) => getEquipmentLabel(item)).join('、') : '未设置' },
+    { label: '栽培模式', value: getCultivationModeLabel(readableText(meta?.cultivation_mode, event.cultivationMode)) },
+    { label: '风险偏好', value: getRiskPreferenceLabel(readableText(meta?.risk_preference, event.riskPreference)) },
+    { label: '有机偏好', value: preferOrganic === null ? '未设置' : (preferOrganic ? '是' : '否') },
+    { label: '采收窗口', value: harvestWindow === null ? '未设置' : `${harvestWindow}天` },
+    { label: '当前判定档位', value: getSelectedBranchLabel(selectedBranch) },
   ];
 }
 
@@ -230,66 +302,68 @@ function toText(value: unknown): string {
 }
 
 function buildTraceSummary(rows: unknown[]): TraceSummaryItem[] {
-  const events = rows.map((row) => (row && typeof row === 'object' ? row as Record<string, unknown> : {}));
-  const pick = (agent: string) => events.find((item) => String(item.agent ?? item.node ?? '').toLowerCase() === agent);
+  const nodeMap = buildTraceNodeMap(rows);
+  const receptionOutputs = getNodeOutputs(getLatestNode(nodeMap, 'reception'));
+  const diagnosisOutputs = getNodeOutputs(getLatestNode(nodeMap, 'diagnosis'));
+  const imageDiagnosis = toRecord(diagnosisOutputs.image_diagnosis) ?? toRecord(diagnosisOutputs.image_result) ?? {};
+  const top3 = Array.isArray(imageDiagnosis?.top3) ? imageDiagnosis.top3 : (Array.isArray(diagnosisOutputs.top3) ? diagnosisOutputs.top3 : []);
+  const top1 = Array.isArray(top3) ? top3[0] : undefined;
 
-  const reception = pick('reception');
-  const receptionRaw = toRecord(reception?.raw) ?? reception;
-  const receptionOutputs = toRecord(receptionRaw?.outputs);
+  const kbOutputs = getNodeOutputs(getLatestNode(nodeMap, 'kb_retrieval'));
+  const kbDoc = toRecord(kbOutputs.kb_disease) ?? toRecord(kbOutputs.disease) ?? {};
+  const ingredients = Array.isArray(kbDoc.ingredients)
+    ? kbDoc.ingredients
+    : (Array.isArray(kbOutputs.ingredients) ? kbOutputs.ingredients : []);
 
-  const diagnosis = pick('diagnosis');
-  const diagnosisRaw = toRecord(diagnosis?.raw) ?? diagnosis;
-  const diagnosisOutputs = toRecord(diagnosisRaw?.outputs) ?? diagnosisRaw;
-  const imageDiagnosis = toRecord(diagnosisOutputs?.image_diagnosis) ?? toRecord(diagnosisOutputs?.image_result);
-  const top3 = Array.isArray(imageDiagnosis?.top3) ? imageDiagnosis.top3 : [];
-  const top1 = top3[0];
-
-  const kb = pick('kb_retrieval');
-  const kbRaw = toRecord(kb?.raw) ?? kb;
-  const kbOutputs = toRecord(kbRaw?.outputs) ?? kbRaw;
-  const kbDoc = toRecord(kbOutputs?.kb_disease) ?? toRecord(kbOutputs?.disease);
-  const ingredients = Array.isArray(kbDoc?.ingredients) ? kbDoc.ingredients : [];
-
-  const treatment = pick('treatment');
-  const treatmentRaw = toRecord(treatment?.raw) ?? treatment;
-  const treatmentOutputs = toRecord(treatmentRaw?.outputs) ?? treatmentRaw;
-
-  const supervisor = pick('supervisor');
-  const supervisorRaw = toRecord(supervisor?.raw) ?? supervisor;
-  const supervisorOutputs = toRecord(supervisorRaw?.outputs) ?? supervisorRaw;
+  const treatmentOutputs = getNodeOutputs(getLatestNode(nodeMap, 'treatment'));
+  const supervisorHistory = (nodeMap.supervisor ?? []).map((node) => ({
+    step: toText(node.current_step),
+    decision: toRecord(node.decision) ?? getNodeOutputs(node),
+  }));
+  const lastSupervisor = supervisorHistory.length > 0 ? supervisorHistory[supervisorHistory.length - 1] : undefined;
 
   const make = (key: string, title: string, rowsData: Array<{ label: string; value: string }>) => ({ key, title, rows: rowsData.filter((item) => item.value) });
 
   return [
     make('reception', '接入信息（reception）', [
-      { label: '作物类型', value: toText(receptionOutputs?.crop_type ?? receptionRaw?.crop_type) || '未提取' },
-      { label: '症状', value: toText(receptionOutputs?.symptoms ?? receptionRaw?.symptoms) || '未提取' },
-      { label: '图片', value: (receptionOutputs?.has_image ?? receptionRaw?.has_image) === true ? '已上传' : '未上传/未知' },
-      { label: '缺失字段', value: Array.isArray(receptionOutputs?.missing_fields) ? receptionOutputs!.missing_fields.map(toText).filter(Boolean).join('、') : '无' },
+      { label: '作物类型', value: toText(receptionOutputs.crop_type) || '未提取' },
+      { label: '症状', value: Array.isArray(receptionOutputs.symptoms) ? receptionOutputs.symptoms.map(toText).filter(Boolean).join('、') : (toText(receptionOutputs.symptoms) || '未提取') },
+      { label: '图片', value: toText(receptionOutputs.image_path) ? '已上传' : ((receptionOutputs.has_image === true) ? '已上传' : '未上传') },
+      { label: '缺失字段', value: Array.isArray(receptionOutputs.missing_profile_fields) ? receptionOutputs.missing_profile_fields.map(toText).filter(Boolean).join('、') || '无' : '无' },
     ]),
     make('diagnosis', '识别结果（diagnosis）', [
-      { label: '最终病害', value: toText(diagnosisOutputs?.final_disease ?? diagnosisOutputs?.disease) || '未提取' },
-      { label: '置信度', value: (() => { const c = Number(diagnosisOutputs?.final_confidence ?? imageDiagnosis?.confidence_pct); return Number.isFinite(c) ? `${c <= 1 ? (c * 100).toFixed(2) : c.toFixed(2)}%` : '未提取'; })() },
-      { label: '来源', value: sourceLabel(toText(diagnosisOutputs?.final_source ?? diagnosisOutputs?.source) || 'image') },
-      { label: 'need_confirm', value: diagnosisOutputs?.need_confirm === true ? '是' : '否' },
-      { label: 'top1', value: Array.isArray(top1) ? `${toText(top1[0])} (${Number(top1[1]).toFixed(2)}%)` : toText(toRecord(top1)?.disease) || '无' },
+      { label: '最终病害', value: toText(diagnosisOutputs.final_disease ?? diagnosisOutputs.disease) || '未提取' },
+      { label: '置信度', value: toPercent(diagnosisOutputs.final_confidence ?? imageDiagnosis.confidence_pct ?? imageDiagnosis.confidence) },
+      { label: '来源', value: sourceLabel(toText(diagnosisOutputs.final_source ?? diagnosisOutputs.source) || 'image') },
+      { label: 'need_confirm', value: toYesNo(diagnosisOutputs.need_confirm) },
+      { label: 'top1', value: Array.isArray(top1)
+        ? `${toText(top1[0])} (${toPercent(top1[1])})`
+        : (() => {
+          const rec = toRecord(top1);
+          const d = toText(rec?.disease ?? diagnosisOutputs.image_top1);
+          const p = rec?.prob ?? rec?.prob_pct ?? rec?.confidence ?? diagnosisOutputs.final_confidence;
+          return d ? `${d} (${toPercent(p)})` : '无';
+        })() },
     ]),
     make('kb', '知识库命中（kb_retrieval）', [
-      { label: '命中病害', value: toText(kbDoc?.name ?? kbOutputs?.disease_name) || '未命中' },
-      { label: 'description/treatment/prevention', value: [kbDoc?.description ? 'description' : '', kbDoc?.treatment ? 'treatment' : '', kbDoc?.prevention ? 'prevention' : ''].filter(Boolean).join(' / ') || '缺失' },
-      { label: 'ingredients', value: ingredients.length > 0 ? `有（${ingredients.length}项）` : '无' },
+      { label: '命中病害', value: toText(kbOutputs.disease ?? kbOutputs.disease_name ?? kbDoc.name) || '未命中' },
+      { label: 'description/treatment/prevention', value: (toText(kbOutputs.description ?? kbDoc.description) || toText(kbOutputs.treatment ?? kbDoc.treatment) || toText(kbOutputs.prevention ?? kbDoc.prevention)) ? '已命中' : '缺失' },
+      { label: 'ingredients', value: ingredients.length > 0 ? ingredients.map(toText).filter(Boolean).join('、') : '无' },
     ]),
     make('treatment', '方案编排（treatment）', [
-      { label: 'selected_branch', value: getSelectedBranchLabel(toText(treatmentOutputs?.selected_branch) || undefined) },
-      { label: 'LLM失败', value: treatmentOutputs?.llm_failed === true ? '是' : '否' },
-      { label: '已应用个性化', value: treatmentOutputs?.personalization_applied === true ? '是' : '否' },
-      { label: '触发过滤', value: treatmentOutputs?.filtered === true ? '是' : '否' },
-      { label: '过滤原因', value: Array.isArray(treatmentOutputs?.filtered_reasons) ? treatmentOutputs!.filtered_reasons.map(toText).filter(Boolean).join('、') : '无' },
-      { label: '个性化理由', value: Array.isArray(treatmentOutputs?.personalization_reasons) ? treatmentOutputs!.personalization_reasons.map(toText).filter(Boolean).slice(0, 3).join('；') : '无' },
+      { label: 'selected_branch', value: getSelectedBranchLabel(toText(treatmentOutputs.selected_branch) || undefined) },
+      { label: 'LLM失败', value: toYesNo(treatmentOutputs.llm_failed) },
+      { label: '已应用个性化', value: toYesNo(treatmentOutputs.personalization_applied) },
+      { label: '触发过滤', value: toYesNo(treatmentOutputs.filtered) },
+      { label: '过滤原因', value: Array.isArray(treatmentOutputs.filtered_reasons) ? treatmentOutputs.filtered_reasons.map(toText).filter(Boolean).join('、') || '无' : '无' },
+      { label: '个性化理由', value: Array.isArray(treatmentOutputs.personalization_reasons) ? treatmentOutputs.personalization_reasons.map(toText).filter(Boolean).slice(0, 3).join('；') || '无' : '无' },
     ]),
     make('supervisor', '流程决策（supervisor）', [
-      { label: 'next_action', value: toText(supervisorOutputs?.next_action) || '未提取' },
-      { label: 'reasons', value: Array.isArray(supervisorOutputs?.reasons) ? supervisorOutputs!.reasons.map(toText).filter(Boolean).join('；') : toText(supervisorOutputs?.reasons) || '无' },
+      { label: '决策历史', value: supervisorHistory.map((item) => {
+        const nextAction = toText(item.decision.next_action);
+        const reasons = Array.isArray(item.decision.reasons) ? item.decision.reasons.map(toText).filter(Boolean).join('、') : toText(item.decision.reasons);
+        return `${item.step || 'unknown'} -> ${nextAction || 'unknown'}（${reasons || '无'}）`;
+      }).join('；') || `${toText(lastSupervisor?.decision?.next_action) || '未提取'}（${Array.isArray(lastSupervisor?.decision?.reasons) ? lastSupervisor!.decision.reasons.map(toText).filter(Boolean).join('、') : toText(lastSupervisor?.decision?.reasons) || '无'}）` },
     ]),
   ].filter((item) => item.rows.length > 0);
 }
@@ -708,6 +782,42 @@ export function DashboardPage() {
     run();
   }, [selectedEvent?.traceId]);
 
+  const traceNodeMap = useMemo(() => buildTraceNodeMap(traceRawEvents), [traceRawEvents]);
+  const personalInfoRows = useMemo(() => (
+    selectedEvent ? resolvePersonalizationInfo(selectedEvent, traceNodeMap) : []
+  ), [selectedEvent, traceNodeMap]);
+
+  const caseDiagnosis = useMemo(() => {
+    const diagnosisOutputs = getNodeOutputs(getLatestNode(traceNodeMap, 'diagnosis'));
+    const disease = toText(diagnosisOutputs.final_disease) || selectedEvent?.disease || '—';
+    const confidence = diagnosisOutputs.final_confidence ?? diagnosisOutputs.confidence_pct ?? selectedEvent?.confidencePct;
+    return {
+      disease,
+      confidenceText: confidence === undefined ? (selectedEvent?.confidencePct !== null && selectedEvent?.confidencePct !== undefined ? `${selectedEvent.confidencePct.toFixed(2)}%` : '—') : toPercent(confidence),
+    };
+  }, [traceNodeMap, selectedEvent]);
+
+  const kbSummary = useMemo(() => {
+    const kbOutputs = getNodeOutputs(getLatestNode(traceNodeMap, 'kb_retrieval'));
+    const kbDoc = toRecord(kbOutputs.kb_disease) ?? {};
+    const ingredients = Array.isArray(kbOutputs.ingredients)
+      ? kbOutputs.ingredients.map((item) => toText(item)).filter(Boolean)
+      : (Array.isArray(kbDoc.ingredients) ? kbDoc.ingredients.map((item) => toText(item)).filter(Boolean) : []);
+    return {
+      name: toText(kbOutputs.disease ?? kbOutputs.disease_name ?? kbDoc.name) || kbDetail?.name || selectedEvent?.disease || '',
+      description: toText(kbOutputs.description ?? kbDoc.description) || kbDetail?.description || '',
+      treatment: toText(kbOutputs.treatment ?? kbDoc.treatment) || kbDetail?.treatment || '',
+      prevention: toText(kbOutputs.prevention ?? kbDoc.prevention) || kbDetail?.prevention || '',
+      ingredients,
+    };
+  }, [traceNodeMap, kbDetail, selectedEvent?.disease]);
+
+  const traceSummaryMap = useMemo(() => {
+    const map = new Map<string, TraceSummaryItem>();
+    traceSummary.forEach((item) => map.set(item.key, item));
+    return map;
+  }, [traceSummary]);
+
   const maxCount = Math.max(...stats.map((s) => s.count), 1);
 
   const setQuickRange = (days: number) => {
@@ -1050,7 +1160,7 @@ export function DashboardPage() {
                         {event.disease}
                       </button>
                       <div className="mt-2 flex flex-wrap gap-1">
-                        <Badge variant="outline" className="text-[10px] border-white/30 text-white/70">{event.selectedBranch || 'UNKNOWN'}</Badge>
+                        <Badge variant="outline" className="text-[10px] border-white/30 text-white/70">{event.selectedBranch || '未分档'}</Badge>
                         {event.personalizationApplied && <Badge className="text-[10px] bg-[#c8f7c5] text-black">个性化</Badge>}
                         {event.filtered && <Badge className="text-[10px] bg-yellow-400 text-black">已过滤</Badge>}
                         {event.confirmRound && <Badge className="text-[10px] bg-blue-400 text-black">确认轮</Badge>}
@@ -1100,21 +1210,36 @@ export function DashboardPage() {
                       className="text-lg font-bold text-[#c8f7c5] hover:underline"
                       onClick={() => navigateToKbDisease(selectedEvent.disease)}
                     >
-                      {selectedEvent.disease}
+                      {caseDiagnosis.disease}
                     </button>
-                    <p className="text-white/80 text-sm">{selectedEvent.confidencePct !== null ? `${selectedEvent.confidencePct.toFixed(2)}%` : '—'}</p>
+                    <p className="text-white/80 text-sm">{caseDiagnosis.confidenceText}</p>
                   </div>
                   <div className="bg-white/5 rounded-lg p-3">
                     <p className="text-white/60 text-xs mb-1">模型 / 时间 / 档位</p>
                     <p className="text-white text-sm">{selectedEvent.modelName || selectedEvent.modelId}</p>
                     <p className="text-white/60 text-xs mt-1">{safeDisplayTime(selectedEvent.ts)} · {selectedEvent.selectedBranch}</p>
                   </div>
+                  {['reception', 'diagnosis', 'kb', 'treatment', 'supervisor'].map((key) => {
+                    const section = traceSummaryMap.get(key);
+                    if (!section) return null;
+                    return (
+                      <div key={key} className="bg-white/5 rounded-lg p-3 text-xs space-y-1">
+                        <div className="text-[#c8f7c5]">{section.title}</div>
+                        {section.rows.map((row) => (
+                          <div key={`${key}-${row.label}`} className="flex items-start justify-between gap-2">
+                            <span className="text-white/60">{row.label}</span>
+                            <span className="text-white text-right">{row.value || '无'}</span>
+                          </div>
+                        ))}
+                      </div>
+                    );
+                  })}
                   {hasTreatment && <div className="bg-white/5 rounded-lg p-3 text-white/80 text-sm max-h-36 overflow-y-auto">{renderTreatment(selectedEvent?.treatment)}</div>}
                 </TabsContent>
                 <TabsContent value="personal" className="space-y-2 mt-3 text-sm text-white/80">
                   <div className="bg-[#1a3329] border border-[#2e7d63]/40 rounded-lg px-3 py-2 text-[#c8f7c5] text-xs">影响分档的主要因素</div>
                   <div className="grid grid-cols-1 gap-2">
-                    {resolvePersonalizationInfo(selectedEvent).map((item) => (
+                    {personalInfoRows.map((item) => (
                       <div key={item.label} className="bg-white/5 rounded-lg p-2">
                         <div className="text-white/60 text-xs">{item.label}</div>
                         <div className="text-white mt-1">{item.value || '未设置'}</div>
@@ -1143,32 +1268,32 @@ export function DashboardPage() {
                   )}
                 </TabsContent>
                 <TabsContent value="kb" className="space-y-2 mt-3 text-sm text-white/80">
-                  {kbDetail ? (
+                  {kbSummary.name ? (
                     <>
-                      <button type="button" className="text-[#c8f7c5] font-semibold hover:underline" onClick={() => navigateToKbDisease(kbDetail.name)}>
-                        {kbDetail.name}
+                      <button type="button" className="text-[#c8f7c5] font-semibold hover:underline" onClick={() => navigateToKbDisease(kbSummary.name)}>
+                        {kbSummary.name}
                       </button>
                       <div className="bg-white/5 rounded-lg p-2 whitespace-pre-wrap">
                         <div className="text-xs text-white/60 mb-1">病害描述</div>
-                        {kbDetail.description || '暂无描述'}
+                        {kbSummary.description || '暂无描述'}
                       </div>
                       <div className="bg-white/5 rounded-lg p-2 whitespace-pre-wrap">
                         <div className="text-xs text-white/60 mb-1">治疗方案</div>
-                        {kbDetail.treatment || '暂无'}
+                        {kbSummary.treatment || '暂无'}
                       </div>
                       <div className="bg-white/5 rounded-lg p-2 whitespace-pre-wrap">
                         <div className="text-xs text-white/60 mb-1">预防建议</div>
-                        {kbDetail.prevention || '暂无'}
+                        {kbSummary.prevention || '暂无'}
                       </div>
                                             <div className="bg-white/5 rounded-lg p-2">
                         <div className="text-xs text-white/60 mb-2">推荐成分</div>
                         <div className="flex flex-wrap gap-1">
-                          {(kbDetail.ingredients?.length ?? 0) > 0 ? kbDetail.ingredients?.map((ingredient) => (
+                          {(kbSummary.ingredients.length ?? 0) > 0 ? kbSummary.ingredients.map((ingredient) => (
                             <Badge key={ingredient} className="bg-[#c8f7c5]/20 text-[#c8f7c5]">{ingredient}</Badge>
                           )) : <span className="text-white/40">暂无 ingredients</span>}
                         </div>
                       </div>
-                      <Button size="sm" variant="outline" className="border-white/20 text-white" onClick={() => navigateToKbDisease(kbDetail.name)}>
+                      <Button size="sm" variant="outline" className="border-white/20 text-white" onClick={() => navigateToKbDisease(kbSummary.name)}>
                         查看知识库详情
                       </Button>
                     </>
