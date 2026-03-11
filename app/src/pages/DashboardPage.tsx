@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useCallback, type ReactNode } from 'react';
-import { BarChart3, Calendar, RefreshCw, Image as ImageIcon, TrendingUp, AlertCircle, LineChart as LineChartIcon, Cpu, ArrowRight, Settings2, ChevronDown, ChevronUp } from 'lucide-react';
+import { BarChart3, Calendar, RefreshCw, Image as ImageIcon, TrendingUp, AlertCircle, LineChart as LineChartIcon, Cpu, Settings2, ChevronDown, ChevronUp } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -409,10 +409,9 @@ function buildTraceSummary(rows: unknown[]): TraceSummaryItem[] {
   ].filter((item) => item.rows.length > 0);
 }
 
-function formatDisplayDate(value: string): string {
-  if (!isValidDateString(value)) return '—';
-  const parsed = new Date(`${value}T00:00:00`);
-  return parsed.toLocaleDateString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' });
+function formatDisplayDateRange(start: string, end: string): string {
+  if (!isValidDateString(start) || !isValidDateString(end)) return '—';
+  return `${start} → ${end}`;
 }
 
 function navigateToKbDisease(diseaseName: string) {
@@ -500,9 +499,7 @@ function normalizeEvent(eventLike: unknown, index: number): DiagnosisEvent {
 }
 
 export function DashboardPage() {
-  const [queryMode, setQueryMode] = useState<'preset' | 'custom'>('preset');
-  const [presetKey, setPresetKey] = useState<'7d' | '30d' | '90d' | null>('7d');
-  const [customRange, setCustomRange] = useState<{ start: string | null; end: string | null }>({ start: null, end: null });
+  const [presetKey, setPresetKey] = useState<'7d' | '30d' | '90d'>('7d');
   const [allEvents, setAllEvents] = useState<DiagnosisEvent[]>([]);
   const [selectedEvent, setSelectedEvent] = useState<DiagnosisEvent | null>(null);
   const [selectedDisease, setSelectedDisease] = useState('ALL');
@@ -550,21 +547,12 @@ export function DashboardPage() {
     </CardHeader>
   );
 
-  const getPresetRange = useCallback((key: '7d' | '30d' | '90d' | null): { start: string; end: string } => {
+  const getPresetRange = useCallback((key: '7d' | '30d' | '90d'): { start: string; end: string } => {
     const days = key === '30d' ? 30 : key === '90d' ? 90 : 7;
     return getDefaultDateRange(days);
   }, []);
 
-  const effectiveRange = useMemo(() => {
-    if (queryMode === 'custom') {
-      const customStart = customRange.start;
-      const customEnd = customRange.end;
-      if (customStart && customEnd && isValidDateString(customStart) && isValidDateString(customEnd) && customStart <= customEnd) {
-        return { start: customStart, end: customEnd };
-      }
-    }
-    return getPresetRange(presetKey);
-  }, [customRange.end, customRange.start, getPresetRange, presetKey, queryMode]);
+  const effectiveRange = useMemo(() => getPresetRange(presetKey), [getPresetRange, presetKey]);
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -846,26 +834,19 @@ export function DashboardPage() {
   const maxCount = Math.max(...stats.map((s) => s.count), 1);
 
   const setQuickRange = (key: '7d' | '30d' | '90d') => {
-    setQueryMode('preset');
     setPresetKey(key);
-  };
-
-  const handleCustomDateChange = (field: 'start' | 'end', value: string) => {
-    setQueryMode('custom');
-    setPresetKey(null);
-    setCustomRange((prev) => ({ ...prev, [field]: value || null }));
   };
 
   const displayStartDate = effectiveRange.start;
   const displayEndDate = effectiveRange.end;
+  const displayRangeText = formatDisplayDateRange(displayStartDate, displayEndDate);
 
   const selectedQuickRange = useMemo(() => {
-    if (queryMode !== 'preset') return null;
     if (presetKey === '7d') return 7;
     if (presetKey === '30d') return 30;
     if (presetKey === '90d') return 90;
     return null;
-  }, [presetKey, queryMode]);
+  }, [presetKey]);
 
   useEffect(() => {
     void fetchData();
@@ -883,11 +864,7 @@ export function DashboardPage() {
         <div className="flex items-center gap-2 flex-wrap">
           <div className="h-10 min-w-[280px] px-3 rounded-md border border-white/20 bg-white/5 text-white flex items-center justify-start text-sm">
             <Calendar className="w-4 h-4 mr-2 text-[#c8f7c5]" />
-            <span className="text-white/70 mr-2">开始</span>
-            <span>{formatDisplayDate(displayStartDate)}</span>
-            <ArrowRight className="w-3 h-3 mx-2 text-white/40" />
-            <span className="text-white/70 mr-2">结束</span>
-            <span>{formatDisplayDate(displayEndDate)}</span>
+            <span className="text-white/90">{displayRangeText}</span>
           </div>
 
           <div className="flex items-center gap-1.5">
@@ -904,22 +881,6 @@ export function DashboardPage() {
             ))}
           </div>
 
-          <div className="flex items-center gap-1.5">
-            <input
-              type="date"
-              value={customRange.start ?? ''}
-              onChange={(event) => handleCustomDateChange('start', event.target.value)}
-              className="h-9 rounded-md border border-white/20 bg-white/5 px-2 text-sm text-white"
-              aria-label="自定义开始日期"
-            />
-            <input
-              type="date"
-              value={customRange.end ?? ''}
-              onChange={(event) => handleCustomDateChange('end', event.target.value)}
-              className="h-9 rounded-md border border-white/20 bg-white/5 px-2 text-sm text-white"
-              aria-label="自定义结束日期"
-            />
-          </div>
           <Button
             onClick={() => { void fetchData(); }}
             disabled={loading}
