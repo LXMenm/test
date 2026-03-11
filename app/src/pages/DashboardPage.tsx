@@ -1244,12 +1244,12 @@ export function DashboardPage() {
                     <p className="text-white/60 text-xs mt-1">{safeDisplayTime(selectedEvent.ts)} · {caseBranchLabel}</p>
                   </div>
                   {['reception', 'diagnosis', 'kb', 'treatment', 'supervisor'].map((key) => {
-                    const section = traceSummaryMap.get(key);
+                    const section = traceSummary.find((item) => item.key === key);
                     if (!section) return null;
                     return (
                       <div key={key} className="bg-white/5 rounded-lg p-3 text-xs space-y-1">
                         <div className="text-[#c8f7c5]">{section.title}</div>
-                        {section.rows.map((row) => (
+                        {section.rows.map((row: { label: string; value: string }) => (
                           <div key={`${key}-${row.label}`} className="flex items-start justify-between gap-2">
                             <span className="text-white/60">{row.label}</span>
                             <span className="text-white text-right">{row.value || '无'}</span>
