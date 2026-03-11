@@ -467,13 +467,15 @@ export function DashboardPage() {
       || (selectedEvent.treatment !== null && typeof selectedEvent.treatment === 'object')
     : false;
 
-  const fetchData = useCallback(async () => {
+  const fetchData = useCallback(async (range?: { start: string; end: string }) => {
     setLoading(true);
 
     const fallbackRange = getDefaultDateRange(7);
-    const invalidRange = !isValidDateString(startDate) || !isValidDateString(endDate) || startDate > endDate;
-    const safeStart = invalidRange ? fallbackRange.start : startDate;
-    const safeEnd = invalidRange ? fallbackRange.end : endDate;
+    const rawStart = range?.start ?? startDate;
+    const rawEnd = range?.end ?? endDate;
+    const invalidRange = !isValidDateString(rawStart) || !isValidDateString(rawEnd) || rawStart > rawEnd;
+    const safeStart = invalidRange ? fallbackRange.start : rawStart;
+    const safeEnd = invalidRange ? fallbackRange.end : rawEnd;
     if (invalidRange) {
       setStartDate(fallbackRange.start);
       setEndDate(fallbackRange.end);
@@ -712,9 +714,15 @@ export function DashboardPage() {
     const end = new Date();
     const start = new Date();
     start.setDate(end.getDate() - (days - 1));
-    setStartDate(formatDate(start));
-    setEndDate(formatDate(end));
+    const nextStart = formatDate(start);
+    const nextEnd = formatDate(end);
+    setStartDate(nextStart);
+    setEndDate(nextEnd);
+    void fetchData({ start: nextStart, end: nextEnd });
   };
+
+  const displayStartDate = isValidDateString(startDate) ? startDate : defaultRange.start;
+  const displayEndDate = isValidDateString(endDate) ? endDate : defaultRange.end;
 
   const selectedQuickRange = useMemo(() => {
 
@@ -739,8 +747,8 @@ export function DashboardPage() {
     <div className="space-y-6 animate-fadeIn overflow-visible">
       <div className="flex flex-col xl:flex-row xl:items-center xl:justify-between gap-4">
         <div className="max-w-[620px]">
-          <h1 className="text-[28px] md:text-[30px] leading-tight font-bold text-white md:whitespace-nowrap">番茄病害<span className="text-[#b9dbc7]">诊疗联动分析看板</span></h1>
-          <p className="text-white/60 mt-1 text-sm">面向基地诊疗过程的趋势、案例与可解释分析</p>
+          <h1 className="text-[28px] md:text-[30px] leading-tight font-bold text-white md:whitespace-nowrap">番茄病害<span className="text-[#b9dbc7]">诊疗分析看板</span></h1>
+          <p className="text-white/60 mt-1 text-sm">诊疗过程的趋势、案例与可解释分析</p>
         </div>
 
         {/* Date Range Controls */}
@@ -748,10 +756,10 @@ export function DashboardPage() {
           <div className="h-10 min-w-[280px] px-3 rounded-md border border-white/20 bg-white/5 text-white flex items-center justify-start text-sm">
             <Calendar className="w-4 h-4 mr-2 text-[#c8f7c5]" />
             <span className="text-white/70 mr-2">开始</span>
-            <span>{formatDisplayDate(startDate)}</span>
+            <span>{formatDisplayDate(displayStartDate)}</span>
             <ArrowRight className="w-3 h-3 mx-2 text-white/40" />
             <span className="text-white/70 mr-2">结束</span>
-            <span>{formatDisplayDate(endDate)}</span>
+            <span>{formatDisplayDate(displayEndDate)}</span>
           </div>
 
           <div className="flex items-center gap-1.5">
@@ -768,7 +776,7 @@ export function DashboardPage() {
             ))}
           </div>
           <Button
-            onClick={fetchData}
+            onClick={() => { void fetchData(); }}
             disabled={loading}
             className="bg-[#c8f7c5] text-black hover:bg-[#b8e7b5]"
             title="手动刷新"
