@@ -167,57 +167,15 @@ function readableText(value: unknown, fallback = '—'): string {
   return fallback;
 }
 
-function toRecord(value: unknown): Record<string, unknown> {
-  return value && typeof value === 'object' ? value as Record<string, unknown> : {};
-}
-
-function findNestedFirstString(value: unknown, keys: string[]): string {
-  const target = new Set(keys.map((key) => key.toLowerCase()));
-  const queue: unknown[] = [value];
-  const visited = new Set<unknown>();
-  while (queue.length > 0) {
-    const current = queue.shift();
-    if (!current || typeof current !== 'object' || visited.has(current)) continue;
-    visited.add(current);
-    if (Array.isArray(current)) {
-      current.forEach((item) => queue.push(item));
-      continue;
-    }
-    const record = current as Record<string, unknown>;
-    for (const [key, nested] of Object.entries(record)) {
-      if (target.has(key.toLowerCase()) && typeof nested === 'string' && nested.trim()) {
-        return nested.trim();
-      }
-      queue.push(nested);
-    }
-  }
-  return '';
-}
-
 function resolveSelectedBranch(event: Record<string, unknown>): string {
-  const meta = toRecord(event.meta);
-  const treatment = toRecord(event.treatment);
-  const payload = toRecord(event.payload);
-  const outputs = toRecord(payload.outputs);
-  const nestedTreatment = toRecord(outputs.treatment);
+  const meta = event.meta && typeof event.meta === 'object' ? event.meta as Record<string, unknown> : undefined;
+  const treatment = event.treatment && typeof event.treatment === 'object' ? event.treatment as Record<string, unknown> : undefined;
+  const payload = event.payload && typeof event.payload === 'object' ? event.payload as Record<string, unknown> : undefined;
+  const outputs = payload?.outputs && typeof payload.outputs === 'object' ? payload.outputs as Record<string, unknown> : undefined;
+  const nestedTreatment = outputs?.treatment && typeof outputs.treatment === 'object' ? outputs.treatment as Record<string, unknown> : undefined;
 
-  const direct = [
-    event.selected_branch,
-    event.selectedBranch,
-    meta.selected_branch,
-    meta.selectedBranch,
-    treatment.selected_branch,
-    treatment.selectedBranch,
-    payload.selected_branch,
-    payload.selectedBranch,
-    outputs.selected_branch,
-    outputs.selectedBranch,
-    nestedTreatment.selected_branch,
-    nestedTreatment.selectedBranch,
-  ].find((item) => typeof item === 'string' && item.trim());
-  if (typeof direct === 'string' && direct.trim()) return direct.trim();
-
-  return findNestedFirstString(event, ['selected_branch', 'selectedBranch']);
+  const raw = event.selected_branch ?? meta?.selected_branch ?? treatment?.selected_branch ?? payload?.selected_branch ?? outputs?.selected_branch ?? nestedTreatment?.selected_branch;
+  return typeof raw === 'string' ? raw.trim() : '';
 }
 
 function getSelectedBranchLabel(value?: string): string {
@@ -238,11 +196,11 @@ function sourceLabel(value: string): string {
   return normalized;
 }
 
-function buildTraceSummary(selectedEvent: DiagnosisEvent | null, rows: unknown[]): TraceSummaryItem[] {
+function buildTraceSummary(rows: unknown[]): TraceSummaryItem[] {
   const events = rows
     .map((row) => (row && typeof row === 'object' ? row as Record<string, unknown> : null))
     .filter((row): row is Record<string, unknown> => row !== null);
-  const byNode = (node: string) => events.find((event) => String(event.node ?? event.agent ?? '').toLowerCase().includes(node) && String(event.status ?? '').toLowerCase() !== 'start');
+  const byNode = (node: string) => events.find((event) => String(event.node ?? event.agent ?? '').toLowerCase().includes(node));
   const getPayload = (event?: Record<string, unknown>) => {
     const payload = event?.payload && typeof event.payload === 'object' ? event.payload as Record<string, unknown> : {};
     const outputs = payload.outputs && typeof payload.outputs === 'object' ? payload.outputs as Record<string, unknown> : {};
@@ -260,65 +218,59 @@ function buildTraceSummary(selectedEvent: DiagnosisEvent | null, rows: unknown[]
   const kbOutputs = getPayload(kb).outputs;
   const treatmentOutputs = getPayload(treatment).outputs;
   const supervisorPayload = getPayload(supervisor).payload;
-  const eventRaw = selectedEvent?.raw ?? {};
-  const imageResult = eventRaw.image_result && typeof eventRaw.image_result === 'object' ? eventRaw.image_result as Record<string, unknown> : {};
-  const top1 = diagnosisOutputs.top1 && typeof diagnosisOutputs.top1 === 'object'
-    ? diagnosisOutputs.top1 as Record<string, unknown>
-    : (imageResult.top1 && typeof imageResult.top1 === 'object' ? imageResult.top1 as Record<string, unknown> : {});
-  const kbHit = eventRaw.kb_retrieval && typeof eventRaw.kb_retrieval === 'object' ? eventRaw.kb_retrieval as Record<string, unknown> : {};
+  const top1 = diagnosisOutputs.top1 && typeof diagnosisOutputs.top1 === 'object' ? diagnosisOutputs.top1 as Record<string, unknown> : {};
   const ingredients = Array.isArray(kbOutputs.ingredients) ? kbOutputs.ingredients : [];
-  const selectedBranch = selectedEvent?.selectedBranch || readableText(treatmentOutputs.selected_branch, '');
 
   return [
     {
       key: 'reception',
       title: '接诊信息',
       entries: [
-        { label: '作物类型', value: readableText(receptionPayload.crop_type ?? eventRaw.crop_type, '未提取') },
-        { label: '症状', value: Array.isArray(eventRaw.symptoms) ? eventRaw.symptoms.map((item) => readableText(item, '')).filter(Boolean).join('、') || '未提取' : readableText(receptionPayload.symptoms, '未提取') },
-        { label: '图片', value: receptionPayload.image_path || eventRaw.image_url ? '已上传' : '未上传' },
-        { label: '缺失字段', value: selectedEvent?.missingProfileFields.join('、') || '无' },
+        { label: '作物类型', value: readableText(receptionPayload.crop_type, '未提取') },
+        { label: '症状', value: readableText(receptionPayload.symptoms, '未提取') },
+        { label: '图片', value: receptionPayload.image_path ? '已上传' : '未上传' },
+        { label: '缺失字段', value: Array.isArray(receptionPayload.missing_fields) ? receptionPayload.missing_fields.join('、') || '无' : '无' },
       ],
     },
     {
       key: 'diagnosis',
       title: '诊断结果',
       entries: [
-        { label: '最终病害', value: readableText(diagnosisOutputs.final_disease ?? eventRaw.final_disease ?? selectedEvent?.disease, '未识别') },
-        { label: '置信度', value: selectedEvent?.confidencePct !== null && selectedEvent?.confidencePct !== undefined ? `${selectedEvent.confidencePct.toFixed(2)}%` : readableText(diagnosisOutputs.confidence ?? top1.prob_pct, '—') },
-        { label: '来源', value: readableText(eventRaw.final_source ?? diagnosisOutputs.source, '—') },
-        { label: '需确认', value: (eventRaw.need_confirm === true || diagnosisOutputs.need_confirm === true) ? '是' : '否' },
-        { label: 'Top1', value: readableText(top1.disease ?? imageResult.disease, '无') },
+        { label: '最终病害', value: readableText(diagnosisOutputs.final_disease ?? top1.disease, '未识别') },
+        { label: '置信度', value: readableText(diagnosisOutputs.confidence_pct ?? top1.prob_pct, '—') },
+        { label: '来源', value: readableText(diagnosisOutputs.source, '—') },
+        { label: '需确认', value: diagnosisOutputs.need_confirm === true ? '是' : '否' },
+        { label: 'Top1', value: readableText(top1.disease, '无') },
       ],
     },
     {
       key: 'kb',
       title: '知识库检索',
       entries: [
-        { label: '命中病害', value: readableText(kbOutputs.disease_name ?? kbOutputs.name ?? kbHit.name ?? selectedEvent?.disease, '未命中') },
-        { label: '描述/治疗/预防', value: `${kbOutputs.description || kbHit.description ? '有' : '无'} / ${kbOutputs.treatment || kbHit.treatment ? '有' : '无'} / ${kbOutputs.prevention || kbHit.prevention ? '有' : '无'}` },
-        { label: 'ingredients', value: ingredients.length > 0 || (Array.isArray(kbHit.ingredients) && kbHit.ingredients.length > 0) ? '有' : '无' },
-        { label: 'ingredients 数量', value: String(ingredients.length > 0 ? ingredients.length : (Array.isArray(kbHit.ingredients) ? kbHit.ingredients.length : 0)) },
+        { label: '命中病害', value: readableText(kbOutputs.disease_name ?? kbOutputs.name, '未命中') },
+        { label: '描述/治疗/预防', value: `${kbOutputs.description ? '有' : '无'} / ${kbOutputs.treatment ? '有' : '无'} / ${kbOutputs.prevention ? '有' : '无'}` },
+        { label: 'ingredients', value: ingredients.length > 0 ? '有' : '无' },
+        { label: 'ingredients 数量', value: String(ingredients.length) },
       ],
     },
     {
       key: 'treatment',
       title: '方案与个性化',
       entries: [
-        { label: '分档', value: getSelectedBranchLabel(selectedBranch) },
-        { label: 'LLM 失败', value: (selectedEvent?.llmFailed || treatmentOutputs.llm_failed === true) ? '是' : '否' },
-        { label: '应用个性化', value: (selectedEvent?.personalizationApplied || treatmentOutputs.personalization_applied === true) ? '是' : '否' },
-        { label: '已过滤', value: (selectedEvent?.filtered || treatmentOutputs.filtered === true) ? '是' : '否' },
-        { label: '过滤原因', value: selectedEvent?.filteredReasons.join('；') || (Array.isArray(treatmentOutputs.filtered_reasons) ? treatmentOutputs.filtered_reasons.join('；') : '') || '无' },
-        { label: '个性化原因', value: selectedEvent?.personalizationReasons.slice(0, 3).join('；') || (Array.isArray(treatmentOutputs.personalization_reasons) ? treatmentOutputs.personalization_reasons.slice(0, 3).join('；') : '') || '无' },
+        { label: '分档', value: getSelectedBranchLabel(readableText(treatmentOutputs.selected_branch, '')) },
+        { label: 'LLM 失败', value: treatmentOutputs.llm_failed === true ? '是' : '否' },
+        { label: '应用个性化', value: treatmentOutputs.personalization_applied === true ? '是' : '否' },
+        { label: '已过滤', value: treatmentOutputs.filtered === true ? '是' : '否' },
+        { label: '过滤原因', value: Array.isArray(treatmentOutputs.filtered_reasons) ? treatmentOutputs.filtered_reasons.join('；') || '无' : '无' },
+        { label: '个性化原因', value: Array.isArray(treatmentOutputs.personalization_reasons) ? treatmentOutputs.personalization_reasons.slice(0, 3).join('；') || '无' : '无' },
       ],
     },
     {
       key: 'supervisor',
       title: '流程决策',
       entries: [
-        { label: '下一动作', value: readableText(supervisorPayload.next_action ?? toRecord(eventRaw.meta).next_action, '未记录') },
-        { label: '原因', value: Array.isArray(supervisorPayload.reasons) ? supervisorPayload.reasons.join('；') || '无' : readableText(supervisorPayload.reason ?? toRecord(eventRaw.meta).degraded_reason, '无') },
+        { label: '下一动作', value: readableText(supervisorPayload.next_action, '未记录') },
+        { label: '原因', value: Array.isArray(supervisorPayload.reasons) ? supervisorPayload.reasons.join('；') || '无' : readableText(supervisorPayload.reason, '无') },
       ],
     },
   ];
@@ -737,13 +689,13 @@ export function DashboardPage() {
         const resp = await fetch(`/api/trace-events?trace_id=${encodeURIComponent(traceId)}`);
         const data = await resp.json();
         const rows = Array.isArray(data?.events) ? data.events : [];
-        setTraceSummary(buildTraceSummary(selectedEvent, rows));
+        setTraceSummary(buildTraceSummary(rows));
       } catch {
         setTraceSummary([]);
       }
     };
     run();
-  }, [selectedEvent]);
+  }, [selectedEvent?.traceId]);
 
   const maxCount = Math.max(...stats.map((s) => s.count), 1);
 
