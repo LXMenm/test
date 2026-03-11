@@ -881,8 +881,8 @@ export function DashboardPage() {
     <div className="space-y-6 animate-fadeIn overflow-visible">
       <div className="flex flex-col xl:flex-row xl:items-center xl:justify-between gap-4">
         <div className="max-w-[620px]">
-          <h1 className="text-[28px] md:text-[30px] leading-tight font-bold text-white md:whitespace-nowrap">番茄病害<span className="text-[#b9dbc7]">诊疗联动分析看板</span></h1>
-          <p className="text-white/60 mt-1 text-sm">面向基地诊疗过程的趋势、案例与可解释分析</p>
+          <h1 className="text-[28px] md:text-[30px] leading-tight font-bold text-white md:whitespace-nowrap">番茄病害<span className="text-[#b9dbc7]">诊疗分析看板</span></h1>
+          <p className="text-white/60 mt-1 text-sm">诊疗过程的趋势、案例与可解释分析</p>
         </div>
 
         {/* Date Range Controls */}
@@ -1243,6 +1243,21 @@ export function DashboardPage() {
                     <p className="text-white text-sm">{selectedEvent.modelName || selectedEvent.modelId}</p>
                     <p className="text-white/60 text-xs mt-1">{safeDisplayTime(selectedEvent.ts)} · {caseBranchLabel}</p>
                   </div>
+                  {['reception', 'diagnosis', 'kb', 'treatment', 'supervisor'].map((key) => {
+                    const section = traceSummaryMap.get(key);
+                    if (!section) return null;
+                    return (
+                      <div key={key} className="bg-white/5 rounded-lg p-3 text-xs space-y-1">
+                        <div className="text-[#c8f7c5]">{section.title}</div>
+                        {section.rows.map((row) => (
+                          <div key={`${key}-${row.label}`} className="flex items-start justify-between gap-2">
+                            <span className="text-white/60">{row.label}</span>
+                            <span className="text-white text-right">{row.value || '无'}</span>
+                          </div>
+                        ))}
+                      </div>
+                    );
+                  })}
                   {hasTreatment && <div className="bg-white/5 rounded-lg p-3 text-white/80 text-sm max-h-36 overflow-y-auto">{renderTreatment(selectedEvent?.treatment)}</div>}
                 </TabsContent>
                 <TabsContent value="personal" className="space-y-2 mt-3 text-sm text-white/80">
