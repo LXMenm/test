@@ -3,7 +3,6 @@ import { BarChart3, Calendar, RefreshCw, Image as ImageIcon, TrendingUp, AlertCi
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Calendar as DateCalendar } from '@/components/ui/calendar';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { ResponsiveContainer, LineChart, Line, CartesianGrid, XAxis, YAxis, Tooltip, BarChart, Bar } from 'recharts';
@@ -416,9 +415,6 @@ export function DashboardPage() {
   const defaultRange = getDefaultDateRange(7);
   const [startDate, setStartDate] = useState(defaultRange.start);
   const [endDate, setEndDate] = useState(defaultRange.end);
-  const [datePickerOpen, setDatePickerOpen] = useState(false);
-  const [draftStartDate, setDraftStartDate] = useState<Date | undefined>(() => new Date(`${defaultRange.start}T00:00:00`));
-  const [draftEndDate, setDraftEndDate] = useState<Date | undefined>(() => new Date(`${defaultRange.end}T00:00:00`));
   const [allEvents, setAllEvents] = useState<DiagnosisEvent[]>([]);
   const [selectedEvent, setSelectedEvent] = useState<DiagnosisEvent | null>(null);
   const [selectedDisease, setSelectedDisease] = useState('ALL');
@@ -481,8 +477,6 @@ export function DashboardPage() {
     if (invalidRange) {
       setStartDate(fallbackRange.start);
       setEndDate(fallbackRange.end);
-      setDraftStartDate(new Date(`${fallbackRange.start}T00:00:00`));
-      setDraftEndDate(new Date(`${fallbackRange.end}T00:00:00`));
     }
 
     try {
@@ -714,45 +708,16 @@ export function DashboardPage() {
 
   const maxCount = Math.max(...stats.map((s) => s.count), 1);
 
-  const applyDateRange = (fromDate: Date, toDate: Date) => {
-    const from = formatDate(fromDate);
-    const to = formatDate(toDate);
-    setStartDate(from);
-    setEndDate(to);
-    setDatePickerOpen(false);
-  };
-
   const setQuickRange = (days: number) => {
     const end = new Date();
     const start = new Date();
     start.setDate(end.getDate() - (days - 1));
-    setDraftStartDate(start);
-    setDraftEndDate(end);
-    applyDateRange(start, end);
-  };
-
-  const onStartDateSelect = (nextStart: Date | undefined) => {
-    if (!nextStart) return;
-    setDraftStartDate(nextStart);
-    if (!draftEndDate || nextStart > draftEndDate) {
-      setDraftEndDate(undefined);
-      return;
-    }
-    applyDateRange(nextStart, draftEndDate);
-  };
-
-  const onEndDateSelect = (nextEnd: Date | undefined) => {
-    if (!nextEnd || !draftStartDate) return;
-    if (nextEnd < draftStartDate) {
-      setDraftStartDate(nextEnd);
-      setDraftEndDate(undefined);
-      return;
-    }
-    setDraftEndDate(nextEnd);
-    applyDateRange(draftStartDate, nextEnd);
+    setStartDate(formatDate(start));
+    setEndDate(formatDate(end));
   };
 
   const selectedQuickRange = useMemo(() => {
+
     const today = new Date();
     const end = formatDate(today);
     const daysDiff = (from: string, to: string) => {
@@ -764,11 +729,6 @@ export function DashboardPage() {
     if (endDate !== end) return null;
     const diff = daysDiff(startDate, endDate);
     return diff === 7 || diff === 30 || diff === 90 ? diff : null;
-  }, [startDate, endDate]);
-
-  useEffect(() => {
-    setDraftStartDate(new Date(`${startDate}T00:00:00`));
-    setDraftEndDate(new Date(`${endDate}T00:00:00`));
   }, [startDate, endDate]);
 
   useEffect(() => {
@@ -785,69 +745,14 @@ export function DashboardPage() {
 
         {/* Date Range Controls */}
         <div className="flex items-center gap-2 flex-wrap">
-          <Popover open={datePickerOpen} onOpenChange={setDatePickerOpen}>
-            <PopoverTrigger asChild>
-              <Button
-                variant="outline"
-                className="border-white/20 bg-white/5 text-white hover:bg-white/10 min-w-[280px] justify-start"
-              >
-                <Calendar className="w-4 h-4 mr-2 text-[#c8f7c5]" />
-                <span className="text-white/70 mr-2">开始</span>
-                <span>{formatDisplayDate(startDate)}</span>
-                <ArrowRight className="w-3 h-3 mx-2 text-white/40" />
-                <span className="text-white/70 mr-2">结束</span>
-                <span>{formatDisplayDate(endDate)}</span>
-              </Button>
-            </PopoverTrigger>
-            <PopoverContent align="end" className="z-50 w-auto max-w-[95vw] p-4 bg-[#d7edd4] text-black border border-[#a7c7a1] shadow-2xl rounded-2xl">
-              <div className="space-y-3">
-                <div className="grid grid-cols-2 gap-3 text-xs">
-                  <div className="rounded-lg border border-black/10 bg-white/50 px-3 py-2">
-                    <p className="text-black/60">开始日期</p>
-                    <p className="font-semibold">{draftStartDate ? formatDisplayDate(formatDate(draftStartDate)) : '请选择开始日期'}</p>
-                  </div>
-                  <div className="rounded-lg border border-black/10 bg-white/50 px-3 py-2">
-                    <p className="text-black/60">结束日期</p>
-                    <p className="font-semibold">{draftEndDate ? formatDisplayDate(formatDate(draftEndDate)) : '请选择结束日期'}</p>
-                  </div>
-                </div>
-                <div className="grid md:grid-cols-2 gap-4">
-                  <div>
-                    <p className="text-xs text-black/60 mb-2">开始日期</p>
-                    <DateCalendar
-                      mode="single"
-                      selected={draftStartDate}
-                      onSelect={onStartDateSelect}
-                      month={draftStartDate}
-                      className="rounded-xl border border-black/10 bg-white/60"
-                      classNames={{
-                        day: 'text-black',
-                        day_button: 'hover:bg-[#c8f7c5]/60 data-[selected=true]:bg-[#7fbf7b] data-[selected=true]:text-black',
-                        range_middle: 'bg-[#b2d8ac]',
-                      }}
-                    />
-                  </div>
-                  <div>
-                    <p className="text-xs text-black/60 mb-2">结束日期</p>
-                    <DateCalendar
-                      mode="single"
-                      selected={draftEndDate}
-                      onSelect={onEndDateSelect}
-                      month={draftEndDate ?? draftStartDate}
-                      disabled={(day) => (draftStartDate ? day < draftStartDate : false)}
-                      modifiers={{ range_middle: draftStartDate && draftEndDate ? { from: draftStartDate, to: draftEndDate } : undefined }}
-                      className="rounded-xl border border-black/10 bg-white/60"
-                      classNames={{
-                        day: 'text-black',
-                        day_button: 'hover:bg-[#c8f7c5]/60 data-[selected=true]:bg-[#7fbf7b] data-[selected=true]:text-black',
-                        range_middle: 'bg-[#b2d8ac]',
-                      }}
-                    />
-                  </div>
-                </div>
-              </div>
-            </PopoverContent>
-          </Popover>
+          <div className="h-10 min-w-[280px] px-3 rounded-md border border-white/20 bg-white/5 text-white flex items-center justify-start text-sm">
+            <Calendar className="w-4 h-4 mr-2 text-[#c8f7c5]" />
+            <span className="text-white/70 mr-2">开始</span>
+            <span>{formatDisplayDate(startDate)}</span>
+            <ArrowRight className="w-3 h-3 mx-2 text-white/40" />
+            <span className="text-white/70 mr-2">结束</span>
+            <span>{formatDisplayDate(endDate)}</span>
+          </div>
 
           <div className="flex items-center gap-1.5">
             {[7, 30, 90].map((days) => (
