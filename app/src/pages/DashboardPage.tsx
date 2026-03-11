@@ -169,6 +169,8 @@ function getSelectedBranchLabelOrFallback(value?: string | null): string {
   if (normalized === 'FAMILY') return '家庭';
   if (normalized === 'MID') return '中型';
   if (normalized === 'ENTERPRISE') return '企业级';
+  if (normalized === 'HOME') return '家庭';
+  if (normalized === 'PRO') return '中型';
   const label = getProfileBranchLabel(value ?? undefined);
   return label === '—' ? '未分档' : label;
 }
@@ -181,14 +183,18 @@ function resolveSelectedBranch(event: Record<string, unknown>): string {
   const meta = toRecord(event.meta);
   const treatment = toRecord(event.treatment);
   const payload = toRecord(event.payload);
-  const outputs = toRecord(toRecord(event.outputs)?.treatment);
+  const outputs = toRecord(event.outputs);
+  const treatmentOutputs = toRecord(outputs?.treatment);
   const candidates = [
     event.selected_branch,
     meta?.selected_branch,
+    meta?.branch,
     treatment?.selected_branch,
+    toRecord(treatment?.outputs)?.selected_branch,
     payload?.selected_branch,
     toRecord(payload?.treatment)?.selected_branch,
     outputs?.selected_branch,
+    treatmentOutputs?.selected_branch,
   ];
   const hit = candidates.find((item) => typeof item === 'string' && item.trim());
   return typeof hit === 'string' ? hit.trim() : '';
@@ -316,11 +322,23 @@ function buildTraceSummary(rows: unknown[]): TraceSummaryItem[] {
     : (Array.isArray(kbOutputs.ingredients) ? kbOutputs.ingredients : []);
 
   const treatmentOutputs = getNodeOutputs(getLatestNode(nodeMap, 'treatment'));
-  const supervisorHistory = (nodeMap.supervisor ?? []).map((node) => ({
-    step: toText(node.current_step),
-    decision: toRecord(node.decision) ?? getNodeOutputs(node),
-  }));
-  const lastSupervisor = supervisorHistory.length > 0 ? supervisorHistory[supervisorHistory.length - 1] : undefined;
+  const supervisorHistory = (nodeMap.supervisor ?? []).map((node) => {
+    const decision = toRecord(node.decision)
+      ?? toRecord(node.payload)
+      ?? getNodeOutputs(node)
+      ?? {};
+    const step = toText(node.current_step ?? node.step ?? decision.current_step ?? decision.step ?? node.status) || '流程节点';
+    const nextAction = toText(decision.next_action ?? decision.next ?? decision.action ?? decision.route_to);
+    const reasonArr = Array.isArray(decision.reasons)
+      ? decision.reasons.map(toText).filter(Boolean)
+      : [];
+    const reason = reasonArr.join('、') || toText(decision.reason ?? decision.message ?? node.message);
+    return { step, nextAction: nextAction || 'end', reason: reason || '无' };
+  });
+  const dedupSupervisor = supervisorHistory.filter((item, idx, arr) => (
+    arr.findIndex((x) => `${x.step}|${x.nextAction}|${x.reason}` === `${item.step}|${item.nextAction}|${item.reason}`) === idx
+  ));
+  const lastSupervisor = dedupSupervisor.length > 0 ? dedupSupervisor[dedupSupervisor.length - 1] : undefined;
 
   const make = (key: string, title: string, rowsData: Array<{ label: string; value: string }>) => ({ key, title, rows: rowsData.filter((item) => item.value) });
 
@@ -359,11 +377,7 @@ function buildTraceSummary(rows: unknown[]): TraceSummaryItem[] {
       { label: '个性化理由', value: Array.isArray(treatmentOutputs.personalization_reasons) ? treatmentOutputs.personalization_reasons.map(toText).filter(Boolean).slice(0, 3).join('；') || '无' : '无' },
     ]),
     make('supervisor', '流程决策（supervisor）', [
-      { label: '决策历史', value: supervisorHistory.map((item) => {
-        const nextAction = toText(item.decision.next_action);
-        const reasons = Array.isArray(item.decision.reasons) ? item.decision.reasons.map(toText).filter(Boolean).join('、') : toText(item.decision.reasons);
-        return `${item.step || 'unknown'} -> ${nextAction || 'unknown'}（${reasons || '无'}）`;
-      }).join('；') || `${toText(lastSupervisor?.decision?.next_action) || '未提取'}（${Array.isArray(lastSupervisor?.decision?.reasons) ? lastSupervisor!.decision.reasons.map(toText).filter(Boolean).join('、') : toText(lastSupervisor?.decision?.reasons) || '无'}）` },
+      { label: '决策历史', value: dedupSupervisor.map((item) => `${item.step} -> ${item.nextAction}（${item.reason}）`).join('；') || `${lastSupervisor?.nextAction ?? 'end'}（${lastSupervisor?.reason ?? '无'}）` },
     ]),
   ].filter((item) => item.rows.length > 0);
 }
@@ -797,6 +811,22 @@ export function DashboardPage() {
     };
   }, [traceNodeMap, selectedEvent]);
 
+  const caseBranchLabel = useMemo(() => {
+    const treatmentOutputs = getNodeOutputs(getLatestNode(traceNodeMap, 'treatment'));
+    const pNode = getLatestNode(traceNodeMap, 'personalization');
+    const pPayload = toRecord(pNode?.payload);
+    const pMeta = toRecord(pPayload?.meta);
+    const pOutputs = toRecord(pPayload?.outputs);
+    const branch = String(
+      treatmentOutputs.selected_branch
+      ?? pOutputs?.selected_branch
+      ?? pMeta?.selected_branch
+      ?? selectedEvent?.selectedBranchRaw
+      ?? ''
+    );
+    return getSelectedBranchLabel(branch);
+  }, [traceNodeMap, selectedEvent]);
+
   const kbSummary = useMemo(() => {
     const kbOutputs = getNodeOutputs(getLatestNode(traceNodeMap, 'kb_retrieval'));
     const kbDoc = toRecord(kbOutputs.kb_disease) ?? {};
@@ -811,12 +841,6 @@ export function DashboardPage() {
       ingredients,
     };
   }, [traceNodeMap, kbDetail, selectedEvent?.disease]);
-
-  const traceSummaryMap = useMemo(() => {
-    const map = new Map<string, TraceSummaryItem>();
-    traceSummary.forEach((item) => map.set(item.key, item));
-    return map;
-  }, [traceSummary]);
 
   const maxCount = Math.max(...stats.map((s) => s.count), 1);
 
@@ -1217,7 +1241,7 @@ export function DashboardPage() {
                   <div className="bg-white/5 rounded-lg p-3">
                     <p className="text-white/60 text-xs mb-1">模型 / 时间 / 档位</p>
                     <p className="text-white text-sm">{selectedEvent.modelName || selectedEvent.modelId}</p>
-                    <p className="text-white/60 text-xs mt-1">{safeDisplayTime(selectedEvent.ts)} · {selectedEvent.selectedBranch}</p>
+                    <p className="text-white/60 text-xs mt-1">{safeDisplayTime(selectedEvent.ts)} · {caseBranchLabel}</p>
                   </div>
                   {['reception', 'diagnosis', 'kb', 'treatment', 'supervisor'].map((key) => {
                     const section = traceSummaryMap.get(key);
