@@ -1367,14 +1367,39 @@ def _event_elapsed_ms(event: dict[str, Any]) -> float | None:
             text = raw.strip().lower()
             if not text:
                 return None
-            compact = text.replace("毫秒", "ms")
-            if compact.endswith("ms"):
-                compact = compact[:-2].strip()
+            compact = text.replace("毫秒", "ms").replace("秒", "s")
             match = re.search(r"-?\d+(?:\.\d+)?", compact)
             if not match:
                 return None
             value = float(match.group(0))
-            return value if value >= 0 else None
+            if value < 0:
+                return None
+            if compact.endswith("s") and not compact.endswith("ms"):
+                value *= 1000
+            return value
+        return None
+
+    def _walk_dict_for_elapsed(payload: dict[str, Any]) -> float | None:
+        preferred_keys = (
+            "elapsed_ms", "duration_ms", "latency_ms", "response_ms", "cost_ms",
+            "elapsed", "duration", "latency", "response_time", "time_cost",
+        )
+        for key in preferred_keys:
+            if key in payload:
+                parsed = _parse_elapsed_value(payload.get(key))
+                if parsed is not None:
+                    return parsed
+        for value in payload.values():
+            if isinstance(value, dict):
+                parsed = _walk_dict_for_elapsed(_safe_record(value))
+                if parsed is not None:
+                    return parsed
+            elif isinstance(value, list):
+                for item in value:
+                    if isinstance(item, dict):
+                        parsed = _walk_dict_for_elapsed(_safe_record(item))
+                        if parsed is not None:
+                            return parsed
         return None
 
     candidates = [
@@ -1386,13 +1411,18 @@ def _event_elapsed_ms(event: dict[str, Any]) -> float | None:
         meta.get("latency_ms"),
         timing.get("elapsed_ms"),
         timing.get("duration_ms"),
+        timing.get("latency_ms"),
     ]
 
     for candidate in candidates:
         parsed = _parse_elapsed_value(candidate)
         if parsed is not None:
             return parsed
-    return None
+
+    from_nested = _walk_dict_for_elapsed(meta)
+    if from_nested is not None:
+        return from_nested
+    return _walk_dict_for_elapsed(event)
 
 
 def _event_in_filters(
