@@ -82,6 +82,10 @@ interface ProfileListItem {
   name?: string;
 }
 
+interface KbDiseaseListItem {
+  name?: string;
+}
+
 interface ProfileDetail {
   farmer_id: string;
   name?: string;
@@ -132,7 +136,10 @@ const chartPalette = {
 };
 
 function formatDate(date: Date): string {
-  return date.toISOString().split('T')[0];
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
 }
 
 function getDefaultDateRange(days: number = 7): { start: string; end: string } {
@@ -507,6 +514,7 @@ export function DashboardPage() {
   const [selectedPersonalizationStatus, setSelectedPersonalizationStatus] = useState('ALL');
   const [selectedModel, setSelectedModel] = useState('ALL');
   const [profiles, setProfiles] = useState<ProfileListItem[]>([]);
+  const [kbDiseases, setKbDiseases] = useState<string[]>([]);
   const [selectedFarmerId, setSelectedFarmerId] = useState('ALL');
   const [selectedBaseId, setSelectedBaseId] = useState('ALL');
   const [farmerBases, setFarmerBases] = useState<Array<{ id: string; name?: string }>>([]);
@@ -586,9 +594,9 @@ export function DashboardPage() {
       try {
         const resp = await fetch('/api/profiles');
         const data = await resp.json();
-        const items: Record<string, unknown>[] = Array.isArray(data)
-          ? data
-          : (Array.isArray(data?.items) ? data.items : []);
+        const items: Record<string, unknown>[] = Array.isArray(data?.profiles)
+          ? data.profiles
+          : (Array.isArray(data) ? data : (Array.isArray(data?.items) ? data.items : []));
         setProfiles(items
           .map((item) => ({ id: String(item.id ?? item.farmer_id ?? ''), name: typeof item.name === 'string' ? item.name : undefined }))
           .filter((item) => item.id));
@@ -597,6 +605,25 @@ export function DashboardPage() {
       }
     };
     run();
+  }, []);
+
+  useEffect(() => {
+    const run = async () => {
+      try {
+        const resp = await fetch('/api/kb/diseases');
+        const data = await resp.json();
+        const items: KbDiseaseListItem[] = Array.isArray(data?.items) ? data.items : [];
+        setKbDiseases(
+          items
+            .map((item) => (typeof item?.name === 'string' ? item.name.trim() : ''))
+            .filter(Boolean)
+            .sort((a, b) => a.localeCompare(b, 'zh-CN')),
+        );
+      } catch {
+        setKbDiseases([]);
+      }
+    };
+    void run();
   }, []);
 
   useEffect(() => {
@@ -620,7 +647,7 @@ export function DashboardPage() {
     run();
   }, [selectedFarmerId]);
 
-  const diseaseOptions = useMemo(() => Array.from(new Set(allEvents.map((event) => event.disease))).sort((a, b) => a.localeCompare(b, 'zh-CN')), [allEvents]);
+  const diseaseOptions = useMemo(() => kbDiseases, [kbDiseases]);
   const modelOptions = useMemo(() => resolveModelOptions(), []);
 
   const filteredEvents = useMemo(() => allEvents.filter((event) => {
@@ -1063,63 +1090,64 @@ export function DashboardPage() {
         </Card>
       )}
 
-      {modulePrefs.filter && (
-        <Card className="glass-card">
-          {renderModuleHeader('filter', '过滤原因统计', <TrendingUp className="w-5 h-5 text-[#b8ddc7]" />)}
-          {!moduleCollapse.filter && (
-            <CardContent>
-              <div className="space-y-3">
-                {filteredReasonDistribution.map((item) => {
-                  const max = Math.max(...filteredReasonDistribution.map((x) => x.count), 1);
-                  return (
-                    <div key={item.name} className="space-y-1">
-                      <div className="flex items-center justify-between text-sm">
-                        <span className="text-white/70 truncate pr-2">{item.name}</span>
-                        <span className="text-[#b8ddc7]">{item.count}</span>
+      {(modulePrefs.disease || modulePrefs.filter) && (
+        <div className="grid lg:grid-cols-2 gap-6">
+          {modulePrefs.disease && (
+            <Card className="glass-card">
+              {renderModuleHeader('disease', `病害 Top ${Math.min(8, stats.length)}`, <TrendingUp className="w-5 h-5 text-[#c8f7c5]" />)}
+              {!moduleCollapse.disease && (
+                <CardContent>
+                  <div className="space-y-3">
+                    {stats.slice(0, 8).map((stat, index) => (
+                      <div key={stat.disease} className="space-y-1">
+                        <div className="flex items-center justify-between text-sm gap-2">
+                          <button className="text-white/80 truncate flex-1 text-left hover:text-[#c8f7c5]" onClick={() => navigateToKbDisease(stat.disease)}>
+                            #{index + 1} {stat.disease}
+                          </button>
+                          <button className="text-[#c8f7c5] font-mono ml-2" onClick={() => setSelectedDisease(stat.disease)}>
+                            ({stat.count})
+                          </button>
+                        </div>
+                        <div className="h-2 bg-white/10 rounded-full overflow-hidden">
+                          <div
+                            className="h-full bg-gradient-to-r from-[#c8f7c5] to-[#4ade80] rounded-full transition-all duration-500"
+                            style={{ width: `${(stat.count / maxCount) * 100}%` }}
+                          />
+                        </div>
                       </div>
-                      <div className="h-2 bg-white/10 rounded-full overflow-hidden">
-                        <div className="h-full bg-[#6fa98b]" style={{ width: `${(item.count / max) * 100}%` }} />
-                      </div>
-                    </div>
-                  );
-                })}
-                {filteredReasonDistribution.length === 0 && <p className="text-white/40 text-sm">暂无过滤原因统计</p>}
-              </div>
-            </CardContent>
+                    ))}
+                  </div>
+                </CardContent>
+              )}
+            </Card>
           )}
-        </Card>
-      )}
 
-      {modulePrefs.disease && (
-        <div className="grid lg:grid-cols-3 gap-6">
-          {/* Disease Stats Chart */}
-          <Card className="glass-card lg:col-span-1">
-            {renderModuleHeader('disease', `病害 Top ${Math.min(8, stats.length)}`, <TrendingUp className="w-5 h-5 text-[#c8f7c5]" />)}
-            {!moduleCollapse.disease && (
-              <CardContent>
-                <div className="space-y-3">
-              {stats.slice(0, 8).map((stat, index) => (
-                <div key={stat.disease} className="space-y-1">
-                  <div className="flex items-center justify-between text-sm gap-2">
-                    <button className="text-white/80 truncate flex-1 text-left hover:text-[#c8f7c5]" onClick={() => navigateToKbDisease(stat.disease)}>
-                      #{index + 1} {stat.disease}
-                    </button>
-                    <button className="text-[#c8f7c5] font-mono ml-2" onClick={() => setSelectedDisease(stat.disease)}>
-                      ({stat.count})
-                    </button>
+          {modulePrefs.filter && (
+            <Card className="glass-card">
+              {renderModuleHeader('filter', '过滤原因统计', <TrendingUp className="w-5 h-5 text-[#b8ddc7]" />)}
+              {!moduleCollapse.filter && (
+                <CardContent>
+                  <div className="space-y-3">
+                    {filteredReasonDistribution.map((item) => {
+                      const max = Math.max(...filteredReasonDistribution.map((x) => x.count), 1);
+                      return (
+                        <div key={item.name} className="space-y-1">
+                          <div className="flex items-center justify-between text-sm">
+                            <span className="text-white/70 truncate pr-2">{item.name}</span>
+                            <span className="text-[#b8ddc7]">{item.count}</span>
+                          </div>
+                          <div className="h-2 bg-white/10 rounded-full overflow-hidden">
+                            <div className="h-full bg-[#6fa98b]" style={{ width: `${(item.count / max) * 100}%` }} />
+                          </div>
+                        </div>
+                      );
+                    })}
+                    {filteredReasonDistribution.length === 0 && <p className="text-white/40 text-sm">暂无过滤原因统计</p>}
                   </div>
-                  <div className="h-2 bg-white/10 rounded-full overflow-hidden">
-                    <div
-                      className="h-full bg-gradient-to-r from-[#c8f7c5] to-[#4ade80] rounded-full transition-all duration-500"
-                      style={{ width: `${(stat.count / maxCount) * 100}%` }}
-                    />
-                  </div>
-                </div>
-              ))}
-                </div>
-              </CardContent>
-            )}
-          </Card>
+                </CardContent>
+              )}
+            </Card>
+          )}
         </div>
       )}
 
