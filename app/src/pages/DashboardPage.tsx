@@ -67,6 +67,24 @@ interface SummaryCards {
   treatmentSuccessRate: number;
   filteredRate: number;
   degradedRate: number;
+  llmFailedRate: number;
+  avgResponseMs: number;
+}
+
+interface FarmerStat {
+  farmerId: string;
+  farmerName: string;
+  count: number;
+  filteredRate: number;
+  degradedRate: number;
+  confirmRoundRate: number;
+}
+
+interface BaseStat {
+  baseId: string;
+  baseName: string;
+  count: number;
+  diseaseCounts: Record<string, number>;
 }
 
 interface KbDetail {
@@ -100,7 +118,7 @@ interface TraceSummaryItem {
 
 type SelectedBranchKey = 'FAMILY' | 'MID' | 'ENTERPRISE';
 
-type ModuleKey = 'kpi' | 'trend' | 'model' | 'filter' | 'recent' | 'detail' | 'disease';
+type ModuleKey = 'kpi' | 'trend' | 'model' | 'filter' | 'recent' | 'detail' | 'disease' | 'farmerBase';
 
 type ModulePrefs = Record<ModuleKey, boolean>;
 type ModuleCollapse = Record<ModuleKey, boolean>;
@@ -113,6 +131,7 @@ const defaultModulePrefs: ModulePrefs = {
   recent: true,
   detail: true,
   disease: true,
+  farmerBase: true,
 };
 
 const defaultCollapse: ModuleCollapse = {
@@ -123,6 +142,7 @@ const defaultCollapse: ModuleCollapse = {
   recent: false,
   detail: false,
   disease: false,
+  farmerBase: false,
 };
 
 const chartPalette = {
@@ -378,17 +398,17 @@ function buildTraceSummary(rows: unknown[]): TraceSummaryItem[] {
 
   return [
     make('reception', '接入信息（reception）', [
-      { label: '作物类型', value: sanitizeTraceText(receptionOutputs.crop_type) },
-      { label: '症状', value: Array.isArray(receptionOutputs.symptoms) ? receptionOutputs.symptoms.map((item) => sanitizeTraceText(item)).filter(Boolean).join('、') : sanitizeTraceText(receptionOutputs.symptoms) },
-      { label: '图片', value: toText(receptionOutputs.image_path) ? '已上传' : ((receptionOutputs.has_image === true) ? '已上传' : '') },
-      { label: '缺失字段', value: Array.isArray(receptionOutputs.missing_profile_fields) ? receptionOutputs.missing_profile_fields.map((item) => sanitizeTraceText(item)).filter(Boolean).join('、') : '' },
+      { label: '作物类型（reception.outputs.crop_type）', value: sanitizeTraceText(receptionOutputs.crop_type) },
+      { label: '症状（reception.outputs.symptoms）', value: Array.isArray(receptionOutputs.symptoms) ? receptionOutputs.symptoms.map((item) => sanitizeTraceText(item)).filter(Boolean).join('、') : sanitizeTraceText(receptionOutputs.symptoms) },
+      { label: '图片（reception.outputs.image_path）', value: toText(receptionOutputs.image_path) ? '已上传' : ((receptionOutputs.has_image === true) ? '已上传' : '') },
+      { label: '缺失字段（reception.outputs.missing_profile_fields）', value: Array.isArray(receptionOutputs.missing_profile_fields) ? receptionOutputs.missing_profile_fields.map((item) => sanitizeTraceText(item)).filter(Boolean).join('、') : '' },
     ]),
     make('diagnosis', '识别结果（diagnosis）', [
-      { label: '最终病害', value: sanitizeTraceText(diagnosisOutputs.final_disease ?? diagnosisOutputs.disease) },
-      { label: '置信度', value: Number.isFinite(Number(diagnosisOutputs.final_confidence ?? imageDiagnosis.confidence_pct ?? imageDiagnosis.confidence)) ? toPercent(diagnosisOutputs.final_confidence ?? imageDiagnosis.confidence_pct ?? imageDiagnosis.confidence) : '' },
-      { label: '来源', value: sanitizeTraceText(toText(diagnosisOutputs.final_source ?? diagnosisOutputs.source)) },
-      { label: 'need_confirm', value: typeof diagnosisOutputs.need_confirm === 'boolean' ? toYesNo(diagnosisOutputs.need_confirm) : '' },
-      { label: 'top1', value: Array.isArray(top1)
+      { label: '最终病害（diagnosis.outputs.final_disease）', value: sanitizeTraceText(diagnosisOutputs.final_disease ?? diagnosisOutputs.disease) },
+      { label: '置信度（diagnosis.outputs.final_confidence）', value: Number.isFinite(Number(diagnosisOutputs.final_confidence ?? imageDiagnosis.confidence_pct ?? imageDiagnosis.confidence)) ? toPercent(diagnosisOutputs.final_confidence ?? imageDiagnosis.confidence_pct ?? imageDiagnosis.confidence) : '' },
+      { label: '来源（diagnosis.outputs.final_source）', value: sanitizeTraceText(toText(diagnosisOutputs.final_source ?? diagnosisOutputs.source)) },
+      { label: 'need_confirm（diagnosis.outputs.need_confirm）', value: typeof diagnosisOutputs.need_confirm === 'boolean' ? toYesNo(diagnosisOutputs.need_confirm) : '' },
+      { label: 'top1（diagnosis.outputs.image_top1）', value: Array.isArray(top1)
         ? (toText(top1[0]) ? `${toText(top1[0])} (${toPercent(top1[1])})` : '')
         : (() => {
           const rec = toRecord(top1);
@@ -398,20 +418,20 @@ function buildTraceSummary(rows: unknown[]): TraceSummaryItem[] {
         })() },
     ]),
     make('kb', '知识库命中（kb_retrieval）', [
-      { label: '命中病害', value: sanitizeTraceText(kbOutputs.disease ?? kbOutputs.disease_name ?? kbDoc.name) },
-      { label: 'description/treatment/prevention', value: (toText(kbOutputs.description ?? kbDoc.description) || toText(kbOutputs.treatment ?? kbDoc.treatment) || toText(kbOutputs.prevention ?? kbDoc.prevention)) ? '已命中' : '' },
-      { label: 'ingredients', value: ingredients.length > 0 ? ingredients.map((item) => sanitizeTraceText(item)).filter(Boolean).join('、') : '' },
+      { label: '命中病害（kb_retrieval.outputs.disease）', value: sanitizeTraceText(kbOutputs.disease ?? kbOutputs.disease_name ?? kbDoc.name) },
+      { label: 'description/treatment/prevention（kb_retrieval.outputs.*）', value: (toText(kbOutputs.description ?? kbDoc.description) || toText(kbOutputs.treatment ?? kbDoc.treatment) || toText(kbOutputs.prevention ?? kbDoc.prevention)) ? '已命中' : '' },
+      { label: 'ingredients（kb_retrieval.outputs.ingredients）', value: ingredients.length > 0 ? ingredients.map((item) => sanitizeTraceText(item)).filter(Boolean).join('、') : '' },
     ]),
     make('treatment', '方案编排（treatment）', [
-      { label: 'selected_branch', value: getSelectedBranchLabel(normalizeBranch(treatmentOutputs.selected_branch)) === '未分档' ? '' : getSelectedBranchLabel(normalizeBranch(treatmentOutputs.selected_branch)) },
-      { label: 'LLM失败', value: typeof treatmentOutputs.llm_failed === 'boolean' ? toYesNo(treatmentOutputs.llm_failed) : '' },
-      { label: '已应用个性化', value: typeof treatmentOutputs.personalization_applied === 'boolean' ? toYesNo(treatmentOutputs.personalization_applied) : '' },
-      { label: '触发过滤', value: typeof treatmentOutputs.filtered === 'boolean' ? toYesNo(treatmentOutputs.filtered) : '' },
-      { label: '过滤原因', value: Array.isArray(treatmentOutputs.filtered_reasons) ? treatmentOutputs.filtered_reasons.map((item) => sanitizeTraceText(item)).filter(Boolean).join('、') : '' },
-      { label: '个性化理由', value: Array.isArray(treatmentOutputs.personalization_reasons) ? treatmentOutputs.personalization_reasons.map((item) => sanitizeTraceText(item)).filter(Boolean).slice(0, 3).join('；') : '' },
+      { label: 'selected_branch（treatment.outputs.selected_branch）', value: getSelectedBranchLabel(normalizeBranch(treatmentOutputs.selected_branch)) === '未分档' ? '' : getSelectedBranchLabel(normalizeBranch(treatmentOutputs.selected_branch)) },
+      { label: 'LLM失败（treatment.outputs.llm_failed）', value: typeof treatmentOutputs.llm_failed === 'boolean' ? toYesNo(treatmentOutputs.llm_failed) : '' },
+      { label: '已应用个性化（treatment.outputs.personalization_applied）', value: typeof treatmentOutputs.personalization_applied === 'boolean' ? toYesNo(treatmentOutputs.personalization_applied) : '' },
+      { label: '触发过滤（treatment.outputs.filtered）', value: typeof treatmentOutputs.filtered === 'boolean' ? toYesNo(treatmentOutputs.filtered) : '' },
+      { label: '过滤原因（treatment.outputs.filtered_reasons）', value: Array.isArray(treatmentOutputs.filtered_reasons) ? treatmentOutputs.filtered_reasons.map((item) => sanitizeTraceText(item)).filter(Boolean).join('、') : '' },
+      { label: '个性化理由（treatment.outputs.personalization_reasons）', value: Array.isArray(treatmentOutputs.personalization_reasons) ? treatmentOutputs.personalization_reasons.map((item) => sanitizeTraceText(item)).filter(Boolean).slice(0, 3).join('；') : '' },
     ]),
     make('supervisor', '流程决策（supervisor）', [
-      { label: '决策历史', value: dedupSupervisor.map((item) => [item.step, item.nextAction, item.reason].filter(Boolean).join(' -> ')).filter(Boolean).join('；') },
+      { label: '决策历史（supervisor.inputs/decision/outputs）', value: dedupSupervisor.map((item) => [item.step, item.nextAction, item.reason].filter(Boolean).join(' -> ')).filter(Boolean).join('；') },
     ]),
   ].filter((item) => item.rows.length > 0);
 }
@@ -515,6 +535,24 @@ export function DashboardPage() {
   const [selectedModel, setSelectedModel] = useState('ALL');
   const [profiles, setProfiles] = useState<ProfileListItem[]>([]);
   const [kbDiseases, setKbDiseases] = useState<string[]>([]);
+  const [summary, setSummary] = useState<SummaryCards>({
+    total: 0,
+    today: 0,
+    diseaseKinds: 0,
+    firstPassRate: 0,
+    treatmentSuccessRate: 0,
+    filteredRate: 0,
+    degradedRate: 0,
+    llmFailedRate: 0,
+    avgResponseMs: 0,
+  });
+  const [stats, setStats] = useState<DiseaseStat[]>([]);
+  const [timeseries, setTimeseries] = useState<TimeseriesPoint[]>([]);
+  const [modelStats, setModelStats] = useState<Array<{ model: string; count: number; success: number; fallback: number; degraded: number; llmFailedRate: number; avgMs: number }>>([]);
+  const [filteredReasonDistribution, setFilteredReasonDistribution] = useState<Array<{ name: string; count: number }>>([]);
+  const [farmerStats, setFarmerStats] = useState<FarmerStat[]>([]);
+  const [baseStats, setBaseStats] = useState<BaseStat[]>([]);
+  const [baseTopDiseases, setBaseTopDiseases] = useState<string[]>([]);
   const [selectedFarmerId, setSelectedFarmerId] = useState('ALL');
   const [selectedBaseId, setSelectedBaseId] = useState('ALL');
   const [farmerBases, setFarmerBases] = useState<Array<{ id: string; name?: string }>>([]);
@@ -566,37 +604,120 @@ export function DashboardPage() {
     setLoading(true);
     const safeStart = effectiveRange.start;
     const safeEnd = effectiveRange.end;
+    const params = new URLSearchParams({
+      start: safeStart,
+      end: safeEnd,
+      farmer_id: selectedFarmerId,
+      base_id: selectedBaseId,
+      disease: selectedDisease,
+      model_id: selectedModel,
+      selected_branch: selectedBranch,
+      personalization_status: selectedPersonalizationStatus,
+    });
 
     try {
       const eventsResp = await fetch(`/api/events?start=${safeStart}&end=${safeEnd}&limit=5000`);
       const eventsData = await eventsResp.json();
-      console.log('[Dashboard] /api/events response:', eventsData);
-
-      const eventsList = Array.isArray(eventsData)
-        ? eventsData
-        : eventsData?.events ?? eventsData?.items ?? eventsData?.data ?? [];
-      const safeEvents = Array.isArray(eventsList)
-        ? eventsList.map((eventLike, index) => normalizeEvent(eventLike, index))
-        : [];
+      const eventsList = Array.isArray(eventsData?.events) ? eventsData.events : [];
+      const safeEvents = eventsList.map((eventLike: unknown, index: number) => normalizeEvent(eventLike, index));
       setAllEvents(safeEvents);
       setSelectedEvent(safeEvents.length > 0 ? safeEvents[0] : null);
+
+      const [summaryResp, diseaseResp, timeseriesResp, modelResp, reasonResp, farmerResp, baseResp] = await Promise.all([
+        fetch(`/api/stats/summary?${params.toString()}`),
+        fetch(`/api/stats/disease?${params.toString()}`),
+        fetch(`/api/stats/timeseries?${params.toString()}`),
+        fetch(`/api/stats/models?${params.toString()}`),
+        fetch(`/api/stats/filter-reasons?${params.toString()}`),
+        fetch(`/api/stats/by-farmer?start=${safeStart}&end=${safeEnd}&base_id=${encodeURIComponent(selectedBaseId)}&disease=${encodeURIComponent(selectedDisease)}&model_id=${encodeURIComponent(selectedModel)}&selected_branch=${encodeURIComponent(selectedBranch)}&personalization_status=${encodeURIComponent(selectedPersonalizationStatus)}`),
+        fetch(`/api/stats/by-base?start=${safeStart}&end=${safeEnd}&farmer_id=${encodeURIComponent(selectedFarmerId)}&model_id=${encodeURIComponent(selectedModel)}&selected_branch=${encodeURIComponent(selectedBranch)}&personalization_status=${encodeURIComponent(selectedPersonalizationStatus)}`),
+      ]);
+
+      const summaryData = await summaryResp.json();
+      setSummary({
+        total: Number(summaryData?.total ?? 0),
+        today: Number(summaryData?.today ?? 0),
+        diseaseKinds: Number(summaryData?.disease_kinds ?? 0),
+        firstPassRate: Number(summaryData?.first_pass_rate ?? 0),
+        treatmentSuccessRate: Number(summaryData?.treatment_success_rate ?? 0),
+        filteredRate: Number(summaryData?.filtered_rate ?? 0),
+        degradedRate: Number(summaryData?.degraded_rate ?? 0),
+        llmFailedRate: Number(summaryData?.llm_failed_rate ?? 0),
+        avgResponseMs: Number(summaryData?.avg_response_ms ?? 0),
+      });
+
+      const diseaseData = await diseaseResp.json();
+      setStats(Array.isArray(diseaseData?.items)
+        ? diseaseData.items.map((item: Record<string, unknown>) => ({ disease: String(item?.disease ?? '未识别病害'), count: Number(item?.count ?? 0) }))
+        : []);
+
+      const timeseriesData = await timeseriesResp.json();
+      setTimeseries(Array.isArray(timeseriesData?.items)
+        ? timeseriesData.items.map((item: Record<string, unknown>) => ({ date: String(item?.date ?? ''), count: Number(item?.count ?? 0) }))
+        : []);
+
+      const modelData = await modelResp.json();
+      setModelStats(Array.isArray(modelData?.items)
+        ? modelData.items.map((item: Record<string, unknown>) => ({
+          model: String(item?.model ?? '未知模型'),
+          count: Number(item?.count ?? 0),
+          success: Number(item?.success ?? 0),
+          fallback: Number(item?.fallback ?? 0),
+          degraded: Number(item?.degraded ?? 0),
+          llmFailedRate: Number(item?.llm_failed_rate ?? 0),
+          avgMs: Number(item?.avg_response_ms ?? 0),
+        }))
+        : []);
+
+      const reasonData = await reasonResp.json();
+      setFilteredReasonDistribution(Array.isArray(reasonData?.items)
+        ? reasonData.items.map((item: Record<string, unknown>) => ({ name: String(item?.name ?? ''), count: Number(item?.count ?? 0) })).filter((item: { name: string }) => Boolean(item.name))
+        : []);
+
+      const farmerData = await farmerResp.json();
+      setFarmerStats(Array.isArray(farmerData?.items)
+        ? farmerData.items.map((item: Record<string, unknown>) => ({
+          farmerId: String(item?.farmer_id ?? '未绑定农户'),
+          farmerName: String(item?.farmer_name ?? ''),
+          count: Number(item?.count ?? 0),
+          filteredRate: Number(item?.filtered_rate ?? 0),
+          degradedRate: Number(item?.degraded_rate ?? 0),
+          confirmRoundRate: Number(item?.confirm_round_rate ?? 0),
+        }))
+        : []);
+
+      const baseData = await baseResp.json();
+      setBaseTopDiseases(Array.isArray(baseData?.top_diseases) ? baseData.top_diseases.map((item: unknown) => String(item)) : []);
+      setBaseStats(Array.isArray(baseData?.items)
+        ? baseData.items.map((item: Record<string, unknown>) => ({
+          baseId: String(item?.base_id ?? '未绑定基地'),
+          baseName: String(item?.base_name ?? ''),
+          count: Number(item?.count ?? 0),
+          diseaseCounts: (item?.disease_counts && typeof item.disease_counts === 'object') ? item.disease_counts as Record<string, number> : {},
+        }))
+        : []);
     } catch {
       setAllEvents([]);
       setSelectedEvent(null);
+      setSummary({ total: 0, today: 0, diseaseKinds: 0, firstPassRate: 0, treatmentSuccessRate: 0, filteredRate: 0, degradedRate: 0, llmFailedRate: 0, avgResponseMs: 0 });
+      setStats([]);
+      setTimeseries([]);
+      setModelStats([]);
+      setFilteredReasonDistribution([]);
+      setFarmerStats([]);
+      setBaseStats([]);
+      setBaseTopDiseases([]);
     } finally {
       setLoading(false);
     }
-  }, [effectiveRange.end, effectiveRange.start]);
-
+  }, [effectiveRange.end, effectiveRange.start, selectedFarmerId, selectedBaseId, selectedDisease, selectedModel, selectedBranch, selectedPersonalizationStatus]);
 
   useEffect(() => {
     const run = async () => {
       try {
         const resp = await fetch('/api/profiles');
         const data = await resp.json();
-        const items: Record<string, unknown>[] = Array.isArray(data?.profiles)
-          ? data.profiles
-          : (Array.isArray(data) ? data : (Array.isArray(data?.items) ? data.items : []));
+        const items: Record<string, unknown>[] = Array.isArray(data?.profiles) ? data.profiles : [];
         setProfiles(items
           .map((item) => ({ id: String(item.id ?? item.farmer_id ?? ''), name: typeof item.name === 'string' ? item.name : undefined }))
           .filter((item) => item.id));
@@ -661,114 +782,30 @@ export function DashboardPage() {
     return true;
   }), [allEvents, selectedDisease, selectedBranch, selectedPersonalizationStatus, selectedModel, selectedFarmerId, selectedBaseId]);
 
-  const stats = useMemo<DiseaseStat[]>(() => {
-    const map = new Map<string, number>();
-    filteredEvents.forEach((event) => map.set(event.disease, (map.get(event.disease) ?? 0) + 1));
-    return Array.from(map.entries()).map(([disease, count]) => ({ disease, count })).sort((a, b) => b.count - a.count);
-  }, [filteredEvents]);
 
-  const timeseries = useMemo<TimeseriesPoint[]>(() => {
-    const map = new Map<string, number>();
-    filteredEvents.forEach((event) => {
-      const ts = Date.parse(event.ts);
-      if (!Number.isFinite(ts)) return;
-      const day = formatDate(new Date(ts));
-      map.set(day, (map.get(day) ?? 0) + 1);
-    });
-    return Array.from(map.entries()).map(([date, count]) => ({ date, count })).sort((a, b) => a.date.localeCompare(b.date));
-  }, [filteredEvents]);
-
-  const timeseriesBreakdown = useMemo(() => {
-    const map = new Map<string, Record<string, number>>();
-    filteredEvents.forEach((event) => {
-      const ts = Date.parse(event.ts);
-      if (!Number.isFinite(ts)) return;
-      const day = formatDate(new Date(ts));
-      const current = map.get(day) ?? {};
-      current[event.disease] = (current[event.disease] ?? 0) + 1;
-      map.set(day, current);
-    });
-    return map;
-  }, [filteredEvents]);
+  const modelSummary = useMemo(() => ({
+    avgResponseMs: summary.avgResponseMs,
+    llmFailedRate: summary.llmFailedRate,
+  }), [summary.avgResponseMs, summary.llmFailedRate]);
 
   const diseaseTrendData = useMemo(() => {
     const topDiseases = stats.slice(0, 6).map((item) => item.disease);
+    const eventBreakdown = new Map<string, Record<string, number>>();
+    filteredEvents.forEach((event) => {
+      const ts = Date.parse(event.ts);
+      if (!Number.isFinite(ts)) return;
+      const day = formatDate(new Date(ts));
+      const current = eventBreakdown.get(day) ?? {};
+      current[event.disease] = (current[event.disease] ?? 0) + 1;
+      eventBreakdown.set(day, current);
+    });
     return timeseries.map((row) => {
-      const breakdown = timeseriesBreakdown.get(row.date) ?? {};
+      const breakdown = eventBreakdown.get(row.date) ?? {};
       const payload: Record<string, number | string> = { date: row.date, total: row.count };
       topDiseases.forEach((disease) => { payload[disease] = breakdown[disease] ?? 0; });
       return payload;
     });
-  }, [stats, timeseries, timeseriesBreakdown]);
-
-  const modelStats = useMemo(() => {
-    const map = new Map<string, { count: number; success: number; fallback: number; degraded: number; llmFailed: number; elapsedSum: number; elapsedCount: number }>();
-    filteredEvents.forEach((event) => {
-      const label = getModelLabel(event.modelId);
-      const current = map.get(label) ?? { count: 0, success: 0, fallback: 0, degraded: 0, llmFailed: 0, elapsedSum: 0, elapsedCount: 0 };
-      current.count += 1;
-      if (event.llmFailed || event.workflowDegraded) current.degraded += 1;
-      else if (event.finalSource === '规则兜底') current.fallback += 1;
-      else current.success += 1;
-      if (event.llmFailed) current.llmFailed += 1;
-      if (event.elapsedMs !== null) {
-        current.elapsedSum += event.elapsedMs;
-        current.elapsedCount += 1;
-      }
-      map.set(label, current);
-    });
-    return Array.from(map.entries())
-      .map(([model, data]) => ({
-        model,
-        count: data.count,
-        success: data.success,
-        fallback: data.fallback,
-        degraded: data.degraded,
-        llmFailedRate: data.count > 0 ? (data.llmFailed / data.count) * 100 : 0,
-        avgMs: data.elapsedCount > 0 ? data.elapsedSum / data.elapsedCount : 0,
-      }))
-      .sort((a, b) => b.count - a.count)
-      .slice(0, 8);
-  }, [filteredEvents]);
-
-  const modelSummary = useMemo(() => {
-    const total = modelStats.reduce((sum, item) => sum + item.count, 0);
-    const llmFailed = modelStats.reduce((sum, item) => sum + (item.llmFailedRate / 100) * item.count, 0);
-    const avgResponseMs = filteredEvents.filter((event) => event.elapsedMs !== null).reduce((sum, event) => sum + Number(event.elapsedMs), 0) / Math.max(filteredEvents.filter((event) => event.elapsedMs !== null).length, 1);
-    return { avgResponseMs: Number.isFinite(avgResponseMs) ? avgResponseMs : 0, llmFailedRate: total > 0 ? (llmFailed / total) * 100 : 0 };
-  }, [modelStats, filteredEvents]);
-
-  const summary = useMemo<SummaryCards>(() => {
-    const total = filteredEvents.length;
-    const todayStr = formatDate(new Date());
-    const today = filteredEvents.filter((event) => {
-      const ts = Date.parse(event.ts);
-      return Number.isFinite(ts) && formatDate(new Date(ts)) === todayStr;
-    }).length;
-    const treatmentSuccess = filteredEvents.filter((event) => {
-      if (!event.treatment || typeof event.treatment !== 'object') return false;
-      const plan = (event.treatment as Record<string, unknown>).plan;
-      return typeof plan === 'string' && plan.trim().length > 0;
-    }).length;
-    const firstPassDone = filteredEvents.filter((event) => !event.confirmRound && !event.needConfirm).length;
-    const filteredCount = filteredEvents.filter((event) => event.filtered).length;
-    const degradedCount = filteredEvents.filter((event) => event.workflowDegraded || event.llmFailed).length;
-    return {
-      total,
-      today,
-      diseaseKinds: new Set(filteredEvents.map((event) => event.disease)).size,
-      firstPassRate: total > 0 ? (firstPassDone / total) * 100 : 0,
-      treatmentSuccessRate: total > 0 ? (treatmentSuccess / total) * 100 : 0,
-      filteredRate: total > 0 ? (filteredCount / total) * 100 : 0,
-      degradedRate: total > 0 ? (degradedCount / total) * 100 : 0,
-    };
-  }, [filteredEvents]);
-
-  const filteredReasonDistribution = useMemo(() => {
-    const map = new Map<string, number>();
-    filteredEvents.forEach((event) => event.filteredReasons.forEach((reason) => map.set(reason, (map.get(reason) ?? 0) + 1)));
-    return Array.from(map.entries()).map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count).slice(0, 8);
-  }, [filteredEvents]);
+  }, [filteredEvents, stats, timeseries]);
 
   useEffect(() => {
     localStorage.setItem('dashboard:module-prefs', JSON.stringify(modulePrefs));
@@ -933,6 +970,7 @@ export function DashboardPage() {
                   recent: '最近诊断',
                   detail: '详情区',
                   disease: '病害 Top / 补充图表',
+                  farmerBase: '农户/基地维度分析',
                 }).map(([key, label]) => {
                   const visible = modulePrefs[key as ModuleKey];
                   return (
@@ -1001,7 +1039,7 @@ export function DashboardPage() {
         <Card className="border border-[#2e7d63]/45 bg-[#12231d] shadow-[0_0_0_1px_rgba(121,185,150,0.08),0_14px_40px_rgba(5,18,12,0.4)]">
           {renderModuleHeader('kpi', '核心诊疗总览', <BarChart3 className="w-5 h-5 text-[#b8ddc7]" />)}
           {!moduleCollapse.kpi && (
-            <CardContent className="grid sm:grid-cols-2 xl:grid-cols-6 gap-4 pt-1">
+            <CardContent className="grid sm:grid-cols-2 xl:grid-cols-8 gap-4 pt-1">
               {[
                 ['总诊断次数', String(summary.total)],
                 ['今日诊断次数', String(summary.today)],
@@ -1009,6 +1047,8 @@ export function DashboardPage() {
                 ['首轮完成率', `${summary.firstPassRate.toFixed(1)}%`],
                 ['方案生成成功率', `${summary.treatmentSuccessRate.toFixed(1)}%`],
                 ['过滤触发率 / 降级率', `${summary.filteredRate.toFixed(1)}% / ${summary.degradedRate.toFixed(1)}%`],
+                ['LLM失败率', `${summary.llmFailedRate.toFixed(1)}%`],
+                ['平均响应时间', summary.avgResponseMs > 0 ? `${summary.avgResponseMs.toFixed(0)} ms` : '—'],
               ].map(([title, value]) => (
                 <div key={title} className="rounded-xl border border-[#2e7d63]/35 bg-[#173128] px-4 py-4">
                   <p className="text-white/70 text-xs">{title}</p>
@@ -1149,6 +1189,53 @@ export function DashboardPage() {
             </Card>
           )}
         </div>
+      )}
+
+
+      {modulePrefs.farmerBase && (
+        <Card className="glass-card">
+          {renderModuleHeader('farmerBase', '农户 / 基地维度分析', <TrendingUp className="w-5 h-5 text-[#b8ddc7]" />)}
+          {!moduleCollapse.farmerBase && (
+            <CardContent className="grid lg:grid-cols-2 gap-6">
+              <div className="h-80">
+                <p className="text-white/70 text-sm mb-2">农户诊断量排行（含过滤/确认轮/降级率）</p>
+                {farmerStats.length > 0 ? (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={farmerStats} margin={{ left: 8, right: 8, top: 10, bottom: 20 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="rgba(193,227,207,0.18)" />
+                      <XAxis dataKey="farmerId" stroke="rgba(229,243,236,0.72)" tick={{ fontSize: 11 }} interval={0} angle={-15} textAnchor="end" height={56} />
+                      <YAxis stroke="rgba(229,243,236,0.72)" allowDecimals={false} tick={{ fontSize: 12 }} />
+                      <Tooltip contentStyle={{ background: '#10231c', border: '1px solid rgba(146,194,168,0.5)', color: '#e8fff0' }} />
+                      <Bar dataKey="count" fill={chartPalette.greenSoft} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                ) : <div className="h-full flex items-center justify-center text-white/40 text-sm">暂无农户维度统计</div>}
+              </div>
+
+              <div className="h-80">
+                <p className="text-white/70 text-sm mb-2">基地病害构成（Top病害堆叠）</p>
+                {baseStats.length > 0 ? (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={baseStats} margin={{ left: 8, right: 8, top: 10, bottom: 20 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="rgba(193,227,207,0.18)" />
+                      <XAxis dataKey="baseId" stroke="rgba(229,243,236,0.72)" tick={{ fontSize: 11 }} interval={0} angle={-15} textAnchor="end" height={56} />
+                      <YAxis stroke="rgba(229,243,236,0.72)" allowDecimals={false} tick={{ fontSize: 12 }} />
+                      <Tooltip contentStyle={{ background: '#10231c', border: '1px solid rgba(146,194,168,0.5)', color: '#e8fff0' }} />
+                      {baseTopDiseases.map((disease, index) => (
+                        <Bar
+                          key={disease}
+                          dataKey={`diseaseCounts.${disease}`}
+                          stackId="disease"
+                          fill={[chartPalette.greenSoft, chartPalette.greenDark, chartPalette.yellowSoft, chartPalette.cyanSoft, chartPalette.coralSoft][index % 5]}
+                        />
+                      ))}
+                    </BarChart>
+                  </ResponsiveContainer>
+                ) : <div className="h-full flex items-center justify-center text-white/40 text-sm">暂无基地维度统计</div>}
+              </div>
+            </CardContent>
+          )}
+        </Card>
       )}
 
       <div className="grid lg:grid-cols-2 gap-6">
