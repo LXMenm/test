@@ -18,17 +18,23 @@ import {
   getPesticideAccessLevelLabel,
   getRiskPreferenceLabel,
   getSelectedBranchLabel,
+  getGrowthStageLabel,
+  normalizeGrowthStage,
+  TOMATO_GROWTH_STAGE_OPTIONS,
   type SelectedBranch,
 } from '@/lib/profileLabels';
 
 interface FarmerBase {
   base_id: string;
+  internal_base_uid?: string;
   name: string;
   location: string;
   province: string;
   facility_type: string;
   environment: string;
   growth_stage: string;
+  sowing_date: string;
+  estimated_harvest_window_days: number | null;
   notes: string;
 }
 
@@ -59,6 +65,29 @@ const EQUIPMENT_OPTIONS = ['HAND_SPRAYER', 'BACKPACK_SPRAYER', 'MIST_BLOWER', 'D
 const CULTIVATION_MODE_OPTIONS = ['SOIL', 'HYDROPONIC', 'SUBSTRATE'] as const;
 const EXPERIENCE_OPTIONS = ['NOVICE', 'INTERMEDIATE', 'EXPERT'] as const;
 const RISK_OPTIONS = ['CONSERVATIVE', 'BALANCED', 'AGGRESSIVE'] as const;
+
+
+const TOMATO_TOTAL_GROW_DAYS = 120;
+
+const estimateHarvestWindowDays = (sowingDate?: string | null): number | null => {
+  if (!sowingDate) return null;
+  const parsed = new Date(`${sowingDate}T00:00:00`);
+  if (Number.isNaN(parsed.getTime())) return null;
+  const now = new Date();
+  const elapsedDays = Math.max(Math.floor((now.getTime() - parsed.getTime()) / (24 * 60 * 60 * 1000)), 0);
+  return Math.max(TOMATO_TOTAL_GROW_DAYS - elapsedDays, 0);
+};
+
+const validateUniqueBaseIds = (bases: FarmerBase[]): string | null => {
+  const seen = new Set<string>();
+  for (const base of bases) {
+    const id = base.base_id.trim();
+    if (!id) continue;
+    if (seen.has(id)) return id;
+    seen.add(id);
+  }
+  return null;
+};
 
 
 const predictBranch = (
@@ -102,8 +131,11 @@ const normalizeBase = (baseId: string, base: unknown): FarmerBase => {
     province: toSafeString(baseObj.province),
     facility_type: toSafeString(baseObj.facility_type ?? baseObj.facility),
     environment: toSafeString(baseObj.environment),
-    growth_stage: toSafeString(baseObj.growth_stage),
+    growth_stage: normalizeGrowthStage(toSafeString(baseObj.growth_stage)),
+    sowing_date: toSafeString(baseObj.sowing_date),
+    estimated_harvest_window_days: estimateHarvestWindowDays(toSafeString(baseObj.sowing_date)),
     notes: toSafeString(baseObj.notes),
+    internal_base_uid: toSafeString(baseObj.internal_base_uid) || undefined,
   };
 };
 
@@ -116,20 +148,20 @@ const normalizeProfile = (raw: unknown): FarmerProfile => {
       return normalizeBase(toSafeString(baseObj.base_id, `B${idx + 1}`), baseObj);
     })
     : rawBases && typeof rawBases === 'object'
-    ? Object.entries(rawBases).map(([baseId, base]) => normalizeBase(baseId, base))
-    : [];
+      ? Object.entries(rawBases).map(([baseId, base]) => normalizeBase(baseId, base))
+      : [];
 
   const rawConstraints = rawObj.constraints && typeof rawObj.constraints === 'object'
     ? rawObj.constraints as Record<string, unknown>
     : {};
   const rawBanned = rawConstraints.banned_ingredients;
 
-  return {
+  const profile: FarmerProfile = {
     farmer_id: toSafeString(rawObj.farmer_id),
     name: toSafeString(rawObj.name),
     active_base_id: toSafeString(rawObj.active_base_id),
     confirm_when_low_confidence: Boolean(rawObj.confirm_when_low_confidence),
-    schema_version: toSafeString(rawObj.schema_version, '1.1'),
+    schema_version: toSafeString(rawObj.schema_version, '1.2'),
     updated_at: toSafeString(rawObj.updated_at),
     farm_scale: (FARM_SCALE_OPTIONS.includes(toSafeString(rawObj.farm_scale) as never) ? toSafeString(rawObj.farm_scale) : 'SMALL') as FarmerProfile['farm_scale'],
     pesticide_access_level: (PESTICIDE_ACCESS_OPTIONS.includes(toSafeString(rawObj.pesticide_access_level) as never) ? toSafeString(rawObj.pesticide_access_level) : 'LIMITED') as FarmerProfile['pesticide_access_level'],
@@ -148,7 +180,14 @@ const normalizeProfile = (raw: unknown): FarmerProfile => {
     },
     bases: basesArray,
   };
+
+  const activeBase = profile.active_base_id ? profile.bases.find((base) => base.base_id === profile.active_base_id) : null;
+  const estimated = estimateHarvestWindowDays(activeBase?.sowing_date);
+  if (estimated !== null) profile.constraints.harvest_window_days = estimated;
+
+  return profile;
 };
+
 
 const normalizeProfileList = (raw: unknown): FarmerProfile[] => {
   if (!Array.isArray(raw)) return [];
@@ -250,11 +289,41 @@ export function ProfilesPage() {
     if (!editedProfile) return;
 
     setErrorMessage('');
+    const duplicateBaseId = validateUniqueBaseIds(editedProfile.bases);
+    if (duplicateBaseId) {
+      setErrorMessage(`基地ID重复：${duplicateBaseId}（同一农户下不允许重复）`);
+      return;
+    }
+
+    const basesMap = Object.fromEntries(editedProfile.bases.map((base) => [base.base_id, {
+      base_id: base.base_id,
+      internal_base_uid: base.internal_base_uid,
+      name: base.name,
+      location: base.location,
+      province: base.province,
+      facility: base.facility_type,
+      environment: base.environment,
+      growth_stage: normalizeGrowthStage(base.growth_stage),
+      sowing_date: base.sowing_date || null,
+      notes: base.notes,
+    }]));
+    const activeBase = editedProfile.active_base_id
+      ? editedProfile.bases.find((base) => base.base_id === editedProfile.active_base_id)
+      : null;
+    const estimatedHarvest = estimateHarvestWindowDays(activeBase?.sowing_date);
+
     try {
       const resp = await fetch(`/api/profiles/${editedProfile.farmer_id}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(editedProfile)
+        body: JSON.stringify({
+          ...editedProfile,
+          bases: basesMap,
+          constraints: {
+            ...editedProfile.constraints,
+            harvest_window_days: estimatedHarvest ?? editedProfile.constraints.harvest_window_days,
+          },
+        })
       });
       await parseJsonOrThrow(resp);
       fetchProfiles();
@@ -367,16 +436,25 @@ export function ProfilesPage() {
   const addBase = () => {
     if (!newBaseId.trim() || !editedProfile) return;
 
+    const safeBaseId = newBaseId.trim();
+    const exists = editedProfile.bases.some((base) => base.base_id === safeBaseId);
+    if (exists) {
+      setErrorMessage(`基地ID重复：${safeBaseId}（同一农户下不允许重复）`);
+      return;
+    }
+
     setEditedProfile({
       ...editedProfile,
       bases: [...(Array.isArray(editedProfile.bases) ? editedProfile.bases : []), {
-        base_id: newBaseId,
+        base_id: safeBaseId,
         name: '',
         location: '',
         province: '',
         facility_type: '',
         environment: '',
         growth_stage: '',
+        sowing_date: '',
+        estimated_harvest_window_days: null,
         notes: ''
       }]
     });
@@ -677,14 +755,13 @@ export function ProfilesPage() {
                     <div className="space-y-2">
                       <Label className="text-white/60">距离采收期（天）</Label>
                       <Input
-                        type="number"
-                        value={editedProfile.constraints.harvest_window_days}
-                        onChange={(e) => setEditedProfile({
-                          ...editedProfile,
-                          constraints: { ...editedProfile.constraints, harvest_window_days: parseInt(e.target.value) || 0 }
-                        })}
-                        className="bg-white/5 border-white/20 text-white focus:border-[#c8f7c5]"
+                        value={`${editedProfile.constraints.harvest_window_days ?? 0}`}
+                        readOnly
+                        className="bg-white/5 border-white/10 text-white/80"
                       />
+                      <p className="text-xs text-white/45">
+                        优先根据活跃基地播种日期自动估算（经验规则），无播种日期时回退历史手填值。
+                      </p>
                     </div>
                     <div className="space-y-2">
                       <Label className="text-white/60">禁用成分关键词</Label>
@@ -748,6 +825,7 @@ export function ProfilesPage() {
                       <div key={base.base_id} className="bg-white/5 rounded-xl p-4 space-y-3">
                         <div className="flex items-center justify-between">
                           <Badge className="bg-[#c8f7c5]/20 text-[#c8f7c5]">{base.base_id}</Badge>
+                          <span className="text-xs text-white/50">{getGrowthStageLabel(base.growth_stage)}</span>
                           <Button
                             onClick={() => removeBase(idx)}
                             variant="ghost"
@@ -820,16 +898,58 @@ export function ProfilesPage() {
                           </div>
                           <div className="space-y-1">
                             <Label className="text-white/60 text-xs">生长阶段</Label>
-                            <Input
-                              value={base.growth_stage}
-                              onChange={(e) => {
+                            <Select
+                              value={normalizeGrowthStage(base.growth_stage) || '__EMPTY__'}
+                              onValueChange={(value) => {
                                 const newBases = [...editedProfile.bases];
-                                newBases[idx].growth_stage = e.target.value;
+                                newBases[idx].growth_stage = value === '__EMPTY__' ? '' : value;
                                 setEditedProfile({ ...editedProfile, bases: newBases });
                               }}
-                              className="bg-white/10 border-white/20 text-white text-sm"
-                            />
+                            >
+                              <SelectTrigger className="bg-white/10 border-white/20 text-white text-sm">
+                                <SelectValue placeholder="请选择生长阶段" />
+                              </SelectTrigger>
+                              <SelectContent className="bg-[#111] text-white border-white/20">
+                                <SelectItem value="__EMPTY__">未设置</SelectItem>
+                                {TOMATO_GROWTH_STAGE_OPTIONS.map((stage) => (
+                                  <SelectItem key={stage.value} value={stage.value}>{stage.label}</SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
                           </div>
+                          <div className="space-y-1">
+                              <Label className="text-white/60 text-xs">播种日期</Label>
+                              <Input
+                                type="date"
+                                value={base.sowing_date || ''}
+                                onChange={(e) => {
+                                  const newBases = [...editedProfile.bases];
+                                  newBases[idx].sowing_date = e.target.value;
+                                  newBases[idx].estimated_harvest_window_days = estimateHarvestWindowDays(e.target.value);
+                                  if (editedProfile.active_base_id === newBases[idx].base_id) {
+                                    setEditedProfile({
+                                      ...editedProfile,
+                                      constraints: {
+                                        ...editedProfile.constraints,
+                                        harvest_window_days: newBases[idx].estimated_harvest_window_days ?? editedProfile.constraints.harvest_window_days,
+                                      },
+                                      bases: newBases,
+                                    });
+                                    return;
+                                  }
+                                  setEditedProfile({ ...editedProfile, bases: newBases });
+                                }}
+                                className="bg-white/10 border-white/20 text-white text-sm"
+                              />
+                            </div>
+                            <div className="space-y-1">
+                              <Label className="text-white/60 text-xs">预计距采收天数（系统估算）</Label>
+                              <Input
+                                value={base.estimated_harvest_window_days === null ? '未设置' : `${base.estimated_harvest_window_days} 天`}
+                                readOnly
+                                className="bg-white/5 border-white/10 text-white/80 text-sm"
+                              />
+                            </div>
                         </div>
                       </div>
                     ))}

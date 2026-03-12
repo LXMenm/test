@@ -5,8 +5,11 @@ import hashlib
 import json
 from datetime import datetime
 from typing import Dict, List, Literal, Optional
+from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+
+from .profile_constants import normalize_growth_stage, normalize_sowing_date
 
 
 class TreatmentConstraint(BaseModel):
@@ -23,13 +26,23 @@ class BaseProfile(BaseModel):
     """单个生产基地的资料。"""
 
     base_id: str
+    internal_base_uid: Optional[str] = None
     name: Optional[str] = None
     location: Optional[str] = None
     province: Optional[str] = None
     facility: Optional[str] = None
     environment: Optional[str] = None
     growth_stage: Optional[str] = None
+    sowing_date: Optional[str] = None
     notes: Optional[str] = None
+
+    @model_validator(mode="after")
+    def normalize_fields(self) -> "BaseProfile":
+        if not self.internal_base_uid:
+            self.internal_base_uid = uuid4().hex
+        self.growth_stage = normalize_growth_stage(self.growth_stage)
+        self.sowing_date = normalize_sowing_date(self.sowing_date)
+        return self
 
 
 class FarmerProfile(BaseModel):
@@ -37,7 +50,7 @@ class FarmerProfile(BaseModel):
 
     farmer_id: str
     name: Optional[str] = None
-    schema_version: str = "1.1"
+    schema_version: str = "1.2"
     updated_at: Optional[str] = None
     active_base_id: Optional[str] = None
     confirm_when_low_confidence: bool = True
@@ -54,6 +67,7 @@ class FarmerProfile(BaseModel):
         """填充更新时间。"""
         if not self.updated_at:
             self.updated_at = datetime.utcnow().isoformat() + "Z"
+
 
 
 def compute_profile_hash(profile: FarmerProfile) -> str:

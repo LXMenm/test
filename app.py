@@ -8,7 +8,7 @@ import uuid
 from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import Body, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -34,9 +34,10 @@ from event_store import (
 )
 from knowledge_base import get_kb_manager
 from personalization import profile_rules
+from personalization.profile_constants import estimate_harvest_window_days, normalize_growth_stage
 from personalization.profile_models import BaseProfile, FarmerProfile, TreatmentConstraint
 from personalization.profile_context import build_personalization_context, build_personalization_flags
-from personalization.profile_store import get_profile_path, load_profile, list_profile_ids
+from personalization.profile_store import get_profile_path, load_profile, list_profile_ids, save_profile as persist_profile
 from personalization.utils import dedupe_reasons, compute_personalization_applied, normalize_follow_up_questions
 from state import create_initial_state
 from trace_store import list_trace_events, subscribe as subscribe_trace, unsubscribe as unsubscribe_trace, emit_trace_event
@@ -1020,33 +1021,48 @@ def _normalize_profile_payload_for_save(farmer_id: str, payload: dict) -> Farmer
 
     bases = normalized.get("bases")
     if isinstance(bases, list):
-        bases_map = {}
+        bases_map: dict[str, dict] = {}
         for item in bases:
             if not isinstance(item, dict):
                 continue
             base_id = str(item.get("base_id") or "").strip()
             if not base_id:
                 continue
+            if base_id in bases_map:
+                raise ValueError(f"同一农户下基地ID重复：{base_id}")
             base_data = dict(item)
             if "facility_type" in base_data and "facility" not in base_data:
                 base_data["facility"] = base_data.pop("facility_type")
+            if "growth_stage" in base_data:
+                base_data["growth_stage"] = normalize_growth_stage(str(base_data.get("growth_stage") or ""))
             bases_map[base_id] = base_data
         normalized["bases"] = bases_map
 
+    elif isinstance(bases, dict):
+        checked: dict[str, dict] = {}
+        for base_id, raw_base in bases.items():
+            if base_id in checked:
+                raise ValueError(f"同一农户下基地ID重复：{base_id}")
+            base_data = dict(raw_base) if isinstance(raw_base, dict) else {}
+            if "facility_type" in base_data and "facility" not in base_data:
+                base_data["facility"] = base_data.pop("facility_type")
+            if "growth_stage" in base_data:
+                base_data["growth_stage"] = normalize_growth_stage(str(base_data.get("growth_stage") or ""))
+            checked[str(base_id)] = base_data
+        normalized["bases"] = checked
+
     profile = FarmerProfile.model_validate(normalized)
+
+    # 根据活跃基地播种日期自动估算采收窗口（旧字段兼容回退）。
+    active_base = profile.bases.get(profile.active_base_id or "") if profile.active_base_id else None
+    if active_base and active_base.sowing_date:
+        estimated_days = estimate_harvest_window_days(active_base.sowing_date)
+        if estimated_days is not None:
+            profile.constraints.harvest_window_days = estimated_days
+
     profile.ensure_timestamp()
     profile.updated_at = _utc_now_iso()
     return profile
-def _generate_farmer_id() -> str | None:
-    existing_ids = set()
-    for farmer_id in list_profile_ids():
-        match = re.match(r"^F(\d{4})$", farmer_id)
-        if match:
-            existing_ids.add(int(match.group(1)))
-    for index in range(1, 1001):
-        if index not in existing_ids:
-            return f"F{index:04d}"
-    return None
 
 
 @app.post("/api/profiles")
@@ -1092,18 +1108,14 @@ def create_profile(payload: dict = Body(...)) -> dict[str, bool | str]:
 
 @app.get("/api/profiles/{farmer_id}")
 def get_profile(farmer_id: str) -> dict:
-    path = get_profile_path(farmer_id)
-    if not path.exists():
+    profile = load_profile(farmer_id)
+    if profile is None:
         raise HTTPException(status_code=404, detail="档案不存在")
-    try:
-        with path.open("r", encoding="utf-8") as f:
-            return json.load(f)
-    except json.JSONDecodeError as exc:
-        raise HTTPException(status_code=400, detail=f"档案内容非法: {exc}") from exc
+    return profile.model_dump()
 
 
 @app.post("/api/profiles/{farmer_id}")
-def save_profile(farmer_id: str, payload: dict = Body(...)) -> dict[str, bool]:
+def save_profile_route(farmer_id: str, payload: dict = Body(...)) -> dict[str, bool]:
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="档案内容非法")
     try:
@@ -1111,9 +1123,7 @@ def save_profile(farmer_id: str, payload: dict = Body(...)) -> dict[str, bool]:
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"档案格式非法: {exc}") from exc
     try:
-        save_path = get_profile_path(farmer_id)
-        with save_path.open("w", encoding="utf-8") as f:
-            json.dump(profile.model_dump(), f, ensure_ascii=False, indent=2)
+        persist_profile(profile)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"保存档案失败: {exc}") from exc
     return {"ok": True}
@@ -1132,12 +1142,12 @@ def delete_profile(farmer_id: str) -> dict[str, bool]:
 
 
 @app.get("/api/events")
-def get_events(start: str | None = None, end: str | None = None, limit: int = 50) -> list[dict]:
+def get_events(start: str | None = None, end: str | None = None, limit: int = 50) -> dict[str, list[dict[str, Any]]]:
     if start or end:
         if (start and not validate_date_str(start)) or (end and not validate_date_str(end)):
             raise HTTPException(status_code=400, detail="日期格式应为 YYYY-MM-DD")
-        return list_events_range(start, end, limit)
-    return list_events(limit)
+        return {"events": list_events_range(start, end, limit)}
+    return {"events": list_events(limit)}
 
 
 
@@ -1235,18 +1245,278 @@ def validate_date_str(value: str) -> bool:
     return True
 
 
+def _safe_record(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _normalize_branch(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    normalized = value.strip().upper()
+    if normalized in {"HOME", "FAMILY"}:
+        return "FAMILY"
+    if normalized in {"PRO", "MID"}:
+        return "MID"
+    if normalized == "ENTERPRISE":
+        return "ENTERPRISE"
+    return normalized
+
+
+def _event_disease(event: dict[str, Any]) -> str:
+    image_result = _safe_record(event.get("image_result"))
+    return str(
+        event.get("final_disease")
+        or image_result.get("disease")
+        or event.get("disease")
+        or event.get("disease_name")
+        or "未识别病害"
+    ).strip() or "未识别病害"
+
+
+def _event_model_id(event: dict[str, Any]) -> str:
+    meta = _safe_record(event.get("meta"))
+    return str(
+        meta.get("model_id")
+        or event.get("model_id")
+        or ""
+    ).strip()
+
+
+def _event_model_label(event: dict[str, Any]) -> str:
+    meta = _safe_record(event.get("meta"))
+    return str(
+        meta.get("model_display_name")
+        or event.get("model_display_name")
+        or _event_model_id(event)
+        or "未知模型"
+    ).strip() or "未知模型"
+
+
+def _event_farmer_id(event: dict[str, Any]) -> str:
+    meta = _safe_record(event.get("meta"))
+    return str(meta.get("farmer_id") or event.get("farmer_id") or "").strip()
+
+
+def _event_base_id(event: dict[str, Any]) -> str:
+    meta = _safe_record(event.get("meta"))
+    return str(meta.get("base_id") or event.get("base_id") or "").strip()
+
+
+def _event_selected_branch(event: dict[str, Any]) -> str:
+    meta = _safe_record(event.get("meta"))
+    treatment = _safe_record(event.get("treatment"))
+    outputs = _safe_record(event.get("outputs"))
+    personalization = _safe_record(event.get("personalization"))
+    personalization_outputs = _safe_record(event.get("personalization_outputs"))
+    candidates = [
+        event.get("selected_branch"),
+        treatment.get("selected_branch"),
+        outputs.get("selected_branch"),
+        personalization.get("selected_branch"),
+        personalization_outputs.get("selected_branch"),
+        meta.get("selected_branch"),
+        meta.get("branch"),
+    ]
+    for candidate in candidates:
+        branch = _normalize_branch(candidate)
+        if branch:
+            return branch
+    return ""
+
+
+def _event_filtered(event: dict[str, Any]) -> bool:
+    meta = _safe_record(event.get("meta"))
+    return event.get("filtered") is True or meta.get("filtered") is True
+
+
+def _event_filtered_reasons(event: dict[str, Any]) -> list[str]:
+    meta = _safe_record(event.get("meta"))
+    reasons = event.get("filtered_reasons")
+    if not isinstance(reasons, list):
+        reasons = meta.get("filtered_reasons")
+    if not isinstance(reasons, list):
+        return []
+    return [str(reason).strip() for reason in reasons if str(reason).strip()]
+
+
+def _event_personalization_applied(event: dict[str, Any]) -> bool:
+    meta = _safe_record(event.get("meta"))
+    return event.get("personalization_applied") is True or meta.get("personalization_applied") is True
+
+
+def _event_degraded(event: dict[str, Any]) -> bool:
+    meta = _safe_record(event.get("meta"))
+    return (
+        event.get("workflow_degraded") is True
+        or meta.get("workflow_degraded") is True
+        or event.get("llm_failed") is True
+        or meta.get("llm_failed") is True
+    )
+
+
+def _event_llm_failed(event: dict[str, Any]) -> bool:
+    meta = _safe_record(event.get("meta"))
+    return event.get("llm_failed") is True or meta.get("llm_failed") is True
+
+
+def _event_treatment_success(event: dict[str, Any]) -> bool:
+    treatment = _safe_record(event.get("treatment"))
+    plan = treatment.get("plan") or event.get("treatment_plan")
+    return isinstance(plan, str) and bool(plan.strip())
+
+
+def _event_elapsed_ms(event: dict[str, Any]) -> float | None:
+    meta = _safe_record(event.get("meta"))
+    timing = _safe_record(meta.get("timing"))
+
+    def _parse_elapsed_value(raw: Any) -> float | None:
+        if isinstance(raw, (int, float)):
+            value = float(raw)
+            return value if value >= 0 else None
+        if isinstance(raw, str):
+            text = raw.strip().lower()
+            if not text:
+                return None
+            compact = text.replace("毫秒", "ms").replace("秒", "s")
+            match = re.search(r"-?\d+(?:\.\d+)?", compact)
+            if not match:
+                return None
+            value = float(match.group(0))
+            if value < 0:
+                return None
+            if compact.endswith("s") and not compact.endswith("ms"):
+                value *= 1000
+            return value
+        return None
+
+    def _walk_dict_for_elapsed(payload: dict[str, Any]) -> float | None:
+        preferred_keys = (
+            "elapsed_ms", "duration_ms", "latency_ms", "response_ms", "cost_ms",
+            "elapsed", "duration", "latency", "response_time", "time_cost",
+        )
+        for key in preferred_keys:
+            if key in payload:
+                parsed = _parse_elapsed_value(payload.get(key))
+                if parsed is not None:
+                    return parsed
+        for value in payload.values():
+            if isinstance(value, dict):
+                parsed = _walk_dict_for_elapsed(_safe_record(value))
+                if parsed is not None:
+                    return parsed
+            elif isinstance(value, list):
+                for item in value:
+                    if isinstance(item, dict):
+                        parsed = _walk_dict_for_elapsed(_safe_record(item))
+                        if parsed is not None:
+                            return parsed
+        return None
+
+    candidates = [
+        event.get("elapsed_ms"),
+        meta.get("elapsed_ms"),
+        event.get("duration_ms"),
+        meta.get("duration_ms"),
+        event.get("latency_ms"),
+        meta.get("latency_ms"),
+        timing.get("elapsed_ms"),
+        timing.get("duration_ms"),
+        timing.get("latency_ms"),
+    ]
+
+    zero_fallback: float | None = None
+    for candidate in candidates:
+        parsed = _parse_elapsed_value(candidate)
+        if parsed is None:
+            continue
+        if parsed > 0:
+            return parsed
+        zero_fallback = parsed
+
+    from_nested = _walk_dict_for_elapsed(meta)
+    if from_nested is not None:
+        if from_nested > 0:
+            return from_nested
+        zero_fallback = from_nested if zero_fallback is None else zero_fallback
+
+    from_event = _walk_dict_for_elapsed(event)
+    if from_event is not None:
+        if from_event > 0:
+            return from_event
+        zero_fallback = from_event if zero_fallback is None else zero_fallback
+
+    return zero_fallback
+
+
+def _event_in_filters(
+    event: dict[str, Any],
+    farmer_id: str | None,
+    base_id: str | None,
+    disease: str | None,
+    model_id: str | None,
+    selected_branch: str | None,
+    personalization_status: str | None,
+) -> bool:
+    if farmer_id and farmer_id != "ALL" and _event_farmer_id(event) != farmer_id:
+        return False
+    if base_id and base_id != "ALL" and _event_base_id(event) != base_id:
+        return False
+    if disease and disease != "ALL" and _event_disease(event) != disease:
+        return False
+    if model_id and model_id != "ALL" and _event_model_id(event) != model_id:
+        return False
+    if selected_branch and selected_branch != "ALL" and _event_selected_branch(event) != _normalize_branch(selected_branch):
+        return False
+    if personalization_status == "APPLIED" and not _event_personalization_applied(event):
+        return False
+    if personalization_status == "FILTERED" and not _event_filtered(event):
+        return False
+    return True
+
+
+def _load_filtered_events(
+    start: str | None,
+    end: str | None,
+    farmer_id: str | None,
+    base_id: str | None,
+    disease: str | None,
+    model_id: str | None,
+    selected_branch: str | None,
+    personalization_status: str | None,
+) -> list[dict[str, Any]]:
+    events = list_events_range(start, end, 200000) if (start or end) else list_events(200000)
+    return [
+        event for event in events
+        if _event_in_filters(event, farmer_id, base_id, disease, model_id, selected_branch, personalization_status)
+    ]
+
+
 @app.get("/api/stats/disease")
 def get_disease_stats(
     start: str | None = None,
     end: str | None = None,
     days: int = 30,
-) -> dict[str, int]:
+    farmer_id: str | None = None,
+    base_id: str | None = None,
+    disease: str | None = None,
+    model_id: str | None = None,
+    selected_branch: str | None = None,
+    personalization_status: str | None = None,
+) -> dict[str, Any]:
     if start or end:
         if (start and not validate_date_str(start)) or (end and not validate_date_str(end)):
             raise HTTPException(status_code=400, detail="日期格式应为 YYYY-MM-DD")
-        return stats_by_disease_range(start, end)
     safe_days = max(1, min(3650, int(days)))
-    return stats_by_disease(safe_days)
+    if any([farmer_id, base_id, disease, model_id, selected_branch, personalization_status]):
+        events = _load_filtered_events(start, end, farmer_id, base_id, disease, model_id, selected_branch, personalization_status)
+        counts: dict[str, int] = {}
+        for event in events:
+            disease_name = _event_disease(event)
+            counts[disease_name] = counts.get(disease_name, 0) + 1
+    else:
+        counts = stats_by_disease_range(start, end) if (start or end) else stats_by_disease(safe_days)
+    items = [{"disease": disease_name, "count": count} for disease_name, count in sorted(counts.items(), key=lambda item: item[1], reverse=True)]
+    return {"items": items}
 
 
 @app.get("/api/stats/timeseries")
@@ -1254,13 +1524,31 @@ def get_timeseries(
     start: str | None = None,
     end: str | None = None,
     days: int = 30,
-) -> list[dict]:
+    farmer_id: str | None = None,
+    base_id: str | None = None,
+    disease: str | None = None,
+    model_id: str | None = None,
+    selected_branch: str | None = None,
+    personalization_status: str | None = None,
+) -> dict[str, Any]:
     if start or end:
         if (start and not validate_date_str(start)) or (end and not validate_date_str(end)):
             raise HTTPException(status_code=400, detail="日期格式应为 YYYY-MM-DD")
-        return timeseries_range(start, end)
+    if any([farmer_id, base_id, disease, model_id, selected_branch, personalization_status]):
+        events = _load_filtered_events(start, end, farmer_id, base_id, disease, model_id, selected_branch, personalization_status)
+        counts: dict[str, int] = {}
+        for event in events:
+            ts = event.get("ts")
+            if not isinstance(ts, str):
+                continue
+            day = ts.split("T", 1)[0]
+            counts[day] = counts.get(day, 0) + 1
+        items = [{"date": day, "count": counts[day]} for day in sorted(counts.keys())]
+        return {"items": items}
+    if start or end:
+        return {"items": timeseries_range(start, end)}
     safe_days = max(1, min(3650, int(days)))
-    return timeseries(safe_days)
+    return {"items": timeseries(safe_days)}
 
 
 @app.get("/api/stats/geo")
@@ -1268,23 +1556,233 @@ def get_geo_stats(
     start: str | None = None,
     end: str | None = None,
     days: int = 30,
-) -> list[dict]:
+) -> dict[str, Any]:
     if start or end:
         if (start and not validate_date_str(start)) or (end and not validate_date_str(end)):
             raise HTTPException(status_code=400, detail="日期格式应为 YYYY-MM-DD")
-        return geo_points_range(start, end)
+        return {"items": geo_points_range(start, end)}
     safe_days = max(1, min(3650, int(days)))
-    return geo_points(safe_days)
+    return {"items": geo_points(safe_days)}
 
 
 @app.get("/api/stats/models")
 def get_model_stats(
     start: str | None = None,
     end: str | None = None,
-) -> dict[str, int]:
+    farmer_id: str | None = None,
+    base_id: str | None = None,
+    disease: str | None = None,
+    model_id: str | None = None,
+    selected_branch: str | None = None,
+    personalization_status: str | None = None,
+) -> dict[str, Any]:
     if (start and not validate_date_str(start)) or (end and not validate_date_str(end)):
         raise HTTPException(status_code=400, detail="日期格式应为 YYYY-MM-DD")
-    return model_usage_range(start, end)
+    events = _load_filtered_events(start, end, farmer_id, base_id, disease, model_id, selected_branch, personalization_status)
+    if not events and not any([farmer_id, base_id, disease, model_id, selected_branch, personalization_status]):
+        raw_counts = model_usage_range(start, end)
+        return {
+            "items": [{"model": model, "count": count, "success": count, "fallback": 0, "degraded": 0, "llm_failed_rate": 0.0, "avg_response_ms": 0.0} for model, count in raw_counts.items()],
+        }
+
+    aggregates: dict[str, dict[str, float]] = {}
+    for event in events:
+        label = _event_model_label(event)
+        item = aggregates.setdefault(label, {"count": 0, "success": 0, "fallback": 0, "degraded": 0, "llm_failed": 0, "elapsed_sum": 0, "elapsed_count": 0})
+        item["count"] += 1
+        if _event_degraded(event):
+            item["degraded"] += 1
+        elif str(event.get("final_source") or "").strip().lower() in {"rule", "fallback"}:
+            item["fallback"] += 1
+        else:
+            item["success"] += 1
+        if _event_llm_failed(event):
+            item["llm_failed"] += 1
+        elapsed_ms = _event_elapsed_ms(event)
+        if elapsed_ms is not None:
+            item["elapsed_sum"] += elapsed_ms
+            item["elapsed_count"] += 1
+
+    items = []
+    for model, value in aggregates.items():
+        count = int(value["count"])
+        items.append({
+            "model": model,
+            "count": count,
+            "success": int(value["success"]),
+            "fallback": int(value["fallback"]),
+            "degraded": int(value["degraded"]),
+            "llm_failed_rate": (value["llm_failed"] / count * 100) if count > 0 else 0.0,
+            "avg_response_ms": (value["elapsed_sum"] / value["elapsed_count"]) if value["elapsed_count"] > 0 else 0.0,
+        })
+    items.sort(key=lambda item: item["count"], reverse=True)
+    return {"items": items[:8]}
+
+
+@app.get("/api/stats/summary")
+def get_stats_summary(
+    start: str | None = None,
+    end: str | None = None,
+    farmer_id: str | None = None,
+    base_id: str | None = None,
+    disease: str | None = None,
+    model_id: str | None = None,
+    selected_branch: str | None = None,
+    personalization_status: str | None = None,
+) -> dict[str, float | int]:
+    if (start and not validate_date_str(start)) or (end and not validate_date_str(end)):
+        raise HTTPException(status_code=400, detail="日期格式应为 YYYY-MM-DD")
+
+    events = _load_filtered_events(start, end, farmer_id, base_id, disease, model_id, selected_branch, personalization_status)
+    total = len(events)
+    today = datetime.now(timezone.utc).date().isoformat()
+    today_count = 0
+    disease_set = set()
+    first_pass_done = 0
+    treatment_success = 0
+    filtered_count = 0
+    degraded_count = 0
+    llm_failed_count = 0
+    elapsed_values: list[float] = []
+
+    for event in events:
+        ts = event.get("ts")
+        ts_date = str(ts).split("T", 1)[0] if isinstance(ts, str) else ""
+        if ts_date == today:
+            today_count += 1
+        disease_set.add(_event_disease(event))
+        confirm_round = event.get("confirm_round") is True
+        need_confirm = event.get("need_confirm") is True
+        if not confirm_round and not need_confirm:
+            first_pass_done += 1
+        if _event_treatment_success(event):
+            treatment_success += 1
+        if _event_filtered(event):
+            filtered_count += 1
+        if _event_degraded(event):
+            degraded_count += 1
+        if _event_llm_failed(event):
+            llm_failed_count += 1
+        elapsed_ms = _event_elapsed_ms(event)
+        if elapsed_ms is not None:
+            elapsed_values.append(elapsed_ms)
+
+    return {
+        "total": total,
+        "today": today_count,
+        "disease_kinds": len(disease_set),
+        "first_pass_rate": (first_pass_done / total * 100) if total > 0 else 0.0,
+        "treatment_success_rate": (treatment_success / total * 100) if total > 0 else 0.0,
+        "filtered_rate": (filtered_count / total * 100) if total > 0 else 0.0,
+        "degraded_rate": (degraded_count / total * 100) if total > 0 else 0.0,
+        "llm_failed_rate": (llm_failed_count / total * 100) if total > 0 else 0.0,
+        "avg_response_ms": (sum(elapsed_values) / len(elapsed_values)) if elapsed_values else 0.0,
+    }
+
+
+@app.get("/api/stats/filter-reasons")
+def get_filter_reasons_stats(
+    start: str | None = None,
+    end: str | None = None,
+    farmer_id: str | None = None,
+    base_id: str | None = None,
+    disease: str | None = None,
+    model_id: str | None = None,
+    selected_branch: str | None = None,
+    personalization_status: str | None = None,
+) -> dict[str, Any]:
+    if (start and not validate_date_str(start)) or (end and not validate_date_str(end)):
+        raise HTTPException(status_code=400, detail="日期格式应为 YYYY-MM-DD")
+    events = _load_filtered_events(start, end, farmer_id, base_id, disease, model_id, selected_branch, personalization_status)
+    counts: dict[str, int] = {}
+    for event in events:
+        for reason in _event_filtered_reasons(event):
+            counts[reason] = counts.get(reason, 0) + 1
+    items = [{"name": name, "count": count} for name, count in sorted(counts.items(), key=lambda item: item[1], reverse=True)[:8]]
+    return {"items": items}
+
+
+@app.get("/api/stats/by-farmer")
+def get_stats_by_farmer(
+    start: str | None = None,
+    end: str | None = None,
+    base_id: str | None = None,
+    disease: str | None = None,
+    model_id: str | None = None,
+    selected_branch: str | None = None,
+    personalization_status: str | None = None,
+) -> dict[str, Any]:
+    if (start and not validate_date_str(start)) or (end and not validate_date_str(end)):
+        raise HTTPException(status_code=400, detail="日期格式应为 YYYY-MM-DD")
+    events = _load_filtered_events(start, end, None, base_id, disease, model_id, selected_branch, personalization_status)
+    grouped: dict[str, dict[str, Any]] = {}
+    for event in events:
+        farmer_id = _event_farmer_id(event) or "未绑定农户"
+        meta = _safe_record(event.get("meta"))
+        item = grouped.setdefault(farmer_id, {"farmer_id": farmer_id, "farmer_name": str(meta.get("farmer_name") or meta.get("name") or ""), "count": 0, "filtered": 0, "degraded": 0, "confirm_round": 0})
+        item["count"] += 1
+        if _event_filtered(event):
+            item["filtered"] += 1
+        if _event_degraded(event):
+            item["degraded"] += 1
+        if event.get("confirm_round") is True:
+            item["confirm_round"] += 1
+
+    items = []
+    for value in grouped.values():
+        total = value["count"]
+        items.append({
+            "farmer_id": value["farmer_id"],
+            "farmer_name": value["farmer_name"],
+            "count": total,
+            "filtered_rate": value["filtered"] / total * 100 if total else 0,
+            "degraded_rate": value["degraded"] / total * 100 if total else 0,
+            "confirm_round_rate": value["confirm_round"] / total * 100 if total else 0,
+        })
+    items.sort(key=lambda item: item["count"], reverse=True)
+    return {"items": items[:8]}
+
+
+@app.get("/api/stats/by-base")
+def get_stats_by_base(
+    start: str | None = None,
+    end: str | None = None,
+    farmer_id: str | None = None,
+    model_id: str | None = None,
+    selected_branch: str | None = None,
+    personalization_status: str | None = None,
+) -> dict[str, Any]:
+    if (start and not validate_date_str(start)) or (end and not validate_date_str(end)):
+        raise HTTPException(status_code=400, detail="日期格式应为 YYYY-MM-DD")
+    events = _load_filtered_events(start, end, farmer_id, None, None, model_id, selected_branch, personalization_status)
+    grouped: dict[str, dict[str, Any]] = {}
+    all_diseases: dict[str, int] = {}
+    for event in events:
+        base_id = _event_base_id(event) or "未绑定基地"
+        meta = _safe_record(event.get("meta"))
+        disease = _event_disease(event)
+        all_diseases[disease] = all_diseases.get(disease, 0) + 1
+        item = grouped.setdefault(base_id, {"base_id": base_id, "base_name": str(meta.get("base_name") or ""), "count": 0, "disease_counts": {}})
+        item["count"] += 1
+        disease_counts = item["disease_counts"]
+        disease_counts[disease] = disease_counts.get(disease, 0) + 1
+
+    top_diseases = [name for name, _ in sorted(all_diseases.items(), key=lambda pair: pair[1], reverse=True)[:4]]
+    items = []
+    for value in grouped.values():
+        disease_counts = value["disease_counts"]
+        filtered_counts = {name: disease_counts.get(name, 0) for name in top_diseases}
+        others = max(value["count"] - sum(filtered_counts.values()), 0)
+        if others > 0:
+            filtered_counts["其他"] = others
+        items.append({
+            "base_id": value["base_id"],
+            "base_name": value["base_name"],
+            "count": value["count"],
+            "disease_counts": filtered_counts,
+        })
+    items.sort(key=lambda item: item["count"], reverse=True)
+    return {"top_diseases": top_diseases + (["其他"] if any("其他" in item["disease_counts"] for item in items) else []), "items": items[:6]}
 
 
 @app.get("/dashboard")
