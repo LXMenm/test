@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 from typing import List, Optional
 
+from .profile_constants import estimate_harvest_window_days
 from .profile_models import BaseProfile, FarmerProfile, TreatmentConstraint
 
 
@@ -27,6 +28,29 @@ def list_profile_ids() -> List[str]:
     return sorted(p.stem for p in PROFILE_DIR.glob("*.json"))
 
 
+def _ensure_profile_compatibility(profile: FarmerProfile) -> FarmerProfile:
+    if profile.schema_version in {"1.0", "1.1"}:
+        profile.schema_version = "1.2"
+
+    # 兼容旧档案：没有 internal_base_uid / sowing_date 时自动补齐。
+    for base_id, base in list(profile.bases.items()):
+        if not base.base_id:
+            base.base_id = base_id
+        if not base.internal_base_uid:
+            # BaseProfile validator 会补 uid；这里显式触发确保存盘一致。
+            profile.bases[base_id] = BaseProfile.model_validate(base.model_dump())
+
+    # 采收窗口优先由播种日期估算（按活跃基地）；旧值作为回退。
+    active_base = profile.bases.get(profile.active_base_id or "") if profile.active_base_id else None
+    if active_base and active_base.sowing_date:
+        estimated_days = estimate_harvest_window_days(active_base.sowing_date)
+        if estimated_days is not None:
+            profile.constraints.harvest_window_days = estimated_days
+
+    profile.ensure_timestamp()
+    return profile
+
+
 def load_profile(farmer_id: str) -> Optional[FarmerProfile]:
     """读取指定农户档案。"""
     path = get_profile_path(farmer_id)
@@ -39,20 +63,15 @@ def load_profile(farmer_id: str) -> Optional[FarmerProfile]:
         profile = FarmerProfile.model_validate(data)
     except Exception:
         return None
-    if profile.schema_version == "1.0":
-        profile.schema_version = "1.1"
-    profile.ensure_timestamp()
-    return profile
+    return _ensure_profile_compatibility(profile)
 
 
 def save_profile(profile: FarmerProfile) -> Path:
     """保存农户档案到 JSON。"""
-    if profile.schema_version == "1.0":
-        profile.schema_version = "1.1"
-    profile.ensure_timestamp()
-    path = get_profile_path(profile.farmer_id)
+    normalized = _ensure_profile_compatibility(profile)
+    path = get_profile_path(normalized.farmer_id)
     with path.open("w", encoding="utf-8") as f:
-        json.dump(profile.model_dump(), f, ensure_ascii=False, indent=2)
+        json.dump(normalized.model_dump(), f, ensure_ascii=False, indent=2)
     return path
 
 
@@ -66,6 +85,7 @@ def upsert_base(
     facility: Optional[str] = None,
     environment: Optional[str] = None,
     growth_stage: Optional[str] = None,
+    sowing_date: Optional[str] = None,
     notes: Optional[str] = None,
 ) -> FarmerProfile:
     """创建或更新基地信息。"""
@@ -86,11 +106,13 @@ def upsert_base(
         base.environment = environment
     if growth_stage is not None:
         base.growth_stage = growth_stage
+    if sowing_date is not None:
+        base.sowing_date = sowing_date
     if notes is not None:
         base.notes = notes
 
-    profile.bases[base_id] = base
-    return profile
+    profile.bases[base_id] = BaseProfile.model_validate(base.model_dump())
+    return _ensure_profile_compatibility(profile)
 
 
 def update_constraints(
@@ -109,7 +131,7 @@ def update_constraints(
     if prefer_organic is not None:
         constraints.prefer_organic = prefer_organic
     profile.constraints = constraints
-    return profile
+    return _ensure_profile_compatibility(profile)
 
 
 def reset_profile(farmer_id: str) -> FarmerProfile:

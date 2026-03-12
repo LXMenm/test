@@ -34,9 +34,10 @@ from event_store import (
 )
 from knowledge_base import get_kb_manager
 from personalization import profile_rules
+from personalization.profile_constants import estimate_harvest_window_days, normalize_growth_stage
 from personalization.profile_models import BaseProfile, FarmerProfile, TreatmentConstraint
 from personalization.profile_context import build_personalization_context, build_personalization_flags
-from personalization.profile_store import get_profile_path, load_profile, list_profile_ids
+from personalization.profile_store import get_profile_path, load_profile, list_profile_ids, save_profile as persist_profile
 from personalization.utils import dedupe_reasons, compute_personalization_applied, normalize_follow_up_questions
 from state import create_initial_state
 from trace_store import list_trace_events, subscribe as subscribe_trace, unsubscribe as unsubscribe_trace, emit_trace_event
@@ -1020,33 +1021,48 @@ def _normalize_profile_payload_for_save(farmer_id: str, payload: dict) -> Farmer
 
     bases = normalized.get("bases")
     if isinstance(bases, list):
-        bases_map = {}
+        bases_map: dict[str, dict] = {}
         for item in bases:
             if not isinstance(item, dict):
                 continue
             base_id = str(item.get("base_id") or "").strip()
             if not base_id:
                 continue
+            if base_id in bases_map:
+                raise ValueError(f"同一农户下基地ID重复：{base_id}")
             base_data = dict(item)
             if "facility_type" in base_data and "facility" not in base_data:
                 base_data["facility"] = base_data.pop("facility_type")
+            if "growth_stage" in base_data:
+                base_data["growth_stage"] = normalize_growth_stage(str(base_data.get("growth_stage") or ""))
             bases_map[base_id] = base_data
         normalized["bases"] = bases_map
 
+    elif isinstance(bases, dict):
+        checked: dict[str, dict] = {}
+        for base_id, raw_base in bases.items():
+            if base_id in checked:
+                raise ValueError(f"同一农户下基地ID重复：{base_id}")
+            base_data = dict(raw_base) if isinstance(raw_base, dict) else {}
+            if "facility_type" in base_data and "facility" not in base_data:
+                base_data["facility"] = base_data.pop("facility_type")
+            if "growth_stage" in base_data:
+                base_data["growth_stage"] = normalize_growth_stage(str(base_data.get("growth_stage") or ""))
+            checked[str(base_id)] = base_data
+        normalized["bases"] = checked
+
     profile = FarmerProfile.model_validate(normalized)
+
+    # 根据活跃基地播种日期自动估算采收窗口（旧字段兼容回退）。
+    active_base = profile.bases.get(profile.active_base_id or "") if profile.active_base_id else None
+    if active_base and active_base.sowing_date:
+        estimated_days = estimate_harvest_window_days(active_base.sowing_date)
+        if estimated_days is not None:
+            profile.constraints.harvest_window_days = estimated_days
+
     profile.ensure_timestamp()
     profile.updated_at = _utc_now_iso()
     return profile
-def _generate_farmer_id() -> str | None:
-    existing_ids = set()
-    for farmer_id in list_profile_ids():
-        match = re.match(r"^F(\d{4})$", farmer_id)
-        if match:
-            existing_ids.add(int(match.group(1)))
-    for index in range(1, 1001):
-        if index not in existing_ids:
-            return f"F{index:04d}"
-    return None
 
 
 @app.post("/api/profiles")
@@ -1092,18 +1108,14 @@ def create_profile(payload: dict = Body(...)) -> dict[str, bool | str]:
 
 @app.get("/api/profiles/{farmer_id}")
 def get_profile(farmer_id: str) -> dict:
-    path = get_profile_path(farmer_id)
-    if not path.exists():
+    profile = load_profile(farmer_id)
+    if profile is None:
         raise HTTPException(status_code=404, detail="档案不存在")
-    try:
-        with path.open("r", encoding="utf-8") as f:
-            return json.load(f)
-    except json.JSONDecodeError as exc:
-        raise HTTPException(status_code=400, detail=f"档案内容非法: {exc}") from exc
+    return profile.model_dump()
 
 
 @app.post("/api/profiles/{farmer_id}")
-def save_profile(farmer_id: str, payload: dict = Body(...)) -> dict[str, bool]:
+def save_profile_route(farmer_id: str, payload: dict = Body(...)) -> dict[str, bool]:
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="档案内容非法")
     try:
@@ -1111,9 +1123,7 @@ def save_profile(farmer_id: str, payload: dict = Body(...)) -> dict[str, bool]:
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"档案格式非法: {exc}") from exc
     try:
-        save_path = get_profile_path(farmer_id)
-        with save_path.open("w", encoding="utf-8") as f:
-            json.dump(profile.model_dump(), f, ensure_ascii=False, indent=2)
+        persist_profile(profile)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"保存档案失败: {exc}") from exc
     return {"ok": True}
