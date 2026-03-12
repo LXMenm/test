@@ -1,0 +1,31 @@
+{
+  "farmer_id": "F0001",
+  "name": "蚊蚊",
+  "schema_version": "1.0",
+  "updated_at": "2026-03-08T08:35:40Z",
+  "active_base_id": "B0001",
+  "confirm_when_low_confidence": true,
+  "farm_scale": "LARGE",
+  "pesticide_access_level": "FULL",
+  "equipment": [],
+  "cultivation_mode": "SOIL",
+  "experience_level": "NOVICE",
+  "risk_preference": "BALANCED",
+  "bases": {
+    "B0001": {
+      "base_id": "B0001",
+      "name": "日光温室1号",
+      "location": "广州市白云区",
+      "province": "广东省",
+      "facility": "温室大棚",
+      "environment": "最近一周连阴雨，高湿度",
+      "growth_stage": "",
+      "notes": "优先选择低毒方案"
+    }
+  },
+  "constraints": {
+    "banned_ingredients": [],
+    "harvest_window_days": 3,
+    "prefer_organic": true
+  }
+}
