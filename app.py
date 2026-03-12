@@ -1357,12 +1357,42 @@ def _event_treatment_success(event: dict[str, Any]) -> bool:
 
 def _event_elapsed_ms(event: dict[str, Any]) -> float | None:
     meta = _safe_record(event.get("meta"))
-    value = event.get("elapsed_ms") if event.get("elapsed_ms") is not None else meta.get("elapsed_ms")
-    try:
-        parsed = float(value)
-    except (TypeError, ValueError):
+    timing = _safe_record(meta.get("timing"))
+
+    def _parse_elapsed_value(raw: Any) -> float | None:
+        if isinstance(raw, (int, float)):
+            value = float(raw)
+            return value if value >= 0 else None
+        if isinstance(raw, str):
+            text = raw.strip().lower()
+            if not text:
+                return None
+            compact = text.replace("毫秒", "ms")
+            if compact.endswith("ms"):
+                compact = compact[:-2].strip()
+            match = re.search(r"-?\d+(?:\.\d+)?", compact)
+            if not match:
+                return None
+            value = float(match.group(0))
+            return value if value >= 0 else None
         return None
-    return parsed if parsed >= 0 else None
+
+    candidates = [
+        event.get("elapsed_ms"),
+        meta.get("elapsed_ms"),
+        event.get("duration_ms"),
+        meta.get("duration_ms"),
+        event.get("latency_ms"),
+        meta.get("latency_ms"),
+        timing.get("elapsed_ms"),
+        timing.get("duration_ms"),
+    ]
+
+    for candidate in candidates:
+        parsed = _parse_elapsed_value(candidate)
+        if parsed is not None:
+            return parsed
+    return None
 
 
 def _event_in_filters(
