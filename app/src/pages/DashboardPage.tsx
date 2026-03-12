@@ -436,6 +436,14 @@ function buildTraceSummary(rows: unknown[]): TraceSummaryItem[] {
   ].filter((item) => item.rows.length > 0);
 }
 
+function formatResponseMs(value: number, hasData: boolean): string {
+  if (!hasData) return '—';
+  if (!Number.isFinite(value) || value < 0) return '0 ms';
+  if (value >= 100) return `${value.toFixed(0)} ms`;
+  if (value >= 10) return `${value.toFixed(1)} ms`;
+  return `${value.toFixed(2)} ms`;
+}
+
 function formatDisplayDateRange(start: string, end: string): string {
   if (!isValidDateString(start) || !isValidDateString(end)) return '—';
   return `${start} → ${end}`;
@@ -1048,7 +1056,7 @@ export function DashboardPage() {
                 ['方案生成成功率', `${summary.treatmentSuccessRate.toFixed(1)}%`],
                 ['过滤触发率 / 降级率', `${summary.filteredRate.toFixed(1)}% / ${summary.degradedRate.toFixed(1)}%`],
                 ['LLM失败率', `${summary.llmFailedRate.toFixed(1)}%`],
-                ['平均响应时间', summary.total > 0 ? `${summary.avgResponseMs.toFixed(0)} ms` : '—'],
+                ['平均响应时间', formatResponseMs(summary.avgResponseMs, summary.total > 0)],
               ].map(([title, value]) => (
                 <div key={title} className="rounded-xl border border-[#2e7d63]/35 bg-[#173128] px-4 py-4">
                   <p className="text-white/70 text-xs">{title}</p>
@@ -1122,7 +1130,7 @@ export function DashboardPage() {
                 <div className="h-full flex items-center justify-center text-white/40 text-sm">暂无模型调用数据</div>
               )}
               <div className="mt-2 text-xs text-white/70 flex items-center justify-between">
-                <span>平均响应时间：{summary.total > 0 ? `${modelSummary.avgResponseMs.toFixed(0)} ms` : '—'}</span>
+                <span>平均响应时间：{formatResponseMs(modelSummary.avgResponseMs, summary.total > 0)}</span>
                 <span>LLM 失败率：{modelSummary.llmFailedRate.toFixed(1)}%</span>
               </div>
             </CardContent>

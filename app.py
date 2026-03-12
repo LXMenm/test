@@ -1414,15 +1414,28 @@ def _event_elapsed_ms(event: dict[str, Any]) -> float | None:
         timing.get("latency_ms"),
     ]
 
+    zero_fallback: float | None = None
     for candidate in candidates:
         parsed = _parse_elapsed_value(candidate)
-        if parsed is not None:
+        if parsed is None:
+            continue
+        if parsed > 0:
             return parsed
+        zero_fallback = parsed
 
     from_nested = _walk_dict_for_elapsed(meta)
     if from_nested is not None:
-        return from_nested
-    return _walk_dict_for_elapsed(event)
+        if from_nested > 0:
+            return from_nested
+        zero_fallback = from_nested if zero_fallback is None else zero_fallback
+
+    from_event = _walk_dict_for_elapsed(event)
+    if from_event is not None:
+        if from_event > 0:
+            return from_event
+        zero_fallback = from_event if zero_fallback is None else zero_fallback
+
+    return zero_fallback
 
 
 def _event_in_filters(
