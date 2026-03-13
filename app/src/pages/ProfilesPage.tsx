@@ -30,11 +30,16 @@ interface FarmerBase {
   name: string;
   location: string;
   province: string;
+  latitude?: number | null;
+  longitude?: number | null;
+  city?: string;
+  district?: string;
   facility_type: string;
   environment: string;
   growth_stage: string;
   sowing_date: string;
   estimated_harvest_window_days: number | null;
+  weather_snapshot?: string;
   notes: string;
 }
 
@@ -124,16 +129,23 @@ const toSafeNumber = (value: unknown, fallback = 0): number => {
 
 const normalizeBase = (baseId: string, base: unknown): FarmerBase => {
   const baseObj = base && typeof base === 'object' ? base as Record<string, unknown> : {};
+  const latitude = typeof baseObj.latitude === 'number' ? baseObj.latitude : null;
+  const longitude = typeof baseObj.longitude === 'number' ? baseObj.longitude : null;
   return {
     base_id: toSafeString(baseObj.base_id, baseId),
     name: toSafeString(baseObj.name),
     location: toSafeString(baseObj.location),
     province: toSafeString(baseObj.province),
+    latitude,
+    longitude,
+    city: toSafeString(baseObj.city),
+    district: toSafeString(baseObj.district),
     facility_type: toSafeString(baseObj.facility_type ?? baseObj.facility),
     environment: toSafeString(baseObj.environment),
     growth_stage: normalizeGrowthStage(toSafeString(baseObj.growth_stage)),
     sowing_date: toSafeString(baseObj.sowing_date),
     estimated_harvest_window_days: estimateHarvestWindowDays(toSafeString(baseObj.sowing_date)),
+    weather_snapshot: toSafeString(baseObj.weather_snapshot),
     notes: toSafeString(baseObj.notes),
     internal_base_uid: toSafeString(baseObj.internal_base_uid) || undefined,
   };
@@ -301,10 +313,15 @@ export function ProfilesPage() {
       name: base.name,
       location: base.location,
       province: base.province,
+      latitude: typeof base.latitude === 'number' ? base.latitude : null,
+      longitude: typeof base.longitude === 'number' ? base.longitude : null,
+      city: base.city,
+      district: base.district,
       facility: base.facility_type,
       environment: base.environment,
       growth_stage: normalizeGrowthStage(base.growth_stage),
       sowing_date: base.sowing_date || null,
+      weather_snapshot: base.weather_snapshot,
       notes: base.notes,
     }]));
     const activeBase = editedProfile.active_base_id
@@ -450,11 +467,16 @@ export function ProfilesPage() {
         name: '',
         location: '',
         province: '',
+        latitude: null,
+        longitude: null,
+        city: '',
+        district: '',
         facility_type: '',
         environment: '',
         growth_stage: '',
         sowing_date: '',
         estimated_harvest_window_days: null,
+        weather_snapshot: '',
         notes: ''
       }]
     });
@@ -469,6 +491,59 @@ export function ProfilesPage() {
       ...editedProfile,
       bases: (Array.isArray(editedProfile.bases) ? editedProfile.bases : []).filter((_, i) => i !== idx)
     });
+  };
+
+  const updateBase = (idx: number, updater: (base: FarmerBase) => FarmerBase) => {
+    if (!editedProfile) return;
+    const newBases = [...editedProfile.bases];
+    newBases[idx] = updater(newBases[idx]);
+    setEditedProfile({ ...editedProfile, bases: newBases });
+  };
+
+  const useCurrentLocation = (idx: number) => {
+    if (!editedProfile) return;
+    setErrorMessage('');
+    if (!navigator.geolocation) {
+      setErrorMessage('当前浏览器不支持地理定位');
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(async (position) => {
+      const lat = Number(position.coords.latitude.toFixed(6));
+      const lon = Number(position.coords.longitude.toFixed(6));
+
+      updateBase(idx, (base) => ({ ...base, latitude: lat, longitude: lon }));
+
+      try {
+        const reverseResp = await fetch(`/api/location/reverse?lat=${encodeURIComponent(String(lat))}&lon=${encodeURIComponent(String(lon))}`);
+        if (reverseResp.ok) {
+          const data = await reverseResp.json();
+          updateBase(idx, (base) => ({
+            ...base,
+            location: typeof data.location === 'string' && data.location.trim() ? data.location : base.location,
+            province: typeof data.province === 'string' && data.province.trim() ? data.province : base.province,
+            city: typeof data.city === 'string' ? data.city : base.city,
+            district: typeof data.district === 'string' ? data.district : base.district,
+          }));
+        }
+      } catch {
+        setErrorMessage('已获取经纬度，但地址解析失败，可手动填写地址');
+      }
+
+      try {
+        const weatherResp = await fetch(`/api/weather/summary?lat=${encodeURIComponent(String(lat))}&lon=${encodeURIComponent(String(lon))}`);
+        if (weatherResp.ok) {
+          const weatherData = await weatherResp.json();
+          updateBase(idx, (base) => ({
+            ...base,
+            weather_snapshot: typeof weatherData.summary === 'string' ? weatherData.summary : base.weather_snapshot,
+          }));
+        }
+      } catch {
+        setErrorMessage('已获取经纬度，但天气摘要拉取失败，不影响保存');
+      }
+    }, () => {
+      setErrorMessage('定位失败，请检查浏览器权限并重试');
+    }, { enableHighAccuracy: false, timeout: 10000 });
   };
 
   useEffect(() => {
@@ -852,24 +927,37 @@ export function ProfilesPage() {
                             <Label className="text-white/60 text-xs">位置/地址</Label>
                             <Input
                               value={base.location}
-                              onChange={(e) => {
-                                const newBases = [...editedProfile.bases];
-                                newBases[idx].location = e.target.value;
-                                setEditedProfile({ ...editedProfile, bases: newBases });
-                              }}
+                              onChange={(e) => updateBase(idx, (current) => ({ ...current, location: e.target.value }))}
                               className="bg-white/10 border-white/20 text-white text-sm"
                             />
+                          </div>
+                          <div className="space-y-1 sm:col-span-2">
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              className="border-white/20 text-white hover:bg-white/10"
+                              onClick={() => useCurrentLocation(idx)}
+                            >
+                              <MapPin className="w-4 h-4 mr-1" />
+                              获取当前位置并填充地址/天气
+                            </Button>
                           </div>
                           <div className="space-y-1">
                             <Label className="text-white/60 text-xs">省份</Label>
                             <Input
                               value={base.province}
-                              onChange={(e) => {
-                                const newBases = [...editedProfile.bases];
-                                newBases[idx].province = e.target.value;
-                                setEditedProfile({ ...editedProfile, bases: newBases });
-                              }}
+                              onChange={(e) => updateBase(idx, (current) => ({ ...current, province: e.target.value }))}
                               className="bg-white/10 border-white/20 text-white text-sm"
+                            />
+                          </div>
+                          <div className="space-y-1">
+                            <Label className="text-white/60 text-xs">经纬度</Label>
+                            <Input
+                              value={base.latitude != null && base.longitude != null ? `${base.latitude}, ${base.longitude}` : ''}
+                              readOnly
+                              placeholder="点击“获取当前位置”自动填充"
+                              className="bg-white/5 border-white/10 text-white/70 text-sm"
                             />
                           </div>
                           <div className="space-y-1">
@@ -909,7 +997,7 @@ export function ProfilesPage() {
                               <SelectTrigger className="bg-white/10 border-white/20 text-white text-sm">
                                 <SelectValue placeholder="请选择生长阶段" />
                               </SelectTrigger>
-                              <SelectContent className="bg-[#111] text-white border-white/20">
+                              <SelectContent className="bg-[#111] text-white border-white/20 max-h-56 overflow-y-auto">
                                 <SelectItem value="__EMPTY__">未设置</SelectItem>
                                 {TOMATO_GROWTH_STAGE_OPTIONS.map((stage) => (
                                   <SelectItem key={stage.value} value={stage.value}>{stage.label}</SelectItem>
@@ -950,6 +1038,14 @@ export function ProfilesPage() {
                                 className="bg-white/5 border-white/10 text-white/80 text-sm"
                               />
                             </div>
+                            <div className="space-y-1 sm:col-span-2">
+                              <Label className="text-white/60 text-xs">天气摘要（自动获取，可手动修改）</Label>
+                              <Input
+                                value={base.weather_snapshot || ''}
+                                onChange={(e) => updateBase(idx, (current) => ({ ...current, weather_snapshot: e.target.value }))}
+                                className="bg-white/10 border-white/20 text-white text-sm"
+                              />
+                            </div>
                         </div>
                       </div>
                     ))}
@@ -975,7 +1071,7 @@ export function ProfilesPage() {
 
       {/* Add Profile Dialog */}
       <Dialog open={showAddDialog} onOpenChange={setShowAddDialog}>
-        <DialogContent className="bg-[#1a1a1a] border-white/20 text-white">
+        <DialogContent className="bg-[#1a1a1a] border-white/20 text-white max-w-md max-h-[85vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>新增农户档案</DialogTitle>
           </DialogHeader>
@@ -1011,7 +1107,7 @@ export function ProfilesPage() {
 
       {/* Add Base Dialog */}
       <Dialog open={showAddBaseDialog} onOpenChange={setShowAddBaseDialog}>
-        <DialogContent className="bg-[#1a1a1a] border-white/20 text-white">
+        <DialogContent className="bg-[#1a1a1a] border-white/20 text-white max-w-md max-h-[85vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>新增基地</DialogTitle>
           </DialogHeader>

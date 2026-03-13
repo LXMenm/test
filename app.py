@@ -9,6 +9,8 @@ from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import urlencode
+from urllib.request import urlopen
 
 from fastapi import Body, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -1014,6 +1016,29 @@ def _utc_now_iso() -> str:
 
 
 
+def _collect_existing_base_ids(exclude_farmer_id: str | None = None) -> dict[str, str]:
+    """收集系统内已有基地ID -> 所属farmer_id（用于全局唯一校验）。"""
+    result: dict[str, str] = {}
+    for existing_farmer_id in list_profile_ids():
+        if exclude_farmer_id and existing_farmer_id == exclude_farmer_id:
+            continue
+        profile = load_profile(existing_farmer_id)
+        if not profile:
+            continue
+        for base_id in profile.bases.keys():
+            result[base_id] = existing_farmer_id
+    return result
+
+
+@app.get("/api/profiles/base-ids")
+def list_all_base_ids() -> dict[str, list[dict[str, str]]]:
+    items = [
+        {"base_id": base_id, "farmer_id": owner}
+        for base_id, owner in sorted(_collect_existing_base_ids().items(), key=lambda item: (item[0], item[1]))
+    ]
+    return {"items": items}
+
+
 def _normalize_profile_payload_for_save(farmer_id: str, payload: dict) -> FarmerProfile:
     """兼容前端旧结构并校验档案，确保可被 load_profile 解析。"""
     normalized = dict(payload)
@@ -1052,6 +1077,12 @@ def _normalize_profile_payload_for_save(farmer_id: str, payload: dict) -> Farmer
         normalized["bases"] = checked
 
     profile = FarmerProfile.model_validate(normalized)
+
+    existing_base_ids = _collect_existing_base_ids(exclude_farmer_id=farmer_id)
+    for base_id in profile.bases.keys():
+        owner = existing_base_ids.get(base_id)
+        if owner:
+            raise ValueError(f"基地ID已存在，请更换后再试（{base_id} 已归属 {owner}）")
 
     # 根据活跃基地播种日期自动估算采收窗口（旧字段兼容回退）。
     active_base = profile.bases.get(profile.active_base_id or "") if profile.active_base_id else None
@@ -1139,6 +1170,91 @@ def delete_profile(farmer_id: str) -> dict[str, bool]:
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"删除档案失败: {exc}") from exc
     return {"ok": True}
+
+
+def _http_get_json(url: str) -> dict[str, Any] | None:
+    try:
+        with urlopen(url, timeout=8) as resp:  # nosec B310
+            data = json.loads(resp.read().decode("utf-8"))
+            return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
+@app.get("/api/location/reverse")
+def reverse_geocode(lat: float, lon: float) -> dict[str, Any]:
+    # 最小可用：使用 Open-Meteo 免费逆地理服务；失败不抛 500，返回可回退结构。
+    params = urlencode({"latitude": lat, "longitude": lon, "count": 1, "language": "zh", "format": "json"})
+    data = _http_get_json(f"https://geocoding-api.open-meteo.com/v1/reverse?{params}") or {}
+    results = data.get("results") if isinstance(data.get("results"), list) else []
+    first = results[0] if results and isinstance(results[0], dict) else {}
+    city = str(first.get("city") or first.get("name") or "").strip()
+    province = str(first.get("admin1") or "").strip()
+    district = str(first.get("admin2") or "").strip()
+    location = " ".join(part for part in [province, city, district] if part).strip()
+    return {
+        "ok": bool(first),
+        "latitude": lat,
+        "longitude": lon,
+        "province": province,
+        "city": city,
+        "district": district,
+        "location": location,
+    }
+
+
+@app.get("/api/weather/summary")
+def weather_summary(lat: float, lon: float) -> dict[str, Any]:
+    # 最小可用：Open-Meteo 免费接口，返回简化环境摘要；失败不阻塞档案保存。
+    params = urlencode({
+        "latitude": lat,
+        "longitude": lon,
+        "current": "temperature_2m,relative_humidity_2m,precipitation,weather_code",
+        "daily": "precipitation_probability_max",
+        "timezone": "auto",
+    })
+    data = _http_get_json(f"https://api.open-meteo.com/v1/forecast?{params}") or {}
+    current = data.get("current") if isinstance(data.get("current"), dict) else {}
+    daily = data.get("daily") if isinstance(data.get("daily"), dict) else {}
+
+    temp = current.get("temperature_2m")
+    humidity = current.get("relative_humidity_2m")
+    precipitation = current.get("precipitation")
+    rain_risk = None
+    rain_probs = daily.get("precipitation_probability_max") if isinstance(daily.get("precipitation_probability_max"), list) else []
+    if rain_probs:
+        try:
+            rain_risk = max(float(v) for v in rain_probs[:3])
+        except Exception:
+            rain_risk = None
+
+    lines: list[str] = []
+    if isinstance(temp, (int, float)):
+        lines.append(f"当前温度约 {float(temp):.1f}℃")
+    if isinstance(humidity, (int, float)):
+        lines.append(f"当前相对湿度约 {float(humidity):.0f}%")
+        if float(humidity) >= 80:
+            lines.append("湿度偏高，注意真菌性病害传播风险")
+    if isinstance(precipitation, (int, float)) and float(precipitation) > 0:
+        lines.append("当前存在降水")
+    if isinstance(rain_risk, (int, float)):
+        if rain_risk >= 60:
+            lines.append("未来两天有较高降雨风险")
+        elif rain_risk >= 30:
+            lines.append("未来两天有一定降雨概率")
+
+    summary = "；".join(lines) if lines else "天气数据暂不可用"
+    return {
+        "ok": summary != "天气数据暂不可用",
+        "latitude": lat,
+        "longitude": lon,
+        "summary": summary,
+        "temperature_2m": temp,
+        "relative_humidity_2m": humidity,
+        "precipitation": precipitation,
+        "rain_risk": rain_risk,
+    }
+
 
 
 @app.get("/api/events")

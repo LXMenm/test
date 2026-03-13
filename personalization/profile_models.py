@@ -30,11 +30,24 @@ class BaseProfile(BaseModel):
     name: Optional[str] = None
     location: Optional[str] = None
     province: Optional[str] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    city: Optional[str] = None
+    district: Optional[str] = None
     facility: Optional[str] = None
     environment: Optional[str] = None
     growth_stage: Optional[str] = None
     sowing_date: Optional[str] = None
     notes: Optional[str] = None
+    weather_snapshot: Optional[str] = None
+
+    @model_validator(mode="after")
+    def normalize_fields(self) -> "BaseProfile":
+        if not self.internal_base_uid:
+            self.internal_base_uid = uuid4().hex
+        self.growth_stage = normalize_growth_stage(self.growth_stage)
+        self.sowing_date = normalize_sowing_date(self.sowing_date)
+        return self
 
     @model_validator(mode="after")
     def normalize_fields(self) -> "BaseProfile":
