@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from typing import Dict, Optional
 
+from .profile_constants import estimate_harvest_window_days, growth_stage_label
 from .profile_models import BaseProfile, FarmerProfile, TreatmentConstraint, compute_profile_hash
 from .policy_engine import PersonalizationPolicy
 from .utils import dedupe_reasons
@@ -31,7 +32,9 @@ def build_personalization_context(
         if base_profile.environment:
             parts.append(f"近期环境: {base_profile.environment}")
         if base_profile.growth_stage:
-            parts.append(f"默认生育期: {base_profile.growth_stage}")
+            parts.append(f"默认生育期: {growth_stage_label(base_profile.growth_stage)}")
+        if base_profile.sowing_date:
+            parts.append(f"播种日期: {base_profile.sowing_date}")
         if base_profile.notes:
             parts.append(f"备注: {base_profile.notes}")
 
@@ -45,8 +48,11 @@ def build_personalization_context(
     parts.append(f"风险偏好: {profile.risk_preference}")
     if constraints.banned_ingredients:
         parts.append(f"禁用成分: {', '.join(constraints.banned_ingredients)}")
-    if constraints.harvest_window_days:
-        parts.append(f"距采收天数: {constraints.harvest_window_days}天")
+    effective_harvest_days = estimate_harvest_window_days(base_profile.sowing_date) if base_profile else None
+    if effective_harvest_days is None:
+        effective_harvest_days = constraints.harvest_window_days
+    if effective_harvest_days is not None:
+        parts.append(f"距采收天数: {effective_harvest_days}天（规则估算）")
     if constraints.prefer_organic:
         parts.append("偏好有机/低残留方案")
 
@@ -63,10 +69,14 @@ def build_personalization_flags(
         return {}
 
     constraints: TreatmentConstraint = profile.constraints
+    effective_harvest_days = estimate_harvest_window_days(base_profile.sowing_date) if base_profile else None
+    if effective_harvest_days is None:
+        effective_harvest_days = constraints.harvest_window_days
+
     flags: Dict = {
         "confirm_when_low_confidence": profile.confirm_when_low_confidence,
         "banned_ingredients": constraints.banned_ingredients,
-        "harvest_window_days": constraints.harvest_window_days,
+        "harvest_window_days": effective_harvest_days,
         "prefer_organic": constraints.prefer_organic,
         "profile_schema_version": profile.schema_version,
         "profile_updated_at": profile.updated_at,
@@ -90,6 +100,8 @@ def build_personalization_flags(
                 "location": base_profile.location,
                 "environment": base_profile.environment,
                 "growth_stage": base_profile.growth_stage,
+                "growth_stage_label": growth_stage_label(base_profile.growth_stage),
+                "sowing_date": base_profile.sowing_date,
             }
         )
     return flags
