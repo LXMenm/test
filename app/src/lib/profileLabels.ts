@@ -86,3 +86,58 @@ export function getSelectedBranchLabel(value?: string | null): string {
 
 // 兼容已有调用
 export const formatSelectedBranch = getSelectedBranchLabel;
+
+export const TOMATO_GROWTH_STAGE_LABELS = {
+  SEEDLING: '育苗期',
+  VEGETATIVE: '营养生长期',
+  FLOWERING: '开花期',
+  FRUIT_SET: '坐果期',
+  FRUIT_EXPANSION: '膨果期',
+  RIPENING: '转色成熟期',
+  HARVEST: '采收期',
+} as const;
+
+const TOMATO_GROWTH_STAGE_ALIASES: Record<string, keyof typeof TOMATO_GROWTH_STAGE_LABELS> = {
+  育苗: 'SEEDLING',
+  育苗期: 'SEEDLING',
+  苗期: 'SEEDLING',
+  seedling: 'SEEDLING',
+  营养生长期: 'VEGETATIVE',
+  营养期: 'VEGETATIVE',
+  生长期: 'VEGETATIVE',
+  vegetative: 'VEGETATIVE',
+  开花: 'FLOWERING',
+  开花期: 'FLOWERING',
+  flowering: 'FLOWERING',
+  坐果: 'FRUIT_SET',
+  坐果期: 'FRUIT_SET',
+  fruit_set: 'FRUIT_SET',
+  膨果: 'FRUIT_EXPANSION',
+  膨果期: 'FRUIT_EXPANSION',
+  fruit_expansion: 'FRUIT_EXPANSION',
+  转色: 'RIPENING',
+  成熟: 'RIPENING',
+  转色成熟期: 'RIPENING',
+  ripening: 'RIPENING',
+  采收: 'HARVEST',
+  采收期: 'HARVEST',
+  harvest: 'HARVEST',
+};
+
+export const TOMATO_GROWTH_STAGE_OPTIONS = Object.entries(TOMATO_GROWTH_STAGE_LABELS).map(([value, label]) => ({ value, label }));
+
+export const normalizeGrowthStage = (value?: string | null): keyof typeof TOMATO_GROWTH_STAGE_LABELS | '' => {
+  if (!value) return '';
+  const raw = value.trim();
+  if (!raw) return '';
+  const upper = raw.toUpperCase() as keyof typeof TOMATO_GROWTH_STAGE_LABELS;
+  if (upper in TOMATO_GROWTH_STAGE_LABELS) return upper;
+  return TOMATO_GROWTH_STAGE_ALIASES[raw] || TOMATO_GROWTH_STAGE_ALIASES[raw.toLowerCase()] || '';
+};
+
+export const getGrowthStageLabel = (value?: string | null): string => {
+  const normalized = normalizeGrowthStage(value);
+  if (!normalized) return '未设置';
+  return TOMATO_GROWTH_STAGE_LABELS[normalized];
+};
+
