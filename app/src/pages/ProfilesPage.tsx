@@ -3,6 +3,7 @@ import { Users, Plus, RefreshCw, Save, Trash2, MapPin, Sprout, Ban } from 'lucid
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -83,6 +84,34 @@ const estimateHarvestWindowDays = (sowingDate?: string | null): number | null =>
   return Math.max(TOMATO_TOTAL_GROW_DAYS - elapsedDays, 0);
 };
 
+
+
+const mergeEnvironmentWeather = (environment: string, weatherSummary: string): string => {
+  const env = environment.trim();
+  const weather = weatherSummary.trim();
+  if (!weather) return environment;
+  if (!env) return weather;
+  if (env.includes(weather)) return environment;
+  return `${env}；${weather}`;
+};
+
+const composeLocationText = (payload: Record<string, unknown>, fallback = ''): string => {
+  const pick = (...keys: string[]) => {
+    for (const key of keys) {
+      const value = payload[key];
+      if (typeof value === 'string' && value.trim()) return value.trim();
+    }
+    return '';
+  };
+
+  const province = pick('province', 'admin1');
+  const city = pick('city', 'name', 'admin2');
+  const district = pick('district', 'admin3', 'admin4');
+  const location = pick('location');
+  if (location) return location;
+  const joined = [province, city, district].filter(Boolean).join(' ').trim();
+  return joined || fallback;
+};
 const validateUniqueBaseIds = (bases: FarmerBase[]): string | null => {
   const seen = new Set<string>();
   for (const base of bases) {
@@ -504,7 +533,7 @@ export function ProfilesPage() {
     });
   };
 
-  const useCurrentLocation = (idx: number) => {
+  const handleCurrentLocation = (idx: number) => {
     if (!editedProfile) return;
     const targetBase = editedProfile.bases[idx];
     if (!targetBase) return;
@@ -527,13 +556,26 @@ export function ProfilesPage() {
         const reverseResp = await fetch(`/api/location/reverse?lat=${encodeURIComponent(String(lat))}&lon=${encodeURIComponent(String(lon))}`);
         if (reverseResp.ok) {
           const data = await reverseResp.json();
-          updateBase(idx, (base) => ({
-            ...base,
-            location: typeof data.location === 'string' && data.location.trim() ? data.location : base.location,
-            province: typeof data.province === 'string' && data.province.trim() ? data.province : base.province,
-            city: typeof data.city === 'string' && data.city.trim() ? data.city : base.city,
-            district: typeof data.district === 'string' && data.district.trim() ? data.district : base.district,
-          }));
+          const reverseData = data && typeof data === 'object' ? data as Record<string, unknown> : {};
+          updateBase(idx, (base) => {
+            const nextProvince = (typeof reverseData.province === 'string' && reverseData.province.trim())
+              ? reverseData.province.trim()
+              : (typeof reverseData.admin1 === 'string' ? reverseData.admin1.trim() : base.province);
+            const nextCity = (typeof reverseData.city === 'string' && reverseData.city.trim())
+              ? reverseData.city.trim()
+              : (typeof reverseData.name === 'string' ? reverseData.name.trim() : (base.city || ''));
+            const nextDistrict = (typeof reverseData.district === 'string' && reverseData.district.trim())
+              ? reverseData.district.trim()
+              : (typeof reverseData.admin3 === 'string' ? reverseData.admin3.trim() : (base.district || ''));
+            const nextLocation = composeLocationText(reverseData, base.location);
+            return {
+              ...base,
+              province: nextProvince || base.province,
+              city: nextCity || base.city,
+              district: nextDistrict || base.district,
+              location: nextLocation || base.location,
+            };
+          });
         } else {
           setErrorMessage('已获取经纬度，但地址解析失败，可手动填写地址');
         }
@@ -548,10 +590,7 @@ export function ProfilesPage() {
           updateBase(idx, (base) => {
             const summary = typeof weatherData.summary === 'string' ? weatherData.summary : '';
             const hasSummary = Boolean(summary.trim());
-            const enrichedEnvironment = hasSummary && !base.environment.includes(summary)
-              ? (base.environment ? `${base.environment}
-[天气] ${summary}` : `[天气] ${summary}`)
-              : base.environment;
+            const enrichedEnvironment = hasSummary ? mergeEnvironmentWeather(base.environment, summary) : base.environment;
             return {
               ...base,
               weather_snapshot: hasSummary ? summary : base.weather_snapshot,
@@ -964,7 +1003,7 @@ export function ProfilesPage() {
                               variant="outline"
                               size="sm"
                               className="border-white/20 text-white hover:bg-white/10"
-                              onClick={() => useCurrentLocation(idx)}
+                              onClick={() => handleCurrentLocation(idx)}
                               disabled={locatingBaseId === (base.base_id || `idx-${idx}`)}
                             >
                               <MapPin className={`w-4 h-4 mr-1 ${locatingBaseId === (base.base_id || `idx-${idx}`) ? 'animate-pulse' : ''}`} />
@@ -1002,14 +1041,14 @@ export function ProfilesPage() {
                           </div>
                           <div className="space-y-1">
                             <Label className="text-white/60 text-xs">环境描述</Label>
-                            <Input
+                            <Textarea
                               value={base.environment}
                               onChange={(e) => {
                                 const newBases = [...editedProfile.bases];
                                 newBases[idx].environment = e.target.value;
                                 setEditedProfile({ ...editedProfile, bases: newBases });
                               }}
-                              className="bg-white/10 border-white/20 text-white text-sm"
+                              className="bg-white/10 border-white/20 text-white text-sm min-h-[72px] resize-y"
                             />
                           </div>
                           <div className="space-y-1">
@@ -1064,14 +1103,6 @@ export function ProfilesPage() {
                                 value={base.estimated_harvest_window_days === null ? '未设置' : `${base.estimated_harvest_window_days} 天`}
                                 readOnly
                                 className="bg-white/5 border-white/10 text-white/80 text-sm"
-                              />
-                            </div>
-                            <div className="space-y-1 sm:col-span-2">
-                              <Label className="text-white/60 text-xs">天气摘要（自动获取，可手动修改）</Label>
-                              <Input
-                                value={base.weather_snapshot || ''}
-                                onChange={(e) => updateBase(idx, (current) => ({ ...current, weather_snapshot: e.target.value }))}
-                                className="bg-white/10 border-white/20 text-white text-sm"
                               />
                             </div>
                         </div>

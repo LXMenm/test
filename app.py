@@ -1181,17 +1181,30 @@ def _http_get_json(url: str) -> dict[str, Any] | None:
         return None
 
 
+def _pick_text(payload: dict[str, Any], *keys: str) -> str:
+    for key in keys:
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
 @app.get("/api/location/reverse")
 def reverse_geocode(lat: float, lon: float) -> dict[str, Any]:
-    # 最小可用：使用 Open-Meteo 免费逆地理服务；失败不抛 500，返回可回退结构。
+    # Open-Meteo 免费逆地理：尽可能兼容中国地区字段差异，返回可直接展示的 location。
     params = urlencode({"latitude": lat, "longitude": lon, "count": 1, "language": "zh", "format": "json"})
     data = _http_get_json(f"https://geocoding-api.open-meteo.com/v1/reverse?{params}") or {}
     results = data.get("results") if isinstance(data.get("results"), list) else []
     first = results[0] if results and isinstance(results[0], dict) else {}
-    city = str(first.get("city") or first.get("name") or "").strip()
-    province = str(first.get("admin1") or "").strip()
-    district = str(first.get("admin2") or "").strip()
+
+    province = _pick_text(first, "admin1")
+    city = _pick_text(first, "city", "name", "admin2")
+    district = _pick_text(first, "district", "admin3", "admin4", "admin2")
+
     location = " ".join(part for part in [province, city, district] if part).strip()
+    if not location:
+        location = _pick_text(first, "name", "admin1", "admin2")
+
     return {
         "ok": bool(first),
         "latitude": lat,
@@ -1200,6 +1213,10 @@ def reverse_geocode(lat: float, lon: float) -> dict[str, Any]:
         "city": city,
         "district": district,
         "location": location,
+        "admin1": _pick_text(first, "admin1"),
+        "admin2": _pick_text(first, "admin2"),
+        "admin3": _pick_text(first, "admin3"),
+        "name": _pick_text(first, "name"),
     }
 
 
