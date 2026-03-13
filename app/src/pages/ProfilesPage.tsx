@@ -248,6 +248,7 @@ export function ProfilesPage() {
   const [showAddBaseDialog, setShowAddBaseDialog] = useState(false);
   const [newBaseId, setNewBaseId] = useState('');
   const [errorMessage, setErrorMessage] = useState('');
+  const [locatingBaseId, setLocatingBaseId] = useState<string | null>(null);
 
   const parseJsonOrThrow = async (resp: Response) => {
     let payload: Record<string, unknown> | null = null;
@@ -494,19 +495,28 @@ export function ProfilesPage() {
   };
 
   const updateBase = (idx: number, updater: (base: FarmerBase) => FarmerBase) => {
-    if (!editedProfile) return;
-    const newBases = [...editedProfile.bases];
-    newBases[idx] = updater(newBases[idx]);
-    setEditedProfile({ ...editedProfile, bases: newBases });
+    setEditedProfile((prev) => {
+      if (!prev) return prev;
+      if (!Array.isArray(prev.bases) || !prev.bases[idx]) return prev;
+      const newBases = [...prev.bases];
+      newBases[idx] = updater(newBases[idx]);
+      return { ...prev, bases: newBases };
+    });
   };
 
   const useCurrentLocation = (idx: number) => {
     if (!editedProfile) return;
+    const targetBase = editedProfile.bases[idx];
+    if (!targetBase) return;
+
     setErrorMessage('');
+    setLocatingBaseId(targetBase.base_id || `idx-${idx}`);
     if (!navigator.geolocation) {
       setErrorMessage('当前浏览器不支持地理定位');
+      setLocatingBaseId(null);
       return;
     }
+
     navigator.geolocation.getCurrentPosition(async (position) => {
       const lat = Number(position.coords.latitude.toFixed(6));
       const lon = Number(position.coords.longitude.toFixed(6));
@@ -521,9 +531,11 @@ export function ProfilesPage() {
             ...base,
             location: typeof data.location === 'string' && data.location.trim() ? data.location : base.location,
             province: typeof data.province === 'string' && data.province.trim() ? data.province : base.province,
-            city: typeof data.city === 'string' ? data.city : base.city,
-            district: typeof data.district === 'string' ? data.district : base.district,
+            city: typeof data.city === 'string' && data.city.trim() ? data.city : base.city,
+            district: typeof data.district === 'string' && data.district.trim() ? data.district : base.district,
           }));
+        } else {
+          setErrorMessage('已获取经纬度，但地址解析失败，可手动填写地址');
         }
       } catch {
         setErrorMessage('已获取经纬度，但地址解析失败，可手动填写地址');
@@ -533,17 +545,32 @@ export function ProfilesPage() {
         const weatherResp = await fetch(`/api/weather/summary?lat=${encodeURIComponent(String(lat))}&lon=${encodeURIComponent(String(lon))}`);
         if (weatherResp.ok) {
           const weatherData = await weatherResp.json();
-          updateBase(idx, (base) => ({
-            ...base,
-            weather_snapshot: typeof weatherData.summary === 'string' ? weatherData.summary : base.weather_snapshot,
-          }));
+          updateBase(idx, (base) => {
+            const summary = typeof weatherData.summary === 'string' ? weatherData.summary : '';
+            const hasSummary = Boolean(summary.trim());
+            const enrichedEnvironment = hasSummary && !base.environment.includes(summary)
+              ? (base.environment ? `${base.environment}
+[天气] ${summary}` : `[天气] ${summary}`)
+              : base.environment;
+            return {
+              ...base,
+              weather_snapshot: hasSummary ? summary : base.weather_snapshot,
+              environment: enrichedEnvironment,
+            };
+          });
+        } else {
+          setErrorMessage('地址已回填，但天气摘要获取失败，不影响保存');
         }
       } catch {
-        setErrorMessage('已获取经纬度，但天气摘要拉取失败，不影响保存');
+        setErrorMessage('地址已回填，但天气摘要获取失败，不影响保存');
+      } finally {
+        setLocatingBaseId(null);
       }
-    }, () => {
-      setErrorMessage('定位失败，请检查浏览器权限并重试');
-    }, { enableHighAccuracy: false, timeout: 10000 });
+    }, (err) => {
+      const denied = err?.code === 1;
+      setErrorMessage(denied ? '定位权限被拒绝，请在浏览器中允许位置访问后重试' : '定位失败，请检查浏览器权限并重试');
+      setLocatingBaseId(null);
+    }, { enableHighAccuracy: false, timeout: 10000, maximumAge: 300000 });
   };
 
   useEffect(() => {
@@ -938,9 +965,10 @@ export function ProfilesPage() {
                               size="sm"
                               className="border-white/20 text-white hover:bg-white/10"
                               onClick={() => useCurrentLocation(idx)}
+                              disabled={locatingBaseId === (base.base_id || `idx-${idx}`)}
                             >
-                              <MapPin className="w-4 h-4 mr-1" />
-                              获取当前位置并填充地址/天气
+                              <MapPin className={`w-4 h-4 mr-1 ${locatingBaseId === (base.base_id || `idx-${idx}`) ? 'animate-pulse' : ''}`} />
+                              {locatingBaseId === (base.base_id || `idx-${idx}`) ? '定位与天气获取中…' : '获取当前位置并填充地址/天气'}
                             </Button>
                           </div>
                           <div className="space-y-1">

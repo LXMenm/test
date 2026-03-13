@@ -1203,14 +1203,54 @@ def reverse_geocode(lat: float, lon: float) -> dict[str, Any]:
     }
 
 
+def _weather_code_to_cn(code: int | float | str | None) -> str:
+    try:
+        normalized = int(float(code))
+    except Exception:
+        return "天气情况未知"
+
+    mapping = {
+        0: "晴朗",
+        1: "大部晴朗",
+        2: "多云",
+        3: "阴天",
+        45: "有雾",
+        48: "有雾凇",
+        51: "小毛雨",
+        53: "毛雨",
+        55: "较强毛雨",
+        56: "小冻毛雨",
+        57: "冻毛雨",
+        61: "小雨",
+        63: "中雨",
+        65: "大雨",
+        66: "冻雨",
+        67: "强冻雨",
+        71: "小雪",
+        73: "中雪",
+        75: "大雪",
+        77: "米雪",
+        80: "阵雨",
+        81: "较强阵雨",
+        82: "强阵雨",
+        85: "阵雪",
+        86: "强阵雪",
+        95: "雷暴",
+        96: "雷暴伴小冰雹",
+        99: "雷暴伴强冰雹",
+    }
+    return mapping.get(normalized, "天气情况未知")
+
+
 @app.get("/api/weather/summary")
 def weather_summary(lat: float, lon: float) -> dict[str, Any]:
-    # 最小可用：Open-Meteo 免费接口，返回简化环境摘要；失败不阻塞档案保存。
+    # Open-Meteo 免费接口：更丰富但可降级的农业天气摘要。
     params = urlencode({
         "latitude": lat,
         "longitude": lon,
-        "current": "temperature_2m,relative_humidity_2m,precipitation,weather_code",
-        "daily": "precipitation_probability_max",
+        "current": "temperature_2m,apparent_temperature,relative_humidity_2m,precipitation,weather_code,wind_speed_10m",
+        "daily": "temperature_2m_max,temperature_2m_min,precipitation_probability_max",
+        "forecast_days": 2,
         "timezone": "auto",
     })
     data = _http_get_json(f"https://api.open-meteo.com/v1/forecast?{params}") or {}
@@ -1218,40 +1258,82 @@ def weather_summary(lat: float, lon: float) -> dict[str, Any]:
     daily = data.get("daily") if isinstance(data.get("daily"), dict) else {}
 
     temp = current.get("temperature_2m")
+    apparent_temperature = current.get("apparent_temperature")
     humidity = current.get("relative_humidity_2m")
     precipitation = current.get("precipitation")
-    rain_risk = None
+    weather_code = current.get("weather_code")
+    wind_speed_10m = current.get("wind_speed_10m")
+
+    temperature_2m_max = None
+    temperature_2m_min = None
+    precipitation_probability_max = None
+
+    max_list = daily.get("temperature_2m_max") if isinstance(daily.get("temperature_2m_max"), list) else []
+    min_list = daily.get("temperature_2m_min") if isinstance(daily.get("temperature_2m_min"), list) else []
     rain_probs = daily.get("precipitation_probability_max") if isinstance(daily.get("precipitation_probability_max"), list) else []
+
+    if max_list:
+        temperature_2m_max = max_list[0]
+    if min_list:
+        temperature_2m_min = min_list[0]
     if rain_probs:
         try:
-            rain_risk = max(float(v) for v in rain_probs[:3])
+            precipitation_probability_max = max(float(v) for v in rain_probs[:2])
         except Exception:
-            rain_risk = None
+            precipitation_probability_max = None
 
-    lines: list[str] = []
+    rain_risk = precipitation_probability_max
+
+    parts: list[str] = []
+    weather_desc = _weather_code_to_cn(weather_code)
     if isinstance(temp, (int, float)):
-        lines.append(f"当前温度约 {float(temp):.1f}℃")
-    if isinstance(humidity, (int, float)):
-        lines.append(f"当前相对湿度约 {float(humidity):.0f}%")
-        if float(humidity) >= 80:
-            lines.append("湿度偏高，注意真菌性病害传播风险")
-    if isinstance(precipitation, (int, float)) and float(precipitation) > 0:
-        lines.append("当前存在降水")
-    if isinstance(rain_risk, (int, float)):
-        if rain_risk >= 60:
-            lines.append("未来两天有较高降雨风险")
-        elif rain_risk >= 30:
-            lines.append("未来两天有一定降雨概率")
+        current_part = f"当前{weather_desc}，温度 {float(temp):.1f}℃"
+        if isinstance(apparent_temperature, (int, float)):
+            current_part += f"，体感 {float(apparent_temperature):.1f}℃"
+        if isinstance(humidity, (int, float)):
+            current_part += f"，湿度 {float(humidity):.0f}%"
+        if isinstance(wind_speed_10m, (int, float)):
+            current_part += f"，风速 {float(wind_speed_10m):.1f} m/s"
+        parts.append(current_part)
 
-    summary = "；".join(lines) if lines else "天气数据暂不可用"
+    if isinstance(temperature_2m_max, (int, float)) and isinstance(temperature_2m_min, (int, float)):
+        parts.append(f"今日最高/最低温约 {float(temperature_2m_max):.0f}℃ / {float(temperature_2m_min):.0f}℃")
+
+    if isinstance(precipitation_probability_max, (int, float)):
+        if precipitation_probability_max >= 60:
+            rain_text = "未来24小时降雨概率较高"
+        elif precipitation_probability_max >= 30:
+            rain_text = "未来24小时降雨概率中等"
+        else:
+            rain_text = "未来24小时降雨概率较低"
+        parts.append(rain_text)
+
+    advisories: list[str] = []
+    if isinstance(humidity, (int, float)) and float(humidity) >= 80:
+        advisories.append("湿度偏高，注意真菌性病害传播风险")
+    if isinstance(precipitation_probability_max, (int, float)) and float(precipitation_probability_max) >= 60:
+        advisories.append("未来降雨概率较高，建议关注棚内排湿与叶面结露")
+    if isinstance(precipitation, (int, float)) and float(precipitation) > 0:
+        advisories.append("当前有降水，注意叶面湿润时段管理")
+
+    summary_parts = (parts + advisories)[:4]
+    summary = "。".join(summary_parts) if summary_parts else "天气数据暂不可用"
+
     return {
         "ok": summary != "天气数据暂不可用",
         "latitude": lat,
         "longitude": lon,
         "summary": summary,
         "temperature_2m": temp,
+        "apparent_temperature": apparent_temperature,
         "relative_humidity_2m": humidity,
+        "wind_speed_10m": wind_speed_10m,
+        "weather_code": weather_code,
+        "weather_desc": weather_desc,
         "precipitation": precipitation,
+        "temperature_2m_max": temperature_2m_max,
+        "temperature_2m_min": temperature_2m_min,
+        "precipitation_probability_max": precipitation_probability_max,
         "rain_risk": rain_risk,
     }
 

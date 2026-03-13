@@ -50,8 +50,6 @@ class BaseProfile(BaseModel):
         return self
 
 
-
-
 class FarmerProfile(BaseModel):
     """农户整体档案。"""
 
