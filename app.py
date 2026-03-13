@@ -1096,6 +1096,31 @@ def _normalize_profile_payload_for_save(farmer_id: str, payload: dict) -> Farmer
     return profile
 
 
+def _generate_farmer_id() -> str | None:
+    """生成唯一的农户ID"""
+    from personalization.profile_store import PROFILE_DIR
+    
+    if not PROFILE_DIR.exists():
+        return "F0001"
+    
+    # 获取所有现有农户ID
+    existing_ids = []
+    for file in PROFILE_DIR.glob("*.json"):
+        try:
+            id = file.stem
+            if id.startswith("F") and id[1:].isdigit():
+                existing_ids.append(int(id[1:]))
+        except:
+            pass
+    
+    if not existing_ids:
+        return "F0001"
+    
+    # 生成下一个ID
+    next_id = max(existing_ids) + 1
+    return f"F{next_id:04d}"
+
+
 @app.post("/api/profiles")
 def create_profile(payload: dict = Body(...)) -> dict[str, bool | str]:
     if not isinstance(payload, dict):
@@ -1191,32 +1216,71 @@ def _pick_text(payload: dict[str, Any], *keys: str) -> str:
 
 @app.get("/api/location/reverse")
 def reverse_geocode(lat: float, lon: float) -> dict[str, Any]:
-    # Open-Meteo 免费逆地理：尽可能兼容中国地区字段差异，返回可直接展示的 location。
-    params = urlencode({"latitude": lat, "longitude": lon, "count": 1, "language": "zh", "format": "json"})
-    data = _http_get_json(f"https://geocoding-api.open-meteo.com/v1/reverse?{params}") or {}
-    results = data.get("results") if isinstance(data.get("results"), list) else []
-    first = results[0] if results and isinstance(results[0], dict) else {}
+    # Nominatim/OpenStreetMap 免费逆地理编码
+    from urllib.request import Request
+    
+    def _http_get_json_with_header(url: str) -> dict | None:
+        try:
+            req = Request(url, headers={"User-Agent": "tomato-diagnosis-dashboard/1.0"})
+            with urlopen(req, timeout=8) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                return data if isinstance(data, dict) else None
+        except Exception:
+            return None
+    
+    params = urlencode({
+        "lat": lat,
+        "lon": lon,
+        "format": "jsonv2",
+        "addressdetails": 1,
+        "accept-language": "zh-CN"
+    })
+    data = _http_get_json_with_header(f"https://nominatim.openstreetmap.org/reverse?{params}") or {}
+    address = data.get("address") if isinstance(data.get("address"), dict) else {}
 
-    province = _pick_text(first, "admin1")
-    city = _pick_text(first, "city", "name", "admin2")
-    district = _pick_text(first, "district", "admin3", "admin4", "admin2")
+    province = str(
+        address.get("state")
+        or address.get("province")
+        or address.get("region")
+        or address.get("country_region")
+        or address.get("administrative")
+        or ""
+    ).strip()
+    
+    # 对于直辖市，从城市名称中提取省份信息
+    if not province and address.get("city"):
+        city_name = str(address.get("city")).strip()
+        if city_name in ["北京市", "上海市", "天津市", "重庆市"]:
+            province = city_name
 
-    location = " ".join(part for part in [province, city, district] if part).strip()
-    if not location:
-        location = _pick_text(first, "name", "admin1", "admin2")
+    city = str(
+        address.get("city")
+        or address.get("town")
+        or address.get("municipality")
+        or address.get("county")
+        or ""
+    ).strip()
+
+    district = str(
+        address.get("district")
+        or address.get("county")
+        or address.get("suburb")
+        or ""
+    ).strip()
+
+    display_name = str(data.get("display_name") or "").strip()
+    parts = [p for p in [province, city, district] if p]
+    location = " ".join(parts).strip() or display_name
 
     return {
-        "ok": bool(first),
+        "ok": bool(location),
         "latitude": lat,
         "longitude": lon,
         "province": province,
         "city": city,
         "district": district,
         "location": location,
-        "admin1": _pick_text(first, "admin1"),
-        "admin2": _pick_text(first, "admin2"),
-        "admin3": _pick_text(first, "admin3"),
-        "name": _pick_text(first, "name"),
+        "raw_display_name": display_name,
     }
 
 

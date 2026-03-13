@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Users, Plus, RefreshCw, Save, Trash2, MapPin, Sprout, Ban } from 'lucide-react';
+import { Users, Plus, RefreshCw, Save, Trash2, MapPin, Sprout, Ban, Cloud } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -7,7 +7,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Checkbox } from '@/components/ui/checkbox';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Separator } from '@/components/ui/separator';
 import { cn } from '@/lib/utils';
@@ -87,12 +87,9 @@ const estimateHarvestWindowDays = (sowingDate?: string | null): number | null =>
 
 
 const mergeEnvironmentWeather = (environment: string, weatherSummary: string): string => {
-  const env = environment.trim();
   const weather = weatherSummary.trim();
   if (!weather) return environment;
-  if (!env) return weather;
-  if (env.includes(weather)) return environment;
-  return `${env}；${weather}`;
+  return weather;
 };
 
 const composeLocationText = (payload: Record<string, unknown>, fallback = ''): string => {
@@ -276,6 +273,33 @@ export function ProfilesPage() {
   const [newIngredient, setNewIngredient] = useState('');
   const [showAddBaseDialog, setShowAddBaseDialog] = useState(false);
   const [newBaseId, setNewBaseId] = useState('');
+  const [allBaseIds, setAllBaseIds] = useState<Set<string>>(new Set());
+
+  // 获取所有基地ID，用于检查全局重复
+  const fetchAllBaseIds = async () => {
+    try {
+      const resp = await fetch('/api/profiles/base-ids');
+      if (resp.ok) {
+        const data = await resp.json();
+        const baseIds = new Set<string>();
+        if (Array.isArray(data?.items)) {
+          data.items.forEach((item: any) => {
+            if (typeof item?.base_id === 'string') {
+              baseIds.add(item.base_id);
+            }
+          });
+        }
+        setAllBaseIds(baseIds);
+      }
+    } catch (error) {
+      console.error('Failed to fetch base IDs:', error);
+    }
+  };
+
+  // 组件加载时获取所有基地ID
+  useEffect(() => {
+    fetchAllBaseIds();
+  }, []);
   const [errorMessage, setErrorMessage] = useState('');
   const [locatingBaseId, setLocatingBaseId] = useState<string | null>(null);
 
@@ -382,10 +406,14 @@ export function ProfilesPage() {
     }
   };
 
+  const [showErrorDialog, setShowErrorDialog] = useState(false);
+  const [errorDialogMessage, setErrorDialogMessage] = useState('');
+
   const createProfile = async () => {
     if (!newProfileName.trim()) return;
 
     setErrorMessage('');
+    setErrorDialogMessage('');
     try {
       const resp = await fetch('/api/profiles', {
         method: 'POST',
@@ -418,11 +446,13 @@ export function ProfilesPage() {
         setShowAddDialog(false);
         setNewProfileName('');
       } else {
-        setErrorMessage('创建成功但未返回有效 farmer_id，无法自动打开详情');
+        setErrorDialogMessage('创建成功但未返回有效 farmer_id，无法自动打开详情');
+        setShowErrorDialog(true);
       }
     } catch (error) {
       const msg = error instanceof Error ? error.message : '创建农户失败';
-      setErrorMessage(msg);
+      setErrorDialogMessage(msg);
+      setShowErrorDialog(true);
       console.error('Failed to create profile:', error);
     }
   };
@@ -484,9 +514,19 @@ export function ProfilesPage() {
     if (!newBaseId.trim() || !editedProfile) return;
 
     const safeBaseId = newBaseId.trim();
-    const exists = editedProfile.bases.some((base) => base.base_id === safeBaseId);
-    if (exists) {
-      setErrorMessage(`基地ID重复：${safeBaseId}（同一农户下不允许重复）`);
+    
+    // 检查同一农户下的重复
+    const existsInCurrent = editedProfile.bases.some((base) => base.base_id === safeBaseId);
+    if (existsInCurrent) {
+      setErrorDialogMessage(`基地ID重复：${safeBaseId}（同一农户下不允许重复）`);
+      setShowErrorDialog(true);
+      return;
+    }
+    
+    // 检查全局重复
+    if (allBaseIds.has(safeBaseId)) {
+      setErrorDialogMessage(`基地ID已存在，请更换后再试`);
+      setShowErrorDialog(true);
       return;
     }
 
@@ -510,6 +550,10 @@ export function ProfilesPage() {
         notes: ''
       }]
     });
+    
+    // 更新本地的基地ID集合
+    setAllBaseIds(prev => new Set(prev).add(safeBaseId));
+    
     setShowAddBaseDialog(false);
     setNewBaseId('');
   };
@@ -533,7 +577,7 @@ export function ProfilesPage() {
     });
   };
 
-  const handleCurrentLocation = (idx: number) => {
+  const handleGetCurrentLocation = (idx: number) => {
     if (!editedProfile) return;
     const targetBase = editedProfile.bases[idx];
     if (!targetBase) return;
@@ -581,10 +625,28 @@ export function ProfilesPage() {
         }
       } catch {
         setErrorMessage('已获取经纬度，但地址解析失败，可手动填写地址');
+      } finally {
+        setLocatingBaseId(null);
       }
+    }, (err) => {
+      const denied = err?.code === 1;
+      setErrorMessage(denied ? '定位权限被拒绝，请在浏览器中允许位置访问后重试' : '定位失败，请检查浏览器权限并重试');
+      setLocatingBaseId(null);
+    }, { enableHighAccuracy: false, timeout: 10000, maximumAge: 300000 });
+  };
 
-      try {
-        const weatherResp = await fetch(`/api/weather/summary?lat=${encodeURIComponent(String(lat))}&lon=${encodeURIComponent(String(lon))}`);
+  const handleGetWeather = (idx: number) => {
+    if (!editedProfile) return;
+    const targetBase = editedProfile.bases[idx];
+    if (!targetBase || !targetBase.latitude || !targetBase.longitude) return;
+
+    setErrorMessage('');
+
+    const lat = targetBase.latitude;
+    const lon = targetBase.longitude;
+
+    fetch(`/api/weather/summary?lat=${encodeURIComponent(String(lat))}&lon=${encodeURIComponent(String(lon))}`)
+      .then(async (weatherResp) => {
         if (weatherResp.ok) {
           const weatherData = await weatherResp.json();
           updateBase(idx, (base) => {
@@ -598,18 +660,12 @@ export function ProfilesPage() {
             };
           });
         } else {
-          setErrorMessage('地址已回填，但天气摘要获取失败，不影响保存');
+          setErrorMessage('天气摘要获取失败，不影响保存');
         }
-      } catch {
-        setErrorMessage('地址已回填，但天气摘要获取失败，不影响保存');
-      } finally {
-        setLocatingBaseId(null);
-      }
-    }, (err) => {
-      const denied = err?.code === 1;
-      setErrorMessage(denied ? '定位权限被拒绝，请在浏览器中允许位置访问后重试' : '定位失败，请检查浏览器权限并重试');
-      setLocatingBaseId(null);
-    }, { enableHighAccuracy: false, timeout: 10000, maximumAge: 300000 });
+      })
+      .catch(() => {
+        setErrorMessage('天气摘要获取失败，不影响保存');
+      });
   };
 
   useEffect(() => {
@@ -642,6 +698,26 @@ export function ProfilesPage() {
           </CardContent>
         </Card>
       )}
+
+      {/* Error Dialog */}
+      <Dialog open={showErrorDialog} onOpenChange={setShowErrorDialog}>
+        <DialogContent className="bg-[#1a3329] border-[#c8f7c5]/30 text-white">
+          <DialogHeader>
+            <DialogTitle className="text-white">错误提示</DialogTitle>
+          </DialogHeader>
+          <DialogDescription className="text-white/60">
+            {errorDialogMessage}
+          </DialogDescription>
+          <div className="flex justify-end mt-4">
+            <Button 
+              onClick={() => setShowErrorDialog(false)}
+              className="bg-[#c8f7c5] text-black hover:bg-[#b8e7b5]"
+            >
+              确定
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       <div className="grid lg:grid-cols-4 gap-6">
         {/* Profile List */}
@@ -700,9 +776,16 @@ export function ProfilesPage() {
         {/* Profile Detail */}
         <Card className="glass-card lg:col-span-3">
           <CardHeader className="flex flex-row items-center justify-between">
-            <CardTitle className="text-white">
-              {selectedProfile ? `当前农户: ${selectedProfile.farmer_id}` : '请选择农户'}
-            </CardTitle>
+            <div className="space-y-1">
+              <CardTitle className="text-white">
+                {selectedProfile ? `当前农户: ${selectedProfile.farmer_id}` : '请选择农户'}
+              </CardTitle>
+              {selectedProfile && selectedProfile.updated_at && (
+                <p className="text-white/60 text-xs">
+                  更新时间为：{new Date(selectedProfile.updated_at).toLocaleString()}
+                </p>
+              )}
+            </div>
             {selectedProfile && editedProfile && (
               <div className="flex gap-2">
                 <Button
@@ -998,17 +1081,28 @@ export function ProfilesPage() {
                             />
                           </div>
                           <div className="space-y-1 sm:col-span-2">
-                            <Button
-                              type="button"
-                              variant="outline"
-                              size="sm"
-                              className="border-white/20 text-white hover:bg-white/10"
-                              onClick={() => handleCurrentLocation(idx)}
-                              disabled={locatingBaseId === (base.base_id || `idx-${idx}`)}
-                            >
-                              <MapPin className={`w-4 h-4 mr-1 ${locatingBaseId === (base.base_id || `idx-${idx}`) ? 'animate-pulse' : ''}`} />
-                              {locatingBaseId === (base.base_id || `idx-${idx}`) ? '定位与天气获取中…' : '获取当前位置并填充地址/天气'}
-                            </Button>
+                            <div className="flex gap-2">
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className="border-white/20 text-white hover:bg-white/10"
+                                onClick={() => handleGetCurrentLocation(idx)}
+                                disabled={locatingBaseId === (base.base_id || `idx-${idx}`)}
+                              >
+                                <MapPin className={`w-4 h-4 mr-1 ${locatingBaseId === (base.base_id || `idx-${idx}`) ? 'animate-pulse' : ''}`} />
+                                {locatingBaseId === (base.base_id || `idx-${idx}`) ? '定位中…' : '获取当前位置'}
+                              </Button>
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className="border-white/20 text-white hover:bg-white/10"
+                                onClick={() => handleGetWeather(idx)}
+                                disabled={!base.latitude || !base.longitude}
+                              >
+                                <Cloud className="w-4 h-4 mr-1" />
+                                获取天气
+                              </Button>
+                            </div>
                           </div>
                           <div className="space-y-1">
                             <Label className="text-white/60 text-xs">省份</Label>
@@ -1037,18 +1131,6 @@ export function ProfilesPage() {
                                 setEditedProfile({ ...editedProfile, bases: newBases });
                               }}
                               className="bg-white/10 border-white/20 text-white text-sm"
-                            />
-                          </div>
-                          <div className="space-y-1">
-                            <Label className="text-white/60 text-xs">环境描述</Label>
-                            <Textarea
-                              value={base.environment}
-                              onChange={(e) => {
-                                const newBases = [...editedProfile.bases];
-                                newBases[idx].environment = e.target.value;
-                                setEditedProfile({ ...editedProfile, bases: newBases });
-                              }}
-                              className="bg-white/10 border-white/20 text-white text-sm min-h-[72px] resize-y"
                             />
                           </div>
                           <div className="space-y-1">
@@ -1105,6 +1187,14 @@ export function ProfilesPage() {
                                 className="bg-white/5 border-white/10 text-white/80 text-sm"
                               />
                             </div>
+                          <div className="space-y-1 sm:col-span-2">
+                            <Label className="text-white/60 text-xs">环境描述</Label>
+                            <Textarea
+                              value={base.environment}
+                              readOnly
+                              className="bg-white/10 border-white/20 text-white text-sm min-h-[72px] resize-y"
+                            />
+                          </div>
                         </div>
                       </div>
                     ))}
@@ -1166,7 +1256,7 @@ export function ProfilesPage() {
 
       {/* Add Base Dialog */}
       <Dialog open={showAddBaseDialog} onOpenChange={setShowAddBaseDialog}>
-        <DialogContent className="bg-[#1a1a1a] border-white/20 text-white max-w-md max-h-[85vh] overflow-y-auto">
+        <DialogContent className="bg-[#1a3329] border-[#c8f7c5]/30 text-white max-w-md max-h-[85vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>新增基地</DialogTitle>
           </DialogHeader>
