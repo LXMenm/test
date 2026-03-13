@@ -49,6 +49,14 @@ class BaseProfile(BaseModel):
         self.sowing_date = normalize_sowing_date(self.sowing_date)
         return self
 
+    @model_validator(mode="after")
+    def normalize_fields(self) -> "BaseProfile":
+        if not self.internal_base_uid:
+            self.internal_base_uid = uuid4().hex
+        self.growth_stage = normalize_growth_stage(self.growth_stage)
+        self.sowing_date = normalize_sowing_date(self.sowing_date)
+        return self
+
 
 class FarmerProfile(BaseModel):
     """农户整体档案。"""
