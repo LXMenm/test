@@ -105,6 +105,16 @@ export function DiagnosePage() {
   const [selectedProfile, setSelectedProfile] = useState<ProfileDetail | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  const parseJsonSafely = async (resp: Response): Promise<Record<string, unknown>> => {
+    const rawText = await resp.text();
+    if (!rawText.trim()) return {};
+    try {
+      return JSON.parse(rawText) as Record<string, unknown>;
+    } catch {
+      return { detail: rawText };
+    }
+  };
+
   const navigateToKbDisease = (disease: string) => {
     const name = disease.trim();
     if (!name || name === '未知' || name === '—') return;
@@ -436,9 +446,12 @@ export function DiagnosePage() {
         method: 'POST',
         body: fd
       });
-      const data = await resp.json();
+      const data = await parseJsonSafely(resp);
       if (!resp.ok) {
-        throw new Error(data?.detail || `诊断失败: ${resp.status}`);
+        const detail = typeof data?.detail === 'string'
+          ? data.detail
+          : JSON.stringify(data?.detail || data);
+        throw new Error(detail || `诊断失败: ${resp.status}`);
       }
 
       if (data.trace_id) {

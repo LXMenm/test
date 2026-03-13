@@ -4,15 +4,16 @@ import asyncio
 import json
 import re
 import time
+import traceback
 import uuid
 from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
 from typing import Optional
 
-from fastapi import Body, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Body, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, PlainTextResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from PIL import Image
 from pydantic import BaseModel
@@ -54,6 +55,27 @@ FRONTEND_DIR = Path("app/dist")
 LEGACY_WEB_DIR = Path("web")
 MAX_UPLOAD_MB = 8
 TOP_MARGIN = 0.15
+
+
+@app.middleware("http")
+async def diagnose_image_exception_middleware(request: Request, call_next):
+    try:
+        return await call_next(request)
+    except Exception as exc:
+        if request.url.path == "/api/diagnose-image":
+            tb = traceback.format_exc()
+            print(f"[diagnose-image][unhandled] {exc}\n{tb}")
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "detail": {
+                        "message": "诊断流程异常",
+                        "error": str(exc),
+                        "traceback": tb.splitlines()[-20:],
+                    }
+                },
+            )
+        raise
 
 
 class Top3Item(BaseModel):
@@ -423,6 +445,8 @@ async def diagnose_image(
             raise HTTPException(status_code=400, detail=f"上传文件不是有效图片: {exc}") from exc
 
         saved_path.write_bytes(data)
+        if not saved_path.exists() or not saved_path.is_file():
+            raise RuntimeError(f"上传文件保存后不存在: {saved_path}")
         cleanup_old_uploads()
         emit_node_event(trace_id, node="ParseInput", status="end", message="输入解析完成", payload={"image_path": str(saved_path)})
     except HTTPException:
@@ -442,7 +466,22 @@ async def diagnose_image(
         backend=resolved_model.backend,
         allow_torch=allow_torch,
     )
-    disease, conf, probs = engine.diagnose_from_image(str(saved_path))
+    try:
+        disease, conf, probs = engine.diagnose_from_image(str(saved_path))
+    except Exception as exc:
+        tb = traceback.format_exc()
+        print(f"[diagnose-image][{trace_id}] 模型推理失败: {exc}\n{tb}")
+        emit_node_event(trace_id, node="DiagnosisAgent", status="error", message=f"模型推理失败: {exc}")
+        emit_node_event(trace_id, node="Final", status="error", message="诊断失败")
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "message": "模型推理失败",
+                "error": str(exc),
+                "trace_id": trace_id,
+                "traceback": tb.splitlines()[-20:],
+            },
+        ) from exc
     disease = disease or "未知病害"
     conf = float(conf or 0.0)
 
@@ -515,9 +554,23 @@ async def diagnose_image(
 
     treatment: TreatmentPlan | None = None
 
-    profile, base_profile, resolved_base_id = _resolve_profile_and_base(farmer_id, base_id)
-    personalization_context = build_personalization_context(profile, base_profile)
-    personalization_flags = build_personalization_flags(profile, base_profile)
+    try:
+        profile, base_profile, resolved_base_id = _resolve_profile_and_base(farmer_id, base_id)
+        personalization_context = build_personalization_context(profile, base_profile)
+        personalization_flags = build_personalization_flags(profile, base_profile)
+    except Exception as exc:
+        tb = traceback.format_exc()
+        print(f"[diagnose-image][{trace_id}] 个性化上下文构造失败: {exc}\n{tb}")
+        emit_node_event(trace_id, node="ValidatorAgent", status="error", message=f"个性化上下文构造失败: {exc}")
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "message": "个性化上下文构造失败",
+                "error": str(exc),
+                "trace_id": trace_id,
+                "traceback": tb.splitlines()[-20:],
+            },
+        ) from exc
     personalization_meta = _build_personalization_meta(personalization_flags, farmer_id, resolved_base_id)
 
     personalization_applied = False
