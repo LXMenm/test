@@ -16,6 +16,8 @@ import {
   getFarmScaleLabel,
   getPesticideAccessLevelLabel,
   getSelectedBranchLabel,
+  normalizeGrowthStage,
+  TOMATO_GROWTH_STAGE_OPTIONS,
 } from '@/lib/profileLabels';
 import { resolveModelOptions } from '@/lib/modelOptions';
 
@@ -63,6 +65,8 @@ interface ProfileDetail {
   bases?: Record<string, {
     base_id?: string;
     name?: string;
+    growth_stage?: string;
+    sowing_date?: string;
   }>;
 }
 
@@ -586,6 +590,13 @@ export function DiagnosePage() {
     : [];
 
   useEffect(() => {
+    if (!selectedProfile?.bases || !selectedBaseId) return;
+    const base = selectedProfile.bases[selectedBaseId];
+    const mappedStage = normalizeGrowthStage(base?.growth_stage || '');
+    if (mappedStage) setGrowthStage(mappedStage);
+  }, [selectedProfile, selectedBaseId]);
+
+  useEffect(() => {
     if (!confirmMode) return;
     // 仅在尚未选择时自动回填首个候选；不要覆盖用户手动选择"仍不确定/其他"。
     const shouldAutofillChoice = !confirmChoice;
@@ -697,12 +708,19 @@ export function DiagnosePage() {
             {/* Growth Stage */}
             <div className="space-y-2">
               <Label className="text-white/80">生长阶段（可选）</Label>
-              <Input
-                placeholder="例如：开花期"
-                value={growthStage}
-                onChange={(e) => setGrowthStage(e.target.value)}
-                className="bg-white/5 border-white/20 text-white placeholder:text-white/40 focus:border-[#c8f7c5]"
-              />
+              <Select value={normalizeGrowthStage(growthStage) || '__EMPTY__'} onValueChange={(value) => setGrowthStage(value === '__EMPTY__' ? '' : value)}>
+                <SelectTrigger className="bg-white/5 border-white/20 text-white">
+                  <SelectValue placeholder="请选择番茄生长阶段" className="text-white placeholder:text-white/60" />
+                </SelectTrigger>
+                <SelectContent side="bottom" align="start" sideOffset={6} className="bg-[#111] text-white border-white/20">
+                  <SelectItem value="__EMPTY__">未设置</SelectItem>
+                  {TOMATO_GROWTH_STAGE_OPTIONS.map((stage) => (
+                    <SelectItem key={stage.value} value={stage.value} className="text-white data-[highlighted]:bg-[#c8f7c5] data-[highlighted]:text-black">
+                      {stage.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
 
             {/* Model Selection */}

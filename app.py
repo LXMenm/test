@@ -8,7 +8,9 @@ import uuid
 from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
+from urllib.parse import urlencode
+from urllib.request import urlopen
 
 from fastapi import Body, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -34,9 +36,10 @@ from event_store import (
 )
 from knowledge_base import get_kb_manager
 from personalization import profile_rules
+from personalization.profile_constants import estimate_harvest_window_days, normalize_growth_stage
 from personalization.profile_models import BaseProfile, FarmerProfile, TreatmentConstraint
 from personalization.profile_context import build_personalization_context, build_personalization_flags
-from personalization.profile_store import get_profile_path, load_profile, list_profile_ids
+from personalization.profile_store import get_profile_path, load_profile, list_profile_ids, save_profile as persist_profile
 from personalization.utils import dedupe_reasons, compute_personalization_applied, normalize_follow_up_questions
 from state import create_initial_state
 from trace_store import list_trace_events, subscribe as subscribe_trace, unsubscribe as unsubscribe_trace, emit_trace_event
@@ -1013,6 +1016,29 @@ def _utc_now_iso() -> str:
 
 
 
+def _collect_existing_base_ids(exclude_farmer_id: str | None = None) -> dict[str, str]:
+    """收集系统内已有基地ID -> 所属farmer_id（用于全局唯一校验）。"""
+    result: dict[str, str] = {}
+    for existing_farmer_id in list_profile_ids():
+        if exclude_farmer_id and existing_farmer_id == exclude_farmer_id:
+            continue
+        profile = load_profile(existing_farmer_id)
+        if not profile:
+            continue
+        for base_id in profile.bases.keys():
+            result[base_id] = existing_farmer_id
+    return result
+
+
+@app.get("/api/profiles/base-ids")
+def list_all_base_ids() -> dict[str, list[dict[str, str]]]:
+    items = [
+        {"base_id": base_id, "farmer_id": owner}
+        for base_id, owner in sorted(_collect_existing_base_ids().items(), key=lambda item: (item[0], item[1]))
+    ]
+    return {"items": items}
+
+
 def _normalize_profile_payload_for_save(farmer_id: str, payload: dict) -> FarmerProfile:
     """兼容前端旧结构并校验档案，确保可被 load_profile 解析。"""
     normalized = dict(payload)
@@ -1020,33 +1046,54 @@ def _normalize_profile_payload_for_save(farmer_id: str, payload: dict) -> Farmer
 
     bases = normalized.get("bases")
     if isinstance(bases, list):
-        bases_map = {}
+        bases_map: dict[str, dict] = {}
         for item in bases:
             if not isinstance(item, dict):
                 continue
             base_id = str(item.get("base_id") or "").strip()
             if not base_id:
                 continue
+            if base_id in bases_map:
+                raise ValueError(f"同一农户下基地ID重复：{base_id}")
             base_data = dict(item)
             if "facility_type" in base_data and "facility" not in base_data:
                 base_data["facility"] = base_data.pop("facility_type")
+            if "growth_stage" in base_data:
+                base_data["growth_stage"] = normalize_growth_stage(str(base_data.get("growth_stage") or ""))
             bases_map[base_id] = base_data
         normalized["bases"] = bases_map
 
+    elif isinstance(bases, dict):
+        checked: dict[str, dict] = {}
+        for base_id, raw_base in bases.items():
+            if base_id in checked:
+                raise ValueError(f"同一农户下基地ID重复：{base_id}")
+            base_data = dict(raw_base) if isinstance(raw_base, dict) else {}
+            if "facility_type" in base_data and "facility" not in base_data:
+                base_data["facility"] = base_data.pop("facility_type")
+            if "growth_stage" in base_data:
+                base_data["growth_stage"] = normalize_growth_stage(str(base_data.get("growth_stage") or ""))
+            checked[str(base_id)] = base_data
+        normalized["bases"] = checked
+
     profile = FarmerProfile.model_validate(normalized)
+
+    existing_base_ids = _collect_existing_base_ids(exclude_farmer_id=farmer_id)
+    for base_id in profile.bases.keys():
+        owner = existing_base_ids.get(base_id)
+        if owner:
+            raise ValueError(f"基地ID已存在，请更换后再试（{base_id} 已归属 {owner}）")
+
+    # 根据活跃基地播种日期自动估算采收窗口（旧字段兼容回退）。
+    active_base = profile.bases.get(profile.active_base_id or "") if profile.active_base_id else None
+    if active_base and active_base.sowing_date:
+        estimated_days = estimate_harvest_window_days(active_base.sowing_date)
+        if estimated_days is not None:
+            profile.constraints.harvest_window_days = estimated_days
+
     profile.ensure_timestamp()
     profile.updated_at = _utc_now_iso()
     return profile
-def _generate_farmer_id() -> str | None:
-    existing_ids = set()
-    for farmer_id in list_profile_ids():
-        match = re.match(r"^F(\d{4})$", farmer_id)
-        if match:
-            existing_ids.add(int(match.group(1)))
-    for index in range(1, 1001):
-        if index not in existing_ids:
-            return f"F{index:04d}"
-    return None
 
 
 @app.post("/api/profiles")
@@ -1092,18 +1139,14 @@ def create_profile(payload: dict = Body(...)) -> dict[str, bool | str]:
 
 @app.get("/api/profiles/{farmer_id}")
 def get_profile(farmer_id: str) -> dict:
-    path = get_profile_path(farmer_id)
-    if not path.exists():
+    profile = load_profile(farmer_id)
+    if profile is None:
         raise HTTPException(status_code=404, detail="档案不存在")
-    try:
-        with path.open("r", encoding="utf-8") as f:
-            return json.load(f)
-    except json.JSONDecodeError as exc:
-        raise HTTPException(status_code=400, detail=f"档案内容非法: {exc}") from exc
+    return profile.model_dump()
 
 
 @app.post("/api/profiles/{farmer_id}")
-def save_profile(farmer_id: str, payload: dict = Body(...)) -> dict[str, bool]:
+def save_profile_route(farmer_id: str, payload: dict = Body(...)) -> dict[str, bool]:
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="档案内容非法")
     try:
@@ -1111,9 +1154,7 @@ def save_profile(farmer_id: str, payload: dict = Body(...)) -> dict[str, bool]:
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"档案格式非法: {exc}") from exc
     try:
-        save_path = get_profile_path(farmer_id)
-        with save_path.open("w", encoding="utf-8") as f:
-            json.dump(profile.model_dump(), f, ensure_ascii=False, indent=2)
+        persist_profile(profile)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"保存档案失败: {exc}") from exc
     return {"ok": True}
@@ -1131,13 +1172,197 @@ def delete_profile(farmer_id: str) -> dict[str, bool]:
     return {"ok": True}
 
 
+def _http_get_json(url: str) -> dict[str, Any] | None:
+    try:
+        with urlopen(url, timeout=8) as resp:  # nosec B310
+            data = json.loads(resp.read().decode("utf-8"))
+            return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
+def _pick_text(payload: dict[str, Any], *keys: str) -> str:
+    for key in keys:
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+@app.get("/api/location/reverse")
+def reverse_geocode(lat: float, lon: float) -> dict[str, Any]:
+    # Open-Meteo 免费逆地理：尽可能兼容中国地区字段差异，返回可直接展示的 location。
+    params = urlencode({"latitude": lat, "longitude": lon, "count": 1, "language": "zh", "format": "json"})
+    data = _http_get_json(f"https://geocoding-api.open-meteo.com/v1/reverse?{params}") or {}
+    results = data.get("results") if isinstance(data.get("results"), list) else []
+    first = results[0] if results and isinstance(results[0], dict) else {}
+
+    province = _pick_text(first, "admin1")
+    city = _pick_text(first, "city", "name", "admin2")
+    district = _pick_text(first, "district", "admin3", "admin4", "admin2")
+
+    location = " ".join(part for part in [province, city, district] if part).strip()
+    if not location:
+        location = _pick_text(first, "name", "admin1", "admin2")
+
+    return {
+        "ok": bool(first),
+        "latitude": lat,
+        "longitude": lon,
+        "province": province,
+        "city": city,
+        "district": district,
+        "location": location,
+        "admin1": _pick_text(first, "admin1"),
+        "admin2": _pick_text(first, "admin2"),
+        "admin3": _pick_text(first, "admin3"),
+        "name": _pick_text(first, "name"),
+    }
+
+
+def _weather_code_to_cn(code: int | float | str | None) -> str:
+    try:
+        normalized = int(float(code))
+    except Exception:
+        return "天气情况未知"
+
+    mapping = {
+        0: "晴朗",
+        1: "大部晴朗",
+        2: "多云",
+        3: "阴天",
+        45: "有雾",
+        48: "有雾凇",
+        51: "小毛雨",
+        53: "毛雨",
+        55: "较强毛雨",
+        56: "小冻毛雨",
+        57: "冻毛雨",
+        61: "小雨",
+        63: "中雨",
+        65: "大雨",
+        66: "冻雨",
+        67: "强冻雨",
+        71: "小雪",
+        73: "中雪",
+        75: "大雪",
+        77: "米雪",
+        80: "阵雨",
+        81: "较强阵雨",
+        82: "强阵雨",
+        85: "阵雪",
+        86: "强阵雪",
+        95: "雷暴",
+        96: "雷暴伴小冰雹",
+        99: "雷暴伴强冰雹",
+    }
+    return mapping.get(normalized, "天气情况未知")
+
+
+@app.get("/api/weather/summary")
+def weather_summary(lat: float, lon: float) -> dict[str, Any]:
+    # Open-Meteo 免费接口：更丰富但可降级的农业天气摘要。
+    params = urlencode({
+        "latitude": lat,
+        "longitude": lon,
+        "current": "temperature_2m,apparent_temperature,relative_humidity_2m,precipitation,weather_code,wind_speed_10m",
+        "daily": "temperature_2m_max,temperature_2m_min,precipitation_probability_max",
+        "forecast_days": 2,
+        "timezone": "auto",
+    })
+    data = _http_get_json(f"https://api.open-meteo.com/v1/forecast?{params}") or {}
+    current = data.get("current") if isinstance(data.get("current"), dict) else {}
+    daily = data.get("daily") if isinstance(data.get("daily"), dict) else {}
+
+    temp = current.get("temperature_2m")
+    apparent_temperature = current.get("apparent_temperature")
+    humidity = current.get("relative_humidity_2m")
+    precipitation = current.get("precipitation")
+    weather_code = current.get("weather_code")
+    wind_speed_10m = current.get("wind_speed_10m")
+
+    temperature_2m_max = None
+    temperature_2m_min = None
+    precipitation_probability_max = None
+
+    max_list = daily.get("temperature_2m_max") if isinstance(daily.get("temperature_2m_max"), list) else []
+    min_list = daily.get("temperature_2m_min") if isinstance(daily.get("temperature_2m_min"), list) else []
+    rain_probs = daily.get("precipitation_probability_max") if isinstance(daily.get("precipitation_probability_max"), list) else []
+
+    if max_list:
+        temperature_2m_max = max_list[0]
+    if min_list:
+        temperature_2m_min = min_list[0]
+    if rain_probs:
+        try:
+            precipitation_probability_max = max(float(v) for v in rain_probs[:2])
+        except Exception:
+            precipitation_probability_max = None
+
+    rain_risk = precipitation_probability_max
+
+    parts: list[str] = []
+    weather_desc = _weather_code_to_cn(weather_code)
+    if isinstance(temp, (int, float)):
+        current_part = f"当前{weather_desc}，温度 {float(temp):.1f}℃"
+        if isinstance(apparent_temperature, (int, float)):
+            current_part += f"，体感 {float(apparent_temperature):.1f}℃"
+        if isinstance(humidity, (int, float)):
+            current_part += f"，湿度 {float(humidity):.0f}%"
+        if isinstance(wind_speed_10m, (int, float)):
+            current_part += f"，风速 {float(wind_speed_10m):.1f} m/s"
+        parts.append(current_part)
+
+    if isinstance(temperature_2m_max, (int, float)) and isinstance(temperature_2m_min, (int, float)):
+        parts.append(f"今日最高/最低温约 {float(temperature_2m_max):.0f}℃ / {float(temperature_2m_min):.0f}℃")
+
+    if isinstance(precipitation_probability_max, (int, float)):
+        if precipitation_probability_max >= 60:
+            rain_text = "未来24小时降雨概率较高"
+        elif precipitation_probability_max >= 30:
+            rain_text = "未来24小时降雨概率中等"
+        else:
+            rain_text = "未来24小时降雨概率较低"
+        parts.append(rain_text)
+
+    advisories: list[str] = []
+    if isinstance(humidity, (int, float)) and float(humidity) >= 80:
+        advisories.append("湿度偏高，注意真菌性病害传播风险")
+    if isinstance(precipitation_probability_max, (int, float)) and float(precipitation_probability_max) >= 60:
+        advisories.append("未来降雨概率较高，建议关注棚内排湿与叶面结露")
+    if isinstance(precipitation, (int, float)) and float(precipitation) > 0:
+        advisories.append("当前有降水，注意叶面湿润时段管理")
+
+    summary_parts = (parts + advisories)[:4]
+    summary = "。".join(summary_parts) if summary_parts else "天气数据暂不可用"
+
+    return {
+        "ok": summary != "天气数据暂不可用",
+        "latitude": lat,
+        "longitude": lon,
+        "summary": summary,
+        "temperature_2m": temp,
+        "apparent_temperature": apparent_temperature,
+        "relative_humidity_2m": humidity,
+        "wind_speed_10m": wind_speed_10m,
+        "weather_code": weather_code,
+        "weather_desc": weather_desc,
+        "precipitation": precipitation,
+        "temperature_2m_max": temperature_2m_max,
+        "temperature_2m_min": temperature_2m_min,
+        "precipitation_probability_max": precipitation_probability_max,
+        "rain_risk": rain_risk,
+    }
+
+
+
 @app.get("/api/events")
-def get_events(start: str | None = None, end: str | None = None, limit: int = 50) -> list[dict]:
+def get_events(start: str | None = None, end: str | None = None, limit: int = 50) -> dict[str, list[dict[str, Any]]]:
     if start or end:
         if (start and not validate_date_str(start)) or (end and not validate_date_str(end)):
             raise HTTPException(status_code=400, detail="日期格式应为 YYYY-MM-DD")
-        return list_events_range(start, end, limit)
-    return list_events(limit)
+        return {"events": list_events_range(start, end, limit)}
+    return {"events": list_events(limit)}
 
 
 
@@ -1235,18 +1460,278 @@ def validate_date_str(value: str) -> bool:
     return True
 
 
+def _safe_record(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _normalize_branch(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    normalized = value.strip().upper()
+    if normalized in {"HOME", "FAMILY"}:
+        return "FAMILY"
+    if normalized in {"PRO", "MID"}:
+        return "MID"
+    if normalized == "ENTERPRISE":
+        return "ENTERPRISE"
+    return normalized
+
+
+def _event_disease(event: dict[str, Any]) -> str:
+    image_result = _safe_record(event.get("image_result"))
+    return str(
+        event.get("final_disease")
+        or image_result.get("disease")
+        or event.get("disease")
+        or event.get("disease_name")
+        or "未识别病害"
+    ).strip() or "未识别病害"
+
+
+def _event_model_id(event: dict[str, Any]) -> str:
+    meta = _safe_record(event.get("meta"))
+    return str(
+        meta.get("model_id")
+        or event.get("model_id")
+        or ""
+    ).strip()
+
+
+def _event_model_label(event: dict[str, Any]) -> str:
+    meta = _safe_record(event.get("meta"))
+    return str(
+        meta.get("model_display_name")
+        or event.get("model_display_name")
+        or _event_model_id(event)
+        or "未知模型"
+    ).strip() or "未知模型"
+
+
+def _event_farmer_id(event: dict[str, Any]) -> str:
+    meta = _safe_record(event.get("meta"))
+    return str(meta.get("farmer_id") or event.get("farmer_id") or "").strip()
+
+
+def _event_base_id(event: dict[str, Any]) -> str:
+    meta = _safe_record(event.get("meta"))
+    return str(meta.get("base_id") or event.get("base_id") or "").strip()
+
+
+def _event_selected_branch(event: dict[str, Any]) -> str:
+    meta = _safe_record(event.get("meta"))
+    treatment = _safe_record(event.get("treatment"))
+    outputs = _safe_record(event.get("outputs"))
+    personalization = _safe_record(event.get("personalization"))
+    personalization_outputs = _safe_record(event.get("personalization_outputs"))
+    candidates = [
+        event.get("selected_branch"),
+        treatment.get("selected_branch"),
+        outputs.get("selected_branch"),
+        personalization.get("selected_branch"),
+        personalization_outputs.get("selected_branch"),
+        meta.get("selected_branch"),
+        meta.get("branch"),
+    ]
+    for candidate in candidates:
+        branch = _normalize_branch(candidate)
+        if branch:
+            return branch
+    return ""
+
+
+def _event_filtered(event: dict[str, Any]) -> bool:
+    meta = _safe_record(event.get("meta"))
+    return event.get("filtered") is True or meta.get("filtered") is True
+
+
+def _event_filtered_reasons(event: dict[str, Any]) -> list[str]:
+    meta = _safe_record(event.get("meta"))
+    reasons = event.get("filtered_reasons")
+    if not isinstance(reasons, list):
+        reasons = meta.get("filtered_reasons")
+    if not isinstance(reasons, list):
+        return []
+    return [str(reason).strip() for reason in reasons if str(reason).strip()]
+
+
+def _event_personalization_applied(event: dict[str, Any]) -> bool:
+    meta = _safe_record(event.get("meta"))
+    return event.get("personalization_applied") is True or meta.get("personalization_applied") is True
+
+
+def _event_degraded(event: dict[str, Any]) -> bool:
+    meta = _safe_record(event.get("meta"))
+    return (
+        event.get("workflow_degraded") is True
+        or meta.get("workflow_degraded") is True
+        or event.get("llm_failed") is True
+        or meta.get("llm_failed") is True
+    )
+
+
+def _event_llm_failed(event: dict[str, Any]) -> bool:
+    meta = _safe_record(event.get("meta"))
+    return event.get("llm_failed") is True or meta.get("llm_failed") is True
+
+
+def _event_treatment_success(event: dict[str, Any]) -> bool:
+    treatment = _safe_record(event.get("treatment"))
+    plan = treatment.get("plan") or event.get("treatment_plan")
+    return isinstance(plan, str) and bool(plan.strip())
+
+
+def _event_elapsed_ms(event: dict[str, Any]) -> float | None:
+    meta = _safe_record(event.get("meta"))
+    timing = _safe_record(meta.get("timing"))
+
+    def _parse_elapsed_value(raw: Any) -> float | None:
+        if isinstance(raw, (int, float)):
+            value = float(raw)
+            return value if value >= 0 else None
+        if isinstance(raw, str):
+            text = raw.strip().lower()
+            if not text:
+                return None
+            compact = text.replace("毫秒", "ms").replace("秒", "s")
+            match = re.search(r"-?\d+(?:\.\d+)?", compact)
+            if not match:
+                return None
+            value = float(match.group(0))
+            if value < 0:
+                return None
+            if compact.endswith("s") and not compact.endswith("ms"):
+                value *= 1000
+            return value
+        return None
+
+    def _walk_dict_for_elapsed(payload: dict[str, Any]) -> float | None:
+        preferred_keys = (
+            "elapsed_ms", "duration_ms", "latency_ms", "response_ms", "cost_ms",
+            "elapsed", "duration", "latency", "response_time", "time_cost",
+        )
+        for key in preferred_keys:
+            if key in payload:
+                parsed = _parse_elapsed_value(payload.get(key))
+                if parsed is not None:
+                    return parsed
+        for value in payload.values():
+            if isinstance(value, dict):
+                parsed = _walk_dict_for_elapsed(_safe_record(value))
+                if parsed is not None:
+                    return parsed
+            elif isinstance(value, list):
+                for item in value:
+                    if isinstance(item, dict):
+                        parsed = _walk_dict_for_elapsed(_safe_record(item))
+                        if parsed is not None:
+                            return parsed
+        return None
+
+    candidates = [
+        event.get("elapsed_ms"),
+        meta.get("elapsed_ms"),
+        event.get("duration_ms"),
+        meta.get("duration_ms"),
+        event.get("latency_ms"),
+        meta.get("latency_ms"),
+        timing.get("elapsed_ms"),
+        timing.get("duration_ms"),
+        timing.get("latency_ms"),
+    ]
+
+    zero_fallback: float | None = None
+    for candidate in candidates:
+        parsed = _parse_elapsed_value(candidate)
+        if parsed is None:
+            continue
+        if parsed > 0:
+            return parsed
+        zero_fallback = parsed
+
+    from_nested = _walk_dict_for_elapsed(meta)
+    if from_nested is not None:
+        if from_nested > 0:
+            return from_nested
+        zero_fallback = from_nested if zero_fallback is None else zero_fallback
+
+    from_event = _walk_dict_for_elapsed(event)
+    if from_event is not None:
+        if from_event > 0:
+            return from_event
+        zero_fallback = from_event if zero_fallback is None else zero_fallback
+
+    return zero_fallback
+
+
+def _event_in_filters(
+    event: dict[str, Any],
+    farmer_id: str | None,
+    base_id: str | None,
+    disease: str | None,
+    model_id: str | None,
+    selected_branch: str | None,
+    personalization_status: str | None,
+) -> bool:
+    if farmer_id and farmer_id != "ALL" and _event_farmer_id(event) != farmer_id:
+        return False
+    if base_id and base_id != "ALL" and _event_base_id(event) != base_id:
+        return False
+    if disease and disease != "ALL" and _event_disease(event) != disease:
+        return False
+    if model_id and model_id != "ALL" and _event_model_id(event) != model_id:
+        return False
+    if selected_branch and selected_branch != "ALL" and _event_selected_branch(event) != _normalize_branch(selected_branch):
+        return False
+    if personalization_status == "APPLIED" and not _event_personalization_applied(event):
+        return False
+    if personalization_status == "FILTERED" and not _event_filtered(event):
+        return False
+    return True
+
+
+def _load_filtered_events(
+    start: str | None,
+    end: str | None,
+    farmer_id: str | None,
+    base_id: str | None,
+    disease: str | None,
+    model_id: str | None,
+    selected_branch: str | None,
+    personalization_status: str | None,
+) -> list[dict[str, Any]]:
+    events = list_events_range(start, end, 200000) if (start or end) else list_events(200000)
+    return [
+        event for event in events
+        if _event_in_filters(event, farmer_id, base_id, disease, model_id, selected_branch, personalization_status)
+    ]
+
+
 @app.get("/api/stats/disease")
 def get_disease_stats(
     start: str | None = None,
     end: str | None = None,
     days: int = 30,
-) -> dict[str, int]:
+    farmer_id: str | None = None,
+    base_id: str | None = None,
+    disease: str | None = None,
+    model_id: str | None = None,
+    selected_branch: str | None = None,
+    personalization_status: str | None = None,
+) -> dict[str, Any]:
     if start or end:
         if (start and not validate_date_str(start)) or (end and not validate_date_str(end)):
             raise HTTPException(status_code=400, detail="日期格式应为 YYYY-MM-DD")
-        return stats_by_disease_range(start, end)
     safe_days = max(1, min(3650, int(days)))
-    return stats_by_disease(safe_days)
+    if any([farmer_id, base_id, disease, model_id, selected_branch, personalization_status]):
+        events = _load_filtered_events(start, end, farmer_id, base_id, disease, model_id, selected_branch, personalization_status)
+        counts: dict[str, int] = {}
+        for event in events:
+            disease_name = _event_disease(event)
+            counts[disease_name] = counts.get(disease_name, 0) + 1
+    else:
+        counts = stats_by_disease_range(start, end) if (start or end) else stats_by_disease(safe_days)
+    items = [{"disease": disease_name, "count": count} for disease_name, count in sorted(counts.items(), key=lambda item: item[1], reverse=True)]
+    return {"items": items}
 
 
 @app.get("/api/stats/timeseries")
@@ -1254,13 +1739,31 @@ def get_timeseries(
     start: str | None = None,
     end: str | None = None,
     days: int = 30,
-) -> list[dict]:
+    farmer_id: str | None = None,
+    base_id: str | None = None,
+    disease: str | None = None,
+    model_id: str | None = None,
+    selected_branch: str | None = None,
+    personalization_status: str | None = None,
+) -> dict[str, Any]:
     if start or end:
         if (start and not validate_date_str(start)) or (end and not validate_date_str(end)):
             raise HTTPException(status_code=400, detail="日期格式应为 YYYY-MM-DD")
-        return timeseries_range(start, end)
+    if any([farmer_id, base_id, disease, model_id, selected_branch, personalization_status]):
+        events = _load_filtered_events(start, end, farmer_id, base_id, disease, model_id, selected_branch, personalization_status)
+        counts: dict[str, int] = {}
+        for event in events:
+            ts = event.get("ts")
+            if not isinstance(ts, str):
+                continue
+            day = ts.split("T", 1)[0]
+            counts[day] = counts.get(day, 0) + 1
+        items = [{"date": day, "count": counts[day]} for day in sorted(counts.keys())]
+        return {"items": items}
+    if start or end:
+        return {"items": timeseries_range(start, end)}
     safe_days = max(1, min(3650, int(days)))
-    return timeseries(safe_days)
+    return {"items": timeseries(safe_days)}
 
 
 @app.get("/api/stats/geo")
@@ -1268,23 +1771,233 @@ def get_geo_stats(
     start: str | None = None,
     end: str | None = None,
     days: int = 30,
-) -> list[dict]:
+) -> dict[str, Any]:
     if start or end:
         if (start and not validate_date_str(start)) or (end and not validate_date_str(end)):
             raise HTTPException(status_code=400, detail="日期格式应为 YYYY-MM-DD")
-        return geo_points_range(start, end)
+        return {"items": geo_points_range(start, end)}
     safe_days = max(1, min(3650, int(days)))
-    return geo_points(safe_days)
+    return {"items": geo_points(safe_days)}
 
 
 @app.get("/api/stats/models")
 def get_model_stats(
     start: str | None = None,
     end: str | None = None,
-) -> dict[str, int]:
+    farmer_id: str | None = None,
+    base_id: str | None = None,
+    disease: str | None = None,
+    model_id: str | None = None,
+    selected_branch: str | None = None,
+    personalization_status: str | None = None,
+) -> dict[str, Any]:
     if (start and not validate_date_str(start)) or (end and not validate_date_str(end)):
         raise HTTPException(status_code=400, detail="日期格式应为 YYYY-MM-DD")
-    return model_usage_range(start, end)
+    events = _load_filtered_events(start, end, farmer_id, base_id, disease, model_id, selected_branch, personalization_status)
+    if not events and not any([farmer_id, base_id, disease, model_id, selected_branch, personalization_status]):
+        raw_counts = model_usage_range(start, end)
+        return {
+            "items": [{"model": model, "count": count, "success": count, "fallback": 0, "degraded": 0, "llm_failed_rate": 0.0, "avg_response_ms": 0.0} for model, count in raw_counts.items()],
+        }
+
+    aggregates: dict[str, dict[str, float]] = {}
+    for event in events:
+        label = _event_model_label(event)
+        item = aggregates.setdefault(label, {"count": 0, "success": 0, "fallback": 0, "degraded": 0, "llm_failed": 0, "elapsed_sum": 0, "elapsed_count": 0})
+        item["count"] += 1
+        if _event_degraded(event):
+            item["degraded"] += 1
+        elif str(event.get("final_source") or "").strip().lower() in {"rule", "fallback"}:
+            item["fallback"] += 1
+        else:
+            item["success"] += 1
+        if _event_llm_failed(event):
+            item["llm_failed"] += 1
+        elapsed_ms = _event_elapsed_ms(event)
+        if elapsed_ms is not None:
+            item["elapsed_sum"] += elapsed_ms
+            item["elapsed_count"] += 1
+
+    items = []
+    for model, value in aggregates.items():
+        count = int(value["count"])
+        items.append({
+            "model": model,
+            "count": count,
+            "success": int(value["success"]),
+            "fallback": int(value["fallback"]),
+            "degraded": int(value["degraded"]),
+            "llm_failed_rate": (value["llm_failed"] / count * 100) if count > 0 else 0.0,
+            "avg_response_ms": (value["elapsed_sum"] / value["elapsed_count"]) if value["elapsed_count"] > 0 else 0.0,
+        })
+    items.sort(key=lambda item: item["count"], reverse=True)
+    return {"items": items[:8]}
+
+
+@app.get("/api/stats/summary")
+def get_stats_summary(
+    start: str | None = None,
+    end: str | None = None,
+    farmer_id: str | None = None,
+    base_id: str | None = None,
+    disease: str | None = None,
+    model_id: str | None = None,
+    selected_branch: str | None = None,
+    personalization_status: str | None = None,
+) -> dict[str, float | int]:
+    if (start and not validate_date_str(start)) or (end and not validate_date_str(end)):
+        raise HTTPException(status_code=400, detail="日期格式应为 YYYY-MM-DD")
+
+    events = _load_filtered_events(start, end, farmer_id, base_id, disease, model_id, selected_branch, personalization_status)
+    total = len(events)
+    today = datetime.now(timezone.utc).date().isoformat()
+    today_count = 0
+    disease_set = set()
+    first_pass_done = 0
+    treatment_success = 0
+    filtered_count = 0
+    degraded_count = 0
+    llm_failed_count = 0
+    elapsed_values: list[float] = []
+
+    for event in events:
+        ts = event.get("ts")
+        ts_date = str(ts).split("T", 1)[0] if isinstance(ts, str) else ""
+        if ts_date == today:
+            today_count += 1
+        disease_set.add(_event_disease(event))
+        confirm_round = event.get("confirm_round") is True
+        need_confirm = event.get("need_confirm") is True
+        if not confirm_round and not need_confirm:
+            first_pass_done += 1
+        if _event_treatment_success(event):
+            treatment_success += 1
+        if _event_filtered(event):
+            filtered_count += 1
+        if _event_degraded(event):
+            degraded_count += 1
+        if _event_llm_failed(event):
+            llm_failed_count += 1
+        elapsed_ms = _event_elapsed_ms(event)
+        if elapsed_ms is not None:
+            elapsed_values.append(elapsed_ms)
+
+    return {
+        "total": total,
+        "today": today_count,
+        "disease_kinds": len(disease_set),
+        "first_pass_rate": (first_pass_done / total * 100) if total > 0 else 0.0,
+        "treatment_success_rate": (treatment_success / total * 100) if total > 0 else 0.0,
+        "filtered_rate": (filtered_count / total * 100) if total > 0 else 0.0,
+        "degraded_rate": (degraded_count / total * 100) if total > 0 else 0.0,
+        "llm_failed_rate": (llm_failed_count / total * 100) if total > 0 else 0.0,
+        "avg_response_ms": (sum(elapsed_values) / len(elapsed_values)) if elapsed_values else 0.0,
+    }
+
+
+@app.get("/api/stats/filter-reasons")
+def get_filter_reasons_stats(
+    start: str | None = None,
+    end: str | None = None,
+    farmer_id: str | None = None,
+    base_id: str | None = None,
+    disease: str | None = None,
+    model_id: str | None = None,
+    selected_branch: str | None = None,
+    personalization_status: str | None = None,
+) -> dict[str, Any]:
+    if (start and not validate_date_str(start)) or (end and not validate_date_str(end)):
+        raise HTTPException(status_code=400, detail="日期格式应为 YYYY-MM-DD")
+    events = _load_filtered_events(start, end, farmer_id, base_id, disease, model_id, selected_branch, personalization_status)
+    counts: dict[str, int] = {}
+    for event in events:
+        for reason in _event_filtered_reasons(event):
+            counts[reason] = counts.get(reason, 0) + 1
+    items = [{"name": name, "count": count} for name, count in sorted(counts.items(), key=lambda item: item[1], reverse=True)[:8]]
+    return {"items": items}
+
+
+@app.get("/api/stats/by-farmer")
+def get_stats_by_farmer(
+    start: str | None = None,
+    end: str | None = None,
+    base_id: str | None = None,
+    disease: str | None = None,
+    model_id: str | None = None,
+    selected_branch: str | None = None,
+    personalization_status: str | None = None,
+) -> dict[str, Any]:
+    if (start and not validate_date_str(start)) or (end and not validate_date_str(end)):
+        raise HTTPException(status_code=400, detail="日期格式应为 YYYY-MM-DD")
+    events = _load_filtered_events(start, end, None, base_id, disease, model_id, selected_branch, personalization_status)
+    grouped: dict[str, dict[str, Any]] = {}
+    for event in events:
+        farmer_id = _event_farmer_id(event) or "未绑定农户"
+        meta = _safe_record(event.get("meta"))
+        item = grouped.setdefault(farmer_id, {"farmer_id": farmer_id, "farmer_name": str(meta.get("farmer_name") or meta.get("name") or ""), "count": 0, "filtered": 0, "degraded": 0, "confirm_round": 0})
+        item["count"] += 1
+        if _event_filtered(event):
+            item["filtered"] += 1
+        if _event_degraded(event):
+            item["degraded"] += 1
+        if event.get("confirm_round") is True:
+            item["confirm_round"] += 1
+
+    items = []
+    for value in grouped.values():
+        total = value["count"]
+        items.append({
+            "farmer_id": value["farmer_id"],
+            "farmer_name": value["farmer_name"],
+            "count": total,
+            "filtered_rate": value["filtered"] / total * 100 if total else 0,
+            "degraded_rate": value["degraded"] / total * 100 if total else 0,
+            "confirm_round_rate": value["confirm_round"] / total * 100 if total else 0,
+        })
+    items.sort(key=lambda item: item["count"], reverse=True)
+    return {"items": items[:8]}
+
+
+@app.get("/api/stats/by-base")
+def get_stats_by_base(
+    start: str | None = None,
+    end: str | None = None,
+    farmer_id: str | None = None,
+    model_id: str | None = None,
+    selected_branch: str | None = None,
+    personalization_status: str | None = None,
+) -> dict[str, Any]:
+    if (start and not validate_date_str(start)) or (end and not validate_date_str(end)):
+        raise HTTPException(status_code=400, detail="日期格式应为 YYYY-MM-DD")
+    events = _load_filtered_events(start, end, farmer_id, None, None, model_id, selected_branch, personalization_status)
+    grouped: dict[str, dict[str, Any]] = {}
+    all_diseases: dict[str, int] = {}
+    for event in events:
+        base_id = _event_base_id(event) or "未绑定基地"
+        meta = _safe_record(event.get("meta"))
+        disease = _event_disease(event)
+        all_diseases[disease] = all_diseases.get(disease, 0) + 1
+        item = grouped.setdefault(base_id, {"base_id": base_id, "base_name": str(meta.get("base_name") or ""), "count": 0, "disease_counts": {}})
+        item["count"] += 1
+        disease_counts = item["disease_counts"]
+        disease_counts[disease] = disease_counts.get(disease, 0) + 1
+
+    top_diseases = [name for name, _ in sorted(all_diseases.items(), key=lambda pair: pair[1], reverse=True)[:4]]
+    items = []
+    for value in grouped.values():
+        disease_counts = value["disease_counts"]
+        filtered_counts = {name: disease_counts.get(name, 0) for name in top_diseases}
+        others = max(value["count"] - sum(filtered_counts.values()), 0)
+        if others > 0:
+            filtered_counts["其他"] = others
+        items.append({
+            "base_id": value["base_id"],
+            "base_name": value["base_name"],
+            "count": value["count"],
+            "disease_counts": filtered_counts,
+        })
+    items.sort(key=lambda item: item["count"], reverse=True)
+    return {"top_diseases": top_diseases + (["其他"] if any("其他" in item["disease_counts"] for item in items) else []), "items": items[:6]}
 
 
 @app.get("/dashboard")

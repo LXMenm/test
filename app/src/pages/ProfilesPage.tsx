@@ -3,6 +3,7 @@ import { Users, Plus, RefreshCw, Save, Trash2, MapPin, Sprout, Ban } from 'lucid
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -18,17 +19,28 @@ import {
   getPesticideAccessLevelLabel,
   getRiskPreferenceLabel,
   getSelectedBranchLabel,
+  getGrowthStageLabel,
+  normalizeGrowthStage,
+  TOMATO_GROWTH_STAGE_OPTIONS,
   type SelectedBranch,
 } from '@/lib/profileLabels';
 
 interface FarmerBase {
   base_id: string;
+  internal_base_uid?: string;
   name: string;
   location: string;
   province: string;
+  latitude?: number | null;
+  longitude?: number | null;
+  city?: string;
+  district?: string;
   facility_type: string;
   environment: string;
   growth_stage: string;
+  sowing_date: string;
+  estimated_harvest_window_days: number | null;
+  weather_snapshot?: string;
   notes: string;
 }
 
@@ -59,6 +71,57 @@ const EQUIPMENT_OPTIONS = ['HAND_SPRAYER', 'BACKPACK_SPRAYER', 'MIST_BLOWER', 'D
 const CULTIVATION_MODE_OPTIONS = ['SOIL', 'HYDROPONIC', 'SUBSTRATE'] as const;
 const EXPERIENCE_OPTIONS = ['NOVICE', 'INTERMEDIATE', 'EXPERT'] as const;
 const RISK_OPTIONS = ['CONSERVATIVE', 'BALANCED', 'AGGRESSIVE'] as const;
+
+
+const TOMATO_TOTAL_GROW_DAYS = 120;
+
+const estimateHarvestWindowDays = (sowingDate?: string | null): number | null => {
+  if (!sowingDate) return null;
+  const parsed = new Date(`${sowingDate}T00:00:00`);
+  if (Number.isNaN(parsed.getTime())) return null;
+  const now = new Date();
+  const elapsedDays = Math.max(Math.floor((now.getTime() - parsed.getTime()) / (24 * 60 * 60 * 1000)), 0);
+  return Math.max(TOMATO_TOTAL_GROW_DAYS - elapsedDays, 0);
+};
+
+
+
+const mergeEnvironmentWeather = (environment: string, weatherSummary: string): string => {
+  const env = environment.trim();
+  const weather = weatherSummary.trim();
+  if (!weather) return environment;
+  if (!env) return weather;
+  if (env.includes(weather)) return environment;
+  return `${env}；${weather}`;
+};
+
+const composeLocationText = (payload: Record<string, unknown>, fallback = ''): string => {
+  const pick = (...keys: string[]) => {
+    for (const key of keys) {
+      const value = payload[key];
+      if (typeof value === 'string' && value.trim()) return value.trim();
+    }
+    return '';
+  };
+
+  const province = pick('province', 'admin1');
+  const city = pick('city', 'name', 'admin2');
+  const district = pick('district', 'admin3', 'admin4');
+  const location = pick('location');
+  if (location) return location;
+  const joined = [province, city, district].filter(Boolean).join(' ').trim();
+  return joined || fallback;
+};
+const validateUniqueBaseIds = (bases: FarmerBase[]): string | null => {
+  const seen = new Set<string>();
+  for (const base of bases) {
+    const id = base.base_id.trim();
+    if (!id) continue;
+    if (seen.has(id)) return id;
+    seen.add(id);
+  }
+  return null;
+};
 
 
 const predictBranch = (
@@ -95,15 +158,25 @@ const toSafeNumber = (value: unknown, fallback = 0): number => {
 
 const normalizeBase = (baseId: string, base: unknown): FarmerBase => {
   const baseObj = base && typeof base === 'object' ? base as Record<string, unknown> : {};
+  const latitude = typeof baseObj.latitude === 'number' ? baseObj.latitude : null;
+  const longitude = typeof baseObj.longitude === 'number' ? baseObj.longitude : null;
   return {
     base_id: toSafeString(baseObj.base_id, baseId),
     name: toSafeString(baseObj.name),
     location: toSafeString(baseObj.location),
     province: toSafeString(baseObj.province),
+    latitude,
+    longitude,
+    city: toSafeString(baseObj.city),
+    district: toSafeString(baseObj.district),
     facility_type: toSafeString(baseObj.facility_type ?? baseObj.facility),
     environment: toSafeString(baseObj.environment),
-    growth_stage: toSafeString(baseObj.growth_stage),
+    growth_stage: normalizeGrowthStage(toSafeString(baseObj.growth_stage)),
+    sowing_date: toSafeString(baseObj.sowing_date),
+    estimated_harvest_window_days: estimateHarvestWindowDays(toSafeString(baseObj.sowing_date)),
+    weather_snapshot: toSafeString(baseObj.weather_snapshot),
     notes: toSafeString(baseObj.notes),
+    internal_base_uid: toSafeString(baseObj.internal_base_uid) || undefined,
   };
 };
 
@@ -116,20 +189,20 @@ const normalizeProfile = (raw: unknown): FarmerProfile => {
       return normalizeBase(toSafeString(baseObj.base_id, `B${idx + 1}`), baseObj);
     })
     : rawBases && typeof rawBases === 'object'
-    ? Object.entries(rawBases).map(([baseId, base]) => normalizeBase(baseId, base))
-    : [];
+      ? Object.entries(rawBases).map(([baseId, base]) => normalizeBase(baseId, base))
+      : [];
 
   const rawConstraints = rawObj.constraints && typeof rawObj.constraints === 'object'
     ? rawObj.constraints as Record<string, unknown>
     : {};
   const rawBanned = rawConstraints.banned_ingredients;
 
-  return {
+  const profile: FarmerProfile = {
     farmer_id: toSafeString(rawObj.farmer_id),
     name: toSafeString(rawObj.name),
     active_base_id: toSafeString(rawObj.active_base_id),
     confirm_when_low_confidence: Boolean(rawObj.confirm_when_low_confidence),
-    schema_version: toSafeString(rawObj.schema_version, '1.1'),
+    schema_version: toSafeString(rawObj.schema_version, '1.2'),
     updated_at: toSafeString(rawObj.updated_at),
     farm_scale: (FARM_SCALE_OPTIONS.includes(toSafeString(rawObj.farm_scale) as never) ? toSafeString(rawObj.farm_scale) : 'SMALL') as FarmerProfile['farm_scale'],
     pesticide_access_level: (PESTICIDE_ACCESS_OPTIONS.includes(toSafeString(rawObj.pesticide_access_level) as never) ? toSafeString(rawObj.pesticide_access_level) : 'LIMITED') as FarmerProfile['pesticide_access_level'],
@@ -148,7 +221,14 @@ const normalizeProfile = (raw: unknown): FarmerProfile => {
     },
     bases: basesArray,
   };
+
+  const activeBase = profile.active_base_id ? profile.bases.find((base) => base.base_id === profile.active_base_id) : null;
+  const estimated = estimateHarvestWindowDays(activeBase?.sowing_date);
+  if (estimated !== null) profile.constraints.harvest_window_days = estimated;
+
+  return profile;
 };
+
 
 const normalizeProfileList = (raw: unknown): FarmerProfile[] => {
   if (!Array.isArray(raw)) return [];
@@ -197,6 +277,7 @@ export function ProfilesPage() {
   const [showAddBaseDialog, setShowAddBaseDialog] = useState(false);
   const [newBaseId, setNewBaseId] = useState('');
   const [errorMessage, setErrorMessage] = useState('');
+  const [locatingBaseId, setLocatingBaseId] = useState<string | null>(null);
 
   const parseJsonOrThrow = async (resp: Response) => {
     let payload: Record<string, unknown> | null = null;
@@ -250,11 +331,46 @@ export function ProfilesPage() {
     if (!editedProfile) return;
 
     setErrorMessage('');
+    const duplicateBaseId = validateUniqueBaseIds(editedProfile.bases);
+    if (duplicateBaseId) {
+      setErrorMessage(`基地ID重复：${duplicateBaseId}（同一农户下不允许重复）`);
+      return;
+    }
+
+    const basesMap = Object.fromEntries(editedProfile.bases.map((base) => [base.base_id, {
+      base_id: base.base_id,
+      internal_base_uid: base.internal_base_uid,
+      name: base.name,
+      location: base.location,
+      province: base.province,
+      latitude: typeof base.latitude === 'number' ? base.latitude : null,
+      longitude: typeof base.longitude === 'number' ? base.longitude : null,
+      city: base.city,
+      district: base.district,
+      facility: base.facility_type,
+      environment: base.environment,
+      growth_stage: normalizeGrowthStage(base.growth_stage),
+      sowing_date: base.sowing_date || null,
+      weather_snapshot: base.weather_snapshot,
+      notes: base.notes,
+    }]));
+    const activeBase = editedProfile.active_base_id
+      ? editedProfile.bases.find((base) => base.base_id === editedProfile.active_base_id)
+      : null;
+    const estimatedHarvest = estimateHarvestWindowDays(activeBase?.sowing_date);
+
     try {
       const resp = await fetch(`/api/profiles/${editedProfile.farmer_id}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(editedProfile)
+        body: JSON.stringify({
+          ...editedProfile,
+          bases: basesMap,
+          constraints: {
+            ...editedProfile.constraints,
+            harvest_window_days: estimatedHarvest ?? editedProfile.constraints.harvest_window_days,
+          },
+        })
       });
       await parseJsonOrThrow(resp);
       fetchProfiles();
@@ -367,16 +483,30 @@ export function ProfilesPage() {
   const addBase = () => {
     if (!newBaseId.trim() || !editedProfile) return;
 
+    const safeBaseId = newBaseId.trim();
+    const exists = editedProfile.bases.some((base) => base.base_id === safeBaseId);
+    if (exists) {
+      setErrorMessage(`基地ID重复：${safeBaseId}（同一农户下不允许重复）`);
+      return;
+    }
+
     setEditedProfile({
       ...editedProfile,
       bases: [...(Array.isArray(editedProfile.bases) ? editedProfile.bases : []), {
-        base_id: newBaseId,
+        base_id: safeBaseId,
         name: '',
         location: '',
         province: '',
+        latitude: null,
+        longitude: null,
+        city: '',
+        district: '',
         facility_type: '',
         environment: '',
         growth_stage: '',
+        sowing_date: '',
+        estimated_harvest_window_days: null,
+        weather_snapshot: '',
         notes: ''
       }]
     });
@@ -391,6 +521,95 @@ export function ProfilesPage() {
       ...editedProfile,
       bases: (Array.isArray(editedProfile.bases) ? editedProfile.bases : []).filter((_, i) => i !== idx)
     });
+  };
+
+  const updateBase = (idx: number, updater: (base: FarmerBase) => FarmerBase) => {
+    setEditedProfile((prev) => {
+      if (!prev) return prev;
+      if (!Array.isArray(prev.bases) || !prev.bases[idx]) return prev;
+      const newBases = [...prev.bases];
+      newBases[idx] = updater(newBases[idx]);
+      return { ...prev, bases: newBases };
+    });
+  };
+
+  const handleCurrentLocation = (idx: number) => {
+    if (!editedProfile) return;
+    const targetBase = editedProfile.bases[idx];
+    if (!targetBase) return;
+
+    setErrorMessage('');
+    setLocatingBaseId(targetBase.base_id || `idx-${idx}`);
+    if (!navigator.geolocation) {
+      setErrorMessage('当前浏览器不支持地理定位');
+      setLocatingBaseId(null);
+      return;
+    }
+
+    navigator.geolocation.getCurrentPosition(async (position) => {
+      const lat = Number(position.coords.latitude.toFixed(6));
+      const lon = Number(position.coords.longitude.toFixed(6));
+
+      updateBase(idx, (base) => ({ ...base, latitude: lat, longitude: lon }));
+
+      try {
+        const reverseResp = await fetch(`/api/location/reverse?lat=${encodeURIComponent(String(lat))}&lon=${encodeURIComponent(String(lon))}`);
+        if (reverseResp.ok) {
+          const data = await reverseResp.json();
+          const reverseData = data && typeof data === 'object' ? data as Record<string, unknown> : {};
+          updateBase(idx, (base) => {
+            const nextProvince = (typeof reverseData.province === 'string' && reverseData.province.trim())
+              ? reverseData.province.trim()
+              : (typeof reverseData.admin1 === 'string' ? reverseData.admin1.trim() : base.province);
+            const nextCity = (typeof reverseData.city === 'string' && reverseData.city.trim())
+              ? reverseData.city.trim()
+              : (typeof reverseData.name === 'string' ? reverseData.name.trim() : (base.city || ''));
+            const nextDistrict = (typeof reverseData.district === 'string' && reverseData.district.trim())
+              ? reverseData.district.trim()
+              : (typeof reverseData.admin3 === 'string' ? reverseData.admin3.trim() : (base.district || ''));
+            const nextLocation = composeLocationText(reverseData, base.location);
+            return {
+              ...base,
+              province: nextProvince || base.province,
+              city: nextCity || base.city,
+              district: nextDistrict || base.district,
+              location: nextLocation || base.location,
+            };
+          });
+        } else {
+          setErrorMessage('已获取经纬度，但地址解析失败，可手动填写地址');
+        }
+      } catch {
+        setErrorMessage('已获取经纬度，但地址解析失败，可手动填写地址');
+      }
+
+      try {
+        const weatherResp = await fetch(`/api/weather/summary?lat=${encodeURIComponent(String(lat))}&lon=${encodeURIComponent(String(lon))}`);
+        if (weatherResp.ok) {
+          const weatherData = await weatherResp.json();
+          updateBase(idx, (base) => {
+            const summary = typeof weatherData.summary === 'string' ? weatherData.summary : '';
+            const hasSummary = Boolean(summary.trim());
+            const enrichedEnvironment = hasSummary ? mergeEnvironmentWeather(base.environment, summary) : base.environment;
+            return {
+              ...base,
+              weather_snapshot: hasSummary ? summary : base.weather_snapshot,
+              environment: enrichedEnvironment,
+            };
+          });
+        } else {
+          setErrorMessage('地址已回填，但天气摘要获取失败，不影响保存');
+        }
+      } catch {
+        setErrorMessage('地址已回填，但天气摘要获取失败，不影响保存');
+      } finally {
+        setLocatingBaseId(null);
+      }
+    }, (err) => {
+      const denied = err?.code === 1;
+      setErrorMessage(denied ? '定位权限被拒绝，请在浏览器中允许位置访问后重试' : '定位失败，请检查浏览器权限并重试');
+      setLocatingBaseId(null);
+    }, { enableHighAccuracy: false, timeout: 10000, maximumAge: 300000 });
   };
 
   useEffect(() => {
@@ -677,14 +896,13 @@ export function ProfilesPage() {
                     <div className="space-y-2">
                       <Label className="text-white/60">距离采收期（天）</Label>
                       <Input
-                        type="number"
-                        value={editedProfile.constraints.harvest_window_days}
-                        onChange={(e) => setEditedProfile({
-                          ...editedProfile,
-                          constraints: { ...editedProfile.constraints, harvest_window_days: parseInt(e.target.value) || 0 }
-                        })}
-                        className="bg-white/5 border-white/20 text-white focus:border-[#c8f7c5]"
+                        value={`${editedProfile.constraints.harvest_window_days ?? 0}`}
+                        readOnly
+                        className="bg-white/5 border-white/10 text-white/80"
                       />
+                      <p className="text-xs text-white/45">
+                        优先根据活跃基地播种日期自动估算（经验规则），无播种日期时回退历史手填值。
+                      </p>
                     </div>
                     <div className="space-y-2">
                       <Label className="text-white/60">禁用成分关键词</Label>
@@ -748,6 +966,7 @@ export function ProfilesPage() {
                       <div key={base.base_id} className="bg-white/5 rounded-xl p-4 space-y-3">
                         <div className="flex items-center justify-between">
                           <Badge className="bg-[#c8f7c5]/20 text-[#c8f7c5]">{base.base_id}</Badge>
+                          <span className="text-xs text-white/50">{getGrowthStageLabel(base.growth_stage)}</span>
                           <Button
                             onClick={() => removeBase(idx)}
                             variant="ghost"
@@ -774,24 +993,38 @@ export function ProfilesPage() {
                             <Label className="text-white/60 text-xs">位置/地址</Label>
                             <Input
                               value={base.location}
-                              onChange={(e) => {
-                                const newBases = [...editedProfile.bases];
-                                newBases[idx].location = e.target.value;
-                                setEditedProfile({ ...editedProfile, bases: newBases });
-                              }}
+                              onChange={(e) => updateBase(idx, (current) => ({ ...current, location: e.target.value }))}
                               className="bg-white/10 border-white/20 text-white text-sm"
                             />
+                          </div>
+                          <div className="space-y-1 sm:col-span-2">
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              className="border-white/20 text-white hover:bg-white/10"
+                              onClick={() => handleCurrentLocation(idx)}
+                              disabled={locatingBaseId === (base.base_id || `idx-${idx}`)}
+                            >
+                              <MapPin className={`w-4 h-4 mr-1 ${locatingBaseId === (base.base_id || `idx-${idx}`) ? 'animate-pulse' : ''}`} />
+                              {locatingBaseId === (base.base_id || `idx-${idx}`) ? '定位与天气获取中…' : '获取当前位置并填充地址/天气'}
+                            </Button>
                           </div>
                           <div className="space-y-1">
                             <Label className="text-white/60 text-xs">省份</Label>
                             <Input
                               value={base.province}
-                              onChange={(e) => {
-                                const newBases = [...editedProfile.bases];
-                                newBases[idx].province = e.target.value;
-                                setEditedProfile({ ...editedProfile, bases: newBases });
-                              }}
+                              onChange={(e) => updateBase(idx, (current) => ({ ...current, province: e.target.value }))}
                               className="bg-white/10 border-white/20 text-white text-sm"
+                            />
+                          </div>
+                          <div className="space-y-1">
+                            <Label className="text-white/60 text-xs">经纬度</Label>
+                            <Input
+                              value={base.latitude != null && base.longitude != null ? `${base.latitude}, ${base.longitude}` : ''}
+                              readOnly
+                              placeholder="点击“获取当前位置”自动填充"
+                              className="bg-white/5 border-white/10 text-white/70 text-sm"
                             />
                           </div>
                           <div className="space-y-1">
@@ -808,28 +1041,70 @@ export function ProfilesPage() {
                           </div>
                           <div className="space-y-1">
                             <Label className="text-white/60 text-xs">环境描述</Label>
-                            <Input
+                            <Textarea
                               value={base.environment}
                               onChange={(e) => {
                                 const newBases = [...editedProfile.bases];
                                 newBases[idx].environment = e.target.value;
                                 setEditedProfile({ ...editedProfile, bases: newBases });
                               }}
-                              className="bg-white/10 border-white/20 text-white text-sm"
+                              className="bg-white/10 border-white/20 text-white text-sm min-h-[72px] resize-y"
                             />
                           </div>
                           <div className="space-y-1">
                             <Label className="text-white/60 text-xs">生长阶段</Label>
-                            <Input
-                              value={base.growth_stage}
-                              onChange={(e) => {
+                            <Select
+                              value={normalizeGrowthStage(base.growth_stage) || '__EMPTY__'}
+                              onValueChange={(value) => {
                                 const newBases = [...editedProfile.bases];
-                                newBases[idx].growth_stage = e.target.value;
+                                newBases[idx].growth_stage = value === '__EMPTY__' ? '' : value;
                                 setEditedProfile({ ...editedProfile, bases: newBases });
                               }}
-                              className="bg-white/10 border-white/20 text-white text-sm"
-                            />
+                            >
+                              <SelectTrigger className="bg-white/10 border-white/20 text-white text-sm">
+                                <SelectValue placeholder="请选择生长阶段" />
+                              </SelectTrigger>
+                              <SelectContent className="bg-[#111] text-white border-white/20 max-h-56 overflow-y-auto">
+                                <SelectItem value="__EMPTY__">未设置</SelectItem>
+                                {TOMATO_GROWTH_STAGE_OPTIONS.map((stage) => (
+                                  <SelectItem key={stage.value} value={stage.value}>{stage.label}</SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
                           </div>
+                          <div className="space-y-1">
+                              <Label className="text-white/60 text-xs">播种日期</Label>
+                              <Input
+                                type="date"
+                                value={base.sowing_date || ''}
+                                onChange={(e) => {
+                                  const newBases = [...editedProfile.bases];
+                                  newBases[idx].sowing_date = e.target.value;
+                                  newBases[idx].estimated_harvest_window_days = estimateHarvestWindowDays(e.target.value);
+                                  if (editedProfile.active_base_id === newBases[idx].base_id) {
+                                    setEditedProfile({
+                                      ...editedProfile,
+                                      constraints: {
+                                        ...editedProfile.constraints,
+                                        harvest_window_days: newBases[idx].estimated_harvest_window_days ?? editedProfile.constraints.harvest_window_days,
+                                      },
+                                      bases: newBases,
+                                    });
+                                    return;
+                                  }
+                                  setEditedProfile({ ...editedProfile, bases: newBases });
+                                }}
+                                className="bg-white/10 border-white/20 text-white text-sm"
+                              />
+                            </div>
+                            <div className="space-y-1">
+                              <Label className="text-white/60 text-xs">预计距采收天数（系统估算）</Label>
+                              <Input
+                                value={base.estimated_harvest_window_days === null ? '未设置' : `${base.estimated_harvest_window_days} 天`}
+                                readOnly
+                                className="bg-white/5 border-white/10 text-white/80 text-sm"
+                              />
+                            </div>
                         </div>
                       </div>
                     ))}
@@ -855,7 +1130,7 @@ export function ProfilesPage() {
 
       {/* Add Profile Dialog */}
       <Dialog open={showAddDialog} onOpenChange={setShowAddDialog}>
-        <DialogContent className="bg-[#1a1a1a] border-white/20 text-white">
+        <DialogContent className="bg-[#1a1a1a] border-white/20 text-white max-w-md max-h-[85vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>新增农户档案</DialogTitle>
           </DialogHeader>
@@ -891,7 +1166,7 @@ export function ProfilesPage() {
 
       {/* Add Base Dialog */}
       <Dialog open={showAddBaseDialog} onOpenChange={setShowAddBaseDialog}>
-        <DialogContent className="bg-[#1a1a1a] border-white/20 text-white">
+        <DialogContent className="bg-[#1a1a1a] border-white/20 text-white max-w-md max-h-[85vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>新增基地</DialogTitle>
           </DialogHeader>
