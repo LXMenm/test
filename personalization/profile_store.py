@@ -7,6 +7,7 @@ from typing import List, Optional
 
 from .profile_constants import estimate_harvest_window_days
 from .profile_models import BaseProfile, FarmerProfile, TreatmentConstraint
+from .risk_tags import build_base_risk_tags
 
 
 PROFILE_DIR = Path("data/profiles")
@@ -46,6 +47,15 @@ def _ensure_profile_compatibility(profile: FarmerProfile) -> FarmerProfile:
         estimated_days = estimate_harvest_window_days(active_base.sowing_date)
         if estimated_days is not None:
             profile.constraints.harvest_window_days = estimated_days
+
+    harvest_hint = profile.constraints.harvest_window_days
+    for base_id, base in list(profile.bases.items()):
+        risk_payload = build_base_risk_tags(base, harvest_window_days=harvest_hint if profile.active_base_id == base_id else None)
+        base.risk_tags = [str(item).strip() for item in (risk_payload.get("risk_tags") or []) if str(item).strip()]
+        base.risk_reasons = [str(item).strip() for item in (risk_payload.get("risk_reasons") or []) if str(item).strip()]
+        base.risk_updated_at = risk_payload.get("risk_updated_at")
+        base.risk_items = risk_payload.get("risk_items") or []
+        profile.bases[base_id] = BaseProfile.model_validate(base.model_dump())
 
     profile.ensure_timestamp()
     return profile

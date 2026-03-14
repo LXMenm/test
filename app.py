@@ -4,6 +4,7 @@ import asyncio
 import json
 import re
 import time
+import traceback
 import uuid
 from datetime import datetime, timezone
 from io import BytesIO
@@ -12,9 +13,9 @@ from typing import Any, Optional
 from urllib.parse import urlencode
 from urllib.request import urlopen
 
-from fastapi import Body, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Body, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, PlainTextResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from PIL import Image
 from pydantic import BaseModel
@@ -59,6 +60,21 @@ MAX_UPLOAD_MB = 8
 TOP_MARGIN = 0.15
 
 
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    """统一兜底：确保 API 异常返回 JSON，便于前端透传错误。"""
+    tb = traceback.format_exc()
+    traceback.print_exc()
+    detail = str(exc) or exc.__class__.__name__
+    payload = {
+        "detail": detail,
+        "error": exc.__class__.__name__,
+    }
+    if request.url.path == "/api/diagnose-image":
+        payload["traceback"] = tb
+    return JSONResponse(status_code=500, content=payload)
+
+
 class Top3Item(BaseModel):
     disease: str
     prob: float
@@ -95,6 +111,10 @@ class DiagnoseResponse(BaseModel):
     treatment: Optional[TreatmentPlan]
     personalization_applied: bool
     farmer_id: Optional[str]
+    risk_tags: list[str] = []
+    risk_items: list[dict[str, Any]] = []
+    risk_summary: str | None = None
+    risk_updated_at: str | None = None
     filtered: bool
     filtered_reasons: list[str]
     filtered_components: list[str]
@@ -284,6 +304,10 @@ def _build_personalization_meta(flags: dict, farmer_id: str | None, base_id: str
         "cultivation_mode": flags.get("cultivation_mode"),
         "experience_level": flags.get("experience_level"),
         "risk_preference": flags.get("risk_preference"),
+        "risk_tags": flags.get("risk_tags") or [],
+        "risk_items": flags.get("risk_items") or [],
+        "risk_updated_at": flags.get("risk_updated_at"),
+        "risk_summary": "、".join([str(item).strip() for item in (flags.get("risk_tags") or []) if str(item).strip()]) or None,
     }
 
 
@@ -673,6 +697,10 @@ async def diagnose_image(
         "elapsed_ms": round((time.perf_counter() - request_started) * 1000, 2),
         "image_confidence": final_state.get("image_confidence") if final_state else None,
         "treatment": treatment_or_none,
+        "risk_tags": list(flags.get("risk_tags") or []),
+        "risk_items": list(flags.get("risk_items") or []),
+        "risk_summary": "、".join([str(item).strip() for item in (flags.get("risk_tags") or []) if str(item).strip()]) or None,
+        "risk_updated_at": flags.get("risk_updated_at"),
         "meta": {
             **personalization_meta,
             "lat": lat,
@@ -691,6 +719,10 @@ async def diagnose_image(
             "model_fallback_reason": model_meta.get("model_fallback_reason"),
             "workflow_degraded": workflow_degraded,
             "degraded_reason": degraded_reason,
+            "risk_tags": list(flags.get("risk_tags") or []),
+            "risk_items": list(flags.get("risk_items") or []),
+            "risk_summary": "、".join([str(item).strip() for item in (flags.get("risk_tags") or []) if str(item).strip()]) or None,
+            "risk_updated_at": flags.get("risk_updated_at"),
         },
     }
     emit_node_event(trace_id, node="Persist", status="start", message="写入事件日志")
@@ -714,6 +746,10 @@ async def diagnose_image(
         treatment=treatment,
         personalization_applied=personalization_applied,
         farmer_id=farmer_id,
+        risk_tags=[str(item) for item in (flags.get("risk_tags") or [])],
+        risk_items=[item.model_dump() if hasattr(item, "model_dump") else item for item in (flags.get("risk_items") or [])],
+        risk_summary="、".join([str(item).strip() for item in (flags.get("risk_tags") or []) if str(item).strip()]) or None,
+        risk_updated_at=flags.get("risk_updated_at"),
         filtered=filtered,
         filtered_reasons=filtered_reasons,
         filtered_components=filtered_components,

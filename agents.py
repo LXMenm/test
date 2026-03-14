@@ -384,6 +384,10 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
 诊断病害：{disease_type}
 症状：{symptoms}
 个性化上下文：{personalization_context}
+原则：
+1) 必须优先依据原始字段（location/weather/growth_stage/sowing_date/harvest_window_days）判断。
+2) 风险标签仅作为辅助解释与约束提示，不能替代原始环境事实。
+3) 若风险标签与原始字段冲突，以原始字段为准。
 请输出1-2条与位置/设施/偏好有关的诊断风险提醒。"""
         try:
             extra_note = call_llm(
@@ -779,6 +783,13 @@ def treatment_agent(state: CropDiseaseState) -> CropDiseaseState:
     if harvest_window_days is None:
         harvest_window_days = flags.get("harvest_window_days")
     prefer_organic = bool(flags.get("prefer_organic") or constraints.prefer_organic)
+    risk_items = [item for item in (flags.get("risk_items") or []) if item]
+    risk_tags = [str(item).strip() for item in (flags.get("risk_tags") or []) if str(item).strip()]
+    risk_context = {
+        "risk_tags": risk_tags,
+        "risk_items": [item.model_dump() if hasattr(item, "model_dump") else item for item in risk_items],
+        "risk_summary": "、".join(risk_tags) if risk_tags else "暂无",
+    }
     llm_output: TreatmentLLMOutput | None = None
     llm_failed_reason = ""
     def _build_prompt(branch: str, extra_requirements: str = "") -> str:
@@ -797,6 +808,12 @@ def treatment_agent(state: CropDiseaseState) -> CropDiseaseState:
 {json.dumps(policy, ensure_ascii=False)}
 基地信息：
 {json.dumps(base_info, ensure_ascii=False)}
+农业风险标签（辅助解释层，不可替代原始字段）：
+{json.dumps(risk_context, ensure_ascii=False)}
+事实优先规则：
+- 必须优先使用原始字段（location/weather/growth_stage/sowing_date/harvest_window_days）。
+- 风险标签只用于补充解释与强化提醒。
+- 若冲突，以原始字段为准。
 约束：
 - banned_ingredients={banned_ingredients}
 - harvest_window_days={harvest_window_days}
@@ -975,6 +992,8 @@ def treatment_agent(state: CropDiseaseState) -> CropDiseaseState:
             "filtered_reasons": flags.get("filtered_reasons") or [],
             "filtered_components": flags.get("filtered_components") or [],
             "filtered_actions": flags.get("filtered_actions") or [],
+            "risk_tags": [str(item) for item in (flags.get("risk_tags") or [])],
+            "risk_summary": "、".join([str(item).strip() for item in (flags.get("risk_tags") or []) if str(item).strip()]) or "",
         },
     )
     return state
