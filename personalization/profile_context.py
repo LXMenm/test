@@ -37,6 +37,10 @@ def build_personalization_context(
             parts.append(f"播种日期: {base_profile.sowing_date}")
         if base_profile.notes:
             parts.append(f"备注: {base_profile.notes}")
+        if base_profile.risk_tags:
+            parts.append(f"农业风险标签: {', '.join(base_profile.risk_tags)}")
+        if base_profile.risk_reasons:
+            parts.append(f"风险提示: {'；'.join(base_profile.risk_reasons[:3])}")
 
     constraints = profile.constraints
     parts.append(f"种植规模: {profile.farm_scale}")
@@ -102,6 +106,9 @@ def build_personalization_flags(
                 "growth_stage": base_profile.growth_stage,
                 "growth_stage_label": growth_stage_label(base_profile.growth_stage),
                 "sowing_date": base_profile.sowing_date,
+                "risk_tags": list(base_profile.risk_tags or []),
+                "risk_items": [item.model_dump() if hasattr(item, "model_dump") else item for item in (base_profile.risk_items or [])],
+                "risk_reasons": list(base_profile.risk_reasons or []),
             }
         )
     return flags

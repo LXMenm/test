@@ -25,6 +25,13 @@ import {
   type SelectedBranch,
 } from '@/lib/profileLabels';
 
+interface RiskItem {
+  code: string;
+  label: string;
+  level: "low" | "medium" | "high";
+  reason: string;
+}
+
 interface FarmerBase {
   base_id: string;
   internal_base_uid?: string;
@@ -41,6 +48,10 @@ interface FarmerBase {
   sowing_date: string;
   estimated_harvest_window_days: number | null;
   weather_snapshot?: string;
+  risk_tags?: string[];
+  risk_reasons?: string[];
+  risk_items?: RiskItem[];
+  risk_updated_at?: string;
   notes: string;
 }
 
@@ -72,6 +83,17 @@ const CULTIVATION_MODE_OPTIONS = ['SOIL', 'HYDROPONIC', 'SUBSTRATE'] as const;
 const EXPERIENCE_OPTIONS = ['NOVICE', 'INTERMEDIATE', 'EXPERT'] as const;
 const RISK_OPTIONS = ['CONSERVATIVE', 'BALANCED', 'AGGRESSIVE'] as const;
 
+
+const RISK_LABEL_MAP: Record<string, string> = {
+  HIGH_HUMIDITY: '高湿风险',
+  RAIN_RISK: '降雨风险',
+  POOR_VENTILATION: '通风不良风险',
+  NEAR_HARVEST: '临近采收风险',
+  SEEDLING_VULNERABLE: '苗期脆弱风险',
+  FLOWERING_FRUITING_SENSITIVE: '开花结果期敏感风险',
+  GREENHOUSE_PRESSURE: '温室环境风险',
+  MISSING_CONTEXT: '信息不完整',
+};
 
 const TOMATO_TOTAL_GROW_DAYS = 120;
 
@@ -172,6 +194,27 @@ const normalizeBase = (baseId: string, base: unknown): FarmerBase => {
     sowing_date: toSafeString(baseObj.sowing_date),
     estimated_harvest_window_days: estimateHarvestWindowDays(toSafeString(baseObj.sowing_date)),
     weather_snapshot: toSafeString(baseObj.weather_snapshot),
+    risk_tags: Array.isArray(baseObj.risk_tags) ? baseObj.risk_tags.map((item: unknown) => toSafeString(item)).filter(Boolean) : [],
+    risk_reasons: Array.isArray(baseObj.risk_reasons) ? baseObj.risk_reasons.map((item: unknown) => toSafeString(item)).filter(Boolean) : [],
+    risk_items: Array.isArray(baseObj.risk_items)
+      ? baseObj.risk_items
+        .map((item: unknown) => {
+          const obj = item && typeof item === 'object' ? item as Record<string, unknown> : {};
+          const code = toSafeString(obj.code);
+          const label = toSafeString(obj.label, RISK_LABEL_MAP[code] || code);
+          const reason = toSafeString(obj.reason);
+          const level = toSafeString(obj.level, 'low');
+          if (!code || !label || !reason) return null;
+          return {
+            code,
+            label,
+            reason,
+            level: (level === 'high' || level === 'medium' || level === 'low') ? level : 'low',
+          } as RiskItem;
+        })
+        .filter((item): item is RiskItem => Boolean(item))
+      : [],
+    risk_updated_at: toSafeString(baseObj.risk_updated_at),
     notes: toSafeString(baseObj.notes),
     internal_base_uid: toSafeString(baseObj.internal_base_uid) || undefined,
   };
@@ -283,9 +326,10 @@ export function ProfilesPage() {
         const data = await resp.json();
         const baseIds = new Set<string>();
         if (Array.isArray(data?.items)) {
-          data.items.forEach((item: any) => {
-            if (typeof item?.base_id === 'string') {
-              baseIds.add(item.base_id);
+          data.items.forEach((item: unknown) => {
+            const itemObj = item && typeof item === 'object' ? item as Record<string, unknown> : {};
+            if (typeof itemObj.base_id === 'string') {
+              baseIds.add(itemObj.base_id);
             }
           });
         }
@@ -376,6 +420,10 @@ export function ProfilesPage() {
       growth_stage: normalizeGrowthStage(base.growth_stage),
       sowing_date: base.sowing_date || null,
       weather_snapshot: base.weather_snapshot,
+      risk_tags: base.risk_tags || [],
+      risk_reasons: base.risk_reasons || [],
+      risk_items: base.risk_items || [],
+      risk_updated_at: base.risk_updated_at || null,
       notes: base.notes,
     }]));
     const activeBase = editedProfile.active_base_id
@@ -1187,6 +1235,31 @@ export function ProfilesPage() {
                                 className="bg-white/5 border-white/10 text-white/80 text-sm"
                               />
                             </div>
+                          <div className="space-y-2 sm:col-span-2">
+                            <Label className="text-white/60 text-xs">农业风险标签</Label>
+                            <div className="flex flex-wrap gap-2">
+                              {(base.risk_items && base.risk_items.length > 0
+                                ? base.risk_items.map((item) => ({ code: item.code, label: item.label }))
+                                : (base.risk_tags || []).map((code) => ({ code, label: RISK_LABEL_MAP[code] || code }))
+                              ).map((tag) => (
+                                <Badge key={tag.code} className="bg-[#c8f7c5]/20 text-[#c8f7c5] border border-[#c8f7c5]/30">
+                                  {tag.label}
+                                </Badge>
+                              ))}
+                              {(!(base.risk_tags && base.risk_tags.length) && !(base.risk_items && base.risk_items.length)) && (
+                                <span className="text-white/50 text-xs">暂无风险标签</span>
+                              )}
+                            </div>
+                            <div className="space-y-1">
+                              {(base.risk_items && base.risk_items.length > 0
+                                ? base.risk_items.map((item) => item.reason)
+                                : (base.risk_reasons || [])
+                              ).slice(0, 4).map((reason, reasonIdx) => (
+                                <p key={`${base.base_id}-risk-${reasonIdx}`} className="text-xs text-white/70">• {reason}</p>
+                              ))}
+                            </div>
+                          </div>
+
                           <div className="space-y-1 sm:col-span-2">
                             <Label className="text-white/60 text-xs">环境描述</Label>
                             <Textarea

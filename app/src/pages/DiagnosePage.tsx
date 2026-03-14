@@ -440,30 +440,45 @@ export function DiagnosePage() {
         method: 'POST',
         body: fd
       });
-      const data = await resp.json();
+      const raw = await resp.text();
+      let data: unknown = null;
+      try {
+        data = raw ? JSON.parse(raw) : null;
+      } catch {
+        data = null;
+      }
       if (!resp.ok) {
-        throw new Error(data?.detail || `诊断失败: ${resp.status}`);
+        const detail = data && typeof data === 'object' && 'detail' in data
+          ? String((data as { detail?: unknown }).detail ?? '')
+          : '';
+        throw new Error(detail || raw || `诊断失败: ${resp.status}`);
       }
 
-      if (data.trace_id) {
-        setTraceId(data.trace_id);
+      if (!data || typeof data !== 'object') {
+        throw new Error('诊断接口返回格式非法');
       }
-      if (data.image_id) {
-        setImageId(data.image_id);
+
+      const payload = data as Record<string, unknown>;
+
+      if (payload.trace_id) {
+        setTraceId(String(payload.trace_id));
       }
-      if (Array.isArray(data?.events)) {
-        setTraceEvents(normalizeTraceEvents(data.events));
+      if (payload.image_id) {
+        setImageId(String(payload.image_id));
+      }
+      if (Array.isArray(payload.events)) {
+        setTraceEvents(normalizeTraceEvents(payload.events));
       }
       setWorkflowRefreshToken((prev) => prev + 1);
 
-      const normalizedResult = buildResultFromPayload(data);
+      const normalizedResult = buildResultFromPayload(payload);
       setResult(normalizedResult);
-      const payloadRecord = data && typeof data === 'object' ? data as Record<string, unknown> : {};
+      const payloadRecord = payload;
       setLatestPayload(payloadRecord);
 
       const candidates = parseTop3Candidates(payloadRecord, normalizedResult);
-      const needsConfirm = typeof data?.need_confirm === 'boolean'
-        ? data.need_confirm
+      const needsConfirm = typeof payload.need_confirm === 'boolean'
+        ? payload.need_confirm
         : deriveNeedConfirm(payloadRecord, candidates, normalizedResult.displayConfidencePct);
       console.log('[confirm] candidates=', candidates);
       console.log('[confirm] derivedNeedConfirm=', needsConfirm);
