@@ -300,6 +300,8 @@ def _build_personalization_meta(flags: dict, farmer_id: str | None, base_id: str
         "cultivation_mode": flags.get("cultivation_mode"),
         "experience_level": flags.get("experience_level"),
         "risk_preference": flags.get("risk_preference"),
+        "risk_tags": flags.get("risk_tags") or [],
+        "risk_items": flags.get("risk_items") or [],
     }
 
 

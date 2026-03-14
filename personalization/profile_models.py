@@ -22,6 +22,16 @@ class TreatmentConstraint(BaseModel):
     prefer_organic: bool = Field(default=False, description="是否偏好有机/低残留方案")
 
 
+
+
+class RiskItem(BaseModel):
+    """农业风险标签条目。"""
+
+    code: str
+    label: str
+    level: Literal["low", "medium", "high"] = "low"
+    reason: str
+
 class BaseProfile(BaseModel):
     """单个生产基地的资料。"""
 
@@ -40,6 +50,10 @@ class BaseProfile(BaseModel):
     sowing_date: Optional[str] = None
     notes: Optional[str] = None
     weather_snapshot: Optional[str] = None
+    risk_tags: List[str] = Field(default_factory=list)
+    risk_items: List[RiskItem] = Field(default_factory=list)
+    risk_reasons: List[str] = Field(default_factory=list)
+    risk_updated_at: Optional[str] = None
 
     @model_validator(mode="after")
     def normalize_fields(self) -> "BaseProfile":
