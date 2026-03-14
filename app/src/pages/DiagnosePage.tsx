@@ -42,6 +42,10 @@ interface DiagnosisResult {
   profile_equipment?: string[];
   profile_cultivation_mode?: string;
   selected_branch?: "FAMILY" | "MID" | "ENTERPRISE" | string;
+  risk_tags?: string[];
+  risk_items?: Array<{ code?: string; label?: string; reason?: string; level?: string }>;
+  risk_summary?: string;
+  risk_updated_at?: string;
 }
 
 interface ProfileListItem {
@@ -930,6 +934,36 @@ export function DiagnosePage() {
                         </ul>
                       ) : (
                         <p className="text-white/50">暂无个性化影响说明</p>
+                      )}
+                    </div>
+                  </div>
+
+                  <div>
+                    <h4 className="text-white/80 font-medium mb-2">农业风险标签（辅助解释层）</h4>
+                    <div className="bg-white/5 rounded-xl p-4 border border-[#c8f7c5]/20 text-sm text-white/80 space-y-2">
+                      <div className="flex flex-wrap gap-2">
+                        {Array.isArray(result.risk_items) && result.risk_items.length > 0
+                          ? result.risk_items.map((item, idx) => (
+                            <Badge key={`${item.code || item.label || 'risk'}-${idx}`} className="bg-[#c8f7c5]/20 text-[#c8f7c5] border border-[#c8f7c5]/40">
+                              {item.label || item.code || '风险标签'}
+                            </Badge>
+                          ))
+                          : (Array.isArray(result.risk_tags) && result.risk_tags.length > 0
+                            ? result.risk_tags.map((tag) => (
+                              <Badge key={tag} className="bg-[#c8f7c5]/20 text-[#c8f7c5] border border-[#c8f7c5]/40">{tag}</Badge>
+                            ))
+                            : <span className="text-white/50">暂无风险标签</span>
+                          )}
+                      </div>
+                      {result.risk_summary ? <p className="text-white/70">风险摘要：{result.risk_summary}</p> : null}
+                      {Array.isArray(result.risk_items) && result.risk_items.length > 0 ? (
+                        <ul className="list-disc pl-5 space-y-1">
+                          {result.risk_items.slice(0, 3).map((item, idx) => (
+                            <li key={`risk-reason-${idx}`}>{item.reason || item.label || item.code}</li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <p className="text-xs text-white/60">风险标签仅用于解释层，原始字段仍是诊断与方案生成主依据。</p>
                       )}
                     </div>
                   </div>

@@ -111,6 +111,10 @@ class DiagnoseResponse(BaseModel):
     treatment: Optional[TreatmentPlan]
     personalization_applied: bool
     farmer_id: Optional[str]
+    risk_tags: list[str] = []
+    risk_items: list[dict[str, Any]] = []
+    risk_summary: str | None = None
+    risk_updated_at: str | None = None
     filtered: bool
     filtered_reasons: list[str]
     filtered_components: list[str]
@@ -302,6 +306,8 @@ def _build_personalization_meta(flags: dict, farmer_id: str | None, base_id: str
         "risk_preference": flags.get("risk_preference"),
         "risk_tags": flags.get("risk_tags") or [],
         "risk_items": flags.get("risk_items") or [],
+        "risk_updated_at": flags.get("risk_updated_at"),
+        "risk_summary": "、".join([str(item).strip() for item in (flags.get("risk_tags") or []) if str(item).strip()]) or None,
     }
 
 
@@ -691,6 +697,10 @@ async def diagnose_image(
         "elapsed_ms": round((time.perf_counter() - request_started) * 1000, 2),
         "image_confidence": final_state.get("image_confidence") if final_state else None,
         "treatment": treatment_or_none,
+        "risk_tags": list(flags.get("risk_tags") or []),
+        "risk_items": list(flags.get("risk_items") or []),
+        "risk_summary": "、".join([str(item).strip() for item in (flags.get("risk_tags") or []) if str(item).strip()]) or None,
+        "risk_updated_at": flags.get("risk_updated_at"),
         "meta": {
             **personalization_meta,
             "lat": lat,
@@ -709,6 +719,10 @@ async def diagnose_image(
             "model_fallback_reason": model_meta.get("model_fallback_reason"),
             "workflow_degraded": workflow_degraded,
             "degraded_reason": degraded_reason,
+            "risk_tags": list(flags.get("risk_tags") or []),
+            "risk_items": list(flags.get("risk_items") or []),
+            "risk_summary": "、".join([str(item).strip() for item in (flags.get("risk_tags") or []) if str(item).strip()]) or None,
+            "risk_updated_at": flags.get("risk_updated_at"),
         },
     }
     emit_node_event(trace_id, node="Persist", status="start", message="写入事件日志")
@@ -732,6 +746,10 @@ async def diagnose_image(
         treatment=treatment,
         personalization_applied=personalization_applied,
         farmer_id=farmer_id,
+        risk_tags=[str(item) for item in (flags.get("risk_tags") or [])],
+        risk_items=[item.model_dump() if hasattr(item, "model_dump") else item for item in (flags.get("risk_items") or [])],
+        risk_summary="、".join([str(item).strip() for item in (flags.get("risk_tags") or []) if str(item).strip()]) or None,
+        risk_updated_at=flags.get("risk_updated_at"),
         filtered=filtered,
         filtered_reasons=filtered_reasons,
         filtered_components=filtered_components,

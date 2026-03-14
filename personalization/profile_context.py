@@ -109,6 +109,7 @@ def build_personalization_flags(
                 "risk_tags": list(base_profile.risk_tags or []),
                 "risk_items": [item.model_dump() if hasattr(item, "model_dump") else item for item in (base_profile.risk_items or [])],
                 "risk_reasons": list(base_profile.risk_reasons or []),
+                "risk_updated_at": base_profile.risk_updated_at,
             }
         )
     return flags

@@ -49,6 +49,10 @@ interface DiagnosisEvent {
   preferOrganic: boolean | null;
   harvestWindowDays: number | null;
   personalizationReasons: string[];
+  riskTags: string[];
+  riskItems: Array<{ code: string; label: string; reason: string; level?: string }>;
+  riskSummary: string;
+  riskUpdatedAt: string;
   elapsedMs: number | null;
   treatment?: unknown;
   raw: Record<string, unknown>;
@@ -118,7 +122,7 @@ interface TraceSummaryItem {
 
 type SelectedBranchKey = 'FAMILY' | 'MID' | 'ENTERPRISE';
 
-type ModuleKey = 'kpi' | 'trend' | 'model' | 'filter' | 'recent' | 'detail' | 'disease' | 'farmerBase';
+type ModuleKey = 'kpi' | 'trend' | 'model' | 'filter' | 'risk' | 'recent' | 'detail' | 'disease' | 'farmerBase';
 
 type ModulePrefs = Record<ModuleKey, boolean>;
 type ModuleCollapse = Record<ModuleKey, boolean>;
@@ -128,6 +132,7 @@ const defaultModulePrefs: ModulePrefs = {
   trend: true,
   model: true,
   filter: true,
+  risk: true,
   recent: true,
   detail: true,
   disease: true,
@@ -139,6 +144,7 @@ const defaultCollapse: ModuleCollapse = {
   trend: false,
   model: false,
   filter: false,
+  risk: false,
   recent: false,
   detail: false,
   disease: false,
@@ -354,6 +360,7 @@ function resolvePersonalizationInfo(event: DiagnosisEvent, nodeMap?: TraceNodeMa
     { label: '有机偏好', value: preferOrganic === null ? '未设置' : (preferOrganic ? '是' : '否') },
     { label: '采收窗口', value: harvestWindow === null ? '未设置' : `${harvestWindow}天` },
     { label: '当前判定档位', value: getSelectedBranchLabel(selectedBranch) },
+    { label: '农业风险标签', value: event.riskTags.length > 0 ? event.riskTags.join('、') : '暂无' },
   ];
 }
 
@@ -378,6 +385,10 @@ function buildTraceSummary(rows: unknown[]): TraceSummaryItem[] {
     : (Array.isArray(kbOutputs.ingredients) ? kbOutputs.ingredients : []);
 
   const treatmentOutputs = getNodeOutputs(getLatestNode(nodeMap, 'treatment'));
+  const personalizationNode = getLatestNode(nodeMap, 'personalization');
+  const personalizationPayload = toRecord(personalizationNode?.payload);
+  const personalizationMeta = toRecord(personalizationPayload?.meta) ?? {};
+  const personalizationOutputs = toRecord(personalizationPayload?.outputs) ?? {};
   const supervisorHistory = (nodeMap.supervisor ?? []).map((node) => {
     const inputs = toRecord(node.inputs);
     const decision = toRecord(node.decision);
@@ -429,6 +440,11 @@ function buildTraceSummary(rows: unknown[]): TraceSummaryItem[] {
       { label: '触发过滤（treatment.outputs.filtered）', value: typeof treatmentOutputs.filtered === 'boolean' ? toYesNo(treatmentOutputs.filtered) : '' },
       { label: '过滤原因（treatment.outputs.filtered_reasons）', value: Array.isArray(treatmentOutputs.filtered_reasons) ? treatmentOutputs.filtered_reasons.map((item) => sanitizeTraceText(item)).filter(Boolean).join('、') : '' },
       { label: '个性化理由（treatment.outputs.personalization_reasons）', value: Array.isArray(treatmentOutputs.personalization_reasons) ? treatmentOutputs.personalization_reasons.map((item) => sanitizeTraceText(item)).filter(Boolean).slice(0, 3).join('；') : '' },
+    ]),
+    make('risk', '农业风险解释（risk）', [
+      { label: '风险标签（personalization.meta.risk_tags）', value: Array.isArray(personalizationMeta.risk_tags) ? personalizationMeta.risk_tags.map((item) => sanitizeTraceText(item)).filter(Boolean).join('、') : '' },
+      { label: '风险摘要（personalization.meta.risk_summary）', value: sanitizeTraceText(personalizationMeta.risk_summary) },
+      { label: '方案影响（treatment.outputs.risk_summary）', value: sanitizeTraceText(treatmentOutputs.risk_summary ?? personalizationOutputs.risk_summary) },
     ]),
     make('supervisor', '流程决策（supervisor）', [
       { label: '决策历史（supervisor.inputs/decision/outputs）', value: dedupSupervisor.map((item) => [item.step, item.nextAction, item.reason].filter(Boolean).join(' -> ')).filter(Boolean).join('；') },
@@ -526,6 +542,32 @@ function normalizeEvent(eventLike: unknown, index: number): DiagnosisEvent {
     personalizationReasons: Array.isArray(event.personalization_reasons)
       ? event.personalization_reasons.map((item) => readableText(item, '')).filter(Boolean)
       : [],
+    riskTags: Array.isArray(event.risk_tags)
+      ? event.risk_tags.map((item) => readableText(item, '')).filter(Boolean)
+      : (Array.isArray(meta?.risk_tags) ? meta.risk_tags.map((item) => readableText(item, '')).filter(Boolean) : []),
+    riskItems: Array.isArray(event.risk_items)
+      ? event.risk_items.map((item) => {
+        const obj = toRecord(item) ?? {};
+        return {
+          code: readableText(obj.code, ''),
+          label: readableText(obj.label, readableText(obj.code, '风险')),
+          reason: readableText(obj.reason, ''),
+          level: readableText(obj.level, ''),
+        };
+      }).filter((item) => Boolean(item.code || item.label || item.reason))
+      : (Array.isArray(meta?.risk_items)
+        ? meta.risk_items.map((item) => {
+          const obj = toRecord(item) ?? {};
+          return {
+            code: readableText(obj.code, ''),
+            label: readableText(obj.label, readableText(obj.code, '风险')),
+            reason: readableText(obj.reason, ''),
+            level: readableText(obj.level, ''),
+          };
+        }).filter((item) => Boolean(item.code || item.label || item.reason))
+        : []),
+    riskSummary: readableText(event.risk_summary ?? meta?.risk_summary, ''),
+    riskUpdatedAt: readableText(event.risk_updated_at ?? meta?.risk_updated_at, ''),
     elapsedMs: Number.isFinite(Number(event.elapsed_ms ?? meta?.elapsed_ms)) ? Number(event.elapsed_ms ?? meta?.elapsed_ms) : null,
     confidencePct: getConfidencePct(event),
     treatment: event.treatment,
@@ -888,6 +930,48 @@ export function DashboardPage() {
     return { plan, prevention };
   }, [selectedEvent]);
 
+  const riskDistribution = useMemo(() => {
+    const counts = new Map<string, number>();
+    filteredEvents.forEach((event) => {
+      const tags = event.riskTags.length > 0 ? event.riskTags : event.riskItems.map((item) => item.code || item.label).filter(Boolean);
+      tags.forEach((tag) => {
+        counts.set(tag, (counts.get(tag) || 0) + 1);
+      });
+    });
+    return Array.from(counts.entries())
+      .map(([tag, count]) => ({ tag, count }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 8);
+  }, [filteredEvents]);
+
+  const riskDiseaseTop = useMemo(() => {
+    const byRisk = new Map<string, Map<string, number>>();
+    filteredEvents.forEach((event) => {
+      const disease = event.disease || '未知病害';
+      const tags = event.riskTags.length > 0 ? event.riskTags : event.riskItems.map((item) => item.code || item.label).filter(Boolean);
+      tags.forEach((tag) => {
+        const diseaseMap = byRisk.get(tag) || new Map<string, number>();
+        diseaseMap.set(disease, (diseaseMap.get(disease) || 0) + 1);
+        byRisk.set(tag, diseaseMap);
+      });
+    });
+    return Array.from(byRisk.entries()).slice(0, 5).map(([tag, diseaseMap]) => ({
+      tag,
+      topDiseases: Array.from(diseaseMap.entries()).sort((a, b) => b[1] - a[1]).slice(0, 3),
+    }));
+  }, [filteredEvents]);
+
+  const selectedRiskSummary = useMemo(() => {
+    if (!selectedEvent) return { tags: [] as string[], reasons: [] as string[] };
+    const tags = selectedEvent.riskItems.length > 0
+      ? selectedEvent.riskItems.map((item) => item.label || item.code).filter(Boolean)
+      : selectedEvent.riskTags;
+    const reasons = selectedEvent.riskItems.length > 0
+      ? selectedEvent.riskItems.map((item) => item.reason).filter(Boolean)
+      : [];
+    return { tags, reasons };
+  }, [selectedEvent]);
+
   const kbSummary = useMemo(() => {
     const kbOutputs = getNodeOutputs(getLatestNode(traceNodeMap, 'kb_retrieval'));
     const kbDoc = toRecord(kbOutputs.kb_disease) ?? {};
@@ -1196,6 +1280,43 @@ export function DashboardPage() {
               )}
             </Card>
           )}
+
+          {modulePrefs.risk && (
+            <Card className="glass-card">
+              {renderModuleHeader('risk', '风险标签统计', <AlertCircle className="w-5 h-5 text-[#b8ddc7]" />)}
+              {!moduleCollapse.risk && (
+                <CardContent className="space-y-4">
+                  <div className="space-y-3">
+                    {riskDistribution.map((item) => {
+                      const max = Math.max(...riskDistribution.map((x) => x.count), 1);
+                      return (
+                        <div key={item.tag} className="space-y-1">
+                          <div className="flex items-center justify-between text-sm">
+                            <span className="text-white/70 truncate pr-2">{item.tag}</span>
+                            <span className="text-[#b8ddc7]">{item.count}</span>
+                          </div>
+                          <div className="h-2 bg-white/10 rounded-full overflow-hidden">
+                            <div className="h-full bg-[#6fa98b]" style={{ width: `${(item.count / max) * 100}%` }} />
+                          </div>
+                        </div>
+                      );
+                    })}
+                    {riskDistribution.length === 0 && <p className="text-white/40 text-sm">暂无风险标签统计</p>}
+                  </div>
+
+                  <div className="space-y-2">
+                    <p className="text-white/60 text-xs">风险标签 × 病害 Top3</p>
+                    {riskDiseaseTop.length > 0 ? riskDiseaseTop.map((item) => (
+                      <div key={item.tag} className="bg-white/5 rounded-lg p-2 text-xs">
+                        <div className="text-[#c8f7c5] mb-1">{item.tag}</div>
+                        <div className="text-white/80">{item.topDiseases.map((pair) => `${pair[0]}(${pair[1]})`).join('、') || '暂无'}</div>
+                      </div>
+                    )) : <p className="text-white/40 text-sm">暂无关联统计</p>}
+                  </div>
+                </CardContent>
+              )}
+            </Card>
+          )}
         </div>
       )}
 
@@ -1352,6 +1473,19 @@ export function DashboardPage() {
                         <div className="text-white mt-1">{item.value || '未设置'}</div>
                       </div>
                     ))}
+                  </div>
+                  <div className="bg-white/5 rounded-lg p-2 space-y-2">
+                    <div className="text-white/60 text-xs">农业风险标签（解释层）</div>
+                    <div className="flex flex-wrap gap-1">
+                      {selectedRiskSummary.tags.length > 0 ? selectedRiskSummary.tags.map((tag) => (
+                        <Badge key={tag} className="bg-[#c8f7c5]/20 text-[#c8f7c5] border border-[#c8f7c5]/40">{tag}</Badge>
+                      )) : <span className="text-white/40 text-xs">暂无风险标签</span>}
+                    </div>
+                    {selectedRiskSummary.reasons.length > 0 ? (
+                      <ul className="list-disc pl-5 text-white/80 text-xs space-y-1">
+                        {selectedRiskSummary.reasons.slice(0, 3).map((reason, idx) => <li key={`risk-reason-${idx}`}>{reason}</li>)}
+                      </ul>
+                    ) : null}
                   </div>
                 </TabsContent>
                 <TabsContent value="trace" className="space-y-2 mt-3">
