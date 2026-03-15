@@ -25,9 +25,7 @@ class DiseaseKnowledge:
             "晚疫病": "晚疫病会导致番茄果实和叶片快速腐烂，病斑呈水渍状，在潮湿环境下发展迅速。",
             "黄化曲叶病毒病": "由白粉虱传播的病毒病，导致叶片黄化、卷曲、变小，植株生长受阻。",
             "叶霉病": "叶霉病在叶片背面产生灰褐色霉层，正面出现黄色病斑，严重时叶片枯死。",
-            "白粉病": "白粉病在叶片表面形成白色粉状物，影响光合作用，导致叶片早衰。",
             "细菌性斑点病": "细菌性病害，在叶片和果实上形成小斑点，逐渐扩大并可能穿孔。",
-            "灰霉病": "灰霉病在潮湿环境下发生，导致果实和叶片腐烂，表面产生灰色霉层。",
             "叶斑病": "叶斑病会在叶片上形成褐色或灰褐色病斑，影响光合作用。",
             "花叶病毒病": "花叶病毒病导致叶片出现花叶斑驳、畸形，植株生长受抑。",
             "蜘蛛螨": "蜘蛛螨取食叶片汁液，导致叶片失绿、发黄并出现细小斑点。",
@@ -42,6 +40,9 @@ class DiseaseKnowledge:
             diseases = default_diseases
             save_diseases({"diseases": diseases})
 
+        # canonical disease key 仅保留图片10类
+        canonical_order = ["健康", "早疫病", "晚疫病", "黄化曲叶病毒病", "叶霉病", "细菌性斑点病", "叶斑病", "蜘蛛螨", "靶斑病", "花叶病毒病"]
+        diseases = {name: diseases.get(name, {"description": default_descriptions.get(name, "")}) for name in canonical_order}
         self.disease_classes = list(diseases.keys())
         self.disease_descriptions = {
             name: info.get("description", "") if isinstance(info, dict) else ""
