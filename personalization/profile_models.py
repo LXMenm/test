@@ -29,8 +29,19 @@ class RiskItem(BaseModel):
 
     code: str
     label: str
-    level: Literal["low", "medium", "high"] = "low"
+    level: Literal["low", "medium", "high", "warning"] = "low"
     reason: str
+    source: Optional[
+        Literal[
+            "structured_weather",
+            "weather_text",
+            "growth_stage",
+            "harvest_window",
+            "sowing_date_estimate",
+            "conflict_check",
+            "context_check",
+        ]
+    ] = None
 
 class BaseProfile(BaseModel):
     """单个生产基地的资料。"""
@@ -50,6 +61,9 @@ class BaseProfile(BaseModel):
     sowing_date: Optional[str] = None
     notes: Optional[str] = None
     weather_snapshot: Optional[str] = None
+    relative_humidity_2m: Optional[float] = None
+    precipitation: Optional[float] = None
+    rain_risk: Optional[float] = None
     risk_tags: List[str] = Field(default_factory=list)
     risk_items: List[RiskItem] = Field(default_factory=list)
     risk_reasons: List[str] = Field(default_factory=list)
