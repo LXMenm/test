@@ -60,18 +60,6 @@
       ],
       "disease_type": "fungal"
     },
-    "白粉病": {
-      "description": "白粉病在叶片表面形成白色粉状物，影响光合作用，导致叶片早衰。",
-      "image_labels": [
-        "Tomato___Powdery_mildew"
-      ],
-      "canonical_symptoms": [
-        "白色粉状物",
-        "叶面白粉",
-        "叶片早衰"
-      ],
-      "disease_type": "fungal"
-    },
     "细菌性斑点病": {
       "description": "细菌性病害，在叶片和果实上形成小斑点，逐渐扩大并可能穿孔。",
       "image_labels": [
@@ -84,18 +72,6 @@
       ],
       "disease_type": "bacterial"
     },
-    "灰霉病": {
-      "description": "灰霉病在潮湿环境下发生，导致果实和叶片腐烂，表面产生灰色霉层。",
-      "image_labels": [
-        "Tomato___Gray_mold"
-      ],
-      "canonical_symptoms": [
-        "灰色霉层",
-        "花果腐烂",
-        "高湿易发"
-      ],
-      "disease_type": "fungal"
-    },
     "叶斑病": {
       "description": "叶斑病会在叶片上形成褐色或灰褐色病斑，影响光合作用。",
       "image_labels": [
@@ -107,18 +83,6 @@
         "叶片黄化"
       ],
       "disease_type": "fungal"
-    },
-    "花叶病毒病": {
-      "description": "花叶病毒病导致叶片出现花叶斑驳、畸形，植株生长受抑。",
-      "image_labels": [
-        "Tomato___Tomato_mosaic_virus"
-      ],
-      "canonical_symptoms": [
-        "花叶斑驳",
-        "皱缩畸形",
-        "长势受抑"
-      ],
-      "disease_type": "viral"
     },
     "蜘蛛螨": {
       "description": "蜘蛛螨取食叶片汁液，导致叶片失绿、发黄并出现细小斑点。",
@@ -144,16 +108,15 @@
       ],
       "disease_type": "fungal"
     },
-    "病毒病": {
-      "description": "由病毒引起的番茄病害（兼容旧标签）",
+    "花叶病毒病": {
+      "description": "花叶病毒病导致叶片出现花叶斑驳、畸形，植株生长受抑。",
       "image_labels": [
-        "Tomato___Tomato_Yellow_Leaf_Curl_Virus",
         "Tomato___Tomato_mosaic_virus"
       ],
       "canonical_symptoms": [
-        "发黄",
-        "卷曲",
-        "花叶"
+        "花叶斑驳",
+        "皱缩畸形",
+        "长势受抑"
       ],
       "disease_type": "viral"
     }

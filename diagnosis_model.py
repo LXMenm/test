@@ -414,7 +414,6 @@ class DiseaseDiagnosisEngine:
         facility_text = str(facility or "").lower()
         if any(x in facility_text for x in ["温室", "大棚", "greenhouse", "棚"]):
             priors["叶霉病"] = priors.get("叶霉病", 0.0) + 0.06
-            priors["灰霉病"] = priors.get("灰霉病", 0.0) + 0.06
         if any(x in facility_text for x in ["露地", "open", "field"]):
             priors["早疫病"] = priors.get("早疫病", 0.0) + 0.05
             priors["晚疫病"] = priors.get("晚疫病", 0.0) + 0.05

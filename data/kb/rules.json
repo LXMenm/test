@@ -138,37 +138,6 @@
       "confidence": 0.6
     },
     {
-      "rule_id": "R005",
-      "crop_type": "番茄",
-      "disease": "白粉病",
-      "symptoms_any": [
-        "白粉",
-        "发黄",
-        "叶斑"
-      ],
-      "symptom_weights": {
-        "白粉": 0.56,
-        "发黄": 0.2,
-        "叶斑": 0.24
-      },
-      "growth_stage_weights": {
-        "VEGETATIVE": 0.05,
-        "FLOWERING": 0.06
-      },
-      "environment_weights": {
-        "干湿波动": 0.08,
-        "通风差": 0.06
-      },
-      "base_confidence": 0.58,
-      "evidence": "白粉病特征为叶面白色粉状物并导致叶片早衰。",
-      "symptoms": [
-        "白粉",
-        "发黄",
-        "叶斑"
-      ],
-      "confidence": 0.58
-    },
-    {
       "rule_id": "R006",
       "crop_type": "番茄",
       "disease": "细菌性斑点病",
@@ -199,39 +168,6 @@
         "发黄"
       ],
       "confidence": 0.61
-    },
-    {
-      "rule_id": "R007",
-      "crop_type": "番茄",
-      "disease": "灰霉病",
-      "symptoms_any": [
-        "霉斑",
-        "腐烂",
-        "发黄"
-      ],
-      "symptom_weights": {
-        "霉斑": 0.42,
-        "腐烂": 0.38,
-        "发黄": 0.2
-      },
-      "growth_stage_weights": {
-        "FLOWERING": 0.1,
-        "FRUIT_SET": 0.1,
-        "FRUITING": 0.08
-      },
-      "environment_weights": {
-        "连续高湿": 0.14,
-        "通风差": 0.12,
-        "低温高湿": 0.1
-      },
-      "base_confidence": 0.63,
-      "evidence": "灰霉病常在花果部出现灰色霉层并引起软腐。",
-      "symptoms": [
-        "霉斑",
-        "腐烂",
-        "发黄"
-      ],
-      "confidence": 0.63
     },
     {
       "rule_id": "R008",

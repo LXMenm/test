@@ -12,6 +12,8 @@ from .diagnosis_kb import RuleDiagnosisKnowledge
 from .treatment_kb import TreatmentKnowledge
 from .kb_store import load_diseases, load_symptom_map
 
+CANONICAL_DISEASES_10 = ["健康", "早疫病", "晚疫病", "黄化曲叶病毒病", "叶霉病", "细菌性斑点病", "叶斑病", "蜘蛛螨", "靶斑病", "花叶病毒病"]
+
 
 class KnowledgeBaseManager:
     """知识库统一管理类。"""
@@ -28,7 +30,7 @@ class KnowledgeBaseManager:
         self.disease_meta: Dict[str, Dict[str, Any]] = {
             str(name): info for name, info in diseases_payload.items() if isinstance(info, dict)
         }
-        self.canonical_diseases: List[str] = list(self.disease_meta.keys())
+        self.canonical_diseases: List[str] = [d for d in CANONICAL_DISEASES_10 if d in self.disease_meta]
 
         self.image_label_to_disease: Dict[str, str] = {}
         for disease, meta in self.disease_meta.items():
@@ -37,7 +39,7 @@ class KnowledgeBaseManager:
                 labels = [labels]
             for label in labels:
                 key = str(label).strip()
-                if key:
+                if key and disease in self.canonical_diseases:
                     self.image_label_to_disease[key] = disease
 
         symptom_payload = load_symptom_map()
@@ -53,7 +55,7 @@ class KnowledgeBaseManager:
         }
 
     def get_disease_classes(self):
-        return self.disease_kb.get_disease_classes()
+        return list(self.canonical_diseases)
 
     def get_disease_description(self, disease_name):
         return self.disease_kb.get_disease_description(disease_name)
@@ -82,7 +84,7 @@ class KnowledgeBaseManager:
         seen = set()
         for symptom in self.normalize_symptoms(symptoms):
             for disease in self.symptom_candidates.get(symptom, []):
-                if disease not in seen:
+                if disease in self.canonical_diseases and disease not in seen:
                     seen.add(disease)
                     candidates.append(disease)
         return candidates
@@ -109,7 +111,7 @@ class KnowledgeBaseManager:
 
         candidate_pool = self.get_candidate_diseases_from_symptoms(normalized_symptoms)
         if not candidate_pool:
-            candidate_pool = [rule.get("disease") for rule in rules if rule.get("disease")]
+            candidate_pool = [rule.get("disease") for rule in rules if rule.get("disease") in self.canonical_diseases]
 
         stage = str(growth_stage or "").strip().upper()
         env_text = "\n".join([str(environment or ""), str(facility or ""), str(province or "")]).lower()
@@ -149,7 +151,7 @@ class KnowledgeBaseManager:
         total = sum(v for v in scores.values() if v > 0)
         if total <= 0:
             return {k: 1.0 / len(scores) for k in scores}
-        return {k: v / total for k, v in scores.items()}
+        return {k: v / total for k, v in scores.items() if k in self.canonical_diseases}
 
     def rule_diagnosis(self, crop, symptoms):
         if not symptoms:
