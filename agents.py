@@ -210,6 +210,7 @@ def reception_agent(state: CropDiseaseState) -> CropDiseaseState:
     normalized_symptoms = kb_manager.normalize_symptoms(symptoms)
     state["symptoms"] = symptoms
     state["structured_symptoms"] = {"normalized_symptoms": normalized_symptoms}
+    state["normalized_symptoms"] = normalized_symptoms
     state["image_path"] = image_path
     state["current_step"] = "reception_complete"
     state["messages"] = [message]
@@ -270,7 +271,7 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
     flags = state.get("personalization_flags", {}) or {}
     flags["need_confirm"] = False
     policy = state.get("personalization_policy") or {}
-    hard_constraints = policy.get("hard_constraints") if isinstance(policy, dict) else {}
+    hard_constraints = (policy.get("hard_constraints") or {}) if isinstance(policy, dict) else {}
     personalization_context = state.get("personalization_context")
 
     facility = state.get("facility") or flags.get("facility")
@@ -297,6 +298,7 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
 
     normalized_symptoms = kb_manager.normalize_symptoms(symptoms)
     state["structured_symptoms"] = {"normalized_symptoms": normalized_symptoms}
+    state["normalized_symptoms"] = normalized_symptoms
 
     image_probs: dict[str, float] = {}
     text_probs: dict[str, float] = {}
@@ -367,26 +369,26 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
     except Exception:
         prior_probs = {}
 
-    # 融合分支
+    image_top3 = sorted(image_probs.items(), key=lambda x: x[1], reverse=True)[:3]
+    text_top3 = sorted(text_probs.items(), key=lambda x: x[1], reverse=True)[:3]
+    text_confidence = float(text_top3[0][1]) if text_top3 else 0.0
+
     if hasattr(diagnosis_engine, "fuse_multimodal_probs"):
-        fusion_probs, weights = diagnosis_engine.fuse_multimodal_probs(
+        fusion_probs, fusion_meta = diagnosis_engine.fuse_multimodal_probs(
             image_probs=image_probs,
             text_probs=text_probs,
             prior_probs=prior_probs,
             image_confidence=image_confidence,
+            text_confidence=text_confidence,
         )
     else:
-        # 兼容旧引擎：简单回退
         fusion_probs = image_probs or text_probs or prior_probs or {"健康": 1.0}
-        weights = {"image": 1.0 if image_probs else 0.0, "text": 1.0 if text_probs and not image_probs else 0.0, "prior": 0.0}
+        fusion_meta = {"normalized_weights": {"image": 1.0 if image_probs else 0.0, "text": 1.0 if text_probs and not image_probs else 0.0, "prior": 0.0}}
 
-    image_top3 = sorted(image_probs.items(), key=lambda x: x[1], reverse=True)[:3]
-    text_top3 = sorted(text_probs.items(), key=lambda x: x[1], reverse=True)[:3]
     fusion_top3 = sorted(fusion_probs.items(), key=lambda x: x[1], reverse=True)[:3]
 
     image_top1 = image_top3[0][0] if image_top3 else None
     text_top1 = text_top3[0][0] if text_top3 else None
-    text_confidence = float(text_top3[0][1]) if text_top3 else 0.0
     final_disease = fusion_top3[0][0] if fusion_top3 else (image_top1 or text_top1 or "健康")
     final_confidence = float(fusion_top3[0][1]) if fusion_top3 else max(image_confidence, text_confidence, 0.0)
 
@@ -397,11 +399,16 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
     if hasattr(diagnosis_engine, "build_diagnosis_evidence"):
         diagnosis_evidence = diagnosis_engine.build_diagnosis_evidence(
             normalized_symptoms=normalized_symptoms,
+            raw_symptoms=symptoms,
             image_probs=image_probs,
             text_probs=text_probs,
+            prior_probs=prior_probs,
             fusion_probs=fusion_probs,
-            weights=weights,
+            fusion_meta=fusion_meta if isinstance(fusion_meta, dict) else {},
             modality_conflict_flag=modality_conflict_flag,
+            final_disease=final_disease,
+            final_confidence=final_confidence,
+            final_source="fusion",
         )
     else:
         diagnosis_evidence = {
@@ -409,7 +416,8 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
             "image_top3": image_top3,
             "text_top3": text_top3,
             "fusion_top3": fusion_top3,
-            "weights": weights,
+            "weights": (fusion_meta.get("normalized_weights") if isinstance(fusion_meta, dict) else {}),
+            "fusion_meta": fusion_meta,
             "modality_conflict_flag": modality_conflict_flag,
             "summary": f"融合诊断Top1: {final_disease}",
         }
@@ -485,6 +493,7 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
     state["text_top3"] = [(name, float(prob)) for name, prob in text_top3]
     state["fusion_top3"] = [(name, float(prob)) for name, prob in fusion_top3]
     state["diagnosis_evidence"] = diagnosis_evidence
+    state["fusion_meta"] = fusion_meta if isinstance(fusion_meta, dict) else {}
     state["modality_conflict_flag"] = modality_conflict_flag
     state["personalization_flags"] = flags
     state["current_step"] = "diagnosis_complete"
@@ -510,7 +519,8 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
             "text_confidence": text_confidence,
             "final_confidence": final_confidence,
             "final_source": "fusion",
-            "weights": weights,
+            "weights": (fusion_meta.get("normalized_weights") if isinstance(fusion_meta, dict) else {}),
+            "fusion_meta": fusion_meta,
             "image_top3": image_top3,
             "text_top3": text_top3,
             "fusion_top3": fusion_top3,
@@ -622,7 +632,7 @@ def treatment_agent(state: CropDiseaseState) -> CropDiseaseState:
     flags = state.get("personalization_flags", {}) or {}
     policy = state.get("personalization_policy") or {}
     policy_reasons = dedupe_reasons(state.get("personalization_reasons") or flags.get("personalization_reasons") or [])
-    hard_constraints = policy.get("hard_constraints") if isinstance(policy, dict) else {}
+    hard_constraints = (policy.get("hard_constraints") or {}) if isinstance(policy, dict) else {}
     hard_constraints = hard_constraints if isinstance(hard_constraints, dict) else {}
     kb_snapshot = state.get("kb_snapshot") or {}
     base_info = {

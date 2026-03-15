@@ -60,6 +60,8 @@ class CropDiseaseState(TypedDict):
     text_probs: Optional[Dict[str, float]]
     prior_probs: Optional[Dict[str, float]]
     fusion_probs: Optional[Dict[str, float]]
+    normalized_symptoms: Optional[List[str]]
+    fusion_meta: Optional[Dict[str, Any]]
 
     # 治疗方案
     treatment_plan: Optional[str]  # 具体治疗方案
@@ -138,6 +140,8 @@ def create_initial_state(
         text_probs=None,
         prior_probs=None,
         fusion_probs=None,
+        normalized_symptoms=None,
+        fusion_meta=None,
         treatment_plan=None,
         prevention_advice=None,
         current_step="start",

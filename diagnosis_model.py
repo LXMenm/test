@@ -441,59 +441,147 @@ class DiseaseDiagnosisEngine:
         text_probs: Dict[str, float],
         prior_probs: Dict[str, float],
         image_confidence: float = 0.0,
-    ) -> Tuple[Dict[str, float], Dict[str, float]]:
-        """图像/文本/先验融合。"""
+        text_confidence: float = 0.0,
+    ) -> Tuple[Dict[str, float], Dict[str, object]]:
+        """图像/文本/先验融合（动态权重，避免缺失模态稀释主模态）。"""
         image_probs = self._normalized(image_probs)
         text_probs = self._normalized(text_probs)
         prior_probs = self._normalized(prior_probs)
 
         has_image = bool(image_probs)
         has_text = bool(text_probs)
+        has_prior = bool(prior_probs)
         reliable_image = image_confidence >= 0.6
+        reliable_text = text_confidence >= 0.6
 
-        if has_image and has_text and reliable_image:
-            weights = {"image": 0.60, "text": 0.30, "prior": 0.10}
-        elif has_image and has_text:
-            weights = {"image": 0.40, "text": 0.50, "prior": 0.10}
+        image_top3 = self._topk(image_probs, 3)
+        text_top3 = self._topk(text_probs, 3)
+        prior_top3 = self._topk(prior_probs, 3)
+        image_top1 = image_top3[0][0] if image_top3 else None
+        text_top1 = text_top3[0][0] if text_top3 else None
+        conflict = bool(has_image and has_text and image_top1 and text_top1 and image_top1 != text_top1)
+
+        base_weights = {"image": 0.0, "text": 0.0, "prior": 0.0}
+        confidence_drop_reason = None
+
+        if has_image and has_text:
+            if conflict:
+                base_weights = {"image": 0.45, "text": 0.45, "prior": 0.10 if has_prior else 0.0}
+                confidence_drop_reason = "image_text_conflict"
+            elif reliable_image and reliable_text:
+                base_weights = {"image": 0.60, "text": 0.35, "prior": 0.05 if has_prior else 0.0}
+            elif reliable_image:
+                base_weights = {"image": 0.65, "text": 0.30, "prior": 0.05 if has_prior else 0.0}
+            else:
+                base_weights = {"image": 0.40, "text": 0.55, "prior": 0.05 if has_prior else 0.0}
         elif has_image:
-            weights = {"image": 0.90, "text": 0.00, "prior": 0.10}
+            # IMAGE_ONLY：prior 只能弱修正，避免 0.97 被异常拉低。
+            base_weights = {"image": 0.95, "text": 0.0, "prior": 0.05 if has_prior else 0.0}
+        elif has_text:
+            base_weights = {"image": 0.0, "text": 0.90, "prior": 0.10 if has_prior else 0.0}
         else:
-            weights = {"image": 0.00, "text": 0.85 if has_text else 0.0, "prior": 0.15 if has_text else 1.0}
+            base_weights = {"image": 0.0, "text": 0.0, "prior": 1.0 if has_prior else 0.0}
+
+        # 仅对存在模态做权重重分配，缺失模态不参与。
+        active = {
+            "image": has_image,
+            "text": has_text,
+            "prior": has_prior and base_weights.get("prior", 0.0) > 0,
+        }
+        active_sum = sum(base_weights[k] for k, on in active.items() if on)
+        if active_sum <= 0:
+            normalized_weights = {"image": 0.0, "text": 0.0, "prior": 0.0}
+        else:
+            normalized_weights = {
+                k: (base_weights[k] / active_sum if active.get(k) else 0.0)
+                for k in ["image", "text", "prior"]
+            }
 
         keys = set(image_probs) | set(text_probs) | set(prior_probs)
         if not keys:
-            return {"健康": 1.0}, weights
+            meta = {
+                "has_image": has_image,
+                "has_text": has_text,
+                "has_prior": has_prior,
+                "image_reliable": reliable_image,
+                "text_reliable": reliable_text,
+                "normalized_weights": normalized_weights,
+                "pre_fusion_top1": {"image": image_top3[:1], "text": text_top3[:1], "prior": prior_top3[:1]},
+                "pre_fusion_top3": {"image": image_top3, "text": text_top3, "prior": prior_top3},
+                "post_fusion_top3": [("健康", 1.0)],
+                "confidence_drop_reason": confidence_drop_reason,
+            }
+            return {"健康": 1.0}, meta
 
         fused = {}
         for key in keys:
             fused[key] = (
-                weights["image"] * image_probs.get(key, 0.0)
-                + weights["text"] * text_probs.get(key, 0.0)
-                + weights["prior"] * prior_probs.get(key, 0.0)
+                normalized_weights["image"] * image_probs.get(key, 0.0)
+                + normalized_weights["text"] * text_probs.get(key, 0.0)
+                + normalized_weights["prior"] * prior_probs.get(key, 0.0)
             )
-        return self._normalized(fused), weights
+        fused = self._normalized(fused)
+        meta = {
+            "has_image": has_image,
+            "has_text": has_text,
+            "has_prior": has_prior,
+            "image_reliable": reliable_image,
+            "text_reliable": reliable_text,
+            "normalized_weights": normalized_weights,
+            "pre_fusion_top1": {"image": image_top3[:1], "text": text_top3[:1], "prior": prior_top3[:1]},
+            "pre_fusion_top3": {"image": image_top3, "text": text_top3, "prior": prior_top3},
+            "post_fusion_top3": self._topk(fused, 3),
+            "confidence_drop_reason": confidence_drop_reason,
+        }
+        return fused, meta
 
     def build_diagnosis_evidence(
         self,
         normalized_symptoms: List[str],
+        raw_symptoms: List[str],
         image_probs: Dict[str, float],
         text_probs: Dict[str, float],
+        prior_probs: Dict[str, float],
         fusion_probs: Dict[str, float],
-        weights: Dict[str, float],
+        fusion_meta: Dict[str, object],
         modality_conflict_flag: bool,
+        final_disease: str,
+        final_confidence: float,
+        final_source: str,
     ) -> Dict[str, object]:
         image_top3 = self._topk(image_probs, 3)
         text_top3 = self._topk(text_probs, 3)
+        prior_top3 = self._topk(prior_probs, 3)
         fusion_top3 = self._topk(fusion_probs, 3)
-        summary = f"融合诊断Top1: {fusion_top3[0][0]} ({fusion_top3[0][1]:.2f})" if fusion_top3 else "无可用证据"
+        concise_summary = f"融合诊断Top1: {final_disease} ({final_confidence:.2f})" if fusion_top3 else "无可用证据"
+        detailed_reason = (
+            f"图像top1={image_top3[0][0]}({image_top3[0][1]:.2f})；" if image_top3 else "图像分支缺失；"
+        )
+        detailed_reason += (
+            f"文本top1={text_top3[0][0]}({text_top3[0][1]:.2f})；" if text_top3 else "文本分支缺失；"
+        )
+        if prior_top3:
+            detailed_reason += f"先验top1={prior_top3[0][0]}({prior_top3[0][1]:.2f})；"
+        detailed_reason += f"融合后={final_disease}({final_confidence:.2f})。"
+        if modality_conflict_flag:
+            detailed_reason += "图文top1冲突，已采用保守融合权重。"
+
         return {
             "normalized_symptoms": normalized_symptoms,
+            "raw_symptoms": raw_symptoms,
             "image_top3": image_top3,
             "text_top3": text_top3,
+            "prior_top3": prior_top3,
             "fusion_top3": fusion_top3,
-            "weights": weights,
+            "weights": fusion_meta.get("normalized_weights") if isinstance(fusion_meta, dict) else {},
+            "fusion_meta": fusion_meta,
             "modality_conflict_flag": modality_conflict_flag,
-            "summary": summary,
+            "final_disease": final_disease,
+            "final_confidence": final_confidence,
+            "final_source": final_source,
+            "concise_summary": concise_summary,
+            "detailed_reason": detailed_reason,
+            "summary": concise_summary,
         }
 
 

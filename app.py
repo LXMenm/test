@@ -139,6 +139,11 @@ class DiagnoseResponse(BaseModel):
     model_fallback_reason: list[str] | None = None
     workflow_degraded: bool = False
     degraded_reason: str | None = None
+    text_top3: list[tuple[str, float]] = []
+    fusion_top3: list[tuple[str, float]] = []
+    diagnosis_evidence: dict[str, Any] | None = None
+    modality_conflict_flag: bool | None = None
+    normalized_symptoms: list[str] = []
 
 
 class SPAStaticFiles(StaticFiles):
@@ -570,6 +575,11 @@ async def diagnose_image(
     final_state = None
     workflow_degraded = False
     degraded_reason: str | None = None
+    text_top3: list[tuple[str, float]] = []
+    fusion_top3: list[tuple[str, float]] = []
+    diagnosis_evidence: dict[str, Any] | None = None
+    modality_conflict_flag: bool | None = None
+    normalized_symptoms: list[str] = []
     try:
         query_text = build_trace_query(
             crop_type=crop_type,
@@ -772,6 +782,11 @@ async def diagnose_image(
         model_backend=model_meta.get("backend"),
         resolved_model_path=model_meta.get("resolved_model_path"),
         model_fallback_reason=model_meta.get("model_fallback_reason"),
+        text_top3=list((final_state or {}).get("text_top3") or []),
+        fusion_top3=list((final_state or {}).get("fusion_top3") or []),
+        diagnosis_evidence=(final_state or {}).get("diagnosis_evidence"),
+        modality_conflict_flag=(final_state or {}).get("modality_conflict_flag"),
+        normalized_symptoms=list((final_state or {}).get("normalized_symptoms") or ((final_state or {}).get("structured_symptoms") or {}).get("normalized_symptoms") or []),
         workflow_degraded=workflow_degraded,
         degraded_reason=degraded_reason,
     )
