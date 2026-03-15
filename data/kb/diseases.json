@@ -1,40 +1,161 @@
 {
   "diseases": {
     "健康": {
-      "description": "番茄植株生长正常，无任何病害症状。"
+      "description": "番茄植株生长正常，无任何病害症状。",
+      "image_labels": [
+        "Tomato___healthy"
+      ],
+      "canonical_symptoms": [
+        "无明显病斑",
+        "长势正常",
+        "叶片色泽均匀"
+      ],
+      "disease_type": "healthy"
     },
     "早疫病": {
-      "description": "早疫病是番茄常见真菌性病害，在叶片上形成同心轮纹状病斑，边缘有黄色晕圈。"
+      "description": "早疫病是番茄常见真菌性病害，在叶片上形成同心轮纹状病斑，边缘有黄色晕圈。",
+      "image_labels": [
+        "Tomato___Early_blight"
+      ],
+      "canonical_symptoms": [
+        "同心轮纹病斑",
+        "叶片发黄",
+        "叶斑扩展"
+      ],
+      "disease_type": "fungal"
     },
     "晚疫病": {
-      "description": "晚疫病会导致番茄果实和叶片快速腐烂，病斑呈水渍状，在潮湿环境下发展迅速。"
+      "description": "晚疫病会导致番茄果实和叶片快速腐烂，病斑呈水渍状，在潮湿环境下发展迅速。",
+      "image_labels": [
+        "Tomato___Late_blight"
+      ],
+      "canonical_symptoms": [
+        "水渍状病斑",
+        "湿腐",
+        "叶果腐烂"
+      ],
+      "disease_type": "fungal"
     },
     "黄化曲叶病毒病": {
-      "description": "由白粉虱传播的病毒病，导致叶片黄化、卷曲、变小，植株生长受阻。"
+      "description": "由白粉虱传播的病毒病，导致叶片黄化、卷曲、变小，植株生长受阻。",
+      "image_labels": [
+        "Tomato___Tomato_Yellow_Leaf_Curl_Virus"
+      ],
+      "canonical_symptoms": [
+        "叶片发黄",
+        "卷曲",
+        "植株矮化"
+      ],
+      "disease_type": "viral"
     },
     "叶霉病": {
-      "description": "叶霉病在叶片背面产生灰褐色霉层，正面出现黄色病斑，严重时叶片枯死。"
+      "description": "叶霉病在叶片背面产生灰褐色霉层，正面出现黄色病斑，严重时叶片枯死。",
+      "image_labels": [
+        "Tomato___Leaf_Mold"
+      ],
+      "canonical_symptoms": [
+        "叶背霉层",
+        "黄斑",
+        "潮湿环境加重"
+      ],
+      "disease_type": "fungal"
     },
     "白粉病": {
-      "description": "白粉病在叶片表面形成白色粉状物，影响光合作用，导致叶片早衰。"
+      "description": "白粉病在叶片表面形成白色粉状物，影响光合作用，导致叶片早衰。",
+      "image_labels": [
+        "Tomato___Powdery_mildew"
+      ],
+      "canonical_symptoms": [
+        "白色粉状物",
+        "叶面白粉",
+        "叶片早衰"
+      ],
+      "disease_type": "fungal"
     },
     "细菌性斑点病": {
-      "description": "细菌性病害，在叶片和果实上形成小斑点，逐渐扩大并可能穿孔。"
+      "description": "细菌性病害，在叶片和果实上形成小斑点，逐渐扩大并可能穿孔。",
+      "image_labels": [
+        "Tomato___Bacterial_spot"
+      ],
+      "canonical_symptoms": [
+        "小褐斑",
+        "油渍状斑点",
+        "果面斑点"
+      ],
+      "disease_type": "bacterial"
     },
     "灰霉病": {
-      "description": "灰霉病在潮湿环境下发生，导致果实和叶片腐烂，表面产生灰色霉层。"
+      "description": "灰霉病在潮湿环境下发生，导致果实和叶片腐烂，表面产生灰色霉层。",
+      "image_labels": [
+        "Tomato___Gray_mold"
+      ],
+      "canonical_symptoms": [
+        "灰色霉层",
+        "花果腐烂",
+        "高湿易发"
+      ],
+      "disease_type": "fungal"
     },
     "叶斑病": {
-      "description": "叶斑病会在叶片上形成褐色或灰褐色病斑，影响光合作用。"
+      "description": "叶斑病会在叶片上形成褐色或灰褐色病斑，影响光合作用。",
+      "image_labels": [
+        "Tomato___Septoria_leaf_spot"
+      ],
+      "canonical_symptoms": [
+        "灰褐小斑",
+        "叶斑密集",
+        "叶片黄化"
+      ],
+      "disease_type": "fungal"
     },
     "花叶病毒病": {
-      "description": "花叶病毒病导致叶片出现花叶斑驳、畸形，植株生长受抑。"
+      "description": "花叶病毒病导致叶片出现花叶斑驳、畸形，植株生长受抑。",
+      "image_labels": [
+        "Tomato___Tomato_mosaic_virus"
+      ],
+      "canonical_symptoms": [
+        "花叶斑驳",
+        "皱缩畸形",
+        "长势受抑"
+      ],
+      "disease_type": "viral"
     },
     "蜘蛛螨": {
-      "description": "蜘蛛螨取食叶片汁液，导致叶片失绿、发黄并出现细小斑点。"
+      "description": "蜘蛛螨取食叶片汁液，导致叶片失绿、发黄并出现细小斑点。",
+      "image_labels": [
+        "Tomato___Spider_mites Two-spotted_spider_mite"
+      ],
+      "canonical_symptoms": [
+        "叶片失绿",
+        "细小斑点",
+        "叶背有螨"
+      ],
+      "disease_type": "pest"
     },
     "靶斑病": {
-      "description": "靶斑病在叶片上形成同心轮纹状或靶心状病斑，严重时叶片枯死。"
+      "description": "靶斑病在叶片上形成同心轮纹状或靶心状病斑，严重时叶片枯死。",
+      "image_labels": [
+        "Tomato___Target_Spot"
+      ],
+      "canonical_symptoms": [
+        "靶心状病斑",
+        "同心轮纹",
+        "叶片坏死"
+      ],
+      "disease_type": "fungal"
+    },
+    "病毒病": {
+      "description": "由病毒引起的番茄病害（兼容旧标签）",
+      "image_labels": [
+        "Tomato___Tomato_Yellow_Leaf_Curl_Virus",
+        "Tomato___Tomato_mosaic_virus"
+      ],
+      "canonical_symptoms": [
+        "发黄",
+        "卷曲",
+        "花叶"
+      ],
+      "disease_type": "viral"
     }
   }
 }

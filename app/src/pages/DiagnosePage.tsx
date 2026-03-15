@@ -43,7 +43,7 @@ interface DiagnosisResult {
   profile_cultivation_mode?: string;
   selected_branch?: "FAMILY" | "MID" | "ENTERPRISE" | string;
   risk_tags?: string[];
-  risk_items?: Array<{ code?: string; label?: string; reason?: string; level?: string }>;
+  risk_items?: Array<{ code?: string; label?: string; reason?: string; level?: string; source?: string }>;
   risk_summary?: string;
   risk_updated_at?: string;
 }

@@ -1,154 +1,398 @@
 {
   "rules": [
     {
+      "rule_id": "R001",
       "crop_type": "番茄",
-      "symptoms": [
-        "斑点"
-      ],
       "disease": "早疫病",
-      "confidence": 0.88,
-      "evidence": "早疫病在叶片上形成同心轮纹状病斑，边缘有黄色晕圈",
-      "rule_id": "26736dacd4b6428aa837580e3a6209d8"
+      "symptoms_any": [
+        "斑点",
+        "叶斑",
+        "发黄",
+        "枯萎"
+      ],
+      "symptom_weights": {
+        "斑点": 0.4,
+        "叶斑": 0.3,
+        "发黄": 0.18,
+        "枯萎": 0.12
+      },
+      "growth_stage_weights": {
+        "VEGETATIVE": 0.05,
+        "FLOWERING": 0.08,
+        "FRUIT_SET": 0.06
+      },
+      "environment_weights": {
+        "高湿": 0.1,
+        "连阴雨": 0.08,
+        "通风差": 0.06
+      },
+      "base_confidence": 0.62,
+      "evidence": "早疫病常见同心轮纹斑点，湿度升高时扩展加快。",
+      "symptoms": [
+        "斑点",
+        "叶斑",
+        "发黄",
+        "枯萎"
+      ],
+      "confidence": 0.62
     },
     {
+      "rule_id": "R002",
       "crop_type": "番茄",
-      "symptoms": [
-        "斑点"
-      ],
       "disease": "晚疫病",
-      "confidence": 0.85,
-      "evidence": "晚疫病在叶片上形成不规则的水渍状病斑",
-      "rule_id": "f2dfc0e4a63e49569dab414023dbdebb"
+      "symptoms_any": [
+        "水渍",
+        "腐烂",
+        "斑点",
+        "霉斑"
+      ],
+      "symptom_weights": {
+        "水渍": 0.38,
+        "腐烂": 0.3,
+        "斑点": 0.2,
+        "霉斑": 0.12
+      },
+      "growth_stage_weights": {
+        "FLOWERING": 0.06,
+        "FRUIT_SET": 0.1,
+        "FRUITING": 0.12
+      },
+      "environment_weights": {
+        "高湿": 0.12,
+        "降雨": 0.1,
+        "叶面结露": 0.08
+      },
+      "base_confidence": 0.64,
+      "evidence": "晚疫病病斑多呈水渍状并快速腐烂，潮湿低温条件风险高。",
+      "symptoms": [
+        "水渍",
+        "腐烂",
+        "斑点",
+        "霉斑"
+      ],
+      "confidence": 0.64
     },
     {
+      "rule_id": "R003",
       "crop_type": "番茄",
-      "symptoms": [
-        "斑点"
-      ],
-      "disease": "细菌性斑点病",
-      "confidence": 0.82,
-      "evidence": "细菌性斑点病在叶片上形成小的褐色斑点，周围有黄色晕圈",
-      "rule_id": "cf722a8df4f54b06bd0dd91a65f74e4f"
-    },
-    {
-      "crop_type": "番茄",
-      "symptoms": [
-        "叶子发黄"
-      ],
       "disease": "黄化曲叶病毒病",
-      "confidence": 0.9,
-      "evidence": "由白粉虱传播的病毒病，导致叶片黄化卷曲",
-      "rule_id": "a9f6b4f2df254bdca3bdd9257020527d"
-    },
-    {
-      "crop_type": "番茄",
-      "symptoms": [
-        "叶子发黄"
+      "symptoms_any": [
+        "发黄",
+        "卷曲",
+        "生长缓慢",
+        "花叶"
       ],
-      "disease": "早疫病",
-      "confidence": 0.75,
-      "evidence": "早疫病严重时会导致叶片发黄枯萎",
-      "rule_id": "42774ca36d2447bc894eca570caa54f0"
-    },
-    {
-      "crop_type": "番茄",
+      "symptom_weights": {
+        "发黄": 0.34,
+        "卷曲": 0.34,
+        "生长缓慢": 0.2,
+        "花叶": 0.12
+      },
+      "growth_stage_weights": {
+        "SEEDLING": 0.05,
+        "VEGETATIVE": 0.08
+      },
+      "environment_weights": {
+        "白粉虱多发": 0.14,
+        "高温干旱": 0.08
+      },
+      "base_confidence": 0.66,
+      "evidence": "黄化曲叶病毒病常见叶片黄化卷曲并伴植株矮化。",
       "symptoms": [
-        "叶子发黄"
+        "发黄",
+        "卷曲",
+        "生长缓慢",
+        "花叶"
       ],
-      "disease": "晚疫病",
-      "confidence": 0.78,
-      "evidence": "晚疫病会导致叶片边缘发黄并逐渐扩大",
-      "rule_id": "4270794f2d54457caa72023672b9a63e"
+      "confidence": 0.66
     },
     {
+      "rule_id": "R004",
       "crop_type": "番茄",
-      "symptoms": [
-        "腐烂"
-      ],
-      "disease": "晚疫病",
-      "confidence": 0.95,
-      "evidence": "晚疫病会导致果实和叶片快速腐烂",
-      "rule_id": "50cb43da4ec140a18066292b6fb53fa5"
-    },
-    {
-      "crop_type": "番茄",
-      "symptoms": [
-        "腐烂"
-      ],
-      "disease": "灰霉病",
-      "confidence": 0.92,
-      "evidence": "灰霉病在潮湿环境下会导致果实和叶片腐烂",
-      "rule_id": "41f8c02886fd488eb55ac18728f0a67c"
-    },
-    {
-      "crop_type": "番茄",
-      "symptoms": [
+      "disease": "叶霉病",
+      "symptoms_any": [
+        "霉斑",
+        "发黄",
         "白粉"
       ],
+      "symptom_weights": {
+        "霉斑": 0.45,
+        "发黄": 0.25,
+        "白粉": 0.3
+      },
+      "growth_stage_weights": {
+        "FLOWERING": 0.08,
+        "FRUIT_SET": 0.1
+      },
+      "environment_weights": {
+        "温室高湿": 0.14,
+        "通风差": 0.12
+      },
+      "base_confidence": 0.6,
+      "evidence": "叶霉病常见叶背霉层与叶面黄斑，棚室高湿时易暴发。",
+      "symptoms": [
+        "霉斑",
+        "发黄",
+        "白粉"
+      ],
+      "confidence": 0.6
+    },
+    {
+      "rule_id": "R005",
+      "crop_type": "番茄",
       "disease": "白粉病",
-      "confidence": 0.93,
-      "evidence": "白粉病在叶片表面形成白色粉状物",
-      "rule_id": "c503c1488a224161b83e885cf9555c0a"
+      "symptoms_any": [
+        "白粉",
+        "发黄",
+        "叶斑"
+      ],
+      "symptom_weights": {
+        "白粉": 0.56,
+        "发黄": 0.2,
+        "叶斑": 0.24
+      },
+      "growth_stage_weights": {
+        "VEGETATIVE": 0.05,
+        "FLOWERING": 0.06
+      },
+      "environment_weights": {
+        "干湿波动": 0.08,
+        "通风差": 0.06
+      },
+      "base_confidence": 0.58,
+      "evidence": "白粉病特征为叶面白色粉状物并导致叶片早衰。",
+      "symptoms": [
+        "白粉",
+        "发黄",
+        "叶斑"
+      ],
+      "confidence": 0.58
     },
     {
+      "rule_id": "R006",
       "crop_type": "番茄",
-      "symptoms": [
-        "白粉"
-      ],
-      "disease": "叶霉病",
-      "confidence": 0.8,
-      "evidence": "叶霉病在叶片表面形成淡灰色霉层",
-      "rule_id": "808b69d8dfd34b9d83a82529523b6444"
-    },
-    {
-      "crop_type": "番茄",
-      "symptoms": [
-        "卷曲"
-      ],
-      "disease": "黄化曲叶病毒病",
-      "confidence": 0.91,
-      "evidence": "病毒病导致叶片卷曲、变小",
-      "rule_id": "7fd19478e09a42a6a497d77483b64671"
-    },
-    {
-      "crop_type": "番茄",
-      "symptoms": [
-        "霉斑"
-      ],
-      "disease": "叶霉病",
-      "confidence": 0.9,
-      "evidence": "叶霉病在叶片背面产生灰褐色霉层",
-      "rule_id": "ca175ffc9b0e480585b74b91dbafe185"
-    },
-    {
-      "crop_type": "番茄",
-      "symptoms": [
-        "霉斑"
-      ],
-      "disease": "灰霉病",
-      "confidence": 0.85,
-      "evidence": "灰霉病在叶片上形成灰色霉斑",
-      "rule_id": "4ff785cbb66644f391a5c47ccdc36a3d"
-    },
-    {
-      "crop_type": "番茄",
-      "symptoms": [
-        "生长缓慢"
-      ],
-      "disease": "黄化曲叶病毒病",
-      "confidence": 0.88,
-      "evidence": "病毒病导致植株生长缓慢，矮化",
-      "rule_id": "713e6670e6d4427a9b7fcedcd0216f6a"
-    },
-    {
-      "crop_type": "番茄",
-      "symptoms": [
-        "变色"
-      ],
       "disease": "细菌性斑点病",
-      "confidence": 0.85,
-      "evidence": "细菌性斑点病导致叶片变色并形成斑点",
-      "rule_id": "61ef0978fd48479ea3e66fe6fc0e40e2"
+      "symptoms_any": [
+        "斑点",
+        "水渍",
+        "发黄"
+      ],
+      "symptom_weights": {
+        "斑点": 0.48,
+        "水渍": 0.3,
+        "发黄": 0.22
+      },
+      "growth_stage_weights": {
+        "SEEDLING": 0.06,
+        "VEGETATIVE": 0.08,
+        "FLOWERING": 0.06
+      },
+      "environment_weights": {
+        "雨后": 0.12,
+        "伤口多": 0.1
+      },
+      "base_confidence": 0.61,
+      "evidence": "细菌性斑点病可见小斑点及水渍状病征，雨后传播加快。",
+      "symptoms": [
+        "斑点",
+        "水渍",
+        "发黄"
+      ],
+      "confidence": 0.61
+    },
+    {
+      "rule_id": "R007",
+      "crop_type": "番茄",
+      "disease": "灰霉病",
+      "symptoms_any": [
+        "霉斑",
+        "腐烂",
+        "发黄"
+      ],
+      "symptom_weights": {
+        "霉斑": 0.42,
+        "腐烂": 0.38,
+        "发黄": 0.2
+      },
+      "growth_stage_weights": {
+        "FLOWERING": 0.1,
+        "FRUIT_SET": 0.1,
+        "FRUITING": 0.08
+      },
+      "environment_weights": {
+        "连续高湿": 0.14,
+        "通风差": 0.12,
+        "低温高湿": 0.1
+      },
+      "base_confidence": 0.63,
+      "evidence": "灰霉病常在花果部出现灰色霉层并引起软腐。",
+      "symptoms": [
+        "霉斑",
+        "腐烂",
+        "发黄"
+      ],
+      "confidence": 0.63
+    },
+    {
+      "rule_id": "R008",
+      "crop_type": "番茄",
+      "disease": "叶斑病",
+      "symptoms_any": [
+        "叶斑",
+        "斑点",
+        "发黄"
+      ],
+      "symptom_weights": {
+        "叶斑": 0.46,
+        "斑点": 0.34,
+        "发黄": 0.2
+      },
+      "growth_stage_weights": {
+        "VEGETATIVE": 0.06,
+        "FLOWERING": 0.06
+      },
+      "environment_weights": {
+        "高湿": 0.1,
+        "密植": 0.08
+      },
+      "base_confidence": 0.59,
+      "evidence": "叶斑病表现为灰褐小斑逐步密集，后期叶片黄化。",
+      "symptoms": [
+        "叶斑",
+        "斑点",
+        "发黄"
+      ],
+      "confidence": 0.59
+    },
+    {
+      "rule_id": "R009",
+      "crop_type": "番茄",
+      "disease": "花叶病毒病",
+      "symptoms_any": [
+        "花叶",
+        "卷曲",
+        "生长缓慢",
+        "发黄"
+      ],
+      "symptom_weights": {
+        "花叶": 0.44,
+        "卷曲": 0.22,
+        "生长缓慢": 0.2,
+        "发黄": 0.14
+      },
+      "growth_stage_weights": {
+        "SEEDLING": 0.05,
+        "VEGETATIVE": 0.08
+      },
+      "environment_weights": {
+        "蚜虫高发": 0.12,
+        "工具未消毒": 0.08
+      },
+      "base_confidence": 0.62,
+      "evidence": "花叶病毒病以花叶斑驳和叶片畸形为主要特征。",
+      "symptoms": [
+        "花叶",
+        "卷曲",
+        "生长缓慢",
+        "发黄"
+      ],
+      "confidence": 0.62
+    },
+    {
+      "rule_id": "R010",
+      "crop_type": "番茄",
+      "disease": "蜘蛛螨",
+      "symptoms_any": [
+        "螨害",
+        "发黄",
+        "斑点"
+      ],
+      "symptom_weights": {
+        "螨害": 0.5,
+        "发黄": 0.26,
+        "斑点": 0.24
+      },
+      "growth_stage_weights": {
+        "VEGETATIVE": 0.05,
+        "FRUITING": 0.08
+      },
+      "environment_weights": {
+        "高温干燥": 0.14,
+        "通风差": 0.05
+      },
+      "base_confidence": 0.6,
+      "evidence": "蜘蛛螨刺吸叶片导致失绿斑点，叶背可见虫体或蛛网。",
+      "symptoms": [
+        "螨害",
+        "发黄",
+        "斑点"
+      ],
+      "confidence": 0.6
+    },
+    {
+      "rule_id": "R011",
+      "crop_type": "番茄",
+      "disease": "靶斑病",
+      "symptoms_any": [
+        "靶斑",
+        "叶斑",
+        "斑点",
+        "枯萎"
+      ],
+      "symptom_weights": {
+        "靶斑": 0.48,
+        "叶斑": 0.24,
+        "斑点": 0.18,
+        "枯萎": 0.1
+      },
+      "growth_stage_weights": {
+        "FLOWERING": 0.07,
+        "FRUIT_SET": 0.08,
+        "FRUITING": 0.06
+      },
+      "environment_weights": {
+        "高湿": 0.1,
+        "连作": 0.08
+      },
+      "base_confidence": 0.6,
+      "evidence": "靶斑病病斑具靶心状同心轮纹，后期可造成叶片坏死。",
+      "symptoms": [
+        "靶斑",
+        "叶斑",
+        "斑点",
+        "枯萎"
+      ],
+      "confidence": 0.6
+    },
+    {
+      "rule_id": "R012",
+      "crop_type": "番茄",
+      "disease": "健康",
+      "symptoms_any": [
+        "无明显病斑",
+        "长势正常"
+      ],
+      "symptom_weights": {
+        "无明显病斑": 0.6,
+        "长势正常": 0.4
+      },
+      "growth_stage_weights": {
+        "SEEDLING": 0.02,
+        "VEGETATIVE": 0.02,
+        "FLOWERING": 0.02,
+        "FRUITING": 0.02
+      },
+      "environment_weights": {
+        "通风良好": 0.04,
+        "湿度适中": 0.04
+      },
+      "base_confidence": 0.7,
+      "evidence": "当前未观察到显著病虫害症状，维持常规管理。",
+      "symptoms": [
+        "无明显病斑",
+        "长势正常"
+      ],
+      "confidence": 0.7
     }
   ]
 }
