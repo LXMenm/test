@@ -280,6 +280,31 @@ export function DiagnosePage() {
     return candidates.length > 0 && displayConfidencePct !== null && displayConfidencePct < 60;
   };
 
+  const normalizeRiskItems = (value: unknown) => {
+    if (!Array.isArray(value)) return [];
+    return value.map((item) => {
+      const obj = item && typeof item === 'object' ? item as Record<string, unknown> : {};
+      return {
+        code: typeof obj.code === 'string' ? obj.code : undefined,
+        label: typeof obj.label === 'string' ? obj.label : undefined,
+        level: typeof obj.level === 'string' ? obj.level : undefined,
+        reason: typeof obj.reason === 'string' ? obj.reason : undefined,
+        source: typeof obj.source === 'string' ? obj.source : undefined,
+      };
+    });
+  };
+
+  const formatRiskUpdatedAt = (value?: string) => {
+    if (!value) return '';
+    try {
+      const date = new Date(value);
+      if (isNaN(date.getTime())) return '';
+      return date.toLocaleString();
+    } catch {
+      return '';
+    }
+  };
+
   const buildResultFromPayload = (payload: Record<string, unknown>): DiagnosisResult => {
     const treatmentObj = payload.treatment && typeof payload.treatment === 'object'
       ? payload.treatment as Record<string, unknown>
@@ -317,6 +342,10 @@ export function DiagnosePage() {
     profile_equipment: Array.isArray(payload.profile_equipment) ? payload.profile_equipment.map((item) => String(item)) : [],
     profile_cultivation_mode: typeof payload.profile_cultivation_mode === 'string' ? payload.profile_cultivation_mode : undefined,
     selected_branch: selectedBranch,
+    risk_tags: Array.isArray(payload.risk_tags) ? payload.risk_tags.map((item) => String(item)) : [],
+    risk_items: normalizeRiskItems(payload.risk_items),
+    risk_summary: typeof payload.risk_summary === 'string' ? payload.risk_summary : undefined,
+    risk_updated_at: typeof payload.risk_updated_at === 'string' ? payload.risk_updated_at : undefined,
   });
   };
 
@@ -940,30 +969,66 @@ export function DiagnosePage() {
 
                   <div>
                     <h4 className="text-white/80 font-medium mb-2">农业风险标签（辅助解释层）</h4>
-                    <div className="bg-white/5 rounded-xl p-4 border border-[#c8f7c5]/20 text-sm text-white/80 space-y-2">
-                      <div className="flex flex-wrap gap-2">
-                        {Array.isArray(result.risk_items) && result.risk_items.length > 0
-                          ? result.risk_items.map((item, idx) => (
-                            <Badge key={`${item.code || item.label || 'risk'}-${idx}`} className="bg-[#c8f7c5]/20 text-[#c8f7c5] border border-[#c8f7c5]/40">
-                              {item.label || item.code || '风险标签'}
-                            </Badge>
-                          ))
-                          : (Array.isArray(result.risk_tags) && result.risk_tags.length > 0
-                            ? result.risk_tags.map((tag) => (
-                              <Badge key={tag} className="bg-[#c8f7c5]/20 text-[#c8f7c5] border border-[#c8f7c5]/40">{tag}</Badge>
-                            ))
-                            : <span className="text-white/50">暂无风险标签</span>
-                          )}
-                      </div>
-                      {result.risk_summary ? <p className="text-white/70">风险摘要：{result.risk_summary}</p> : null}
+                    <div className="bg-white/5 rounded-xl p-4 border border-[#c8f7c5]/20 text-sm text-white/80 space-y-4">
                       {Array.isArray(result.risk_items) && result.risk_items.length > 0 ? (
-                        <ul className="list-disc pl-5 space-y-1">
-                          {result.risk_items.slice(0, 3).map((item, idx) => (
-                            <li key={`risk-reason-${idx}`}>{item.reason || item.label || item.code}</li>
-                          ))}
-                        </ul>
+                        <>
+                          <div className="flex flex-wrap gap-2">
+                            {result.risk_items.map((item, idx) => {
+                              const levelClass = item.level === 'high' 
+                                ? 'bg-yellow-500/20 text-yellow-200 border-yellow-500/40'
+                                : item.level === 'medium'
+                                ? 'bg-[#c8f7c5]/20 text-[#c8f7c5] border-[#c8f7c5]/40'
+                                : 'bg-green-500/20 text-green-200 border-green-500/40';
+                              return (
+                                <Badge key={`${item.code || item.label || 'risk'}-${idx}`} className={levelClass}>
+                                  {item.label || item.code || '风险标签'}
+                                </Badge>
+                              );
+                            })}
+                          </div>
+                          {result.risk_summary ? <p className="text-white/70">风险摘要：{result.risk_summary}</p> : null}
+                          <div className="space-y-3">
+                            {result.risk_items.map((item, idx) => {
+                              return (
+                                <div key={`risk-item-${idx}`} className="bg-white/5 p-3 rounded-lg">
+                                  <div className="flex justify-between items-center mb-1">
+                                    <span className="font-medium text-white">{item.label || item.code || '风险标签'}</span>
+                                    <Badge className={item.level === 'high' 
+                                      ? 'bg-yellow-500/30 text-yellow-200 border-yellow-500/50'
+                                      : item.level === 'medium'
+                                      ? 'bg-[#c8f7c5]/30 text-[#c8f7c5] border-[#c8f7c5]/50'
+                                      : 'bg-green-500/30 text-green-200 border-green-500/50'
+                                    }>
+                                      {item.level || 'unknown'}
+                                    </Badge>
+                                  </div>
+                                  <p className="text-white/70 mb-2">{item.reason || ''}</p>
+                                  {item.source && <p className="text-xs text-white/50">来源：{item.source}</p>}
+                                </div>
+                              );
+                            })}
+                          </div>
+                          {result.risk_updated_at && (
+                            <p className="text-xs text-white/50">更新时间：{formatRiskUpdatedAt(result.risk_updated_at)}</p>
+                          )}
+                        </>
+                      ) : Array.isArray(result.risk_tags) && result.risk_tags.length > 0 ? (
+                        <>
+                          <div className="flex flex-wrap gap-2">
+                            {result.risk_tags.map((tag) => (
+                              <Badge key={tag} className="bg-[#c8f7c5]/20 text-[#c8f7c5] border border-[#c8f7c5]/40">{tag}</Badge>
+                            ))}
+                          </div>
+                          {result.risk_summary ? <p className="text-white/70">风险摘要：{result.risk_summary}</p> : null}
+                          {result.risk_updated_at && (
+                            <p className="text-xs text-white/50">更新时间：{formatRiskUpdatedAt(result.risk_updated_at)}</p>
+                          )}
+                        </>
                       ) : (
-                        <p className="text-xs text-white/60">风险标签仅用于解释层，原始字段仍是诊断与方案生成主依据。</p>
+                        <div className="text-center py-4 text-white/50">
+                          <p>暂无风险标签</p>
+                          <p className="text-xs mt-1">风险标签仅用于解释层，原始字段仍是诊断与方案生成的主依据。</p>
+                        </div>
                       )}
                     </div>
                   </div>
