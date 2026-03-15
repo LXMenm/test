@@ -4,47 +4,74 @@ from personalization.profile_models import BaseProfile
 from personalization.risk_tags import build_base_risk_tags
 
 
-def test_scenario_a_greenhouse_high_humidity_rain_fruiting():
+def _tags(result: dict) -> set[str]:
+    return set(result["risk_tags"])
+
+
+def test_sample_1_no_rain_risk_and_conflict_resolution_seedling_vs_harvest_window():
     base = BaseProfile(
         base_id="B1",
-        facility="温室大棚",
-        environment="湿度 88%，连阴雨，叶面结露，通风差",
-        growth_stage="FRUIT_SET",
-        location="山东寿光",
+        weather_snapshot="未来24小时降雨概率较低",
+        relative_humidity_2m=45,
+        precipitation=0,
+        rain_risk=20,
+        growth_stage="SEEDLING",
     )
-    result = build_base_risk_tags(base)
-    tags = set(result["risk_tags"])
+    result = build_base_risk_tags(base, harvest_window_days=2)
+    tags = _tags(result)
+
+    assert "RAIN_RISK" not in tags
+    assert "SEEDLING_VULNERABLE" in tags
+    assert "NEAR_HARVEST" not in tags
+    assert "CONTEXT_CONFLICT" in tags
+
+
+def test_sample_2_structured_weather_and_greenhouse_near_harvest():
+    base = BaseProfile(
+        base_id="B1",
+        facility="温室",
+        relative_humidity_2m=88,
+        precipitation=3.2,
+        rain_risk=75,
+        growth_stage="FRUITING",
+        weather_snapshot="通风一般",
+    )
+    result = build_base_risk_tags(base, harvest_window_days=5)
+    tags = _tags(result)
+
+    assert "RAIN_RISK" in tags
     assert "HIGH_HUMIDITY" in tags
     assert "GREENHOUSE_PRESSURE" in tags
-    assert "FLOWERING_FRUITING_SENSITIVE" in tags
-
-
-def test_scenario_b_near_harvest_by_sowing_date_estimate():
-    sowing = (date.today() - timedelta(days=117)).isoformat()
-    base = BaseProfile(base_id="B1", sowing_date=sowing)
-    result = build_base_risk_tags(base)
-    tags = set(result["risk_tags"])
     assert "NEAR_HARVEST" in tags
 
-
-def test_scenario_c_minimal_fields_no_crash_with_missing_context():
-    base = BaseProfile(base_id="B1", name="仅名称")
-    result = build_base_risk_tags(base)
-    tags = set(result["risk_tags"])
-    assert "MISSING_CONTEXT" in tags
+    rain_item = next(item for item in result["risk_items"] if item["code"] == "RAIN_RISK")
+    assert rain_item["source"] == "structured_weather"
 
 
-def test_scenario_d_low_risk_plain_soil_not_near_harvest():
-    sowing = (date.today() - timedelta(days=30)).isoformat()
+def test_sample_3_text_fallback_low_rain_probability_should_not_trigger():
     base = BaseProfile(
         base_id="B1",
-        facility="露地",
-        environment="湿度 45%，晴朗，通风良好",
-        growth_stage="VEGETATIVE",
-        sowing_date=sowing,
-        location="云南昆明",
+        weather_snapshot="降雨概率较低，短时无雨",
     )
     result = build_base_risk_tags(base)
-    tags = set(result["risk_tags"])
-    assert "HIGH_HUMIDITY" not in tags
+    assert "RAIN_RISK" not in _tags(result)
+
+
+def test_sample_4_seedling_with_long_harvest_estimate_no_near_harvest():
+    sowing = (date.today() - timedelta(days=30)).isoformat()
+    base = BaseProfile(base_id="B1", growth_stage="SEEDLING", sowing_date=sowing)
+    result = build_base_risk_tags(base)
+    tags = _tags(result)
+
+    assert "SEEDLING_VULNERABLE" in tags
     assert "NEAR_HARVEST" not in tags
+
+
+def test_sample_5_fruiting_with_sowing_estimate_near_harvest():
+    sowing = (date.today() - timedelta(days=116)).isoformat()
+    base = BaseProfile(base_id="B1", growth_stage="FRUITING", sowing_date=sowing)
+    result = build_base_risk_tags(base)
+    tags = _tags(result)
+
+    assert "NEAR_HARVEST" in tags
+    assert "SEEDLING_VULNERABLE" not in tags
