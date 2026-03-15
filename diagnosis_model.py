@@ -372,6 +372,130 @@ class DiseaseDiagnosisEngine:
         symptom_text = "、".join(symptoms)
         return f"{base_description} 当前观察到的症状包括：{symptom_text}。"
 
+    def predict_image_proba(self, image_path: str) -> Dict[str, float]:
+        """返回 canonical 中文病害 key 的图像概率分布。"""
+        _, _, probs = self.diagnose_from_image(image_path)
+        canonical_probs: Dict[str, float] = {}
+        for label, prob in (probs or {}).items():
+            disease = kb_manager.map_image_label_to_disease(label)
+            canonical_probs[disease] = canonical_probs.get(disease, 0.0) + float(prob)
+        total = sum(v for v in canonical_probs.values() if v > 0)
+        if total <= 0:
+            return {}
+        return {k: v / total for k, v in canonical_probs.items()}
+
+    def predict_text_proba(
+        self,
+        symptoms: List[str],
+        growth_stage: Optional[str] = None,
+        environment: Optional[str] = None,
+        facility: Optional[str] = None,
+        province: Optional[str] = None,
+    ) -> Dict[str, float]:
+        """KB 驱动的文本概率诊断。"""
+        normalized_symptoms = kb_manager.normalize_symptoms(symptoms or [])
+        return kb_manager.score_diseases_from_text(
+            crop_type="番茄",
+            symptoms=normalized_symptoms,
+            growth_stage=growth_stage,
+            environment=environment,
+            facility=facility,
+            province=province,
+        )
+
+    def build_prior_proba(
+        self,
+        growth_stage: Optional[str] = None,
+        facility: Optional[str] = None,
+        province: Optional[str] = None,
+    ) -> Dict[str, float]:
+        """轻量先验：仅做小幅偏置，避免过强主导。"""
+        priors: Dict[str, float] = {}
+        facility_text = str(facility or "").lower()
+        if any(x in facility_text for x in ["温室", "大棚", "greenhouse", "棚"]):
+            priors["叶霉病"] = priors.get("叶霉病", 0.0) + 0.06
+        if any(x in facility_text for x in ["露地", "open", "field"]):
+            priors["早疫病"] = priors.get("早疫病", 0.0) + 0.05
+            priors["晚疫病"] = priors.get("晚疫病", 0.0) + 0.05
+        if not priors:
+            return {}
+        total = sum(priors.values())
+        return {k: v / total for k, v in priors.items()} if total > 0 else {}
+
+    @staticmethod
+    def _normalized(dist: Dict[str, float]) -> Dict[str, float]:
+        if not dist:
+            return {}
+        total = sum(max(float(v), 0.0) for v in dist.values())
+        if total <= 0:
+            return {}
+        return {k: max(float(v), 0.0) / total for k, v in dist.items()}
+
+    @staticmethod
+    def _topk(dist: Dict[str, float], k: int = 3) -> List[Tuple[str, float]]:
+        return sorted([(k0, float(v0)) for k0, v0 in (dist or {}).items()], key=lambda x: x[1], reverse=True)[:k]
+
+    def fuse_multimodal_probs(
+        self,
+        image_probs: Dict[str, float],
+        text_probs: Dict[str, float],
+        prior_probs: Dict[str, float],
+        image_confidence: float = 0.0,
+    ) -> Tuple[Dict[str, float], Dict[str, float]]:
+        """图像/文本/先验融合。"""
+        image_probs = self._normalized(image_probs)
+        text_probs = self._normalized(text_probs)
+        prior_probs = self._normalized(prior_probs)
+
+        has_image = bool(image_probs)
+        has_text = bool(text_probs)
+        reliable_image = image_confidence >= 0.6
+
+        if has_image and has_text and reliable_image:
+            weights = {"image": 0.60, "text": 0.30, "prior": 0.10}
+        elif has_image and has_text:
+            weights = {"image": 0.40, "text": 0.50, "prior": 0.10}
+        elif has_image:
+            weights = {"image": 0.90, "text": 0.00, "prior": 0.10}
+        else:
+            weights = {"image": 0.00, "text": 0.85 if has_text else 0.0, "prior": 0.15 if has_text else 1.0}
+
+        keys = set(image_probs) | set(text_probs) | set(prior_probs)
+        if not keys:
+            return {"健康": 1.0}, weights
+
+        fused = {}
+        for key in keys:
+            fused[key] = (
+                weights["image"] * image_probs.get(key, 0.0)
+                + weights["text"] * text_probs.get(key, 0.0)
+                + weights["prior"] * prior_probs.get(key, 0.0)
+            )
+        return self._normalized(fused), weights
+
+    def build_diagnosis_evidence(
+        self,
+        normalized_symptoms: List[str],
+        image_probs: Dict[str, float],
+        text_probs: Dict[str, float],
+        fusion_probs: Dict[str, float],
+        weights: Dict[str, float],
+        modality_conflict_flag: bool,
+    ) -> Dict[str, object]:
+        image_top3 = self._topk(image_probs, 3)
+        text_top3 = self._topk(text_probs, 3)
+        fusion_top3 = self._topk(fusion_probs, 3)
+        summary = f"融合诊断Top1: {fusion_top3[0][0]} ({fusion_top3[0][1]:.2f})" if fusion_top3 else "无可用证据"
+        return {
+            "normalized_symptoms": normalized_symptoms,
+            "image_top3": image_top3,
+            "text_top3": text_top3,
+            "fusion_top3": fusion_top3,
+            "weights": weights,
+            "modality_conflict_flag": modality_conflict_flag,
+            "summary": summary,
+        }
+
 
 # 全局诊断引擎实例
 _diagnosis_engine: Optional[DiseaseDiagnosisEngine] = None
