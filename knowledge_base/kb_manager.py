@@ -87,17 +87,14 @@ class KnowledgeBaseManager:
         facility: Optional[str] = None,
         province: Optional[str] = None,
     ) -> bool:
-        """判断是否存在可用于文本诊断的有效证据。"""
+        """判断是否存在可用于文本诊断的有效证据。
+
+        注意：文本证据仅来自用户显式症状描述，不包含生长阶段/设施/地域等背景字段。
+        这些背景字段应仅参与 prior 分支。
+        """
+        _ = (growth_stage, environment, facility, province)
         normalized = [str(item).strip() for item in (symptoms or []) if str(item).strip()]
-        if normalized:
-            return True
-
-        stage_text = str(growth_stage or "").strip().lower()
-        if stage_text and stage_text not in {"unknown", "none", "null", "未提供", "未知"}:
-            return True
-
-        env_text = " ".join([str(environment or ""), str(facility or ""), str(province or "")]).strip().lower()
-        return bool(env_text and env_text not in {"unknown", "none", "null", "未提供", "未知"})
+        return bool(normalized)
 
     def get_candidate_diseases_from_symptoms(self, symptoms: List[str]) -> List[str]:
         candidates: List[str] = []
@@ -125,6 +122,9 @@ class KnowledgeBaseManager:
     ) -> Dict[str, float]:
         """KB 驱动文本打分：症状权重 + 生长阶段权重 + 环境权重 + 基础置信度。"""
         normalized_symptoms = self.normalize_symptoms(symptoms)
+        # 无症状文本证据时，禁止仅靠背景字段生成 text_probs。
+        if not normalized_symptoms:
+            return {}
         if not self.has_effective_text_evidence(
             normalized_symptoms,
             growth_stage=growth_stage,
