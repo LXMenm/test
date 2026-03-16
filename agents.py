@@ -336,8 +336,15 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
             image_probs = {}
 
     # 文本分支（KB 驱动）
+    text_evidence_active = kb_manager.has_effective_text_evidence(
+        normalized_symptoms,
+        growth_stage=crop_growth_stage,
+        environment=environment,
+        facility=facility,
+        province=province,
+    )
     try:
-        if hasattr(diagnosis_engine, "predict_text_proba"):
+        if text_evidence_active and hasattr(diagnosis_engine, "predict_text_proba"):
             text_probs = diagnosis_engine.predict_text_proba(
                 symptoms=normalized_symptoms,
                 growth_stage=crop_growth_stage,
@@ -345,7 +352,7 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
                 facility=facility,
                 province=province,
             )
-        else:
+        elif text_evidence_active:
             text_probs = kb_manager.score_diseases_from_text(
                 crop_type=crop_type,
                 symptoms=normalized_symptoms,
@@ -354,8 +361,13 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
                 facility=facility,
                 province=province,
             )
+        else:
+            text_probs = {}
     except Exception as e:
         print(f"[番茄病害诊断智能体] 文本分支失败: {e}")
+        text_probs = {}
+
+    if not text_evidence_active:
         text_probs = {}
 
     # 先验分支
@@ -374,13 +386,23 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
     text_confidence = float(text_top3[0][1]) if text_top3 else 0.0
 
     if hasattr(diagnosis_engine, "fuse_multimodal_probs"):
-        fusion_probs, fusion_meta = diagnosis_engine.fuse_multimodal_probs(
-            image_probs=image_probs,
-            text_probs=text_probs,
-            prior_probs=prior_probs,
-            image_confidence=image_confidence,
-            text_confidence=text_confidence,
-        )
+        try:
+            fusion_probs, fusion_meta = diagnosis_engine.fuse_multimodal_probs(
+                image_probs=image_probs,
+                text_probs=text_probs,
+                prior_probs=prior_probs,
+                image_confidence=image_confidence,
+                text_confidence=text_confidence,
+                text_evidence_active=text_evidence_active,
+            )
+        except TypeError:
+            fusion_probs, fusion_meta = diagnosis_engine.fuse_multimodal_probs(
+                image_probs=image_probs,
+                text_probs=text_probs,
+                prior_probs=prior_probs,
+                image_confidence=image_confidence,
+                text_confidence=text_confidence,
+            )
     else:
         fusion_probs = image_probs or text_probs or prior_probs or {"健康": 1.0}
         fusion_meta = {"normalized_weights": {"image": 1.0 if image_probs else 0.0, "text": 1.0 if text_probs and not image_probs else 0.0, "prior": 0.0}}
@@ -393,7 +415,7 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
     final_confidence = float(fusion_top3[0][1]) if fusion_top3 else max(image_confidence, text_confidence, 0.0)
 
     modality_conflict_flag = bool(
-        image_top1 and text_top1 and image_top1 != text_top1 and image_confidence >= 0.6 and text_confidence >= 0.6
+        text_evidence_active and image_top1 and text_top1 and image_top1 != text_top1 and image_confidence >= 0.6 and text_confidence >= 0.6
     )
 
     if hasattr(diagnosis_engine, "build_diagnosis_evidence"):
@@ -1029,9 +1051,9 @@ def _deterministic_supervisor_decision(state: CropDiseaseState, flags: dict, mis
     has_diagnosis = bool(state.get("final_disease") or state.get("disease_type"))
     if not has_diagnosis:
         return "diagnosis", False, "番茄病害监督智能体：缺少诊断结果，先执行诊断智能体", ["missing_diagnosis"]
-    # b) 仅 need_confirm 才回 reception（missing_profile_fields 仅作为提示，不阻断流程）
+    # b) need_confirm 时返回补充问题并结束当前轮，等待用户下一轮输入，避免 reception 自循环
     if flags.get("need_confirm"):
-        return "reception", False, "番茄病害监督智能体：需要补充确认信息，回到接待智能体", ["need_confirm"]
+        return "end", True, "番茄病害监督智能体：需用户补充信息后再诊断，当前轮结束并返回追问问题", ["need_confirm_wait_user"]
     # c) 无 kb_snapshot -> kb_retrieval
     if not state.get("kb_snapshot"):
         return "kb_retrieval", False, "番茄病害监督智能体：缺少知识快照，进入知识检索智能体", ["missing_kb_snapshot"]

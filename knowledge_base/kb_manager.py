@@ -79,6 +79,26 @@ class KnowledgeBaseManager:
                 normalized.append(canonical)
         return normalized
 
+    @staticmethod
+    def has_effective_text_evidence(
+        symptoms: List[str],
+        growth_stage: Optional[str] = None,
+        environment: Optional[str] = None,
+        facility: Optional[str] = None,
+        province: Optional[str] = None,
+    ) -> bool:
+        """判断是否存在可用于文本诊断的有效证据。"""
+        normalized = [str(item).strip() for item in (symptoms or []) if str(item).strip()]
+        if normalized:
+            return True
+
+        stage_text = str(growth_stage or "").strip().lower()
+        if stage_text and stage_text not in {"unknown", "none", "null", "未提供", "未知"}:
+            return True
+
+        env_text = " ".join([str(environment or ""), str(facility or ""), str(province or "")]).strip().lower()
+        return bool(env_text and env_text not in {"unknown", "none", "null", "未提供", "未知"})
+
     def get_candidate_diseases_from_symptoms(self, symptoms: List[str]) -> List[str]:
         candidates: List[str] = []
         seen = set()
@@ -105,9 +125,17 @@ class KnowledgeBaseManager:
     ) -> Dict[str, float]:
         """KB 驱动文本打分：症状权重 + 生长阶段权重 + 环境权重 + 基础置信度。"""
         normalized_symptoms = self.normalize_symptoms(symptoms)
+        if not self.has_effective_text_evidence(
+            normalized_symptoms,
+            growth_stage=growth_stage,
+            environment=environment,
+            facility=facility,
+            province=province,
+        ):
+            return {}
         rules = self.diagnosis_kb.list_rules(crop_type)
         if not rules:
-            return {"健康": 1.0}
+            return {}
 
         candidate_pool = self.get_candidate_diseases_from_symptoms(normalized_symptoms)
         if not candidate_pool:
@@ -146,7 +174,7 @@ class KnowledgeBaseManager:
             scores[disease] = max(scores.get(disease, 0.0), score)
 
         if not scores:
-            return {"健康": 1.0}
+            return {}
 
         total = sum(v for v in scores.values() if v > 0)
         if total <= 0:

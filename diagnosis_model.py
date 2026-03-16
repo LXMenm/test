@@ -394,6 +394,15 @@ class DiseaseDiagnosisEngine:
     ) -> Dict[str, float]:
         """KB 驱动的文本概率诊断。"""
         normalized_symptoms = kb_manager.normalize_symptoms(symptoms or [])
+        text_evidence_active = kb_manager.has_effective_text_evidence(
+            normalized_symptoms,
+            growth_stage=growth_stage,
+            environment=environment,
+            facility=facility,
+            province=province,
+        )
+        if not text_evidence_active:
+            return {}
         return kb_manager.score_diseases_from_text(
             crop_type="番茄",
             symptoms=normalized_symptoms,
@@ -442,6 +451,7 @@ class DiseaseDiagnosisEngine:
         prior_probs: Dict[str, float],
         image_confidence: float = 0.0,
         text_confidence: float = 0.0,
+        text_evidence_active: Optional[bool] = None,
     ) -> Tuple[Dict[str, float], Dict[str, object]]:
         """图像/文本/先验融合（动态权重，避免缺失模态稀释主模态）。"""
         image_probs = self._normalized(image_probs)
@@ -450,6 +460,10 @@ class DiseaseDiagnosisEngine:
 
         has_image = bool(image_probs)
         has_text = bool(text_probs)
+        if text_evidence_active is not None:
+            has_text = bool(has_text and text_evidence_active)
+        if not has_text:
+            text_probs = {}
         has_prior = bool(prior_probs)
         reliable_image = image_confidence >= 0.6
         reliable_text = text_confidence >= 0.6
