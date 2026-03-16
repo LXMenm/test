@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
+import subprocess
 import time
 import traceback
 import uuid
@@ -22,6 +24,9 @@ from pydantic import BaseModel
 
 from config import DIAGNOSIS_CONFIDENCE_THRESHOLD, DIAGNOSIS_ALLOW_TORCH
 from diagnosis_model import get_diagnosis_engine
+import diagnosis_model as diagnosis_model_module
+import agents as agents_module
+import knowledge_base.kb_manager as kb_manager_module
 from agents import append_trace, diagnosis_agent, kb_retrieval_agent, treatment_agent
 from event_store import (
     append_event,
@@ -37,7 +42,7 @@ from event_store import (
 )
 from knowledge_base import get_kb_manager
 from personalization import profile_rules
-from personalization.profile_constants import estimate_harvest_window_days, normalize_growth_stage
+from personalization.profile_constants import estimate_harvest_window_days, growth_stage_label, normalize_growth_stage
 from personalization.profile_models import BaseProfile, FarmerProfile, TreatmentConstraint
 from personalization.profile_context import build_personalization_context, build_personalization_flags
 from personalization.profile_store import get_profile_path, load_profile, list_profile_ids, save_profile as persist_profile
@@ -139,6 +144,12 @@ class DiagnoseResponse(BaseModel):
     model_fallback_reason: list[str] | None = None
     workflow_degraded: bool = False
     degraded_reason: str | None = None
+    text_top3: list[tuple[str, float]] = []
+    fusion_top3: list[tuple[str, float]] = []
+    diagnosis_evidence: dict[str, Any] | None = None
+    modality_conflict_flag: bool | None = None
+    normalized_symptoms: list[str] = []
+    debug_runtime: dict[str, Any] | None = None
 
 
 class SPAStaticFiles(StaticFiles):
@@ -400,11 +411,28 @@ def build_trace_query(
     if crop_type:
         parts.append(f"作物类型：{crop_type}")
     if growth_stage:
-        parts.append(f"生长阶段：{growth_stage}")
+        parts.append(f"生长阶段：{growth_stage_label(growth_stage)}")
     if symptoms_list:
         parts.append(f"症状：{', '.join(symptoms_list)}")
     parts.append(f"图片路径：{image_path}")
     return "，".join(parts)
+
+
+def _collect_runtime_debug() -> dict[str, Any]:
+    git_commit = None
+    try:
+        git_commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=str(Path(__file__).resolve().parent), text=True).strip()
+    except Exception:
+        git_commit = None
+    return {
+        "app_file": __file__,
+        "agents_file": getattr(agents_module, "__file__", None),
+        "diagnosis_model_file": getattr(diagnosis_model_module, "__file__", None),
+        "kb_manager_file": getattr(kb_manager_module, "__file__", None),
+        "git_commit": git_commit,
+        "fuse_multimodal_version": getattr(diagnosis_model_module, "FUSE_MULTIMODAL_VERSION", None),
+        "predict_text_proba_version": getattr(diagnosis_model_module, "PREDICT_TEXT_PROBA_VERSION", None),
+    }
 
 
 @app.post("/api/diagnose-image", response_model=DiagnoseResponse)
@@ -418,10 +446,15 @@ async def diagnose_image(
     base_id: str | None = Form(None),
     lat: float | None = Form(None),
     lon: float | None = Form(None),
+    debug_runtime: bool | None = Form(None),
 ) -> DiagnoseResponse:
     request_started = time.perf_counter()
     trace_id = uuid.uuid4().hex
     emit_node_event(trace_id, node="ParseInput", status="start", message="开始解析上传请求")
+    debug_mode = bool(debug_runtime) or str(os.getenv("DIAG_DEBUG_RUNTIME", "0")).lower() in {"1", "true", "yes"}
+    runtime_debug = _collect_runtime_debug() if debug_mode else None
+    if debug_mode:
+        print(f"[RuntimeDebug] {json.dumps(runtime_debug, ensure_ascii=False)}")
     if not file.filename:
         emit_node_event(trace_id, node="ParseInput", status="error", message="文件名为空")
         emit_node_event(trace_id, node="Final", status="error", message="请求解析失败")
@@ -570,6 +603,11 @@ async def diagnose_image(
     final_state = None
     workflow_degraded = False
     degraded_reason: str | None = None
+    text_top3: list[tuple[str, float]] = []
+    fusion_top3: list[tuple[str, float]] = []
+    diagnosis_evidence: dict[str, Any] | None = None
+    modality_conflict_flag: bool | None = None
+    normalized_symptoms: list[str] = []
     try:
         query_text = build_trace_query(
             crop_type=crop_type,
@@ -583,6 +621,11 @@ async def diagnose_image(
             initial_state["personalization_context"] = personalization_context
         if personalization_flags:
             initial_state["personalization_flags"] = dict(personalization_flags)
+        if debug_mode:
+            flags = dict(initial_state.get("personalization_flags") or {})
+            flags["debug_runtime"] = True
+            initial_state["personalization_flags"] = flags
+            initial_state["debug_runtime"] = runtime_debug
         graph = build_graph()
         final_state = graph.invoke(initial_state, config={"recursion_limit": 80})
         if not isinstance(final_state, dict):
@@ -772,8 +815,17 @@ async def diagnose_image(
         model_backend=model_meta.get("backend"),
         resolved_model_path=model_meta.get("resolved_model_path"),
         model_fallback_reason=model_meta.get("model_fallback_reason"),
+        text_top3=list((final_state or {}).get("text_top3") or []),
+        fusion_top3=list((final_state or {}).get("fusion_top3") or []),
+        diagnosis_evidence=(final_state or {}).get("diagnosis_evidence"),
+        modality_conflict_flag=(final_state or {}).get("modality_conflict_flag"),
+        normalized_symptoms=list((final_state or {}).get("normalized_symptoms") or ((final_state or {}).get("structured_symptoms") or {}).get("normalized_symptoms") or []),
         workflow_degraded=workflow_degraded,
         degraded_reason=degraded_reason,
+        debug_runtime={
+            **(runtime_debug or {}),
+            "diagnosis_debug": (final_state or {}).get("debug_diagnosis"),
+        } if debug_mode else None,
     )
 
 
