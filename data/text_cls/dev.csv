@@ -1,0 +1,5 @@
+text,label,symptoms,growth_stage,environment,facility,province
+叶片健康生长均匀,健康,,VEGETATIVE,通风,露地,河北
+叶片出现明显靶心斑,靶斑病,靶斑,FRUIT_SET,潮湿,温室,浙江
+叶片发黄卷叶且植株长势差,黄化曲叶病毒病,发黄 卷曲,SEEDLING,高温,温室,广东
+叶背霉层明显且扩散,叶霉病,霉斑,FLOWERING,高湿,温室,山东

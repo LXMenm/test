@@ -20,12 +20,15 @@ from config import (
 )
 import os
 from knowledge_base import get_kb_manager
+from text_model.infer_text_classifier import build_input_text, load_text_classifier
 
 
 # 获取知识库管理器实例
 kb_manager = get_kb_manager()
 FUSE_MULTIMODAL_VERSION = "fuse_v2_text_evidence_gate_20260316"
-PREDICT_TEXT_PROBA_VERSION = "text_v2_evidence_gate_20260316"
+PREDICT_TEXT_PROBA_VERSION = "text_v3_bert_with_rule_fallback_20260316"
+TEXT_CLS_MODEL_DIR = os.getenv("TEXT_CLS_MODEL_DIR", os.path.join(os.path.dirname(__file__), "models", "text_cls_bert"))
+TEXT_CLS_LABEL_MAP_PATH = os.getenv("TEXT_CLS_LABEL_MAP_PATH", os.path.join(os.path.dirname(__file__), "text_model", "label_map.json"))
 
 # 从知识库获取病害类别
 DISEASE_CLASSES = kb_manager.get_disease_classes()
@@ -124,6 +127,8 @@ class DiseaseDiagnosisEngine:
         self.device = torch.device("cuda" if USE_GPU and torch.cuda.is_available() else "cpu")
         self.model = None
         self.transform = None
+        self.text_classifier = None
+        self.text_classifier_available = None
 
         backend_value = backend if backend is not None else DIAGNOSIS_BACKEND
         backend = (backend_value or "tf").lower()
@@ -386,6 +391,73 @@ class DiseaseDiagnosisEngine:
             return {}
         return {k: v / total for k, v in canonical_probs.items()}
 
+    def _ensure_text_classifier(self):
+        if self.text_classifier_available is True:
+            return self.text_classifier
+        if self.text_classifier_available is False:
+            return None
+        self.text_classifier = load_text_classifier(
+            model_dir=TEXT_CLS_MODEL_DIR,
+            label_map_path=TEXT_CLS_LABEL_MAP_PATH,
+        )
+        self.text_classifier_available = self.text_classifier is not None
+        return self.text_classifier
+
+    def predict_text_proba_rule_based(
+        self,
+        symptoms: List[str],
+        growth_stage: Optional[str] = None,
+        environment: Optional[str] = None,
+        facility: Optional[str] = None,
+        province: Optional[str] = None,
+    ) -> Dict[str, float]:
+        """KB 规则版文本概率诊断（fallback）。"""
+        normalized_symptoms = kb_manager.normalize_symptoms(symptoms or [])
+        if not kb_manager.has_effective_text_evidence(normalized_symptoms):
+            return {}
+        return kb_manager.score_diseases_from_text(
+            crop_type="番茄",
+            symptoms=normalized_symptoms,
+            growth_stage=growth_stage,
+            environment=environment,
+            facility=facility,
+            province=province,
+        )
+
+    def predict_text_proba_bert(
+        self,
+        symptoms: List[str],
+        growth_stage: Optional[str] = None,
+        environment: Optional[str] = None,
+        facility: Optional[str] = None,
+        province: Optional[str] = None,
+    ) -> Dict[str, float]:
+        normalized_symptoms = kb_manager.normalize_symptoms(symptoms or [])
+        if not kb_manager.has_effective_text_evidence(normalized_symptoms):
+            return {}
+        classifier = self._ensure_text_classifier()
+        if not classifier:
+            return {}
+        text = build_input_text(
+            text=" ".join(normalized_symptoms),
+            symptoms=normalized_symptoms,
+            growth_stage=growth_stage,
+            environment=environment,
+            facility=facility,
+            province=province,
+        )
+        probs = classifier.predict_text_probs(
+            text=text,
+            symptoms=normalized_symptoms,
+            growth_stage=growth_stage,
+            environment=environment,
+            facility=facility,
+            province=province,
+        )
+        filtered = {k: float(v) for k, v in (probs or {}).items() if k in DISEASE_CLASSES}
+        # 输出格式与融合层兼容：只保留 canonical disease 且归一化
+        return self._normalized(filtered)
+
     def predict_text_proba(
         self,
         symptoms: List[str],
@@ -394,19 +466,26 @@ class DiseaseDiagnosisEngine:
         facility: Optional[str] = None,
         province: Optional[str] = None,
     ) -> Dict[str, float]:
-        """KB 驱动的文本概率诊断。"""
+        """优先 BERT 文本分类器，失败时回退 KB 规则。"""
         normalized_symptoms = kb_manager.normalize_symptoms(symptoms or [])
-        text_evidence_active = kb_manager.has_effective_text_evidence(
-            normalized_symptoms,
-            growth_stage=growth_stage,
-            environment=environment,
-            facility=facility,
-            province=province,
-        )
+        text_evidence_active = kb_manager.has_effective_text_evidence(normalized_symptoms)
         if not text_evidence_active:
             return {}
-        return kb_manager.score_diseases_from_text(
-            crop_type="番茄",
+
+        try:
+            bert_probs = self.predict_text_proba_bert(
+                symptoms=normalized_symptoms,
+                growth_stage=growth_stage,
+                environment=environment,
+                facility=facility,
+                province=province,
+            )
+            if bert_probs:
+                return bert_probs
+        except Exception:
+            pass
+
+        return self.predict_text_proba_rule_based(
             symptoms=normalized_symptoms,
             growth_stage=growth_stage,
             environment=environment,
