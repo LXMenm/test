@@ -807,6 +807,7 @@ def treatment_agent(state: CropDiseaseState) -> CropDiseaseState:
         branch=selected_branch,
         hard_constraints=hard_constraints,
         flags=flags,
+        constraints=constraints,
         treatment_text=treatment_text,
         prevention_text=prevention_advice,
     )
@@ -831,6 +832,7 @@ def treatment_agent(state: CropDiseaseState) -> CropDiseaseState:
                     branch=selected_branch,
                     hard_constraints=hard_constraints,
                     flags=flags,
+                    constraints=constraints,
                     treatment_text=treatment_text,
                     prevention_text=prevention_advice,
                 )
@@ -1065,10 +1067,53 @@ def _apply_branch_post_fixes(
     _ = (branch, hard_constraints, flags)
     return treatment_text, prevention_text
 
+<<<<<<< codex/refactor-agricultural-risk-tag-generation-rules-hb7leh
+def _validate_treatment_output(
+    *,
+    branch: str,
+    hard_constraints: dict | None,
+    flags: dict | None,
+    treatment_text: str,
+    prevention_text: str,
+    constraints: TreatmentConstraint | None = None,
+) -> list[str]:
+    """约束校验：命中违规时触发 LLM retry/fallback。"""
+    hard_constraints = hard_constraints or {}
+    flags = flags or {}
+
+    full_text = "\n".join([str(treatment_text or ""), str(prevention_text or "")])
+    violations: list[str] = []
+
+    # 禁用成分来源：profile constraints + hard_constraints + flags
+    banned_ingredients = sorted({
+        *[str(item).strip() for item in ((constraints.banned_ingredients if constraints else None) or []) if str(item).strip()],
+        *[str(item).strip() for item in (hard_constraints.get("banned_ingredients") or []) if str(item).strip()],
+        *[str(item).strip() for item in (flags.get("banned_ingredients") or []) if str(item).strip()],
+    })
+    for ingredient in banned_ingredients:
+        if ingredient and ingredient in full_text:
+            violations.append(f"包含禁用成分：{ingredient}")
+
+    # 家庭分支不应出现专业化大规模流程
+    if str(branch or "").upper() == "FAMILY":
+        forbidden_terms = ["无人机", "规模化喷施", "SOP", "专业资质购药流程"]
+        for term in forbidden_terms:
+            if term in full_text:
+                violations.append(f"FAMILY 分支不得包含：{term}")
+
+    # 设备禁用流转约束
+    forbidden_equipment_flows = [str(item).strip().upper() for item in (hard_constraints.get("forbidden_equipment_flows") or []) if str(item).strip()]
+    if "DRONE" in forbidden_equipment_flows and "无人机" in full_text:
+        violations.append("当前档案禁止无人机流程")
+
+    # 去重并保序
+    return dedupe_reasons(violations)
+=======
 def _validate_treatment_output(*args, **kwargs) -> list[str]:
     """最小约束校验：当前保持兼容，不阻断主流程。"""
     _ = (args, kwargs)
     return []
+>>>>>>> main
 
 def _summarize_constraints(constraints: TreatmentConstraint) -> str:
     """将治疗约束转为简短文本。"""
