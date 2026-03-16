@@ -1238,21 +1238,21 @@ export function ProfilesPage() {
                               />
                             </div>
                           <div className="space-y-2 sm:col-span-2">
-                            <Label className="text-white/60 text-xs">农业风险标签</Label>
-                            <div className="flex flex-wrap gap-2">
+                            <Label className="text-[#c8f7c5] font-medium text-xs">农业风险标签</Label>
+                            <div className="flex flex-wrap gap-2 mb-2">
                               {(base.risk_items && base.risk_items.length > 0
                                 ? base.risk_items.map((item) => ({ code: item.code, label: item.label }))
                                 : (base.risk_tags || []).map((code) => ({ code, label: RISK_LABEL_MAP[code] || code }))
                               ).map((tag) => (
-                                <Badge key={tag.code} className="bg-[#c8f7c5]/20 text-[#c8f7c5] border border-[#c8f7c5]/30">
+                                <span key={tag.code} className="bg-[#c8f7c5] text-black px-4 py-1.5 rounded-full text-sm font-medium">
                                   {tag.label}
-                                </Badge>
+                                </span>
                               ))}
                               {(!(base.risk_tags && base.risk_tags.length) && !(base.risk_items && base.risk_items.length)) && (
                                 <span className="text-white/50 text-xs">暂无风险标签</span>
                               )}
                             </div>
-                            <div className="space-y-1">
+                            <div className="space-y-1 bg-white/5 p-3 rounded-lg">
                               {(base.risk_items && base.risk_items.length > 0
                                 ? base.risk_items.map((item) => item.reason)
                                 : (base.risk_reasons || [])
@@ -1262,7 +1262,7 @@ export function ProfilesPage() {
                             </div>
                           </div>
 
-                          <div className="space-y-1 sm:col-span-2">
+                          <div className="space-y-1 sm:col-span-2 mt-4">
                             <Label className="text-white/60 text-xs">环境描述</Label>
                             <Textarea
                               value={base.environment}
