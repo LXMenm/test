@@ -50,6 +50,19 @@ class CropDiseaseState(TypedDict):
     diagnosis_model_id: Optional[str]  # 用户选择的模型ID
     diagnosis_model_meta: Optional[Dict[str, Any]]  # 最终使用模型信息
 
+    structured_symptoms: Optional[Dict[str, Any]]
+    text_confidence: Optional[float]
+    text_top3: Optional[List[tuple[str, float]]]
+    fusion_top3: Optional[List[tuple[str, float]]]
+    diagnosis_evidence: Optional[Dict[str, Any]]
+    modality_conflict_flag: Optional[bool]
+    image_probs: Optional[Dict[str, float]]
+    text_probs: Optional[Dict[str, float]]
+    prior_probs: Optional[Dict[str, float]]
+    fusion_probs: Optional[Dict[str, float]]
+    normalized_symptoms: Optional[List[str]]
+    fusion_meta: Optional[Dict[str, Any]]
+
     # 治疗方案
     treatment_plan: Optional[str]  # 具体治疗方案
     prevention_advice: Optional[str]  # 预防建议
@@ -117,6 +130,18 @@ def create_initial_state(
         final_source=None,
         diagnosis_model_id=None,
         diagnosis_model_meta=None,
+        structured_symptoms=None,
+        text_confidence=None,
+        text_top3=None,
+        fusion_top3=None,
+        diagnosis_evidence=None,
+        modality_conflict_flag=None,
+        image_probs=None,
+        text_probs=None,
+        prior_probs=None,
+        fusion_probs=None,
+        normalized_symptoms=None,
+        fusion_meta=None,
         treatment_plan=None,
         prevention_advice=None,
         current_step="start",

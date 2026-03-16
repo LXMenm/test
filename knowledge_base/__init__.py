@@ -50,3 +50,16 @@ def rule_diagnosis(crop, symptoms):
 def get_treatment_plan(disease_name):
     """获取指定病害的治疗方案"""
     return get_kb_manager().get_treatment_plan(disease_name)
+
+
+def normalize_symptoms(symptoms):
+    """症状归一化。"""
+    return get_kb_manager().normalize_symptoms(symptoms)
+
+def score_diseases_from_text(crop_type, symptoms, growth_stage=None, environment=None, facility=None, province=None):
+    """KB 文本打分。"""
+    return get_kb_manager().score_diseases_from_text(crop_type, symptoms, growth_stage, environment, facility, province)
+
+def map_image_label_to_disease(label):
+    """图像标签映射到中文 canonical disease。"""
+    return get_kb_manager().map_image_label_to_disease(label)

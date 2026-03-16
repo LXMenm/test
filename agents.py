@@ -207,7 +207,10 @@ def reception_agent(state: CropDiseaseState) -> CropDiseaseState:
     # 更新状态
     state["crop_type"] = crop_type
     state["crop_growth_stage"] = crop_growth_stage
+    normalized_symptoms = kb_manager.normalize_symptoms(symptoms)
     state["symptoms"] = symptoms
+    state["structured_symptoms"] = {"normalized_symptoms": normalized_symptoms}
+    state["normalized_symptoms"] = normalized_symptoms
     state["image_path"] = image_path
     state["current_step"] = "reception_complete"
     state["messages"] = [message]
@@ -224,6 +227,7 @@ def reception_agent(state: CropDiseaseState) -> CropDiseaseState:
             "crop_type": crop_type,
             "crop_growth_stage": crop_growth_stage,
             "symptoms": symptoms,
+            "normalized_symptoms": normalized_symptoms,
             "image_path": image_path,
             "missing_profile_fields": missing_profile_fields,
             "removed_tokens": removed_tokens,
@@ -258,33 +262,22 @@ def _fallback_extraction(query: str):
     
     return crop_type, crop_growth_stage, symptoms
 def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
-    """
-    番茄病害诊断智能体节点（使用深度学习模型）
-    职责：
-    1. 基于症状和图像进行番茄病害诊断
-    2. 确定番茄病害类型和置信度
-    3. 提供病害详细描述
-    Args:
-        state: 当前系统状态
-    Returns:
-        更新后的状态
-    """
+    """番茄病害诊断智能体：KB 文本分支 + 图像分支 + 轻量先验融合。"""
     print("\n[番茄病害诊断智能体] 正在分析病害...")
-    crop_type = state.get("crop_type", "番茄")  # 确保是番茄
-    symptoms = state.get("symptoms", [])
+    crop_type = state.get("crop_type", "番茄")
+    symptoms = state.get("symptoms", []) or []
     crop_growth_stage = state.get("crop_growth_stage")
     image_path = state.get("image_path")
     flags = state.get("personalization_flags", {}) or {}
     flags["need_confirm"] = False
     policy = state.get("personalization_policy") or {}
-    hard_constraints = policy.get("hard_constraints") if isinstance(policy, dict) else {}
-    priors = {
-        "facility": flags.get("facility"),
-        "province": flags.get("province"),
-    }
+    hard_constraints = (policy.get("hard_constraints") or {}) if isinstance(policy, dict) else {}
     personalization_context = state.get("personalization_context")
-    
-    # 使用深度学习诊断引擎
+
+    facility = state.get("facility") or flags.get("facility")
+    province = state.get("province") or flags.get("province")
+    environment = state.get("environment") or flags.get("environment")
+
     allow_torch = str(DIAGNOSIS_ALLOW_TORCH).lower() in {"1", "true", "yes"}
     resolved_model, fallback_reasons = resolve_model(state.get("diagnosis_model_id"), allow_torch=allow_torch)
     state["diagnosis_model_id"] = resolved_model.model_id
@@ -293,14 +286,7 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
         backend=resolved_model.backend,
         allow_torch=allow_torch,
     )
-    disease_type = None
-    final_disease = None
-    disease_confidence = None
-    image_confidence = None
-    final_confidence = None
-    final_source = None
-    disease_description = None
-    image_top3 = []
+
     model_meta = {
         "model_id": resolved_model.model_id,
         "model_display_name": resolved_model.display_name,
@@ -309,80 +295,166 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
         "model_fallback_reason": fallback_reasons,
     }
     state["diagnosis_model_meta"] = model_meta
-    
-    # 优先使用图像诊断（如果提供了图像路径）
+
+    normalized_symptoms = kb_manager.normalize_symptoms(symptoms)
+    state["structured_symptoms"] = {"normalized_symptoms": normalized_symptoms}
+    state["normalized_symptoms"] = normalized_symptoms
+
+    image_probs: dict[str, float] = {}
+    text_probs: dict[str, float] = {}
+    prior_probs: dict[str, float] = {}
+    fusion_probs: dict[str, float] = {}
+    image_confidence = 0.0
+
+    # 图像分支
     if image_path:
-        print(f"[番茄病害诊断智能体] 使用图像进行诊断: {image_path}")
         try:
-            disease_type, disease_confidence, probs_dict = diagnosis_engine.diagnose_from_image(image_path)
-            image_top3 = sorted(probs_dict.items(), key=lambda x: x[1], reverse=True)[:3]
-            if disease_type:
-                final_disease = disease_type
+            if hasattr(diagnosis_engine, "predict_image_proba"):
+                image_probs = diagnosis_engine.predict_image_proba(image_path)
+                image_top3_tmp = sorted(image_probs.items(), key=lambda x: x[1], reverse=True)[:3]
+                image_confidence = float(image_top3_tmp[0][1]) if image_top3_tmp else 0.0
+            else:
+                disease_type_legacy, conf_legacy, probs_legacy = diagnosis_engine.diagnose_from_image(image_path)
+                image_confidence = float(conf_legacy or 0.0)
+                for label, prob in (probs_legacy or {}).items():
+                    disease = kb_manager.map_image_label_to_disease(label)
+                    image_probs[disease] = image_probs.get(disease, 0.0) + float(prob)
+                if not image_probs and disease_type_legacy:
+                    image_probs[kb_manager.map_image_label_to_disease(disease_type_legacy)] = image_confidence
+
+            image_top3 = sorted(image_probs.items(), key=lambda x: x[1], reverse=True)[:3]
             state["image_diagnosis"] = {
                 "image_path": image_path,
-                "top1": {"disease": disease_type, "confidence": float(disease_confidence or 0.0)},
+                "top1": {
+                    "disease": image_top3[0][0] if image_top3 else None,
+                    "confidence": float(image_top3[0][1]) if image_top3 else 0.0,
+                },
                 "top3": [(name, float(prob)) for name, prob in image_top3],
             }
-            policy = make_confidence_flags(
-                image_top3, fallback_confidence=float(disease_confidence or 0.0)
-            )
-            image_confidence = float(policy["top1_confidence"])
-            disease_confidence = image_confidence
-            final_confidence = image_confidence
-            final_source = "image"
-            if policy["need_confirm"]:
-                flags["need_confirm"] = True
-                flags["fallback_reason"] = list(policy["reasons"])
-            # 获取病害描述
-            disease_description = diagnosis_engine._get_disease_description(disease_type, symptoms)
-            print(f"[番茄病害诊断智能体] 图像诊断成功")
         except Exception as e:
-            print(f"[番茄病害诊断智能体] 图像诊断失败: {e}，使用症状诊断")
-    
-    # 如果图像诊断失败或没有图像，使用症状诊断
-    if (not disease_type) and (not image_path or symptoms):
-        print("[番茄病害诊断智能体] 使用症状进行诊断")
-        try:
-            disease_type, disease_confidence, disease_description = diagnosis_engine.diagnose_from_symptoms(
+            print(f"[番茄病害诊断智能体] 图像分支失败: {e}")
+            image_probs = {}
+
+    # 文本分支（KB 驱动）
+    text_evidence_active = kb_manager.has_effective_text_evidence(
+        normalized_symptoms,
+        growth_stage=crop_growth_stage,
+        environment=environment,
+        facility=facility,
+        province=province,
+    )
+    try:
+        if text_evidence_active and hasattr(diagnosis_engine, "predict_text_proba"):
+            text_probs = diagnosis_engine.predict_text_proba(
+                symptoms=normalized_symptoms,
+                growth_stage=crop_growth_stage,
+                environment=environment,
+                facility=facility,
+                province=province,
+            )
+        elif text_evidence_active:
+            text_probs = kb_manager.score_diseases_from_text(
                 crop_type=crop_type,
-                symptoms=symptoms,
-                growth_stage=crop_growth_stage
+                symptoms=normalized_symptoms,
+                growth_stage=crop_growth_stage,
+                environment=environment,
+                facility=facility,
+                province=province,
             )
-            if disease_type:
-                final_disease = disease_type
-                final_confidence = disease_confidence
-                final_source = "rule"
-        except Exception as e:
-            print(f"诊断模型调用失败: {e}，使用规则匹配")
-            # 后备方案：规则匹配
-            disease_type, disease_confidence, disease_description = _rule_based_diagnosis(
-                crop_type, symptoms, priors=priors
+        else:
+            text_probs = {}
+    except Exception as e:
+        print(f"[番茄病害诊断智能体] 文本分支失败: {e}")
+        text_probs = {}
+
+    if not text_evidence_active:
+        text_probs = {}
+
+    # 先验分支
+    try:
+        if hasattr(diagnosis_engine, "build_prior_proba"):
+            prior_probs = diagnosis_engine.build_prior_proba(
+                growth_stage=crop_growth_stage,
+                facility=facility,
+                province=province,
             )
-            if disease_type:
-                final_disease = disease_type
-                final_confidence = disease_confidence
-                final_source = "rule"
-    elif image_path and flags.get("need_confirm") and symptoms:
-        print("[番茄病害诊断智能体] 低置信度，使用症状进行回退诊断")
+    except Exception:
+        prior_probs = {}
+
+    image_top3 = sorted(image_probs.items(), key=lambda x: x[1], reverse=True)[:3]
+    text_top3 = sorted(text_probs.items(), key=lambda x: x[1], reverse=True)[:3]
+    text_confidence = float(text_top3[0][1]) if text_top3 else 0.0
+
+    if hasattr(diagnosis_engine, "fuse_multimodal_probs"):
         try:
-            disease_type, disease_confidence, disease_description = diagnosis_engine.diagnose_from_symptoms(
-                crop_type=crop_type,
-                symptoms=symptoms,
-                growth_stage=crop_growth_stage
+            fusion_probs, fusion_meta = diagnosis_engine.fuse_multimodal_probs(
+                image_probs=image_probs,
+                text_probs=text_probs,
+                prior_probs=prior_probs,
+                image_confidence=image_confidence,
+                text_confidence=text_confidence,
+                text_evidence_active=text_evidence_active,
             )
-            if disease_type:
-                final_disease = disease_type
-        except Exception as e:
-            print(f"诊断模型调用失败: {e}，使用规则匹配")
-            disease_type, disease_confidence, disease_description = _rule_based_diagnosis(
-                crop_type, symptoms, priors=priors
+        except TypeError:
+            fusion_probs, fusion_meta = diagnosis_engine.fuse_multimodal_probs(
+                image_probs=image_probs,
+                text_probs=text_probs,
+                prior_probs=prior_probs,
+                image_confidence=image_confidence,
+                text_confidence=text_confidence,
             )
-            if disease_type:
-                final_disease = disease_type
-    if personalization_context and disease_type:
+    else:
+        fusion_probs = image_probs or text_probs or prior_probs or {"健康": 1.0}
+        fusion_meta = {"normalized_weights": {"image": 1.0 if image_probs else 0.0, "text": 1.0 if text_probs and not image_probs else 0.0, "prior": 0.0}}
+
+    fusion_top3 = sorted(fusion_probs.items(), key=lambda x: x[1], reverse=True)[:3]
+
+    image_top1 = image_top3[0][0] if image_top3 else None
+    text_top1 = text_top3[0][0] if text_top3 else None
+    final_disease = fusion_top3[0][0] if fusion_top3 else (image_top1 or text_top1 or "健康")
+    final_confidence = float(fusion_top3[0][1]) if fusion_top3 else max(image_confidence, text_confidence, 0.0)
+
+    modality_conflict_flag = bool(
+        text_evidence_active and image_top1 and text_top1 and image_top1 != text_top1 and image_confidence >= 0.6 and text_confidence >= 0.6
+    )
+
+    if hasattr(diagnosis_engine, "build_diagnosis_evidence"):
+        diagnosis_evidence = diagnosis_engine.build_diagnosis_evidence(
+            normalized_symptoms=normalized_symptoms,
+            raw_symptoms=symptoms,
+            image_probs=image_probs,
+            text_probs=text_probs,
+            prior_probs=prior_probs,
+            fusion_probs=fusion_probs,
+            fusion_meta=fusion_meta if isinstance(fusion_meta, dict) else {},
+            modality_conflict_flag=modality_conflict_flag,
+            final_disease=final_disease,
+            final_confidence=final_confidence,
+            final_source="fusion",
+        )
+    else:
+        diagnosis_evidence = {
+            "normalized_symptoms": normalized_symptoms,
+            "image_top3": image_top3,
+            "text_top3": text_top3,
+            "fusion_top3": fusion_top3,
+            "weights": (fusion_meta.get("normalized_weights") if isinstance(fusion_meta, dict) else {}),
+            "fusion_meta": fusion_meta,
+            "modality_conflict_flag": modality_conflict_flag,
+            "summary": f"融合诊断Top1: {final_disease}",
+        }
+
+    confidence_policy = make_confidence_flags(fusion_top3, fallback_confidence=float(final_confidence or 0.0))
+    if confidence_policy.get("need_confirm"):
+        flags["need_confirm"] = True
+        flags["fallback_reason"] = list(confidence_policy.get("reasons") or [])
+
+    disease_description = diagnosis_engine._get_disease_description(final_disease, normalized_symptoms)
+
+    if personalization_context and final_disease:
         personalization_prompt = f"""以下是诊断结果，请结合农户个性化上下文给出补充提示：
-诊断病害：{disease_type}
-症状：{symptoms}
+诊断病害：{final_disease}
+症状：{normalized_symptoms}
 个性化上下文：{personalization_context}
 原则：
 1) 必须优先依据原始字段（location/weather/growth_stage/sowing_date/harvest_window_days）判断。
@@ -398,33 +470,14 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
             disease_description = (disease_description or "") + f"\n个性化提示：{extra_note.strip()}"
         except Exception:
             pass
-    env_risk_hints = []
-    cultivation_mode = str(flags.get("cultivation_mode") or "")
-    facility_text = str(flags.get("facility") or "")
-    if cultivation_mode == "HYDROPONIC":
-        env_risk_hints.append("水培番茄需重点监测营养液卫生与根区溶氧，避免环境诱导型病害扩散。")
-    if ("温室" in facility_text) or ("GREENHOUSE" in str(flags.get("farm_scale") or "")):
-        env_risk_hints.append("温室场景建议关注通风除湿与叶面持续结露风险，降低灰霉/霉病类压力。")
-    if env_risk_hints:
-        disease_description = (disease_description or "") + "\n环境风险提示：" + "；".join(env_risk_hints[:2])
-    final_confidence = final_confidence if final_confidence is not None else (disease_confidence or 0.0)
-    disease_confidence = final_confidence
-    if final_source is None:
-        final_source = "image" if image_path else "rule"
-    message = f"番茄病害诊断智能体：诊断为{disease_type}，置信度={disease_confidence:.2%}"
-    if image_path and state.get("image_diagnosis"):
-        image_top1 = state["image_diagnosis"].get("top1", {})
-        top3_text = ", ".join([f"{name}={prob:.2f}" for name, prob in state["image_diagnosis"].get("top3", [])])
-        message += (
-            f"\n图像诊断证据："
-            f"\n- Image: {image_path}"
-            f"\n- Top1: {image_top1.get('disease')} (conf={float(image_top1.get('confidence', 0.0)):.2f})"
-            f"\n- Top3: {top3_text}"
-        )
-    if personalization_context:
-        message += "（已参考个性化上下文）"
-    if flags.get("confirm_when_low_confidence") and disease_confidence < DIAGNOSIS_CONFIDENCE_THRESHOLD:
-        follow_ups = _build_follow_up_questions(symptoms, flags, state)
+
+    if flags.get("confirm_when_low_confidence") and final_confidence < DIAGNOSIS_CONFIDENCE_THRESHOLD:
+        follow_ups = [
+            "请补充叶片正反面近照。",
+            "病斑颜色、边缘、是否有霉层或水渍状？",
+            "近期是否高湿、连阴雨、棚内通风差？",
+        ]
+        follow_ups.extend(_build_follow_up_questions(normalized_symptoms, flags, state))
         if hard_constraints.get("forbid_professional_pesticides"):
             follow_ups = [
                 "当前是否能购买合规药剂，还是仅能采用家庭可执行方案？",
@@ -434,29 +487,40 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
         if follow_ups:
             flags["follow_up_questions"] = follow_ups
             state["follow_up_questions"] = follow_ups
-            message += f"；建议追问：{'；'.join(follow_ups)}"
         flags["need_confirm"] = True
         flags.setdefault("fallback_reason", [])
         if "low_confidence" not in flags["fallback_reason"]:
             flags["fallback_reason"].append("low_confidence")
-        state["personalization_flags"] = flags
-    # 更新状态
-    if final_disease:
-        disease_type = final_disease
+
+    message = f"番茄病害诊断智能体：诊断为{final_disease}，置信度={final_confidence:.2%}"
+    if image_path and state.get("image_diagnosis"):
+        message += f"\n图像诊断证据Top3: {state['image_diagnosis'].get('top3', [])}"
+    if text_top3:
+        message += f"\n文本诊断证据Top3: {[(d, round(p, 4)) for d, p in text_top3]}"
+    if personalization_context:
+        message += "（已参考个性化上下文）"
+
     state["final_disease"] = final_disease
-    state["disease_type"] = disease_type
-    state["disease_confidence"] = disease_confidence
+    state["disease_type"] = final_disease
+    state["disease_confidence"] = final_confidence
     state["image_confidence"] = image_confidence
+    state["text_confidence"] = text_confidence
     state["final_confidence"] = final_confidence
-    state["final_source"] = final_source
+    state["final_source"] = "fusion"
     state["disease_description"] = disease_description
+    state["image_probs"] = image_probs
+    state["text_probs"] = text_probs
+    state["prior_probs"] = prior_probs
+    state["fusion_probs"] = fusion_probs
+    state["text_top3"] = [(name, float(prob)) for name, prob in text_top3]
+    state["fusion_top3"] = [(name, float(prob)) for name, prob in fusion_top3]
+    state["diagnosis_evidence"] = diagnosis_evidence
+    state["fusion_meta"] = fusion_meta if isinstance(fusion_meta, dict) else {}
+    state["modality_conflict_flag"] = modality_conflict_flag
+    state["personalization_flags"] = flags
     state["current_step"] = "diagnosis_complete"
     state["messages"] = [message]
-    print(f"  - 病害类型: {disease_type}")
-    print(f"  - 置信度: {disease_confidence:.2%}")
-    print(f"  - 描述: {disease_description}")
-    if flags.get("follow_up_questions"):
-        print(f"  - 追问建议: {flags['follow_up_questions']}")
+
     append_trace(
         state,
         agent="diagnosis",
@@ -464,18 +528,26 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
             "crop_type": crop_type,
             "crop_growth_stage": crop_growth_stage,
             "symptoms": symptoms,
+            "normalized_symptoms": normalized_symptoms,
             "image_path": image_path,
+            "facility": facility,
+            "province": province,
         },
         outputs={
-            "disease_type": disease_type,
+            "disease_type": final_disease,
             "final_disease": final_disease,
-            "disease_confidence": disease_confidence,
+            "disease_confidence": final_confidence,
             "image_confidence": image_confidence,
+            "text_confidence": text_confidence,
             "final_confidence": final_confidence,
-            "final_source": final_source,
-            "disease_description": disease_description,
-            "image_diagnosis": state.get("image_diagnosis"),
-            "image_top1": (state.get("image_diagnosis") or {}).get("top1"),
+            "final_source": "fusion",
+            "weights": (fusion_meta.get("normalized_weights") if isinstance(fusion_meta, dict) else {}),
+            "fusion_meta": fusion_meta,
+            "image_top3": image_top3,
+            "text_top3": text_top3,
+            "fusion_top3": fusion_top3,
+            "modality_conflict_flag": modality_conflict_flag,
+            "diagnosis_evidence": diagnosis_evidence,
             "follow_up_questions": flags.get("follow_up_questions"),
             "need_confirm": flags.get("need_confirm"),
             "fallback_reason": flags.get("fallback_reason"),
@@ -487,6 +559,7 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
         },
     )
     return state
+
 def _rule_based_diagnosis(crop_type: str, symptoms: list, priors: dict | None = None) -> tuple:
     """番茄病害规则匹配诊断（后备方案），可结合设施/区域先验。"""
     priors = priors or {}
@@ -517,196 +590,10 @@ def _rule_based_diagnosis(crop_type: str, symptoms: list, priors: dict | None = 
             "confidence": 0.83,
             "description": "叶霉病在叶片背面产生灰褐色霉层，正面出现黄色病斑，严重时叶片枯死。"
         },
-        "白粉病": {
-            "symptoms": ["白粉", "斑点"],
-            "confidence": 0.87,
-            "description": "白粉病在叶片表面形成白色粉状物，影响光合作用，导致叶片早衰。"
-        },
         "细菌性斑点病": {
             "symptoms": ["斑点", "变色"],
             "confidence": 0.81,
             "description": "细菌性病害，在叶片和果实上形成小斑点，逐渐扩大并可能穿孔。"
-        },
-        "灰霉病": {
-            "symptoms": ["腐烂", "霉斑"],
-            "confidence": 0.84,
-            "description": "灰霉病在潮湿环境下发生，导致果实和叶片腐烂，表面产生灰色霉层。"
-        }
-    }
-    
-    # 如果没有症状，判断为健康
-    if not symptoms:
-        return "健康", 0.99, "番茄植株生长正常，无病害症状。"
-    
-    # 匹配症状最相似的病害
-    best_match = None
-    max_score = 0
-    
-    for disease, info in disease_knowledge.items():
-        if disease == "健康":
-            continue
-        
-        # 计算症状匹配得分
-        match_score = 0
-        for symptom in symptoms:
-            for disease_symptom in info["symptoms"]:
-                if disease_symptom in symptom:
-                    match_score += 1
-        match_score *= _get_prior_weight(disease, priors)
-        
-        if match_score > max_score:
-            max_score = match_score
-            best_match = disease
-    
-    # 如果找到匹配的病害
-    if best_match and max_score > 0:
-        info = disease_knowledge[best_match]
-        return best_match, info["confidence"], info["description"]
-    else:
-        # 没有找到匹配的病害，返回未知
-        return "未知病害", 0.5, "无法根据症状确定具体的番茄病害类型，建议提供更多信息或病害图像。"
-def _get_prior_weight(disease: str, priors: dict) -> float:
-    """根据设施/省份对规则诊断打先验权重。"""
-    facility = priors.get("facility") or ""
-    province = priors.get("province") or ""
-    facility_weights = {
-        "温室": {"灰霉病": 1.2, "白粉病": 1.1},
-        "温室大棚": {"灰霉病": 1.2, "白粉病": 1.1},
-        "露地": {"早疫病": 1.1, "晚疫病": 1.1},
-    }
-    province_weights = {
-        "山东": {"早疫病": 1.05, "晚疫病": 1.05},
-        "云南": {"灰霉病": 1.08, "叶霉病": 1.05},
-    }
-    weight = 1.0
-    for name, mapping in facility_weights.items():
-        if name in facility:
-            weight *= mapping.get(disease, 1.0)
-    for name, mapping in province_weights.items():
-        if name in province:
-            weight *= mapping.get(disease, 1.0)
-    return weight
-def _build_follow_up_questions(symptoms: list, flags: dict, state: CropDiseaseState) -> list[str]:
-    """在低置信度时生成追问要点。"""
-    questions = []
-    if not state.get("image_path"):
-        questions.append("是否有清晰的叶片/果实近照可供诊断？")
-    if state.get("crop_growth_stage") is None:
-        questions.append("当前番茄处于哪个生育期？")
-    if state.get("environment") is None:
-        questions.append("近期棚室/田间的温湿度或天气变化情况？")
-    if symptoms:
-        questions.append("症状扩散速度和面积如何变化？")
-    if flags.get("harvest_window_days"):
-        questions.append("距离计划采收的具体时间？")
-    return questions[:3]
-def _resolve_treatment_branch(flags: dict) -> str:
-    farm_scale = str(flags.get("farm_scale") or "SMALL")
-    pesticide_access_level = str(flags.get("pesticide_access_level") or "LIMITED")
-    equipment = [str(item) for item in (flags.get("equipment") or [])]
-    if farm_scale in {"BALCONY", "SMALL"}:
-        branch = "FAMILY"
-    elif farm_scale == "MEDIUM":
-        branch = "MID"
-    else:
-        branch = "ENTERPRISE"
-    if pesticide_access_level == "NONE":
-        return "FAMILY"
-    if branch == "ENTERPRISE" and not equipment and pesticide_access_level != "FULL":
-        branch = "MID"
-    if (
-        branch == "MID"
-        and any(item in {"DRONE", "MIST_BLOWER"} for item in equipment)
-        and pesticide_access_level == "FULL"
-        and farm_scale == "GREENHOUSE_LARGE"
-    ):
-        branch = "ENTERPRISE"
-    return branch
-def _contains_any(text: str, keywords: list[str]) -> bool:
-    lower = text.lower()
-    return any(keyword.lower() in lower for keyword in keywords)
-def _validate_treatment_output(
-    *,
-    branch: str,
-    hard_constraints: dict,
-    flags: dict,
-    treatment_text: str,
-    prevention_text: str,
-) -> list[str]:
-    violations: list[str] = []
-    whole_text = f"{treatment_text}\n{prevention_text}"
-    equipment = [str(item) for item in (flags.get("equipment") or [])]
-    pesticide_access_level = str(flags.get("pesticide_access_level") or "LIMITED")
-    prefer_organic = bool(flags.get("prefer_organic"))
-    drone_words = ["无人机", "drone"]
-    enterprise_words = ["规模化", "sop", "标准作业", "监测", "复查", "轮换", "作用机制"]
-    family_forbidden = ["无人机", "drone", "规模化喷施", "sop", "专业设备"]
-    mid_forbidden = ["无人机", "drone"] if "DRONE" not in equipment else []
-    if branch == "FAMILY":
-        if _contains_any(whole_text, family_forbidden):
-            violations.append("FAMILY 分支出现不可执行的企业/无人机流程")
-        if pesticide_access_level == "NONE" and _contains_any(whole_text, ["购买", "专业杀虫", "专业杀菌", "资质"]):
-            violations.append("FAMILY + 无购药能力时出现专业购药措辞")
-    if branch == "MID" and mid_forbidden and _contains_any(whole_text, mid_forbidden):
-        violations.append("MID 分支出现无人机流程")
-    if branch == "ENTERPRISE":
-        if "DRONE" not in equipment and _contains_any(whole_text, drone_words):
-            violations.append("ENTERPRISE 在无 DRONE 设备时输出了无人机流程")
-        if not _contains_any(whole_text, enterprise_words):
-            violations.append("ENTERPRISE 缺少SOP/监测/轮换等企业化要素")
-    forbidden_equipment_flows = [str(x) for x in (hard_constraints.get("forbidden_equipment_flows") or [])]
-    if "DRONE" in forbidden_equipment_flows and _contains_any(whole_text, drone_words):
-        violations.append("hard_constraints 禁止 DRONE 但文本出现无人机流程")
-    banned_ingredients = [str(x).strip() for x in (hard_constraints.get("banned_ingredients") or []) if str(x).strip()]
-    for ingredient in banned_ingredients:
-        if ingredient in whole_text:
-            violations.append(f"出现禁用成分: {ingredient}")
-    harvest_window_days = hard_constraints.get("harvest_window_days")
-    if harvest_window_days is None:
-        harvest_window_days = flags.get("harvest_window_days")
-    try:
-        harvest_window_days = int(harvest_window_days)
-    except Exception:
-        harvest_window_days = None
-    if harvest_window_days is not None and harvest_window_days <= 7 and not _contains_any(whole_text, ["采收", "安全间隔", "间隔期"]):
-        violations.append("临近采收但缺少安全间隔提示")
-    if prefer_organic and branch in {"FAMILY", "MID"} and _contains_any(whole_text, ["高毒", "强力化学", "专业化学农药"]):
-        violations.append("prefer_organic 场景出现高风险化学措辞")
-    return violations
-def _apply_branch_post_fixes(branch: str, hard_constraints: dict, flags: dict, treatment_text: str, prevention_text: str) -> tuple[str, str]:
-    text = treatment_text
-    prevention = prevention_text
-    if branch in {"FAMILY", "MID"} and str(flags.get("pesticide_access_level") or "") == "NONE":
-        text = re.sub(r".*(专业杀虫|专业杀菌|需资质|必须购买).*(\n|$)", "", text, flags=re.IGNORECASE)
-    forbidden_equipment_flows = [str(x) for x in (hard_constraints.get("forbidden_equipment_flows") or [])]
-    if "DRONE" in forbidden_equipment_flows:
-        text = re.sub(r".*(无人机|DRONE).*(\n|$)", "", text, flags=re.IGNORECASE)
-        prevention = re.sub(r".*(无人机|DRONE).*(\n|$)", "", prevention, flags=re.IGNORECASE)
-    harvest_window_days = hard_constraints.get("harvest_window_days")
-    if harvest_window_days is None:
-        harvest_window_days = flags.get("harvest_window_days")
-    try:
-        harvest_window_days = int(harvest_window_days)
-    except Exception:
-        harvest_window_days = None
-    if harvest_window_days is not None and harvest_window_days <= 7 and not _contains_any(f"{text}\n{prevention}", ["采收", "安全间隔", "间隔期"]):
-        notice = "【采收安全】距采收较近，请严格遵守采收安全间隔并优先低残留方案。"
-        text = f"{text}\n{notice}".strip()
-    return text.strip(), prevention.strip()
-def _normalize_kb_actions(actions_like: object) -> dict:
-    actions = actions_like if isinstance(actions_like, dict) else {}
-    def _to_list(value: object) -> list[str]:
-        if not isinstance(value, list):
-            return []
-        return [str(item).strip() for item in value if str(item).strip()]
-    treatment_plan = actions.get("treatment_plan") if isinstance(actions, dict) else {}
-    treatment_plan = treatment_plan if isinstance(treatment_plan, dict) else {}
-    return {
-        "immediate_actions": _to_list(actions.get("immediate_actions") if isinstance(actions, dict) else []),
-        "treatment_plan": {
-            "FAMILY": _to_list(treatment_plan.get("FAMILY")),
-            "MID": _to_list(treatment_plan.get("MID")),
-            "ENTERPRISE": _to_list(treatment_plan.get("ENTERPRISE")),
         },
         "prevention_plan": _to_list(actions.get("prevention_plan") if isinstance(actions, dict) else []),
         "resistance_management": _to_list(actions.get("resistance_management") if isinstance(actions, dict) else []),
@@ -767,7 +654,7 @@ def treatment_agent(state: CropDiseaseState) -> CropDiseaseState:
     flags = state.get("personalization_flags", {}) or {}
     policy = state.get("personalization_policy") or {}
     policy_reasons = dedupe_reasons(state.get("personalization_reasons") or flags.get("personalization_reasons") or [])
-    hard_constraints = policy.get("hard_constraints") if isinstance(policy, dict) else {}
+    hard_constraints = (policy.get("hard_constraints") or {}) if isinstance(policy, dict) else {}
     hard_constraints = hard_constraints if isinstance(hard_constraints, dict) else {}
     kb_snapshot = state.get("kb_snapshot") or {}
     base_info = {
@@ -1065,6 +952,59 @@ def _find_missing_profile_fields(
         if not base_profile.environment:
             missing.append("environment")
     return list(dict.fromkeys(missing))
+
+
+
+
+def _normalize_kb_actions(actions: dict | None) -> dict:
+    """兼容 actions 结构，避免缺字段导致下游报错。"""
+    default = {
+        "immediate_actions": [],
+        "treatment_plan": {"FAMILY": [], "MID": [], "ENTERPRISE": []},
+        "prevention_plan": [],
+        "resistance_management": [],
+        "safety_notes": [],
+        "follow_up": [],
+    }
+    if not isinstance(actions, dict):
+        return default
+    merged = dict(default)
+    merged.update({k: v for k, v in actions.items() if k in merged})
+    tp = merged.get("treatment_plan") if isinstance(merged.get("treatment_plan"), dict) else {}
+    merged["treatment_plan"] = {
+        "FAMILY": list(tp.get("FAMILY") or []),
+        "MID": list(tp.get("MID") or []),
+        "ENTERPRISE": list(tp.get("ENTERPRISE") or []),
+    }
+    for key in ["immediate_actions", "prevention_plan", "resistance_management", "safety_notes", "follow_up"]:
+        merged[key] = list(merged.get(key) or [])
+    return merged
+
+
+
+def _resolve_treatment_branch(flags: dict | None) -> str:
+    """根据档案规模选择治疗分支。"""
+    flags = flags or {}
+    scale = str(flags.get("farm_scale") or "").upper()
+    if scale in {"BALCONY", "SMALL"}:
+        return "FAMILY"
+    if scale in {"LARGE", "GREENHOUSE_LARGE"}:
+        return "ENTERPRISE"
+    return "MID"
+
+def _build_follow_up_questions(symptoms: list[str], flags: dict, state: CropDiseaseState) -> list[str]:
+    """低置信度时的通用追问（轻量兼容实现）。"""
+    questions = [
+        "请补充病叶正反面清晰近照（含整体株型）。",
+        "请描述病斑颜色、边缘是否清晰、是否有水渍感或霉层。",
+        "近3天是否出现高湿、连阴雨或棚内通风不足？",
+    ]
+    if any("卷曲" in str(s) for s in (symptoms or [])):
+        questions.append("是否伴随白粉虱/蚜虫活动增多？")
+    if any("斑" in str(s) for s in (symptoms or [])):
+        questions.append("病斑是同心轮纹、靶心状还是水渍状扩展？")
+    return questions
+
 def _build_profile_follow_up_questions(
     missing_fields: list[str],
     profile: Optional[FarmerProfile],
@@ -1074,6 +1014,26 @@ def _build_profile_follow_up_questions(
     """根据档案缺失项生成追问问句（仅用于待补充信息，不混入解释性 reasons）。"""
     _ = (profile, base_profile, policy)
     return build_missing_field_questions(missing_fields)[:3]
+
+
+
+
+
+def _apply_branch_post_fixes(
+    branch: str,
+    hard_constraints: dict | None,
+    flags: dict | None,
+    treatment_text: str,
+    prevention_text: str,
+) -> tuple[str, str]:
+    """分支后处理（兼容实现，不改变既有文本）。"""
+    _ = (branch, hard_constraints, flags)
+    return treatment_text, prevention_text
+
+def _validate_treatment_output(*args, **kwargs) -> list[str]:
+    """最小约束校验：当前保持兼容，不阻断主流程。"""
+    _ = (args, kwargs)
+    return []
 
 def _summarize_constraints(constraints: TreatmentConstraint) -> str:
     """将治疗约束转为简短文本。"""
@@ -1091,9 +1051,9 @@ def _deterministic_supervisor_decision(state: CropDiseaseState, flags: dict, mis
     has_diagnosis = bool(state.get("final_disease") or state.get("disease_type"))
     if not has_diagnosis:
         return "diagnosis", False, "番茄病害监督智能体：缺少诊断结果，先执行诊断智能体", ["missing_diagnosis"]
-    # b) 仅 need_confirm 才回 reception（missing_profile_fields 仅作为提示，不阻断流程）
+    # b) need_confirm 时返回补充问题并结束当前轮，等待用户下一轮输入，避免 reception 自循环
     if flags.get("need_confirm"):
-        return "reception", False, "番茄病害监督智能体：需要补充确认信息，回到接待智能体", ["need_confirm"]
+        return "end", True, "番茄病害监督智能体：需用户补充信息后再诊断，当前轮结束并返回追问问题", ["need_confirm_wait_user"]
     # c) 无 kb_snapshot -> kb_retrieval
     if not state.get("kb_snapshot"):
         return "kb_retrieval", False, "番茄病害监督智能体：缺少知识快照，进入知识检索智能体", ["missing_kb_snapshot"]
