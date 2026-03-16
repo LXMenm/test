@@ -184,3 +184,47 @@ def test_image_text_conflict_generates_conflict_evidence(monkeypatch):
     assert state["diagnosis_evidence"]
     assert "冲突" in (state["diagnosis_evidence"].get("detailed_reason") or "")
     assert state.get("follow_up_questions")
+
+
+class _EngineConflictSpecific:
+    def predict_image_proba(self, _):
+        return {"细菌性斑点病": 0.70, "早疫病": 0.30}
+
+    def predict_text_proba(self, **kwargs):
+        return {"黄化曲叶病毒病": 0.75, "花叶病毒病": 0.25}
+
+    def build_prior_proba(self, **kwargs):
+        return {}
+
+    def fuse_multimodal_probs(self, image_probs, text_probs, prior_probs, image_confidence=0.0, text_confidence=0.0, text_evidence_active=None):
+        # 冲突时给出保守分布，触发 need_confirm
+        return {
+            "细菌性斑点病": 0.46,
+            "黄化曲叶病毒病": 0.44,
+            "早疫病": 0.06,
+            "花叶病毒病": 0.04,
+        }, {
+            "has_image": True,
+            "has_text": True,
+            "has_prior": False,
+            "normalized_weights": {"image": 0.5, "text": 0.5, "prior": 0.0},
+            "confidence_drop_reason": "image_text_conflict",
+        }
+
+    def build_diagnosis_evidence(self, **kwargs):
+        return {
+            "modality_conflict_flag": kwargs["modality_conflict_flag"],
+            "detailed_reason": "图像与文本冲突",
+            "concise_summary": "冲突",
+            "summary": "冲突",
+        }
+
+    def _get_disease_description(self, disease_type, symptoms):
+        return disease_type
+
+
+def test_specific_conflict_sets_modality_flag_and_need_confirm(monkeypatch):
+    state = _run_with_engine(monkeypatch, _EngineConflictSpecific(), symptoms=["发黄", "卷曲"], image_path="exam.JPG")
+    assert state["modality_conflict_flag"] is True
+    assert state["fusion_meta"].get("confidence_drop_reason") == "image_text_conflict"
+    assert state["personalization_flags"].get("need_confirm") is True

@@ -42,7 +42,7 @@ from event_store import (
 )
 from knowledge_base import get_kb_manager
 from personalization import profile_rules
-from personalization.profile_constants import estimate_harvest_window_days, normalize_growth_stage
+from personalization.profile_constants import estimate_harvest_window_days, growth_stage_label, normalize_growth_stage
 from personalization.profile_models import BaseProfile, FarmerProfile, TreatmentConstraint
 from personalization.profile_context import build_personalization_context, build_personalization_flags
 from personalization.profile_store import get_profile_path, load_profile, list_profile_ids, save_profile as persist_profile
@@ -411,7 +411,7 @@ def build_trace_query(
     if crop_type:
         parts.append(f"作物类型：{crop_type}")
     if growth_stage:
-        parts.append(f"生长阶段：{growth_stage}")
+        parts.append(f"生长阶段：{growth_stage_label(growth_stage)}")
     if symptoms_list:
         parts.append(f"症状：{', '.join(symptoms_list)}")
     parts.append(f"图片路径：{image_path}")

@@ -433,9 +433,11 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
     final_disease = fusion_top3[0][0] if fusion_top3 else (image_top1 or text_top1 or "健康")
     final_confidence = float(fusion_top3[0][1]) if fusion_top3 else max(image_confidence, text_confidence, 0.0)
 
-    modality_conflict_flag = bool(
-        text_evidence_active and image_top1 and text_top1 and image_top1 != text_top1 and image_confidence >= 0.6 and text_confidence >= 0.6
-    )
+    fusion_conflict_reason = (fusion_meta.get("confidence_drop_reason") if isinstance(fusion_meta, dict) else None)
+    has_image_active = bool(fusion_meta.get("has_image")) if isinstance(fusion_meta, dict) else bool(image_probs)
+    has_text_active = bool(fusion_meta.get("has_text")) if isinstance(fusion_meta, dict) else bool(text_probs)
+    top1_conflict = bool(has_image_active and has_text_active and image_top1 and text_top1 and image_top1 != text_top1)
+    modality_conflict_flag = bool(top1_conflict or fusion_conflict_reason == "image_text_conflict")
 
     debug_payload.update(
         {
@@ -444,8 +446,9 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
             "text_probs": dict(text_probs),
             "has_text": bool(text_probs),
             "fusion_weights": (fusion_meta.get("normalized_weights") if isinstance(fusion_meta, dict) else {}),
-            "confidence_drop_reason": (fusion_meta.get("confidence_drop_reason") if isinstance(fusion_meta, dict) else None),
+            "confidence_drop_reason": fusion_conflict_reason,
             "fuse_version": (fusion_meta.get("fuse_version") if isinstance(fusion_meta, dict) else None),
+            "modality_conflict_flag": modality_conflict_flag,
             "final_confidence": float(final_confidence),
         }
     )

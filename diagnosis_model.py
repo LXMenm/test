@@ -527,6 +527,7 @@ class DiseaseDiagnosisEngine:
                 "pre_fusion_top3": {"image": image_top3, "text": text_top3, "prior": prior_top3},
                 "post_fusion_top3": [("健康", 1.0)],
                 "confidence_drop_reason": confidence_drop_reason,
+                "modality_conflict_flag": conflict,
             }
             return {"健康": 1.0}, meta
 
@@ -550,6 +551,7 @@ class DiseaseDiagnosisEngine:
             "pre_fusion_top3": {"image": image_top3, "text": text_top3, "prior": prior_top3},
             "post_fusion_top3": self._topk(fused, 3),
             "confidence_drop_reason": confidence_drop_reason,
+            "modality_conflict_flag": conflict,
         }
         return fused, meta
 
