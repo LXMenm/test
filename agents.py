@@ -1067,7 +1067,6 @@ def _apply_branch_post_fixes(
     _ = (branch, hard_constraints, flags)
     return treatment_text, prevention_text
 
-<<<<<<< codex/refactor-agricultural-risk-tag-generation-rules-hb7leh
 def _validate_treatment_output(
     *,
     branch: str,
@@ -1108,12 +1107,6 @@ def _validate_treatment_output(
 
     # 去重并保序
     return dedupe_reasons(violations)
-=======
-def _validate_treatment_output(*args, **kwargs) -> list[str]:
-    """最小约束校验：当前保持兼容，不阻断主流程。"""
-    _ = (args, kwargs)
-    return []
->>>>>>> main
 
 def _summarize_constraints(constraints: TreatmentConstraint) -> str:
     """将治疗约束转为简短文本。"""
