@@ -28,8 +28,9 @@ import {
 interface RiskItem {
   code: string;
   label: string;
-  level: "low" | "medium" | "high";
+  level: "low" | "medium" | "high" | "warning";
   reason: string;
+  source?: string;
 }
 
 interface FarmerBase {
@@ -93,6 +94,7 @@ const RISK_LABEL_MAP: Record<string, string> = {
   FLOWERING_FRUITING_SENSITIVE: '开花结果期敏感风险',
   GREENHOUSE_PRESSURE: '温室环境风险',
   MISSING_CONTEXT: '信息不完整',
+  CONTEXT_CONFLICT: '档案信息冲突',
 };
 
 const TOMATO_TOTAL_GROW_DAYS = 120;
