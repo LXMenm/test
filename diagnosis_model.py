@@ -24,6 +24,8 @@ from knowledge_base import get_kb_manager
 
 # 获取知识库管理器实例
 kb_manager = get_kb_manager()
+FUSE_MULTIMODAL_VERSION = "fuse_v2_text_evidence_gate_20260316"
+PREDICT_TEXT_PROBA_VERSION = "text_v2_evidence_gate_20260316"
 
 # 从知识库获取病害类别
 DISEASE_CLASSES = kb_manager.get_disease_classes()
@@ -514,6 +516,7 @@ class DiseaseDiagnosisEngine:
         keys = set(image_probs) | set(text_probs) | set(prior_probs)
         if not keys:
             meta = {
+                "fuse_version": FUSE_MULTIMODAL_VERSION,
                 "has_image": has_image,
                 "has_text": has_text,
                 "has_prior": has_prior,
@@ -536,6 +539,7 @@ class DiseaseDiagnosisEngine:
             )
         fused = self._normalized(fused)
         meta = {
+            "fuse_version": FUSE_MULTIMODAL_VERSION,
             "has_image": has_image,
             "has_text": has_text,
             "has_prior": has_prior,

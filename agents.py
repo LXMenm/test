@@ -23,9 +23,15 @@ from model_registry import resolve_model
 from pydantic import BaseModel, Field, ValidationError
 import re
 import json
+import os
 from pathlib import Path
 # 获取知识库管理器实例
 kb_manager = get_kb_manager()
+
+
+def _diag_debug_enabled(state: CropDiseaseState) -> bool:
+    flags = state.get("personalization_flags", {}) if isinstance(state, dict) else {}
+    return str(os.getenv("DIAG_DEBUG_RUNTIME", "0")).lower() in {"1", "true", "yes"} or bool(flags.get("debug_runtime"))
 class TreatmentPlanBranches(BaseModel):
     FAMILY: list[str] = Field(default_factory=list)
     MID: list[str] = Field(default_factory=list)
@@ -299,6 +305,13 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
     normalized_symptoms = kb_manager.normalize_symptoms(symptoms)
     state["structured_symptoms"] = {"normalized_symptoms": normalized_symptoms}
     state["normalized_symptoms"] = normalized_symptoms
+    debug_enabled = _diag_debug_enabled(state)
+    diagnosis_model_module = __import__("diagnosis_model")
+    debug_payload: dict[str, object] = {
+        "raw_symptoms": list(symptoms),
+        "normalized_symptoms": list(normalized_symptoms),
+        "predict_text_proba_version": getattr(diagnosis_model_module, "PREDICT_TEXT_PROBA_VERSION", "unknown"),
+    }
 
     image_probs: dict[str, float] = {}
     text_probs: dict[str, float] = {}
@@ -343,8 +356,10 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
         facility=facility,
         province=province,
     )
+    text_probs_source = "none"
     try:
         if text_evidence_active and hasattr(diagnosis_engine, "predict_text_proba"):
+            text_probs_source = "predict_text_proba"
             text_probs = diagnosis_engine.predict_text_proba(
                 symptoms=normalized_symptoms,
                 growth_stage=crop_growth_stage,
@@ -353,6 +368,7 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
                 province=province,
             )
         elif text_evidence_active:
+            text_probs_source = "kb_score_diseases_from_text"
             text_probs = kb_manager.score_diseases_from_text(
                 crop_type=crop_type,
                 symptoms=normalized_symptoms,
@@ -363,12 +379,15 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
             )
         else:
             text_probs = {}
+            text_probs_source = "none_no_effective_text_evidence"
     except Exception as e:
         print(f"[番茄病害诊断智能体] 文本分支失败: {e}")
         text_probs = {}
+        text_probs_source = "exception"
 
     if not text_evidence_active:
         text_probs = {}
+        text_probs_source = "none_no_effective_text_evidence"
 
     # 先验分支
     try:
@@ -417,6 +436,21 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
     modality_conflict_flag = bool(
         text_evidence_active and image_top1 and text_top1 and image_top1 != text_top1 and image_confidence >= 0.6 and text_confidence >= 0.6
     )
+
+    debug_payload.update(
+        {
+            "text_evidence_active": bool(text_evidence_active),
+            "text_probs_source": text_probs_source,
+            "text_probs": dict(text_probs),
+            "has_text": bool(text_probs),
+            "fusion_weights": (fusion_meta.get("normalized_weights") if isinstance(fusion_meta, dict) else {}),
+            "confidence_drop_reason": (fusion_meta.get("confidence_drop_reason") if isinstance(fusion_meta, dict) else None),
+            "fuse_version": (fusion_meta.get("fuse_version") if isinstance(fusion_meta, dict) else None),
+            "final_confidence": float(final_confidence),
+        }
+    )
+    if debug_enabled:
+        print(f"[DiagnosisDebug] {json.dumps(debug_payload, ensure_ascii=False)}")
 
     if hasattr(diagnosis_engine, "build_diagnosis_evidence"):
         diagnosis_evidence = diagnosis_engine.build_diagnosis_evidence(
@@ -517,6 +551,7 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
     state["diagnosis_evidence"] = diagnosis_evidence
     state["fusion_meta"] = fusion_meta if isinstance(fusion_meta, dict) else {}
     state["modality_conflict_flag"] = modality_conflict_flag
+    state["debug_diagnosis"] = debug_payload
     state["personalization_flags"] = flags
     state["current_step"] = "diagnosis_complete"
     state["messages"] = [message]
