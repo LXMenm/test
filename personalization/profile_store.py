@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from .profile_constants import estimate_harvest_window_days
-from .profile_models import BaseProfile, FarmerProfile, TreatmentConstraint
+from .profile_models import BaseProfile, FarmerProfile, RiskItem, TreatmentConstraint
 from .risk_tags import build_base_risk_tags
 
 
@@ -54,7 +54,7 @@ def _ensure_profile_compatibility(profile: FarmerProfile) -> FarmerProfile:
         base.risk_tags = [str(item).strip() for item in (risk_payload.get("risk_tags") or []) if str(item).strip()]
         base.risk_reasons = [str(item).strip() for item in (risk_payload.get("risk_reasons") or []) if str(item).strip()]
         base.risk_updated_at = risk_payload.get("risk_updated_at")
-        base.risk_items = risk_payload.get("risk_items") or []
+        base.risk_items = [RiskItem.model_validate(item) for item in (risk_payload.get("risk_items") or [])]
         profile.bases[base_id] = BaseProfile.model_validate(base.model_dump())
 
     profile.ensure_timestamp()
