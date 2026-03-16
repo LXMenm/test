@@ -2,8 +2,8 @@
   "farmer_id": "F0002",
   "name": "测试",
   "schema_version": "1.2",
-  "updated_at": "2026-03-13T12:20:24.654Z",
-  "active_base_id": "B0001",
+  "updated_at": "2026-03-15T07:16:30.380Z",
+  "active_base_id": "B0002",
   "confirm_when_low_confidence": true,
   "farm_scale": "SMALL",
   "pesticide_access_level": "LIMITED",
@@ -24,17 +24,36 @@
       "longitude": 113.228993,
       "city": "白云区",
       "district": "石井街道",
-      "facility": "温室大棚",
-      "environment": "当前大部晴朗，温度 18.8℃，体感 17.0℃，湿度 57%，风速 12.9 m/s。今日最高/最低温约 24℃ / 16℃。未来24小时降雨概率较低",
-      "growth_stage": "VEGETATIVE",
-      "sowing_date": "2026-02-06",
+      "facility": "阳台",
+      "environment": "当前多云，温度 25.9℃，体感 26.5℃，湿度 42%，风速 3.4 m/s。今日最高/最低温约 26℃ / 16℃。未来24小时降雨概率较低",
+      "growth_stage": "FRUIT_SET",
+      "sowing_date": "2025-12-24",
       "notes": "",
-      "weather_snapshot": "当前大部晴朗，温度 18.8℃，体感 17.0℃，湿度 57%，风速 12.9 m/s。今日最高/最低温约 24℃ / 16℃。未来24小时降雨概率较低"
+      "weather_snapshot": "当前多云，温度 25.9℃，体感 26.5℃，湿度 42%，风速 3.4 m/s。今日最高/最低温约 26℃ / 16℃。未来24小时降雨概率较低",
+      "relative_humidity_2m": null,
+      "precipitation": null,
+      "rain_risk": null,
+      "risk_tags": [
+        "FLOWERING_FRUITING_SENSITIVE"
+      ],
+      "risk_items": [
+        {
+          "code": "FLOWERING_FRUITING_SENSITIVE",
+          "label": "开花结果期敏感风险",
+          "level": "medium",
+          "reason": "当前处于坐果期，需兼顾病害控制与产量品质。",
+          "source": "growth_stage"
+        }
+      ],
+      "risk_reasons": [
+        "当前处于坐果期，需兼顾病害控制与产量品质。"
+      ],
+      "risk_updated_at": "2026-03-15T07:16:30.381140Z"
     }
   },
   "constraints": {
     "banned_ingredients": [],
-    "harvest_window_days": 30,
+    "harvest_window_days": 39,
     "prefer_organic": false
   }
 }
