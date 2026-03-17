@@ -10,6 +10,7 @@ from torchvision import transforms
 from PIL import Image
 import numpy as np
 from typing import Dict, Tuple, Optional, List
+from pathlib import Path
 from config import (
     DIAGNOSIS_MODEL_TYPE,
     DIAGNOSIS_MODEL_PATH,
@@ -17,18 +18,18 @@ from config import (
     DIAGNOSIS_BACKEND,
     USE_GPU,
     DIAGNOSIS_CONFIDENCE_THRESHOLD,
+    TEXT_DIAGNOSIS_BACKEND,
+    TEXT_MODEL_DIR,
 )
 import os
 from knowledge_base import get_kb_manager
-from text_model.infer_text_classifier import build_input_text, load_text_classifier
+from text_model.infer_text_classifier import BertTextClassifier
 
 
 # 获取知识库管理器实例
 kb_manager = get_kb_manager()
 FUSE_MULTIMODAL_VERSION = "fuse_v2_text_evidence_gate_20260316"
 PREDICT_TEXT_PROBA_VERSION = "text_v3_bert_with_rule_fallback_20260316"
-TEXT_CLS_MODEL_DIR = os.getenv("TEXT_CLS_MODEL_DIR", os.path.join(os.path.dirname(__file__), "models", "text_cls_bert"))
-TEXT_CLS_LABEL_MAP_PATH = os.getenv("TEXT_CLS_LABEL_MAP_PATH", os.path.join(os.path.dirname(__file__), "text_model", "label_map.json"))
 
 # 从知识库获取病害类别
 DISEASE_CLASSES = kb_manager.get_disease_classes()
@@ -127,8 +128,8 @@ class DiseaseDiagnosisEngine:
         self.device = torch.device("cuda" if USE_GPU and torch.cuda.is_available() else "cpu")
         self.model = None
         self.transform = None
-        self.text_classifier = None
-        self.text_classifier_available = None
+        self._text_classifier = None
+        self._text_classifier_available = None
 
         backend_value = backend if backend is not None else DIAGNOSIS_BACKEND
         backend = (backend_value or "tf").lower()
@@ -391,21 +392,26 @@ class DiseaseDiagnosisEngine:
             return {}
         return {k: v / total for k, v in canonical_probs.items()}
 
-    def _ensure_text_classifier(self):
-        if self.text_classifier_available is True:
-            return self.text_classifier
-        if self.text_classifier_available is False:
+    def _load_text_classifier(self):
+        if self._text_classifier_available is True:
+            return self._text_classifier
+        if self._text_classifier_available is False:
             return None
-        self.text_classifier = load_text_classifier(
-            model_dir=TEXT_CLS_MODEL_DIR,
-            label_map_path=TEXT_CLS_LABEL_MAP_PATH,
-        )
-        self.text_classifier_available = self.text_classifier is not None
-        return self.text_classifier
+        if not TEXT_MODEL_DIR:
+            self._text_classifier_available = False
+            return None
+        model_path = Path(TEXT_MODEL_DIR)
+        if not model_path.exists():
+            self._text_classifier_available = False
+            return None
+        self._text_classifier = BertTextClassifier(str(model_path))
+        self._text_classifier_available = self._text_classifier is not None
+        return self._text_classifier
 
     def predict_text_proba_rule_based(
         self,
-        symptoms: List[str],
+        raw_text: Optional[str] = None,
+        symptoms: Optional[List[str]] = None,
         growth_stage: Optional[str] = None,
         environment: Optional[str] = None,
         facility: Optional[str] = None,
@@ -426,28 +432,20 @@ class DiseaseDiagnosisEngine:
 
     def predict_text_proba_bert(
         self,
-        symptoms: List[str],
+        raw_text: Optional[str] = None,
+        symptoms: Optional[List[str]] = None,
         growth_stage: Optional[str] = None,
         environment: Optional[str] = None,
         facility: Optional[str] = None,
         province: Optional[str] = None,
     ) -> Dict[str, float]:
         normalized_symptoms = kb_manager.normalize_symptoms(symptoms or [])
-        if not kb_manager.has_effective_text_evidence(normalized_symptoms):
-            return {}
-        classifier = self._ensure_text_classifier()
+        classifier = self._load_text_classifier()
         if not classifier:
             return {}
-        text = build_input_text(
-            text=" ".join(normalized_symptoms),
-            symptoms=normalized_symptoms,
-            growth_stage=growth_stage,
-            environment=environment,
-            facility=facility,
-            province=province,
-        )
-        probs = classifier.predict_text_probs(
-            text=text,
+
+        probs = classifier.predict_probs(
+            raw_text=raw_text,
             symptoms=normalized_symptoms,
             growth_stage=growth_stage,
             environment=environment,
@@ -460,7 +458,8 @@ class DiseaseDiagnosisEngine:
 
     def predict_text_proba(
         self,
-        symptoms: List[str],
+        raw_text: Optional[str] = None,
+        symptoms: Optional[List[str]] = None,
         growth_stage: Optional[str] = None,
         environment: Optional[str] = None,
         facility: Optional[str] = None,
@@ -468,12 +467,38 @@ class DiseaseDiagnosisEngine:
     ) -> Dict[str, float]:
         """优先 BERT 文本分类器，失败时回退 KB 规则。"""
         normalized_symptoms = kb_manager.normalize_symptoms(symptoms or [])
-        text_evidence_active = kb_manager.has_effective_text_evidence(normalized_symptoms)
+        text_evidence_active = bool(normalized_symptoms) or bool((raw_text or "").strip())
         if not text_evidence_active:
             return {}
 
+        backend = (TEXT_DIAGNOSIS_BACKEND or "auto").lower()
+
+        if backend == "rule":
+            return self.predict_text_proba_rule_based(
+                raw_text=raw_text,
+                symptoms=normalized_symptoms,
+                growth_stage=growth_stage,
+                environment=environment,
+                facility=facility,
+                province=province,
+            )
+
+        if backend == "bert":
+            return self.predict_text_proba_bert(
+                raw_text=raw_text,
+                symptoms=normalized_symptoms,
+                growth_stage=growth_stage,
+                environment=environment,
+                facility=facility,
+                province=province,
+            )
+
+        if backend != "auto":
+            backend = "auto"
+
         try:
             bert_probs = self.predict_text_proba_bert(
+                raw_text=raw_text,
                 symptoms=normalized_symptoms,
                 growth_stage=growth_stage,
                 environment=environment,
@@ -486,6 +511,7 @@ class DiseaseDiagnosisEngine:
             pass
 
         return self.predict_text_proba_rule_based(
+            raw_text=raw_text,
             symptoms=normalized_symptoms,
             growth_stage=growth_stage,
             environment=environment,
