@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import inspect
 import json
 from pathlib import Path
 from typing import Dict
@@ -45,7 +46,9 @@ def compute_metrics(eval_pred):
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Train BERT text classifier for tomato disease diagnosis")
+    parser = argparse.ArgumentParser(
+        description="Train BERT text classifier for tomato disease diagnosis"
+    )
     parser.add_argument("--train_csv", default="data/text_cls/train.csv")
     parser.add_argument("--dev_csv", default="data/text_cls/dev.csv")
     parser.add_argument("--test_csv", default="data/text_cls/test.csv")
@@ -62,6 +65,7 @@ def main() -> None:
         AutoTokenizer,
         Trainer,
         TrainingArguments,
+        DataCollatorWithPadding,
     )
 
     label_map = json.loads(Path(args.label_map).read_text(encoding="utf-8"))
@@ -72,12 +76,16 @@ def main() -> None:
         df = pd.read_csv(path)
         if "text" not in df.columns or "label" not in df.columns:
             raise ValueError(f"{path} 缺少必须字段 text/label")
+
         df = df.fillna("")
         df["input_text"] = df.apply(lambda row: build_input_text(row.to_dict()), axis=1)
         df["labels"] = df["label"].map(label2id)
+
         if df["labels"].isna().any():
             bad = sorted(set(df.loc[df["labels"].isna(), "label"].tolist()))
             raise ValueError(f"{path} 存在未知标签: {bad}")
+
+        df["labels"] = df["labels"].astype(int)
         return Dataset.from_pandas(df[["input_text", "labels"]], preserve_index=False)
 
     train_ds = load_split(args.train_csv)
@@ -90,13 +98,31 @@ def main() -> None:
         return tokenizer(
             batch["input_text"],
             truncation=True,
-            padding="max_length",
             max_length=256,
         )
 
     train_tok = train_ds.map(tokenize_fn, batched=True)
     dev_tok = dev_ds.map(tokenize_fn, batched=True)
     test_tok = test_ds.map(tokenize_fn, batched=True)
+
+    # 只保留训练需要的列，并显式转成 torch
+    keep_cols = ["input_ids", "attention_mask", "labels"]
+    if "token_type_ids" in train_tok.column_names:
+        keep_cols.append("token_type_ids")
+
+    train_tok = train_tok.remove_columns(
+        [c for c in train_tok.column_names if c not in keep_cols]
+    )
+    dev_tok = dev_tok.remove_columns(
+        [c for c in dev_tok.column_names if c not in keep_cols]
+    )
+    test_tok = test_tok.remove_columns(
+        [c for c in test_tok.column_names if c not in keep_cols]
+    )
+
+    train_tok.set_format("torch", columns=keep_cols)
+    dev_tok.set_format("torch", columns=keep_cols)
+    test_tok.set_format("torch", columns=keep_cols)
 
     model = AutoModelForSequenceClassification.from_pretrained(
         args.model_name,
@@ -105,9 +131,9 @@ def main() -> None:
         id2label=id2label,
     )
 
-    training_args = TrainingArguments(
+    # 兼容不同 transformers 版本
+    training_args_kwargs = dict(
         output_dir=args.output_dir,
-        eval_strategy="epoch",
         save_strategy="epoch",
         num_train_epochs=args.epochs,
         per_device_train_batch_size=args.batch_size,
@@ -119,14 +145,33 @@ def main() -> None:
         report_to="none",
     )
 
-    trainer = Trainer(
+    ta_sig = inspect.signature(TrainingArguments.__init__)
+    if "eval_strategy" in ta_sig.parameters:
+        training_args_kwargs["eval_strategy"] = "epoch"
+    else:
+        training_args_kwargs["evaluation_strategy"] = "epoch"
+
+    training_args = TrainingArguments(**training_args_kwargs)
+
+    data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
+
+    # 兼容不同 transformers 版本的 Trainer 参数
+    trainer_kwargs = dict(
         model=model,
         args=training_args,
         train_dataset=train_tok,
         eval_dataset=dev_tok,
-        tokenizer=tokenizer,
+        data_collator=data_collator,
         compute_metrics=compute_metrics,
     )
+
+    trainer_sig = inspect.signature(Trainer.__init__)
+    if "tokenizer" in trainer_sig.parameters:
+        trainer_kwargs["tokenizer"] = tokenizer
+    elif "processing_class" in trainer_sig.parameters:
+        trainer_kwargs["processing_class"] = tokenizer
+
+    trainer = Trainer(**trainer_kwargs)
 
     trainer.train()
     trainer.save_model(args.output_dir)
@@ -134,9 +179,11 @@ def main() -> None:
 
     dev_metrics = trainer.evaluate(dev_tok)
     test_metrics = trainer.evaluate(test_tok, metric_key_prefix="test")
+
     print("[TextCLS] dev:", dev_metrics)
     print("[TextCLS] test:", test_metrics)
 
 
 if __name__ == "__main__":
     main()
+    

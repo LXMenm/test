@@ -86,3 +86,11 @@ Thumbs.db
 *.db
 *.sqlite
 *.sqlite3
+
+__pycache__/
+*.py[cod]
+
+models/text_cls_bert/checkpoint-*/
+*.safetensors
+trainer_state.json
+training_args.bin
