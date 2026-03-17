@@ -361,6 +361,7 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
         if text_evidence_active and hasattr(diagnosis_engine, "predict_text_proba"):
             text_probs_source = "predict_text_proba"
             text_probs = diagnosis_engine.predict_text_proba(
+                raw_text=state.get("user_query"),
                 symptoms=normalized_symptoms,
                 growth_stage=crop_growth_stage,
                 environment=environment,

@@ -6,7 +6,7 @@ import diagnosis_model as dm
 
 
 class _StubBertClassifier:
-    def predict_text_probs(self, **kwargs):
+    def predict_probs(self, **kwargs):
         labels = dm.DISEASE_CLASSES
         base = {label: 0.0 for label in labels}
         base["黄化曲叶病毒病"] = 0.7
@@ -17,14 +17,14 @@ class _StubBertClassifier:
 
 def _make_engine() -> dm.DiseaseDiagnosisEngine:
     engine = object.__new__(dm.DiseaseDiagnosisEngine)
-    engine.text_classifier = None
-    engine.text_classifier_available = None
+    engine._text_classifier = None
+    engine._text_classifier_available = None
     return engine
 
 
 def test_predict_text_proba_fallbacks_to_rule_based_when_bert_unavailable():
     engine = _make_engine()
-    engine.text_classifier_available = False
+    engine._text_classifier_available = False
 
     def _rule(self, **kwargs):
         return {"黄化曲叶病毒病": 0.6, "花叶病毒病": 0.4}
@@ -43,7 +43,7 @@ def test_predict_text_proba_bert_returns_canonical_10_class_distribution():
     engine = _make_engine()
     stub = _StubBertClassifier()
 
-    engine._ensure_text_classifier = MethodType(lambda self: stub, engine)
+    engine._load_text_classifier = MethodType(lambda self: stub, engine)
 
     probs = dm.DiseaseDiagnosisEngine.predict_text_proba_bert(
         engine,
@@ -76,3 +76,27 @@ def test_fuse_with_image_and_empty_text_still_works():
     assert fused
     assert meta.get("has_text") is False
     assert max(fused.values()) >= 0.8
+
+
+def test_predict_text_proba_raw_text_only_does_not_activate_text_branch():
+    engine = _make_engine()
+    probs = dm.DiseaseDiagnosisEngine.predict_text_proba(
+        engine,
+        raw_text="作物类型：番茄，生长阶段：FRUIT_SET，图片路径：xxx.jpg",
+        symptoms=[],
+    )
+    assert probs == {}
+
+
+def test_load_text_classifier_returns_none_when_model_broken(monkeypatch, tmp_path):
+    engine = _make_engine()
+    monkeypatch.setattr(dm, "TEXT_MODEL_DIR", str(tmp_path))
+
+    def _raise(_model_dir: str):
+        raise RuntimeError("broken model")
+
+    monkeypatch.setattr(dm, "BertTextClassifier", _raise)
+
+    cls = dm.DiseaseDiagnosisEngine._load_text_classifier(engine)
+    assert cls is None
+    assert engine._text_classifier_available is False

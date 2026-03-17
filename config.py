@@ -110,6 +110,11 @@ def _resolve_diagnosis_model_path() -> str:
 
 
 DIAGNOSIS_MODEL_PATH = _resolve_diagnosis_model_path()
+
+TEXT_DIAGNOSIS_BACKEND = os.getenv("TEXT_DIAGNOSIS_BACKEND", "auto")
+TEXT_MODEL_NAME = os.getenv("TEXT_MODEL_NAME", "bert-base-chinese")
+TEXT_MODEL_DIR = os.getenv("TEXT_MODEL_DIR", str(PROJECT_ROOT / "models" / "text_cls_bert"))
+
 USE_GPU = os.getenv("USE_GPU", "false").lower() == "true"
 DIAGNOSIS_ALLOW_TORCH = os.getenv("DIAGNOSIS_ALLOW_TORCH", "0")
 
