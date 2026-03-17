@@ -76,3 +76,27 @@ def test_fuse_with_image_and_empty_text_still_works():
     assert fused
     assert meta.get("has_text") is False
     assert max(fused.values()) >= 0.8
+
+
+def test_predict_text_proba_raw_text_only_does_not_activate_text_branch():
+    engine = _make_engine()
+    probs = dm.DiseaseDiagnosisEngine.predict_text_proba(
+        engine,
+        raw_text="作物类型：番茄，生长阶段：FRUIT_SET，图片路径：xxx.jpg",
+        symptoms=[],
+    )
+    assert probs == {}
+
+
+def test_load_text_classifier_returns_none_when_model_broken(monkeypatch, tmp_path):
+    engine = _make_engine()
+    monkeypatch.setattr(dm, "TEXT_MODEL_DIR", str(tmp_path))
+
+    def _raise(_model_dir: str):
+        raise RuntimeError("broken model")
+
+    monkeypatch.setattr(dm, "BertTextClassifier", _raise)
+
+    cls = dm.DiseaseDiagnosisEngine._load_text_classifier(engine)
+    assert cls is None
+    assert engine._text_classifier_available is False

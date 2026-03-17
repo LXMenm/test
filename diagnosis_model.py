@@ -404,9 +404,14 @@ class DiseaseDiagnosisEngine:
         if not model_path.exists():
             self._text_classifier_available = False
             return None
-        self._text_classifier = BertTextClassifier(str(model_path))
-        self._text_classifier_available = self._text_classifier is not None
-        return self._text_classifier
+        try:
+            self._text_classifier = BertTextClassifier(str(model_path))
+            self._text_classifier_available = True
+            return self._text_classifier
+        except Exception:
+            self._text_classifier = None
+            self._text_classifier_available = False
+            return None
 
     def predict_text_proba_rule_based(
         self,
@@ -467,7 +472,7 @@ class DiseaseDiagnosisEngine:
     ) -> Dict[str, float]:
         """优先 BERT 文本分类器，失败时回退 KB 规则。"""
         normalized_symptoms = kb_manager.normalize_symptoms(symptoms or [])
-        text_evidence_active = bool(normalized_symptoms) or bool((raw_text or "").strip())
+        text_evidence_active = bool(normalized_symptoms)
         if not text_evidence_active:
             return {}
 
