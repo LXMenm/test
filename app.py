@@ -27,7 +27,7 @@ from diagnosis_model import get_diagnosis_engine
 import diagnosis_model as diagnosis_model_module
 import agents as agents_module
 import knowledge_base.kb_manager as kb_manager_module
-from agents import append_trace, diagnosis_agent, kb_retrieval_agent, treatment_agent, verification_agent
+from agents import append_trace, diagnosis_agent, kb_retrieval_agent, treatment_agent, verification_agent, supervisor_agent
 from event_store import (
     append_event,
     list_events,
@@ -162,6 +162,7 @@ class DiagnoseResponse(BaseModel):
     manual_review_recommended: bool = False
     graph_treatment_generated: bool = False
     fallback_treatment_used: bool = False
+    manual_review_required_before_execution: bool = False
 
 
 class SPAStaticFiles(StaticFiles):
@@ -814,6 +815,7 @@ async def diagnose_image(
         "treatment_available": treatment_available,
         "verification_available": verification_available,
         "manual_review_recommended": False,
+        "manual_review_required_before_execution": False,
         "graph_treatment_generated": graph_treatment_generated,
         "fallback_treatment_used": fallback_treatment_used,
     }
@@ -881,6 +883,7 @@ async def diagnose_image(
         treatment_available=treatment_available,
         verification_available=verification_available,
         manual_review_recommended=False,
+        manual_review_required_before_execution=False,
         graph_treatment_generated=graph_treatment_generated,
         fallback_treatment_used=fallback_treatment_used,
         debug_runtime={
@@ -930,7 +933,14 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
                 break
         if historical_symptoms:
             break
+    symptom_alias_map = {
+        "病斑原形": "病斑圆形",
+        "水渍壮": "水渍状",
+        "卷叶": "叶片卷曲",
+    }
     incoming_symptoms = [str(item).strip() for item in symptoms if str(item).strip()]
+    incoming_symptoms = [symptom_alias_map.get(item, item) for item in incoming_symptoms]
+    historical_symptoms = [symptom_alias_map.get(item, item) for item in historical_symptoms]
     merged_symptoms: list[str] = []
     for symptom in [*historical_symptoms, *incoming_symptoms]:
         if symptom and symptom not in merged_symptoms:
@@ -996,9 +1006,22 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
             outputs={"final_disease": choice, "need_confirm": False},
         )
 
-    state = kb_retrieval_agent(state)
-    state = treatment_agent(state)
-    state = verification_agent(state)
+    # 低置信度回退分支：由 supervisor 做统一路由决策，避免形成平行独立流程。
+    for _ in range(10):
+        state = supervisor_agent(state)
+        next_action = str(state.get("next_action") or "")
+        if next_action == "diagnosis":
+            state = diagnosis_agent(state)
+        elif next_action == "kb_retrieval":
+            state = kb_retrieval_agent(state)
+        elif next_action == "treatment":
+            state = treatment_agent(state)
+        elif next_action == "verification":
+            state = verification_agent(state)
+        elif next_action == "end":
+            break
+        else:
+            break
 
     final_confidence = state.get("final_confidence")
     final_source = state.get("final_source")
@@ -1028,7 +1051,28 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
     manual_review_recommended = need_confirm
     if manual_review_recommended:
         need_confirm = False
+    manual_review_required_before_execution = manual_review_recommended
 
+    state["current_step"] = "uncertainty_router"
+    append_trace(
+        state,
+        agent="uncertainty_router",
+        inputs={
+            "need_confirm_from_diagnosis": bool(flags.get("need_confirm")),
+            "verification_passed": state.get("verification_passed"),
+        },
+        outputs={
+            "need_confirm": need_confirm,
+            "manual_review_recommended": manual_review_recommended,
+            "manual_review_required_before_execution": manual_review_required_before_execution,
+            "status": "manual_review_recommended" if manual_review_recommended else "completed",
+        },
+        decision={
+            "reason": "二诊后仍存在不确定性，转换为人工复核建议" if manual_review_recommended else "二诊确定，可正常收尾",
+        },
+    )
+
+    state["current_step"] = "confirm_finalize"
     append_trace(
         state,
         agent="confirm_finalize",
@@ -1045,6 +1089,9 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
     flags["personalization_applied"] = personalization_applied
     filtered, filtered_reasons, filtered_components, filtered_actions = _normalize_filter_state(flags)
     follow_up_questions = normalize_follow_up_questions(flags.get("follow_up_questions") or [])
+    historical_follow_up_questions = list(follow_up_questions)
+    if manual_review_recommended or not need_confirm:
+        follow_up_questions = []
     flags["follow_up_questions"] = follow_up_questions
     missing_profile_fields = sorted({str(item).strip() for item in (flags.get("missing_profile_fields") or []) if str(item).strip()})
     confirm_message = None
@@ -1133,11 +1180,13 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
         "modality_conflict_flag": modality_conflict_flag,
         "diagnosis_evidence": diagnosis_evidence,
         "manual_review_recommended": manual_review_recommended,
+        "manual_review_required_before_execution": manual_review_required_before_execution,
         "status": "manual_review_recommended" if manual_review_recommended else "completed",
         "treatment_available": bool(state.get("treatment_plan")),
         "verification_available": state.get("verification_result") is not None,
         "graph_treatment_generated": bool(state.get("treatment_plan")),
         "fallback_treatment_used": False,
+        "historical_follow_up_questions": historical_follow_up_questions,
     }
     emit_node_event(trace_id, node="Persist", status="start", message="写入确认轮事件日志")
     try:
@@ -1162,6 +1211,7 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
         "modality_conflict_flag": modality_conflict_flag,
         "diagnosis_evidence": diagnosis_evidence,
         "manual_review_recommended": manual_review_recommended,
+        "manual_review_required_before_execution": manual_review_required_before_execution,
         "status": "manual_review_recommended" if manual_review_recommended else "completed",
         "confirm_message": confirm_message,
         "treatment": {
@@ -1179,6 +1229,7 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
         "filtered_components": filtered_components,
         "filtered_actions": filtered_actions,
         "follow_up_questions": follow_up_questions,
+        "historical_follow_up_questions": historical_follow_up_questions,
         "missing_profile_fields": missing_profile_fields,
         "llm_failed": bool(flags.get("llm_failed")),
         "llm_failed_reason": flags.get("llm_failed_reason"),

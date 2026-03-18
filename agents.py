@@ -1314,6 +1314,27 @@ def _rule_based_verification(payload: dict) -> list[str]:
 
     return dedupe_reasons(issues)
 
+
+def _extract_weather_numbers(summary: str | None) -> tuple[float | None, float | None]:
+    text = str(summary or "")
+    if not text:
+        return None, None
+    humidity = None
+    precipitation_probability = None
+    humidity_match = re.search(r"湿度\s*[:：]?\s*(\d+(?:\.\d+)?)\s*%", text)
+    rain_match = re.search(r"(降雨概率|降水概率)\s*[:：]?\s*(\d+(?:\.\d+)?)\s*%", text)
+    if humidity_match:
+        try:
+            humidity = float(humidity_match.group(1))
+        except Exception:
+            humidity = None
+    if rain_match:
+        try:
+            precipitation_probability = float(rain_match.group(2))
+        except Exception:
+            precipitation_probability = None
+    return humidity, precipitation_probability
+
 def _validate_treatment_output(
     *,
     branch: str,
@@ -1376,6 +1397,11 @@ def verification_agent(state: CropDiseaseState) -> CropDiseaseState:
     weather_summary = state.get("weather_summary") or state.get("environment")
     humidity = state.get("humidity")
     precipitation_probability = state.get("precipitation_probability")
+    parsed_humidity, parsed_precip = _extract_weather_numbers(str(weather_summary) if weather_summary is not None else None)
+    if humidity is None:
+        humidity = parsed_humidity
+    if precipitation_probability is None:
+        precipitation_probability = parsed_precip
 
     payload = {
         "crop_type": state.get("crop_type", "番茄"),
