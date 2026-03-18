@@ -313,6 +313,101 @@ def serialize_final_response(payload: dict[str, Any]) -> dict[str, Any]:
     return data
 
 
+LIST_NORMALIZED_FIELDS = (
+    "follow_up_questions",
+    "historical_follow_up_questions",
+    "missing_profile_fields",
+    "filtered_reasons",
+    "filtered_components",
+    "filtered_actions",
+    "verification_issues",
+    "issues",
+    "must_fix",
+    "suggested_rewrite_points",
+    "risk_tags",
+    "risk_items",
+)
+
+
+def _as_clean_list(value: Any) -> list[Any]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [item for item in value if item is not None]
+    if isinstance(value, tuple):
+        return [item for item in value if item is not None]
+    if isinstance(value, set):
+        return [item for item in value if item is not None]
+    return [value]
+
+
+def normalize_verification_result_payload(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    normalized = dict(value)
+    normalized["issues"] = [str(item).strip() for item in _as_clean_list(normalized.get("issues")) if str(item).strip()]
+    normalized["must_fix"] = [str(item).strip() for item in _as_clean_list(normalized.get("must_fix")) if str(item).strip()]
+    normalized["suggested_rewrite_points"] = [
+        str(item).strip() for item in _as_clean_list(normalized.get("suggested_rewrite_points")) if str(item).strip()
+    ]
+    return normalized
+
+
+def build_canonical_meta(
+    *,
+    farmer_id: str | None,
+    base_id: str | None,
+    canonical_growth_stage: Any,
+    canonical_risk_tags: list[str],
+    canonical_risk_items: list[dict[str, Any]],
+    risk_updated_at: Any,
+    personalization_applied: bool,
+    filtered: bool,
+    filtered_reasons: list[str],
+    filtered_components: list[str],
+    filtered_actions: list[str],
+    model_meta: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "farmer_id": farmer_id,
+        "base_id": base_id,
+        "growth_stage": canonical_growth_stage,
+        "risk_tags": canonical_risk_tags,
+        "risk_items": canonical_risk_items,
+        "risk_summary": "、".join(canonical_risk_tags) if canonical_risk_tags else None,
+        "risk_updated_at": risk_updated_at,
+        "personalization_applied": personalization_applied,
+        "filtered": filtered,
+        "filtered_reasons": filtered_reasons,
+        "filtered_components": filtered_components,
+        "filtered_actions": filtered_actions,
+        "model_id": model_meta.get("model_id"),
+        "model_display_name": model_meta.get("model_display_name"),
+        "model_backend": model_meta.get("backend"),
+        "resolved_model_path": model_meta.get("resolved_model_path"),
+        "model_fallback_reason": model_meta.get("model_fallback_reason"),
+    }
+
+
+def serialize_case_response(payload: dict[str, Any], *, terminal_stage: str) -> dict[str, Any]:
+    data = dict(payload)
+    data["status"] = terminal_stage
+    for key in LIST_NORMALIZED_FIELDS:
+        data[key] = _as_clean_list(data.get(key))
+    data["verification_result"] = normalize_verification_result_payload(data.get("verification_result"))
+    if isinstance(data.get("verification_result"), dict):
+        vr = dict(data["verification_result"])
+        data["verification_result"] = vr
+    if data.get("verification_result") is None:
+        data["verification_issues"] = []
+    canonical_meta = data.get("canonical_meta")
+    if isinstance(canonical_meta, dict):
+        data["meta"] = dict(canonical_meta)
+    data.pop("canonical_meta", None)
+    data = serialize_final_response(data)
+    return sanitize_user_text(data)
+
+
 def emit_node_event(
     trace_id: str,
     *,
@@ -918,6 +1013,20 @@ async def diagnose_image(
         raw["code"] = normalize_risk_code(raw.get("code") or raw.get("label"))
         canonical_risk_items.append(raw)
     canonical_growth_stage = normalize_growth_stage_code((final_state or {}).get("crop_growth_stage") or growth_stage)
+    canonical_meta = build_canonical_meta(
+        farmer_id=farmer_id,
+        base_id=resolved_base_id,
+        canonical_growth_stage=canonical_growth_stage,
+        canonical_risk_tags=canonical_risk_tags,
+        canonical_risk_items=canonical_risk_items,
+        risk_updated_at=flags.get("risk_updated_at"),
+        personalization_applied=personalization_applied,
+        filtered=filtered,
+        filtered_reasons=filtered_reasons,
+        filtered_components=filtered_components,
+        filtered_actions=filtered_actions,
+        model_meta=model_meta,
+    )
     if treatment is not None:
         treatment = TreatmentPlan(
             plan=str(sanitize_user_text(treatment.plan)),
@@ -952,35 +1061,7 @@ async def diagnose_image(
         "risk_items": canonical_risk_items,
         "risk_summary": "、".join(canonical_risk_tags) if canonical_risk_tags else None,
         "risk_updated_at": flags.get("risk_updated_at"),
-        "meta": {
-            **personalization_meta,
-            "lat": lat,
-            "lon": lon,
-            "personalization_applied": personalization_applied,
-            "filtered": filtered,
-            "filtered_reasons": filtered_reasons,
-            "filtered_components": filtered_components,
-            "filtered_actions": filtered_actions,
-            "selected_branch": flags.get("selected_branch"),
-            "elapsed_ms": round((time.perf_counter() - request_started) * 1000, 2),
-            "model_id": model_meta.get("model_id"),
-            "model_display_name": model_meta.get("model_display_name"),
-            "model_backend": model_meta.get("backend"),
-            "resolved_model_path": model_meta.get("resolved_model_path"),
-            "model_fallback_reason": model_meta.get("model_fallback_reason"),
-            "workflow_degraded": workflow_degraded,
-            "degraded_reason": degraded_reason,
-            "risk_tags": canonical_risk_tags,
-            "risk_items": canonical_risk_items,
-            "risk_summary": "、".join(canonical_risk_tags) if canonical_risk_tags else None,
-            "risk_updated_at": flags.get("risk_updated_at"),
-            "verification_result": verification_result,
-            "verification_passed": verification_passed,
-            "verification_risk_level": verification_risk_level,
-            "verification_issues": verification_issues,
-            "verification_summary": verification_summary,
-            "rule_result_role": "fallback_override" if (final_source == "rule") else "reference_only",
-        },
+        "canonical_meta": canonical_meta,
         "verification_result": verification_result,
         "verification_passed": verification_passed,
         "verification_risk_level": verification_risk_level,
@@ -994,8 +1075,14 @@ async def diagnose_image(
         "manual_review_required_before_execution": False,
         "graph_treatment_generated": graph_treatment_generated,
         "fallback_treatment_used": fallback_treatment_used,
+        "follow_up_questions": follow_up_questions,
+        "historical_follow_up_questions": [],
+        "missing_profile_fields": missing_profile_fields,
+        "filtered_reasons": filtered_reasons,
+        "filtered_components": filtered_components,
+        "filtered_actions": filtered_actions,
     }
-    event = serialize_final_response(event)
+    event = serialize_case_response(event, terminal_stage=response_status)
     emit_node_event(trace_id, node="Persist", status="start", message="写入事件日志")
     try:
         append_event(event)
@@ -1020,67 +1107,132 @@ async def diagnose_image(
             payload={"final_disease": final_disease, "status": response_status},
         )
 
+    response_payload = serialize_case_response(
+        {
+            "image_id": unique_name,
+            "image_url": image_url,
+            "image_result": image_result_dict,
+            "fallback_used": fallback_used,
+            "fallback_reason": response_fallback_reason,
+            "rule_result": rule_result_dict,
+            "final_disease": final_disease,
+            "treatment": treatment_or_none,
+            "personalization_applied": personalization_applied,
+            "farmer_id": farmer_id,
+            "growth_stage": canonical_growth_stage,
+            "risk_tags": canonical_risk_tags,
+            "risk_items": canonical_risk_items,
+            "risk_summary": "、".join(canonical_risk_tags) if canonical_risk_tags else None,
+            "risk_updated_at": flags.get("risk_updated_at"),
+            "filtered": filtered,
+            "filtered_reasons": filtered_reasons,
+            "filtered_components": filtered_components,
+            "filtered_actions": filtered_actions,
+            "personalization_reasons": personalization_reasons,
+            "follow_up_questions": follow_up_questions,
+            "historical_follow_up_questions": [],
+            "missing_profile_fields": missing_profile_fields,
+            "profile_farm_scale": flags.get("farm_scale"),
+            "profile_pesticide_access_level": flags.get("pesticide_access_level"),
+            "profile_equipment": [str(item) for item in (flags.get("equipment") or [])],
+            "profile_cultivation_mode": flags.get("cultivation_mode"),
+            "selected_branch": flags.get("selected_branch") if treatment_available else None,
+            "llm_failed": bool(flags.get("llm_failed")),
+            "trace_id": trace_id,
+            "need_confirm": need_confirm,
+            "final_confidence": final_confidence,
+            "final_source": final_source,
+            "model_id": model_meta.get("model_id"),
+            "model_display_name": model_meta.get("model_display_name"),
+            "model_backend": model_meta.get("backend"),
+            "resolved_model_path": model_meta.get("resolved_model_path"),
+            "model_fallback_reason": model_meta.get("model_fallback_reason"),
+            "text_top3": list((final_state or {}).get("text_top3") or []),
+            "fusion_top3": list((final_state or {}).get("fusion_top3") or []),
+            "diagnosis_evidence": (final_state or {}).get("diagnosis_evidence"),
+            "modality_conflict_flag": (final_state or {}).get("modality_conflict_flag"),
+            "normalized_symptoms": list((final_state or {}).get("normalized_symptoms") or ((final_state or {}).get("structured_symptoms") or {}).get("normalized_symptoms") or []),
+            "workflow_degraded": workflow_degraded,
+            "degraded_reason": degraded_reason,
+            "verification_result": verification_result,
+            "verification_passed": verification_passed,
+            "verification_risk_level": verification_risk_level,
+            "verification_issues": verification_issues,
+            "verification_summary": verification_summary,
+            "treatment_skipped_due_need_confirm": need_confirm_waiting,
+            "treatment_available": treatment_available,
+            "verification_available": verification_available,
+            "manual_review_recommended": False,
+            "manual_review_required_before_execution": False,
+            "graph_treatment_generated": graph_treatment_generated,
+            "fallback_treatment_used": fallback_treatment_used,
+            "debug_runtime": {
+                **(runtime_debug or {}),
+                "diagnosis_debug": (final_state or {}).get("debug_diagnosis"),
+            } if debug_mode else None,
+            "canonical_meta": canonical_meta,
+        },
+        terminal_stage=response_status,
+    )
+
     return DiagnoseResponse(
         image_id=unique_name,
-        image_url=image_url,
-        image_result=ImageResult(**image_result_dict),
-        fallback_used=fallback_used,
-        fallback_reason=response_fallback_reason,
-        rule_result=rule_result,
-        final_disease=final_disease,
-        treatment=treatment,
-        personalization_applied=personalization_applied,
-        farmer_id=farmer_id,
-        risk_tags=canonical_risk_tags,
-        risk_items=canonical_risk_items,
-        risk_summary="、".join(canonical_risk_tags) if canonical_risk_tags else None,
-        risk_updated_at=flags.get("risk_updated_at"),
-        filtered=filtered,
-        filtered_reasons=filtered_reasons,
-        filtered_components=filtered_components,
-        filtered_actions=filtered_actions,
-        personalization_reasons=personalization_reasons,
-        follow_up_questions=follow_up_questions,
-        missing_profile_fields=missing_profile_fields,
-        profile_farm_scale=flags.get("farm_scale"),
-        profile_pesticide_access_level=flags.get("pesticide_access_level"),
-        profile_equipment=[str(item) for item in (flags.get("equipment") or [])],
-        profile_cultivation_mode=flags.get("cultivation_mode"),
-        selected_branch=flags.get("selected_branch") if treatment_available else None,
-        llm_failed=bool(flags.get("llm_failed")),
-        trace_id=trace_id,
-        need_confirm=need_confirm,
-        final_confidence=final_confidence,
-        final_source=final_source,
-        model_id=model_meta.get("model_id"),
-        model_display_name=model_meta.get("model_display_name"),
-        model_backend=model_meta.get("backend"),
-        resolved_model_path=model_meta.get("resolved_model_path"),
-        model_fallback_reason=model_meta.get("model_fallback_reason"),
-        text_top3=list((final_state or {}).get("text_top3") or []),
-        fusion_top3=list((final_state or {}).get("fusion_top3") or []),
-        diagnosis_evidence=(final_state or {}).get("diagnosis_evidence"),
-        modality_conflict_flag=(final_state or {}).get("modality_conflict_flag"),
-        normalized_symptoms=list((final_state or {}).get("normalized_symptoms") or ((final_state or {}).get("structured_symptoms") or {}).get("normalized_symptoms") or []),
-        workflow_degraded=workflow_degraded,
-        degraded_reason=degraded_reason,
-        verification_result=verification_result,
-        verification_passed=verification_passed,
-        verification_risk_level=verification_risk_level,
-        verification_issues=verification_issues,
-        verification_summary=verification_summary,
-        status=response_status,
-        treatment_skipped_due_need_confirm=need_confirm_waiting,
-        treatment_available=treatment_available,
-        verification_available=verification_available,
-        manual_review_recommended=False,
-        manual_review_required_before_execution=False,
-        graph_treatment_generated=graph_treatment_generated,
-        fallback_treatment_used=fallback_treatment_used,
-        debug_runtime={
-            **(runtime_debug or {}),
-            "diagnosis_debug": (final_state or {}).get("debug_diagnosis"),
-        } if debug_mode else None,
+        image_url=response_payload["image_url"],
+        image_result=ImageResult(**response_payload["image_result"]),
+        fallback_used=response_payload["fallback_used"],
+        fallback_reason=response_payload.get("fallback_reason"),
+        rule_result=RuleResult(**response_payload["rule_result"]) if response_payload.get("rule_result") else None,
+        final_disease=response_payload["final_disease"],
+        treatment=TreatmentPlan(**response_payload["treatment"]) if response_payload.get("treatment") else None,
+        personalization_applied=response_payload["personalization_applied"],
+        farmer_id=response_payload.get("farmer_id"),
+        risk_tags=response_payload["risk_tags"],
+        risk_items=response_payload["risk_items"],
+        risk_summary=response_payload.get("risk_summary"),
+        risk_updated_at=response_payload.get("risk_updated_at"),
+        filtered=response_payload["filtered"],
+        filtered_reasons=response_payload["filtered_reasons"],
+        filtered_components=response_payload["filtered_components"],
+        filtered_actions=response_payload["filtered_actions"],
+        personalization_reasons=response_payload.get("personalization_reasons") or [],
+        follow_up_questions=response_payload["follow_up_questions"],
+        missing_profile_fields=response_payload["missing_profile_fields"],
+        profile_farm_scale=response_payload.get("profile_farm_scale"),
+        profile_pesticide_access_level=response_payload.get("profile_pesticide_access_level"),
+        profile_equipment=response_payload.get("profile_equipment") or [],
+        profile_cultivation_mode=response_payload.get("profile_cultivation_mode"),
+        selected_branch=response_payload.get("selected_branch"),
+        llm_failed=bool(response_payload.get("llm_failed")),
+        trace_id=response_payload["trace_id"],
+        need_confirm=response_payload.get("need_confirm"),
+        final_confidence=response_payload.get("final_confidence"),
+        final_source=response_payload.get("final_source"),
+        model_id=response_payload.get("model_id"),
+        model_display_name=response_payload.get("model_display_name"),
+        model_backend=response_payload.get("model_backend"),
+        resolved_model_path=response_payload.get("resolved_model_path"),
+        model_fallback_reason=response_payload.get("model_fallback_reason"),
+        text_top3=response_payload.get("text_top3") or [],
+        fusion_top3=response_payload.get("fusion_top3") or [],
+        diagnosis_evidence=response_payload.get("diagnosis_evidence"),
+        modality_conflict_flag=response_payload.get("modality_conflict_flag"),
+        normalized_symptoms=response_payload.get("normalized_symptoms") or [],
+        workflow_degraded=bool(response_payload.get("workflow_degraded")),
+        degraded_reason=response_payload.get("degraded_reason"),
+        verification_result=response_payload.get("verification_result"),
+        verification_passed=response_payload.get("verification_passed"),
+        verification_risk_level=response_payload.get("verification_risk_level"),
+        verification_issues=response_payload.get("verification_issues") or [],
+        verification_summary=response_payload.get("verification_summary"),
+        status=response_payload["status"],
+        treatment_skipped_due_need_confirm=bool(response_payload.get("treatment_skipped_due_need_confirm")),
+        treatment_available=bool(response_payload.get("treatment_available")),
+        verification_available=bool(response_payload.get("verification_available")),
+        manual_review_recommended=bool(response_payload.get("manual_review_recommended")),
+        manual_review_required_before_execution=bool(response_payload.get("manual_review_required_before_execution")),
+        graph_treatment_generated=bool(response_payload.get("graph_treatment_generated")),
+        fallback_treatment_used=bool(response_payload.get("fallback_treatment_used")),
+        debug_runtime=response_payload.get("debug_runtime"),
     )
 
 
@@ -1202,8 +1354,6 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
         outputs={},
     )
 
-    state = diagnosis_agent(state)
-
     if choice and choice != "other":
         state["final_disease"] = choice
         state["disease_type"] = choice
@@ -1303,7 +1453,6 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
         },
     )
 
-    personalization_meta = _build_personalization_meta(flags, farmer_id, state.get("base_id"))
     personalization_applied = compute_personalization_applied(state, flags)
     flags["personalization_applied"] = personalization_applied
     filtered, filtered_reasons, filtered_components, filtered_actions = _normalize_filter_state(flags)
@@ -1343,6 +1492,32 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
     events = list_trace_events(trace_id)
 
     model_meta = state.get("diagnosis_model_meta") or {}
+    canonical_risk_tags = [normalize_risk_code(item) for item in (flags.get("risk_tags") or []) if str(item).strip()]
+    canonical_risk_items = []
+    for item in (flags.get("risk_items") or []):
+        if hasattr(item, "model_dump"):
+            raw = item.model_dump()
+        elif isinstance(item, dict):
+            raw = dict(item)
+        else:
+            raw = {"code": str(item)}
+        raw["code"] = normalize_risk_code(raw.get("code") or raw.get("label"))
+        canonical_risk_items.append(raw)
+    canonical_growth_stage = normalize_growth_stage_code(state.get("crop_growth_stage") or growth_stage)
+    canonical_meta = build_canonical_meta(
+        farmer_id=farmer_id,
+        base_id=state.get("base_id"),
+        canonical_growth_stage=canonical_growth_stage,
+        canonical_risk_tags=canonical_risk_tags,
+        canonical_risk_items=canonical_risk_items,
+        risk_updated_at=flags.get("risk_updated_at"),
+        personalization_applied=personalization_applied,
+        filtered=filtered,
+        filtered_reasons=filtered_reasons,
+        filtered_components=filtered_components,
+        filtered_actions=filtered_actions,
+        model_meta=model_meta,
+    )
     event = {
         "id": uuid.uuid4().hex,
         "ts": datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
@@ -1367,28 +1542,12 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
             "plan": state.get("treatment_plan"),
             "prevention": state.get("prevention_advice"),
         },
-        "meta": {
-            **personalization_meta,
-            "personalization_applied": personalization_applied,
-            "filtered": filtered,
-            "filtered_reasons": filtered_reasons,
-            "filtered_components": filtered_components,
-            "filtered_actions": filtered_actions,
-            "selected_branch": flags.get("selected_branch"),
-            "elapsed_ms": round((time.perf_counter() - request_started) * 1000, 2),
-            "model_id": model_meta.get("model_id"),
-            "model_display_name": model_meta.get("model_display_name"),
-            "model_backend": model_meta.get("backend"),
-            "resolved_model_path": model_meta.get("resolved_model_path"),
-            "model_fallback_reason": model_meta.get("model_fallback_reason"),
-            "verification_result": state.get("verification_result"),
-            "verification_passed": state.get("verification_passed"),
-            "verification_risk_level": state.get("verification_risk_level"),
-            "verification_issues": list(state.get("verification_issues") or []),
-            "verification_summary": state.get("verification_summary"),
-            "manual_review_recommended": manual_review_recommended,
-            "rule_result_role": "fallback_override" if (state.get("final_source") == "rule") else "reference_only",
-        },
+        "growth_stage": canonical_growth_stage,
+        "risk_tags": canonical_risk_tags,
+        "risk_items": canonical_risk_items,
+        "risk_summary": "、".join(canonical_risk_tags) if canonical_risk_tags else None,
+        "risk_updated_at": flags.get("risk_updated_at"),
+        "canonical_meta": canonical_meta,
         "verification_result": state.get("verification_result"),
         "verification_passed": state.get("verification_passed"),
         "verification_risk_level": state.get("verification_risk_level"),
@@ -1403,17 +1562,15 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
         "diagnosis_evidence": diagnosis_evidence,
         "manual_review_recommended": manual_review_recommended,
         "manual_review_required_before_execution": manual_review_required_before_execution,
-<<<<<<< codex/update-multi-agent-workflow-functionality-mhpfbv
         "status": confirm_status,
-=======
-        "status": "manual_review_recommended" if manual_review_recommended else "completed",
->>>>>>> main
+        "status": confirm_status,
         "treatment_available": bool(state.get("treatment_plan")) and not manual_review_recommended,
         "verification_available": (state.get("verification_result") is not None) and not manual_review_recommended,
         "graph_treatment_generated": bool(state.get("treatment_plan")),
         "fallback_treatment_used": False,
         "historical_follow_up_questions": historical_follow_up_questions,
     }
+    event = serialize_case_response(event, terminal_stage=confirm_status)
     emit_node_event(trace_id, node="Persist", status="start", message="写入确认轮事件日志")
     try:
         append_event(event)
@@ -1422,7 +1579,7 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
         print(f"Warning: failed to append confirm event: {exc}")
         emit_node_event(trace_id, node="Persist", status="error", message=f"确认轮事件落盘失败: {exc}")
 
-    response_payload = {
+    response_payload = serialize_case_response({
         "trace_id": trace_id,
         "image_id": image_id,
         "final_disease": state.get("final_disease"),
@@ -1438,11 +1595,9 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
         "diagnosis_evidence": diagnosis_evidence,
         "manual_review_recommended": manual_review_recommended,
         "manual_review_required_before_execution": manual_review_required_before_execution,
-<<<<<<< codex/update-multi-agent-workflow-functionality-mhpfbv
         "status": confirm_status,
-=======
-        "status": "manual_review_recommended" if manual_review_recommended else "completed",
->>>>>>> main
+        "status": confirm_status,
+
         "confirm_message": confirm_message,
         "treatment": None if manual_review_recommended else {
             "plan": state.get("treatment_plan"),
@@ -1472,23 +1627,17 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
         "verification_available": (state.get("verification_result") is not None) and not manual_review_recommended,
         "graph_treatment_generated": bool(state.get("treatment_plan")),
         "fallback_treatment_used": False,
-        "meta": {
-            **personalization_meta,
-            "personalization_applied": personalization_applied,
-            "filtered": filtered,
-            "filtered_reasons": filtered_reasons,
-            "filtered_components": filtered_components,
-            "filtered_actions": filtered_actions,
-            "follow_up_questions": follow_up_questions,
-            "missing_profile_fields": missing_profile_fields,
-            "llm_failed": bool(flags.get("llm_failed")),
-            "llm_failed_reason": flags.get("llm_failed_reason"),
-        },
+        "growth_stage": canonical_growth_stage,
+        "risk_tags": canonical_risk_tags,
+        "risk_items": canonical_risk_items,
+        "risk_summary": "、".join(canonical_risk_tags) if canonical_risk_tags else None,
+        "risk_updated_at": flags.get("risk_updated_at"),
+        "canonical_meta": canonical_meta,
         "events": events,
-    }
+    }, terminal_stage=confirm_status)
     if previous_trace_id and previous_trace_id != trace_id:
         response_payload["previous_trace_id"] = previous_trace_id
-    return sanitize_user_text(response_payload)
+    return response_payload
 
 
 @app.get("/api/models")
