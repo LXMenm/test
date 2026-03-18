@@ -203,6 +203,26 @@ NODE_MESSAGE_CN = {
     "Final": "返回最终结果",
 }
 
+USER_TEXT_CODE_MAP = {
+    "FRUIT_SET": "坐果期",
+    "SEEDLING": "苗期",
+    "FLOWERING": "开花期",
+    "HARVEST": "采收期",
+}
+
+
+def sanitize_user_text(value: Any) -> Any:
+    if isinstance(value, str):
+        text = value
+        for code, label in USER_TEXT_CODE_MAP.items():
+            text = text.replace(code, label)
+        return text
+    if isinstance(value, list):
+        return [sanitize_user_text(item) for item in value]
+    if isinstance(value, dict):
+        return {k: sanitize_user_text(v) for k, v in value.items()}
+    return value
+
 
 def emit_node_event(
     trace_id: str,
@@ -750,6 +770,12 @@ async def diagnose_image(
     verification_available = verification_result is not None
     treatment_available = treatment is not None
     response_fallback_reason = (trace_fallback_reason or fallback_reasons or None) if fallback_used else None
+    if treatment is not None:
+        treatment = TreatmentPlan(
+            plan=str(sanitize_user_text(treatment.plan)),
+            prevention=str(sanitize_user_text(treatment.prevention)),
+        )
+    verification_summary = sanitize_user_text(verification_summary)
 
     event = {
         "id": uuid.uuid4().hex,
@@ -804,6 +830,7 @@ async def diagnose_image(
             "verification_risk_level": verification_risk_level,
             "verification_issues": verification_issues,
             "verification_summary": verification_summary,
+            "rule_result_role": "fallback_override" if (final_source == "rule") else "reference_only",
         },
         "verification_result": verification_result,
         "verification_passed": verification_passed,
@@ -1052,6 +1079,14 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
     if manual_review_recommended:
         need_confirm = False
     manual_review_required_before_execution = manual_review_recommended
+    if manual_review_recommended:
+        state["treatment_plan"] = None
+        state["prevention_advice"] = None
+        state["verification_result"] = None
+        state["verification_passed"] = None
+        state["verification_risk_level"] = None
+        state["verification_issues"] = []
+        state["verification_summary"] = None
 
     state["current_step"] = "uncertainty_router"
     append_trace(
@@ -1096,7 +1131,7 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
     missing_profile_fields = sorted({str(item).strip() for item in (flags.get("missing_profile_fields") or []) if str(item).strip()})
     confirm_message = None
     if manual_review_recommended:
-        confirm_message = "二次诊断后仍存在不确定性，建议人工复核"
+        confirm_message = "二次诊断后仍存在不确定性，建议人工复核后再执行方案"
     elif need_confirm:
         confirm_message = "置信度较低，建议补充症状或重新拍摄"
 
@@ -1166,6 +1201,7 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
             "verification_issues": list(state.get("verification_issues") or []),
             "verification_summary": state.get("verification_summary"),
             "manual_review_recommended": manual_review_recommended,
+            "rule_result_role": "fallback_override" if (state.get("final_source") == "rule") else "reference_only",
         },
         "verification_result": state.get("verification_result"),
         "verification_passed": state.get("verification_passed"),
@@ -1182,8 +1218,8 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
         "manual_review_recommended": manual_review_recommended,
         "manual_review_required_before_execution": manual_review_required_before_execution,
         "status": "manual_review_recommended" if manual_review_recommended else "completed",
-        "treatment_available": bool(state.get("treatment_plan")),
-        "verification_available": state.get("verification_result") is not None,
+        "treatment_available": bool(state.get("treatment_plan")) and not manual_review_recommended,
+        "verification_available": (state.get("verification_result") is not None) and not manual_review_recommended,
         "graph_treatment_generated": bool(state.get("treatment_plan")),
         "fallback_treatment_used": False,
         "historical_follow_up_questions": historical_follow_up_questions,
@@ -1214,7 +1250,7 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
         "manual_review_required_before_execution": manual_review_required_before_execution,
         "status": "manual_review_recommended" if manual_review_recommended else "completed",
         "confirm_message": confirm_message,
-        "treatment": {
+        "treatment": None if manual_review_recommended else {
             "plan": state.get("treatment_plan"),
             "prevention": state.get("prevention_advice"),
         },
@@ -1233,13 +1269,13 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
         "missing_profile_fields": missing_profile_fields,
         "llm_failed": bool(flags.get("llm_failed")),
         "llm_failed_reason": flags.get("llm_failed_reason"),
-        "verification_result": state.get("verification_result"),
-        "verification_passed": state.get("verification_passed"),
-        "verification_risk_level": state.get("verification_risk_level"),
-        "verification_issues": list(state.get("verification_issues") or []),
-        "verification_summary": state.get("verification_summary"),
-        "treatment_available": bool(state.get("treatment_plan")),
-        "verification_available": state.get("verification_result") is not None,
+        "verification_result": None if manual_review_recommended else state.get("verification_result"),
+        "verification_passed": None if manual_review_recommended else state.get("verification_passed"),
+        "verification_risk_level": None if manual_review_recommended else state.get("verification_risk_level"),
+        "verification_issues": [] if manual_review_recommended else list(state.get("verification_issues") or []),
+        "verification_summary": None if manual_review_recommended else state.get("verification_summary"),
+        "treatment_available": bool(state.get("treatment_plan")) and not manual_review_recommended,
+        "verification_available": (state.get("verification_result") is not None) and not manual_review_recommended,
         "graph_treatment_generated": bool(state.get("treatment_plan")),
         "fallback_treatment_used": False,
         "meta": {
@@ -1258,7 +1294,7 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
     }
     if previous_trace_id and previous_trace_id != trace_id:
         response_payload["previous_trace_id"] = previous_trace_id
-    return response_payload
+    return sanitize_user_text(response_payload)
 
 
 @app.get("/api/models")

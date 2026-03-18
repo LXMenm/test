@@ -1315,14 +1315,18 @@ def _rule_based_verification(payload: dict) -> list[str]:
     return dedupe_reasons(issues)
 
 
-def _extract_weather_numbers(summary: str | None) -> tuple[float | None, float | None]:
+def _extract_weather_numbers(summary: str | None) -> tuple[float | None, float | None, float | None, float | None]:
     text = str(summary or "")
     if not text:
-        return None, None
+        return None, None, None, None
     humidity = None
     precipitation_probability = None
+    temperature = None
+    wind_speed = None
     humidity_match = re.search(r"湿度\s*[:：]?\s*(\d+(?:\.\d+)?)\s*%", text)
     rain_match = re.search(r"(降雨概率|降水概率)\s*[:：]?\s*(\d+(?:\.\d+)?)\s*%", text)
+    temp_match = re.search(r"(气温|温度)\s*[:：]?\s*(-?\d+(?:\.\d+)?)\s*[℃cC]", text)
+    wind_match = re.search(r"(风速)\s*[:：]?\s*(\d+(?:\.\d+)?)\s*(m/s|米/秒)?", text)
     if humidity_match:
         try:
             humidity = float(humidity_match.group(1))
@@ -1333,7 +1337,17 @@ def _extract_weather_numbers(summary: str | None) -> tuple[float | None, float |
             precipitation_probability = float(rain_match.group(2))
         except Exception:
             precipitation_probability = None
-    return humidity, precipitation_probability
+    if temp_match:
+        try:
+            temperature = float(temp_match.group(2))
+        except Exception:
+            temperature = None
+    if wind_match:
+        try:
+            wind_speed = float(wind_match.group(2))
+        except Exception:
+            wind_speed = None
+    return humidity, precipitation_probability, temperature, wind_speed
 
 def _validate_treatment_output(
     *,
@@ -1397,7 +1411,9 @@ def verification_agent(state: CropDiseaseState) -> CropDiseaseState:
     weather_summary = state.get("weather_summary") or state.get("environment")
     humidity = state.get("humidity")
     precipitation_probability = state.get("precipitation_probability")
-    parsed_humidity, parsed_precip = _extract_weather_numbers(str(weather_summary) if weather_summary is not None else None)
+    parsed_humidity, parsed_precip, parsed_temperature, parsed_wind_speed = _extract_weather_numbers(
+        str(weather_summary) if weather_summary is not None else None
+    )
     if humidity is None:
         humidity = parsed_humidity
     if precipitation_probability is None:
@@ -1424,6 +1440,8 @@ def verification_agent(state: CropDiseaseState) -> CropDiseaseState:
         "weather_summary": weather_summary,
         "humidity": humidity,
         "precipitation_probability": precipitation_probability,
+        "temperature": parsed_temperature,
+        "wind_speed": parsed_wind_speed,
         "risk_tags": flags.get("risk_tags") or [],
         "kb_snapshot": state.get("kb_snapshot") or {},
         "treatment_plan": state.get("treatment_plan") or "",

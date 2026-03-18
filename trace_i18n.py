@@ -8,6 +8,7 @@ AGENT_NAME_CN = {
     "confirm_input": "二次补充输入",
     "confirm_finalize": "确认结果收尾",
     "uncertainty_router": "不确定性决策",
+    "confirm_choice": "确认候选选择",
 }
 
 STEP_NAME_CN = {
@@ -20,6 +21,7 @@ STEP_NAME_CN = {
     "confirm_input": "二次补充输入",
     "confirm_finalize": "确认结果收尾",
     "uncertainty_router": "不确定性决策完成",
+    "confirm_choice": "确认候选选择",
     "end": "结束",
 }
 
