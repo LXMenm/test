@@ -1373,6 +1373,9 @@ def verification_agent(state: CropDiseaseState) -> CropDiseaseState:
     flags = state.get("personalization_flags", {}) or {}
     profile, base_profile = _get_profile_from_state(state)
     _ = (profile, base_profile)
+    weather_summary = state.get("weather_summary") or state.get("environment")
+    humidity = state.get("humidity")
+    precipitation_probability = state.get("precipitation_probability")
 
     payload = {
         "crop_type": state.get("crop_type", "番茄"),
@@ -1392,9 +1395,9 @@ def verification_agent(state: CropDiseaseState) -> CropDiseaseState:
         "location": state.get("location"),
         "facility": state.get("facility"),
         "environment": state.get("environment"),
-        "weather_summary": state.get("weather_summary"),
-        "humidity": state.get("humidity"),
-        "precipitation_probability": state.get("precipitation_probability"),
+        "weather_summary": weather_summary,
+        "humidity": humidity,
+        "precipitation_probability": precipitation_probability,
         "risk_tags": flags.get("risk_tags") or [],
         "kb_snapshot": state.get("kb_snapshot") or {},
         "treatment_plan": state.get("treatment_plan") or "",

@@ -150,6 +150,11 @@ class DiagnoseResponse(BaseModel):
     modality_conflict_flag: bool | None = None
     normalized_symptoms: list[str] = []
     debug_runtime: dict[str, Any] | None = None
+    verification_result: dict[str, Any] | None = None
+    verification_passed: bool | None = None
+    verification_risk_level: str | None = None
+    verification_issues: list[str] = []
+    verification_summary: str | None = None
 
 
 class SPAStaticFiles(StaticFiles):
@@ -186,7 +191,6 @@ NODE_MESSAGE_CN = {
     "PersonalizationAgent": "应用个性化约束",
     "KBRetrievalAgent": "检索知识库与方案",
     "PrescriptionAgent": "生成治疗与预防建议",
-    "ValidatorAgent": "校验结果完整性",
     "Persist": "落盘诊断与追踪事件",
     "Final": "返回最终结果",
 }
@@ -595,7 +599,6 @@ async def diagnose_image(
     rule_result_dict = rule_result.model_dump() if rule_result else None
     image_url = f"/uploads/{unique_name}"
 
-    emit_node_event(trace_id, node="ValidatorAgent", status="start", message="校验结果")
     need_confirm = None
     trace_fallback_reason: list[str] | None = None
     final_confidence = None
@@ -631,18 +634,15 @@ async def diagnose_image(
         if not isinstance(final_state, dict):
             raise RuntimeError("GRAPH_EMPTY_FINAL_STATE")
         trace_id = final_state.get("trace_id", trace_id)
-        emit_node_event(trace_id, node="ValidatorAgent", status="end", message="校验完成")
     except Exception as exc:
         print(f"Warning: failed to build trace events: {exc}")
         lowered = str(exc).lower()
         degraded_reason = "GRAPH_RECURSION_LIMIT" if "recursion" in lowered else str(exc)
         workflow_degraded = True
-        emit_node_event(trace_id, node="ValidatorAgent", status="error", message=f"校验失败: {exc}")
         fallback_treatment, personalization_outputs = _build_degraded_treatment(final_disease, dict(personalization_flags))
         if fallback_treatment:
             treatment = fallback_treatment
         personalization_flags.update(personalization_outputs)
-        emit_node_event(trace_id, node="ValidatorAgent", status="end", message=f"降级兜底完成: {degraded_reason}")
 
     flags = dict(personalization_flags)
     if final_state:
@@ -657,6 +657,12 @@ async def diagnose_image(
         if treatment_plan or prevention_advice:
             treatment = TreatmentPlan(plan=treatment_plan, prevention=prevention_advice)
         personalization_reasons = dedupe_reasons(final_state.get("personalization_reasons") or [])
+
+    verification_result = (final_state or {}).get("verification_result")
+    verification_passed = (final_state or {}).get("verification_passed")
+    verification_risk_level = (final_state or {}).get("verification_risk_level")
+    verification_issues = list((final_state or {}).get("verification_issues") or [])
+    verification_summary = (final_state or {}).get("verification_summary")
 
     if treatment is None:
         fallback_treatment, personalization_outputs = _build_degraded_treatment(final_disease, dict(flags))
@@ -766,7 +772,17 @@ async def diagnose_image(
             "risk_items": list(flags.get("risk_items") or []),
             "risk_summary": "、".join([str(item).strip() for item in (flags.get("risk_tags") or []) if str(item).strip()]) or None,
             "risk_updated_at": flags.get("risk_updated_at"),
+            "verification_result": verification_result,
+            "verification_passed": verification_passed,
+            "verification_risk_level": verification_risk_level,
+            "verification_issues": verification_issues,
+            "verification_summary": verification_summary,
         },
+        "verification_result": verification_result,
+        "verification_passed": verification_passed,
+        "verification_risk_level": verification_risk_level,
+        "verification_issues": verification_issues,
+        "verification_summary": verification_summary,
     }
     emit_node_event(trace_id, node="Persist", status="start", message="写入事件日志")
     try:
@@ -822,6 +838,11 @@ async def diagnose_image(
         normalized_symptoms=list((final_state or {}).get("normalized_symptoms") or ((final_state or {}).get("structured_symptoms") or {}).get("normalized_symptoms") or []),
         workflow_degraded=workflow_degraded,
         degraded_reason=degraded_reason,
+        verification_result=verification_result,
+        verification_passed=verification_passed,
+        verification_risk_level=verification_risk_level,
+        verification_issues=verification_issues,
+        verification_summary=verification_summary,
         debug_runtime={
             **(runtime_debug or {}),
             "diagnosis_debug": (final_state or {}).get("debug_diagnosis"),
@@ -1062,6 +1083,11 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
         "missing_profile_fields": missing_profile_fields,
         "llm_failed": bool(flags.get("llm_failed")),
         "llm_failed_reason": flags.get("llm_failed_reason"),
+        "verification_result": state.get("verification_result"),
+        "verification_passed": state.get("verification_passed"),
+        "verification_risk_level": state.get("verification_risk_level"),
+        "verification_issues": list(state.get("verification_issues") or []),
+        "verification_summary": state.get("verification_summary"),
         "meta": {
             **personalization_meta,
             "personalization_applied": personalization_applied,
