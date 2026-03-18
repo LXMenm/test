@@ -201,6 +201,7 @@ NODE_MESSAGE_CN = {
     "PrescriptionAgent": "生成治疗与预防建议",
     "Persist": "落盘诊断与追踪事件",
     "Final": "返回最终结果",
+    "AwaitUserConfirmation": "当前轮结束，等待用户补充",
 }
 
 USER_TEXT_CODE_MAP = {
@@ -329,6 +330,34 @@ def emit_node_event(
             "payload": payload or {},
         },
     )
+
+
+TERMINAL_CASE_STATUSES = {"completed", "manual_review_recommended", "failed", "cancelled"}
+
+
+def has_terminal_final_event(trace_id: str) -> bool:
+    for event in list_trace_events(trace_id):
+        if event.get("node") != "Final":
+            continue
+        if str(event.get("status") or "").lower() in {"end", "error"}:
+            return True
+    return False
+
+
+def emit_final_event_once(
+    trace_id: str,
+    *,
+    status: str,
+    message: str,
+    payload: dict[str, Any] | None = None,
+) -> bool:
+    """仅在终态且未存在 Final.end/error 时写入 Final 事件。"""
+    if status not in TERMINAL_CASE_STATUSES:
+        return False
+    if has_terminal_final_event(trace_id):
+        return False
+    emit_node_event(trace_id, node="Final", status="end", message=message, payload=payload)
+    return True
 
 
 def cleanup_old_uploads(max_age_hours: int = 24) -> None:
@@ -975,7 +1004,21 @@ async def diagnose_image(
         print(f"Warning: failed to append event: {exc}")
         emit_node_event(trace_id, node="Persist", status="error", message=f"事件落盘失败: {exc}")
 
-    emit_node_event(trace_id, node="Final", status="end", message="诊断流程完成", payload={"final_disease": final_disease})
+    if response_status == "waiting_for_confirmation":
+        emit_node_event(
+            trace_id,
+            node="AwaitUserConfirmation",
+            status="end",
+            message="当前轮返回追问，等待用户补充后进入二次诊断",
+            payload={"final_disease": final_disease, "status": response_status, "reason": "need_confirm_wait_user"},
+        )
+    else:
+        emit_final_event_once(
+            trace_id,
+            status=response_status,
+            message="诊断流程完成",
+            payload={"final_disease": final_disease, "status": response_status},
+        )
 
     return DiagnoseResponse(
         image_id=unique_name,
@@ -1289,12 +1332,12 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
             "final_disease": state.get("final_disease"),
         },
     )
-    emit_node_event(
+    confirm_status = "manual_review_recommended" if manual_review_recommended else "completed"
+    emit_final_event_once(
         trace_id,
-        node="Final",
-        status="end",
+        status=confirm_status,
         message="二次诊断流程完成",
-        payload={"final_disease": state.get("final_disease"), "confirm_round": True},
+        payload={"final_disease": state.get("final_disease"), "confirm_round": True, "status": confirm_status},
     )
 
     events = list_trace_events(trace_id)
@@ -1360,7 +1403,11 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
         "diagnosis_evidence": diagnosis_evidence,
         "manual_review_recommended": manual_review_recommended,
         "manual_review_required_before_execution": manual_review_required_before_execution,
+<<<<<<< codex/update-multi-agent-workflow-functionality-mhpfbv
+        "status": confirm_status,
+=======
         "status": "manual_review_recommended" if manual_review_recommended else "completed",
+>>>>>>> main
         "treatment_available": bool(state.get("treatment_plan")) and not manual_review_recommended,
         "verification_available": (state.get("verification_result") is not None) and not manual_review_recommended,
         "graph_treatment_generated": bool(state.get("treatment_plan")),
@@ -1391,7 +1438,11 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
         "diagnosis_evidence": diagnosis_evidence,
         "manual_review_recommended": manual_review_recommended,
         "manual_review_required_before_execution": manual_review_required_before_execution,
+<<<<<<< codex/update-multi-agent-workflow-functionality-mhpfbv
+        "status": confirm_status,
+=======
         "status": "manual_review_recommended" if manual_review_recommended else "completed",
+>>>>>>> main
         "confirm_message": confirm_message,
         "treatment": None if manual_review_recommended else {
             "plan": state.get("treatment_plan"),
@@ -1925,6 +1976,8 @@ async def stream_trace(trace_id: str):
                 stream_event = _to_stream_event(trace_id, event)
                 yield f"event: trace\ndata: {json.dumps(stream_event, ensure_ascii=False)}\n\n"
                 if stream_event.get("node") == "Final" and stream_event.get("status") in {"end", "error"}:
+                    break
+                if stream_event.get("node") == "AwaitUserConfirmation" and stream_event.get("status") == "end":
                     break
         finally:
             unsubscribe_trace(trace_id, queue)
