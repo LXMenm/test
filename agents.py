@@ -952,6 +952,14 @@ def treatment_agent(state: CropDiseaseState) -> CropDiseaseState:
     # 更新状态
     state["treatment_plan"] = treatment_plan
     state["prevention_advice"] = prevention_advice
+    if rewrite_mode:
+        # 重写完成后清空旧审查结果，确保 supervisor 进入新的 verification 节点复审
+        state["verification_result"] = None
+        state["verification_passed"] = None
+        state["verification_risk_level"] = None
+        state["verification_issues"] = []
+        state["verification_must_fix"] = []
+        state["verification_summary"] = None
     state["current_step"] = "treatment_complete"
     state["messages"] = [message]
     print(f"  - 治疗方案: {treatment_plan[:50]}...")
@@ -1478,12 +1486,6 @@ def _deterministic_supervisor_decision(state: CropDiseaseState, flags: dict, mis
             return "end", True, "番茄病害监督智能体：审查未通过且达到重写上限，建议人工复核", ["verification_failed_max_retry"]
 
         state["rewrite_count"] = rewrite_count + 1
-        state["verification_result"] = None
-        state["verification_passed"] = None
-        state["verification_risk_level"] = None
-        state["verification_issues"] = []
-        state["verification_must_fix"] = []
-        state["verification_summary"] = None
         return "treatment", False, "番茄病害监督智能体：审查未通过，回到治疗方案智能体重写", ["verification_failed_rewrite"]
 
     return "end", True, "番茄病害监督智能体：治疗方案已通过农业合规审查，流程结束", ["all_required_outputs_ready"]
