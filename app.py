@@ -27,7 +27,7 @@ from diagnosis_model import get_diagnosis_engine
 import diagnosis_model as diagnosis_model_module
 import agents as agents_module
 import knowledge_base.kb_manager as kb_manager_module
-from agents import append_trace, diagnosis_agent, kb_retrieval_agent, treatment_agent
+from agents import append_trace, diagnosis_agent, kb_retrieval_agent, treatment_agent, verification_agent
 from event_store import (
     append_event,
     list_events,
@@ -150,6 +150,18 @@ class DiagnoseResponse(BaseModel):
     modality_conflict_flag: bool | None = None
     normalized_symptoms: list[str] = []
     debug_runtime: dict[str, Any] | None = None
+    verification_result: dict[str, Any] | None = None
+    verification_passed: bool | None = None
+    verification_risk_level: str | None = None
+    verification_issues: list[str] = []
+    verification_summary: str | None = None
+    status: str = "completed"
+    treatment_skipped_due_need_confirm: bool = False
+    treatment_available: bool = False
+    verification_available: bool = False
+    manual_review_recommended: bool = False
+    graph_treatment_generated: bool = False
+    fallback_treatment_used: bool = False
 
 
 class SPAStaticFiles(StaticFiles):
@@ -186,7 +198,6 @@ NODE_MESSAGE_CN = {
     "PersonalizationAgent": "应用个性化约束",
     "KBRetrievalAgent": "检索知识库与方案",
     "PrescriptionAgent": "生成治疗与预防建议",
-    "ValidatorAgent": "校验结果完整性",
     "Persist": "落盘诊断与追踪事件",
     "Final": "返回最终结果",
 }
@@ -595,7 +606,6 @@ async def diagnose_image(
     rule_result_dict = rule_result.model_dump() if rule_result else None
     image_url = f"/uploads/{unique_name}"
 
-    emit_node_event(trace_id, node="ValidatorAgent", status="start", message="校验结果")
     need_confirm = None
     trace_fallback_reason: list[str] | None = None
     final_confidence = None
@@ -631,20 +641,18 @@ async def diagnose_image(
         if not isinstance(final_state, dict):
             raise RuntimeError("GRAPH_EMPTY_FINAL_STATE")
         trace_id = final_state.get("trace_id", trace_id)
-        emit_node_event(trace_id, node="ValidatorAgent", status="end", message="校验完成")
     except Exception as exc:
         print(f"Warning: failed to build trace events: {exc}")
         lowered = str(exc).lower()
         degraded_reason = "GRAPH_RECURSION_LIMIT" if "recursion" in lowered else str(exc)
         workflow_degraded = True
-        emit_node_event(trace_id, node="ValidatorAgent", status="error", message=f"校验失败: {exc}")
         fallback_treatment, personalization_outputs = _build_degraded_treatment(final_disease, dict(personalization_flags))
         if fallback_treatment:
             treatment = fallback_treatment
         personalization_flags.update(personalization_outputs)
-        emit_node_event(trace_id, node="ValidatorAgent", status="end", message=f"降级兜底完成: {degraded_reason}")
 
     flags = dict(personalization_flags)
+    graph_treatment_generated = False
     if final_state:
         final_disease = final_state.get("final_disease") or final_disease
         flags = final_state.get("personalization_flags") or flags
@@ -656,16 +664,35 @@ async def diagnose_image(
         prevention_advice = (final_state.get("prevention_advice") or "").strip()
         if treatment_plan or prevention_advice:
             treatment = TreatmentPlan(plan=treatment_plan, prevention=prevention_advice)
+            graph_treatment_generated = True
         personalization_reasons = dedupe_reasons(final_state.get("personalization_reasons") or [])
 
-    if treatment is None:
+    verification_result = (final_state or {}).get("verification_result")
+    verification_passed = (final_state or {}).get("verification_passed")
+    verification_risk_level = (final_state or {}).get("verification_risk_level")
+    verification_issues = list((final_state or {}).get("verification_issues") or [])
+    verification_summary = (final_state or {}).get("verification_summary")
+
+    need_confirm_waiting = bool(need_confirm is True and not graph_treatment_generated)
+    fallback_treatment_used = False
+    if treatment is None and not need_confirm_waiting:
         fallback_treatment, personalization_outputs = _build_degraded_treatment(final_disease, dict(flags))
         if fallback_treatment:
             treatment = fallback_treatment
+            fallback_treatment_used = True
         flags.update(personalization_outputs)
         if not workflow_degraded:
             workflow_degraded = True
             degraded_reason = degraded_reason or "EMPTY_TREATMENT_FROM_GRAPH"
+    elif need_confirm_waiting:
+        treatment = None
+        verification_result = None
+        verification_passed = None
+        verification_risk_level = None
+        verification_issues = []
+        verification_summary = None
+        workflow_degraded = False
+        degraded_reason = None
 
     follow_up_questions = normalize_follow_up_questions(flags.get("follow_up_questions") or [])
     flags["follow_up_questions"] = follow_up_questions
@@ -718,6 +745,11 @@ async def diagnose_image(
         "model_fallback_reason": model_fallback_reason,
     }
 
+    response_status = "waiting_for_confirmation" if need_confirm_waiting else "completed"
+    verification_available = verification_result is not None
+    treatment_available = treatment is not None
+    response_fallback_reason = (trace_fallback_reason or fallback_reasons or None) if fallback_used else None
+
     event = {
         "id": uuid.uuid4().hex,
         "ts": datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
@@ -728,7 +760,7 @@ async def diagnose_image(
         "image_url": image_url,
         "image_result": image_result_dict,
         "fallback_used": fallback_used,
-        "fallback_reason": trace_fallback_reason or fallback_reasons or None,
+        "fallback_reason": response_fallback_reason,
         "rule_result": rule_result_dict,
         "final_disease": final_state.get("final_disease") if final_state else final_disease,
         "need_confirm": need_confirm,
@@ -766,7 +798,24 @@ async def diagnose_image(
             "risk_items": list(flags.get("risk_items") or []),
             "risk_summary": "、".join([str(item).strip() for item in (flags.get("risk_tags") or []) if str(item).strip()]) or None,
             "risk_updated_at": flags.get("risk_updated_at"),
+            "verification_result": verification_result,
+            "verification_passed": verification_passed,
+            "verification_risk_level": verification_risk_level,
+            "verification_issues": verification_issues,
+            "verification_summary": verification_summary,
         },
+        "verification_result": verification_result,
+        "verification_passed": verification_passed,
+        "verification_risk_level": verification_risk_level,
+        "verification_issues": verification_issues,
+        "verification_summary": verification_summary,
+        "status": response_status,
+        "treatment_skipped_due_need_confirm": need_confirm_waiting,
+        "treatment_available": treatment_available,
+        "verification_available": verification_available,
+        "manual_review_recommended": False,
+        "graph_treatment_generated": graph_treatment_generated,
+        "fallback_treatment_used": fallback_treatment_used,
     }
     emit_node_event(trace_id, node="Persist", status="start", message="写入事件日志")
     try:
@@ -783,7 +832,7 @@ async def diagnose_image(
         image_url=image_url,
         image_result=ImageResult(**image_result_dict),
         fallback_used=fallback_used,
-        fallback_reason=trace_fallback_reason or fallback_reasons or None,
+        fallback_reason=response_fallback_reason,
         rule_result=rule_result,
         final_disease=final_disease,
         treatment=treatment,
@@ -804,7 +853,7 @@ async def diagnose_image(
         profile_pesticide_access_level=flags.get("pesticide_access_level"),
         profile_equipment=[str(item) for item in (flags.get("equipment") or [])],
         profile_cultivation_mode=flags.get("cultivation_mode"),
-        selected_branch=flags.get("selected_branch"),
+        selected_branch=flags.get("selected_branch") if treatment_available else None,
         llm_failed=bool(flags.get("llm_failed")),
         trace_id=trace_id,
         need_confirm=need_confirm,
@@ -822,6 +871,18 @@ async def diagnose_image(
         normalized_symptoms=list((final_state or {}).get("normalized_symptoms") or ((final_state or {}).get("structured_symptoms") or {}).get("normalized_symptoms") or []),
         workflow_degraded=workflow_degraded,
         degraded_reason=degraded_reason,
+        verification_result=verification_result,
+        verification_passed=verification_passed,
+        verification_risk_level=verification_risk_level,
+        verification_issues=verification_issues,
+        verification_summary=verification_summary,
+        status=response_status,
+        treatment_skipped_due_need_confirm=need_confirm_waiting,
+        treatment_available=treatment_available,
+        verification_available=verification_available,
+        manual_review_recommended=False,
+        graph_treatment_generated=graph_treatment_generated,
+        fallback_treatment_used=fallback_treatment_used,
         debug_runtime={
             **(runtime_debug or {}),
             "diagnosis_debug": (final_state or {}).get("debug_diagnosis"),
@@ -915,6 +976,7 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
 
     state = kb_retrieval_agent(state)
     state = treatment_agent(state)
+    state = verification_agent(state)
 
     image_diagnosis = state.get("image_diagnosis") or {}
     image_top1 = image_diagnosis.get("top1") or {}
@@ -931,6 +993,9 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
     flags = state.get("personalization_flags") or {}
     need_confirm = bool(flags.get("need_confirm"))
     if choice and choice != "other":
+        need_confirm = False
+    manual_review_recommended = need_confirm
+    if manual_review_recommended:
         need_confirm = False
 
     append_trace(
@@ -952,7 +1017,9 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
     flags["follow_up_questions"] = follow_up_questions
     missing_profile_fields = sorted({str(item).strip() for item in (flags.get("missing_profile_fields") or []) if str(item).strip()})
     confirm_message = None
-    if need_confirm:
+    if manual_review_recommended:
+        confirm_message = "二次诊断后仍存在不确定性，建议人工复核"
+    elif need_confirm:
         confirm_message = "置信度较低，建议补充症状或重新拍摄"
 
     emit_node_event(
@@ -960,7 +1027,11 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
         node="ConfirmFlow",
         status="end",
         message="二次诊断确认完成",
-        payload={"need_confirm": need_confirm, "final_disease": state.get("final_disease")},
+        payload={
+            "need_confirm": need_confirm,
+            "manual_review_recommended": manual_review_recommended,
+            "final_disease": state.get("final_disease"),
+        },
     )
     emit_node_event(
         trace_id,
@@ -971,21 +1042,6 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
     )
 
     events = list_trace_events(trace_id)
-
-    emit_node_event(
-        trace_id,
-        node="ConfirmFlow",
-        status="end",
-        message="二次诊断确认完成",
-        payload={"need_confirm": need_confirm, "final_disease": state.get("final_disease")},
-    )
-    emit_node_event(
-        trace_id,
-        node="Final",
-        status="end",
-        message="二次诊断流程完成",
-        payload={"final_disease": state.get("final_disease"), "confirm_round": True},
-    )
 
     model_meta = state.get("diagnosis_model_meta") or {}
     event = {
@@ -1026,7 +1082,24 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
             "model_backend": model_meta.get("backend"),
             "resolved_model_path": model_meta.get("resolved_model_path"),
             "model_fallback_reason": model_meta.get("model_fallback_reason"),
+            "verification_result": state.get("verification_result"),
+            "verification_passed": state.get("verification_passed"),
+            "verification_risk_level": state.get("verification_risk_level"),
+            "verification_issues": list(state.get("verification_issues") or []),
+            "verification_summary": state.get("verification_summary"),
+            "manual_review_recommended": manual_review_recommended,
         },
+        "verification_result": state.get("verification_result"),
+        "verification_passed": state.get("verification_passed"),
+        "verification_risk_level": state.get("verification_risk_level"),
+        "verification_issues": list(state.get("verification_issues") or []),
+        "verification_summary": state.get("verification_summary"),
+        "manual_review_recommended": manual_review_recommended,
+        "status": "manual_review_recommended" if manual_review_recommended else "completed",
+        "treatment_available": bool(state.get("treatment_plan")),
+        "verification_available": state.get("verification_result") is not None,
+        "graph_treatment_generated": bool(state.get("treatment_plan")),
+        "fallback_treatment_used": False,
     }
     emit_node_event(trace_id, node="Persist", status="start", message="写入确认轮事件日志")
     try:
@@ -1036,13 +1109,14 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
         print(f"Warning: failed to append confirm event: {exc}")
         emit_node_event(trace_id, node="Persist", status="error", message=f"确认轮事件落盘失败: {exc}")
 
-    return {
+    response_payload = {
         "trace_id": trace_id,
-        "previous_trace_id": previous_trace_id,
         "image_id": image_id,
         "final_disease": state.get("final_disease"),
         "image_result": image_result,
         "need_confirm": need_confirm,
+        "manual_review_recommended": manual_review_recommended,
+        "status": "manual_review_recommended" if manual_review_recommended else "completed",
         "confirm_message": confirm_message,
         "treatment": {
             "plan": state.get("treatment_plan"),
@@ -1062,6 +1136,15 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
         "missing_profile_fields": missing_profile_fields,
         "llm_failed": bool(flags.get("llm_failed")),
         "llm_failed_reason": flags.get("llm_failed_reason"),
+        "verification_result": state.get("verification_result"),
+        "verification_passed": state.get("verification_passed"),
+        "verification_risk_level": state.get("verification_risk_level"),
+        "verification_issues": list(state.get("verification_issues") or []),
+        "verification_summary": state.get("verification_summary"),
+        "treatment_available": bool(state.get("treatment_plan")),
+        "verification_available": state.get("verification_result") is not None,
+        "graph_treatment_generated": bool(state.get("treatment_plan")),
+        "fallback_treatment_used": False,
         "meta": {
             **personalization_meta,
             "personalization_applied": personalization_applied,
@@ -1076,6 +1159,9 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
         },
         "events": events,
     }
+    if previous_trace_id and previous_trace_id != trace_id:
+        response_payload["previous_trace_id"] = previous_trace_id
+    return response_payload
 
 
 @app.get("/api/models")
