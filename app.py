@@ -27,7 +27,7 @@ from diagnosis_model import get_diagnosis_engine
 import diagnosis_model as diagnosis_model_module
 import agents as agents_module
 import knowledge_base.kb_manager as kb_manager_module
-from agents import append_trace, diagnosis_agent, kb_retrieval_agent, treatment_agent
+from agents import append_trace, diagnosis_agent, kb_retrieval_agent, treatment_agent, verification_agent, supervisor_agent
 from event_store import (
     append_event,
     list_events,
@@ -150,6 +150,19 @@ class DiagnoseResponse(BaseModel):
     modality_conflict_flag: bool | None = None
     normalized_symptoms: list[str] = []
     debug_runtime: dict[str, Any] | None = None
+    verification_result: dict[str, Any] | None = None
+    verification_passed: bool | None = None
+    verification_risk_level: str | None = None
+    verification_issues: list[str] = []
+    verification_summary: str | None = None
+    status: str = "completed"
+    treatment_skipped_due_need_confirm: bool = False
+    treatment_available: bool = False
+    verification_available: bool = False
+    manual_review_recommended: bool = False
+    graph_treatment_generated: bool = False
+    fallback_treatment_used: bool = False
+    manual_review_required_before_execution: bool = False
 
 
 class SPAStaticFiles(StaticFiles):
@@ -186,10 +199,118 @@ NODE_MESSAGE_CN = {
     "PersonalizationAgent": "应用个性化约束",
     "KBRetrievalAgent": "检索知识库与方案",
     "PrescriptionAgent": "生成治疗与预防建议",
-    "ValidatorAgent": "校验结果完整性",
     "Persist": "落盘诊断与追踪事件",
     "Final": "返回最终结果",
+    "AwaitUserConfirmation": "当前轮结束，等待用户补充",
 }
+
+USER_TEXT_CODE_MAP = {
+    "FRUIT_SET": "坐果期",
+    "SEEDLING": "苗期",
+    "FLOWERING": "开花期",
+    "HARVEST": "采收期",
+}
+
+
+def sanitize_user_text(value: Any) -> Any:
+    if isinstance(value, str):
+        text = value
+        for code, label in USER_TEXT_CODE_MAP.items():
+            text = text.replace(code, label)
+        return text
+    if isinstance(value, list):
+        return [sanitize_user_text(item) for item in value]
+    if isinstance(value, dict):
+        return {k: sanitize_user_text(v) for k, v in value.items()}
+    return value
+
+
+GROWTH_STAGE_CANONICAL = {
+    "苗期": "SEEDLING",
+    "开花期": "FLOWERING",
+    "坐果期": "FRUIT_SET",
+    "结果期": "FRUIT_SET",
+    "成熟期": "HARVEST",
+}
+
+RISK_CODE_ALIAS = {
+    "开花期_fruiting_sensitive": "FLOWERING_FRUITING_SENSITIVE",
+    "fruting_sensitive": "FLOWERING_FRUITING_SENSITIVE",
+    "fruting": "FLOWERING_FRUITING_SENSITIVE",
+}
+
+
+def normalize_growth_stage_code(value: Any) -> Any:
+    if not isinstance(value, str):
+        return value
+    text = value.strip()
+    if not text:
+        return value
+    normalized = normalize_growth_stage(text)
+    if normalized:
+        return normalized
+    return GROWTH_STAGE_CANONICAL.get(text, text)
+
+
+def normalize_risk_code(code: Any) -> str:
+    text = str(code or "").strip()
+    if not text:
+        return ""
+    lowered = text.lower().replace("-", "_")
+    if lowered in RISK_CODE_ALIAS:
+        return RISK_CODE_ALIAS[lowered]
+    if "开花期" in text and "FRUITING_SENSITIVE" in text:
+        return "FLOWERING_FRUITING_SENSITIVE"
+    return text.upper()
+
+
+def normalize_risk_codes(payload: dict[str, Any]) -> dict[str, Any]:
+    data = dict(payload)
+    tags = [normalize_risk_code(item) for item in (data.get("risk_tags") or []) if str(item).strip()]
+    data["risk_tags"] = tags
+    items = []
+    for item in (data.get("risk_items") or []):
+        if isinstance(item, dict):
+            one = dict(item)
+            one["code"] = normalize_risk_code(one.get("code") or one.get("label"))
+            items.append(one)
+    data["risk_items"] = items
+    if tags:
+        data["risk_summary"] = "、".join(tags)
+    elif isinstance(data.get("risk_summary"), str):
+        data["risk_summary"] = normalize_risk_code(data.get("risk_summary"))
+    data["growth_stage"] = normalize_growth_stage_code(data.get("growth_stage"))
+    return data
+
+
+def merge_follow_up_questions(
+    historical: list[str],
+    current: list[str],
+    *,
+    active: bool,
+) -> tuple[list[str], list[str]]:
+    merged_historical: list[str] = []
+    for item in [*historical, *current]:
+        text = str(item).strip()
+        if text and text not in merged_historical:
+            merged_historical.append(text)
+    visible_current = [str(item).strip() for item in current if str(item).strip()] if active else []
+    return visible_current, merged_historical
+
+
+def serialize_final_response(payload: dict[str, Any]) -> dict[str, Any]:
+    data = normalize_risk_codes(payload)
+    if "verification_summary" in data:
+        data["verification_summary"] = sanitize_user_text(data["verification_summary"])
+    treatment = data.get("treatment")
+    if isinstance(treatment, dict):
+        treatment = dict(treatment)
+        treatment["plan"] = sanitize_user_text(treatment.get("plan"))
+        treatment["prevention"] = sanitize_user_text(treatment.get("prevention"))
+        data["treatment"] = treatment
+    if "confirm_message" in data:
+        data["confirm_message"] = sanitize_user_text(data.get("confirm_message"))
+    return data
 
 
 def emit_node_event(
@@ -209,6 +330,34 @@ def emit_node_event(
             "payload": payload or {},
         },
     )
+
+
+TERMINAL_CASE_STATUSES = {"completed", "manual_review_recommended", "failed", "cancelled"}
+
+
+def has_terminal_final_event(trace_id: str) -> bool:
+    for event in list_trace_events(trace_id):
+        if event.get("node") != "Final":
+            continue
+        if str(event.get("status") or "").lower() in {"end", "error"}:
+            return True
+    return False
+
+
+def emit_final_event_once(
+    trace_id: str,
+    *,
+    status: str,
+    message: str,
+    payload: dict[str, Any] | None = None,
+) -> bool:
+    """仅在终态且未存在 Final.end/error 时写入 Final 事件。"""
+    if status not in TERMINAL_CASE_STATUSES:
+        return False
+    if has_terminal_final_event(trace_id):
+        return False
+    emit_node_event(trace_id, node="Final", status="end", message=message, payload=payload)
+    return True
 
 
 def cleanup_old_uploads(max_age_hours: int = 24) -> None:
@@ -320,6 +469,25 @@ def _build_personalization_meta(flags: dict, farmer_id: str | None, base_id: str
         "risk_updated_at": flags.get("risk_updated_at"),
         "risk_summary": "、".join([str(item).strip() for item in (flags.get("risk_tags") or []) if str(item).strip()]) or None,
     }
+
+
+def resume_from_confirm_input(
+    state: dict[str, Any],
+    *,
+    crop_type: str,
+    growth_stage: str | None,
+    model_id: str | None,
+    image_path: str,
+    merged_symptoms: list[str],
+) -> dict[str, Any]:
+    """将确认输入补丁写入状态，并回到 supervisor 可调度的诊断入口。"""
+    state["image_path"] = image_path
+    state["symptoms"] = merged_symptoms
+    state["crop_type"] = crop_type
+    state["crop_growth_stage"] = normalize_growth_stage_code(growth_stage)
+    state["diagnosis_model_id"] = model_id
+    state["current_step"] = "confirm_input"
+    return state
 
 
 def _normalize_filter_state(flags: dict) -> tuple[bool, list[str], list[str], list[str]]:
@@ -595,7 +763,6 @@ async def diagnose_image(
     rule_result_dict = rule_result.model_dump() if rule_result else None
     image_url = f"/uploads/{unique_name}"
 
-    emit_node_event(trace_id, node="ValidatorAgent", status="start", message="校验结果")
     need_confirm = None
     trace_fallback_reason: list[str] | None = None
     final_confidence = None
@@ -631,20 +798,18 @@ async def diagnose_image(
         if not isinstance(final_state, dict):
             raise RuntimeError("GRAPH_EMPTY_FINAL_STATE")
         trace_id = final_state.get("trace_id", trace_id)
-        emit_node_event(trace_id, node="ValidatorAgent", status="end", message="校验完成")
     except Exception as exc:
         print(f"Warning: failed to build trace events: {exc}")
         lowered = str(exc).lower()
         degraded_reason = "GRAPH_RECURSION_LIMIT" if "recursion" in lowered else str(exc)
         workflow_degraded = True
-        emit_node_event(trace_id, node="ValidatorAgent", status="error", message=f"校验失败: {exc}")
         fallback_treatment, personalization_outputs = _build_degraded_treatment(final_disease, dict(personalization_flags))
         if fallback_treatment:
             treatment = fallback_treatment
         personalization_flags.update(personalization_outputs)
-        emit_node_event(trace_id, node="ValidatorAgent", status="end", message=f"降级兜底完成: {degraded_reason}")
 
     flags = dict(personalization_flags)
+    graph_treatment_generated = False
     if final_state:
         final_disease = final_state.get("final_disease") or final_disease
         flags = final_state.get("personalization_flags") or flags
@@ -656,16 +821,35 @@ async def diagnose_image(
         prevention_advice = (final_state.get("prevention_advice") or "").strip()
         if treatment_plan or prevention_advice:
             treatment = TreatmentPlan(plan=treatment_plan, prevention=prevention_advice)
+            graph_treatment_generated = True
         personalization_reasons = dedupe_reasons(final_state.get("personalization_reasons") or [])
 
-    if treatment is None:
+    verification_result = (final_state or {}).get("verification_result")
+    verification_passed = (final_state or {}).get("verification_passed")
+    verification_risk_level = (final_state or {}).get("verification_risk_level")
+    verification_issues = list((final_state or {}).get("verification_issues") or [])
+    verification_summary = (final_state or {}).get("verification_summary")
+
+    need_confirm_waiting = bool(need_confirm is True and not graph_treatment_generated)
+    fallback_treatment_used = False
+    if treatment is None and not need_confirm_waiting:
         fallback_treatment, personalization_outputs = _build_degraded_treatment(final_disease, dict(flags))
         if fallback_treatment:
             treatment = fallback_treatment
+            fallback_treatment_used = True
         flags.update(personalization_outputs)
         if not workflow_degraded:
             workflow_degraded = True
             degraded_reason = degraded_reason or "EMPTY_TREATMENT_FROM_GRAPH"
+    elif need_confirm_waiting:
+        treatment = None
+        verification_result = None
+        verification_passed = None
+        verification_risk_level = None
+        verification_issues = []
+        verification_summary = None
+        workflow_degraded = False
+        degraded_reason = None
 
     follow_up_questions = normalize_follow_up_questions(flags.get("follow_up_questions") or [])
     flags["follow_up_questions"] = follow_up_questions
@@ -718,6 +902,29 @@ async def diagnose_image(
         "model_fallback_reason": model_fallback_reason,
     }
 
+    response_status = "waiting_for_confirmation" if need_confirm_waiting else "completed"
+    verification_available = verification_result is not None
+    treatment_available = treatment is not None
+    response_fallback_reason = (trace_fallback_reason or fallback_reasons or None) if fallback_used else None
+    canonical_risk_tags = [normalize_risk_code(item) for item in (flags.get("risk_tags") or []) if str(item).strip()]
+    canonical_risk_items = []
+    for item in (flags.get("risk_items") or []):
+        if hasattr(item, "model_dump"):
+            raw = item.model_dump()
+        elif isinstance(item, dict):
+            raw = dict(item)
+        else:
+            raw = {"code": str(item)}
+        raw["code"] = normalize_risk_code(raw.get("code") or raw.get("label"))
+        canonical_risk_items.append(raw)
+    canonical_growth_stage = normalize_growth_stage_code((final_state or {}).get("crop_growth_stage") or growth_stage)
+    if treatment is not None:
+        treatment = TreatmentPlan(
+            plan=str(sanitize_user_text(treatment.plan)),
+            prevention=str(sanitize_user_text(treatment.prevention)),
+        )
+    verification_summary = sanitize_user_text(verification_summary)
+
     event = {
         "id": uuid.uuid4().hex,
         "ts": datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
@@ -728,7 +935,7 @@ async def diagnose_image(
         "image_url": image_url,
         "image_result": image_result_dict,
         "fallback_used": fallback_used,
-        "fallback_reason": trace_fallback_reason or fallback_reasons or None,
+        "fallback_reason": response_fallback_reason,
         "rule_result": rule_result_dict,
         "final_disease": final_state.get("final_disease") if final_state else final_disease,
         "need_confirm": need_confirm,
@@ -740,9 +947,10 @@ async def diagnose_image(
         "elapsed_ms": round((time.perf_counter() - request_started) * 1000, 2),
         "image_confidence": final_state.get("image_confidence") if final_state else None,
         "treatment": treatment_or_none,
-        "risk_tags": list(flags.get("risk_tags") or []),
-        "risk_items": list(flags.get("risk_items") or []),
-        "risk_summary": "、".join([str(item).strip() for item in (flags.get("risk_tags") or []) if str(item).strip()]) or None,
+        "growth_stage": canonical_growth_stage,
+        "risk_tags": canonical_risk_tags,
+        "risk_items": canonical_risk_items,
+        "risk_summary": "、".join(canonical_risk_tags) if canonical_risk_tags else None,
         "risk_updated_at": flags.get("risk_updated_at"),
         "meta": {
             **personalization_meta,
@@ -762,12 +970,32 @@ async def diagnose_image(
             "model_fallback_reason": model_meta.get("model_fallback_reason"),
             "workflow_degraded": workflow_degraded,
             "degraded_reason": degraded_reason,
-            "risk_tags": list(flags.get("risk_tags") or []),
-            "risk_items": list(flags.get("risk_items") or []),
-            "risk_summary": "、".join([str(item).strip() for item in (flags.get("risk_tags") or []) if str(item).strip()]) or None,
+            "risk_tags": canonical_risk_tags,
+            "risk_items": canonical_risk_items,
+            "risk_summary": "、".join(canonical_risk_tags) if canonical_risk_tags else None,
             "risk_updated_at": flags.get("risk_updated_at"),
+            "verification_result": verification_result,
+            "verification_passed": verification_passed,
+            "verification_risk_level": verification_risk_level,
+            "verification_issues": verification_issues,
+            "verification_summary": verification_summary,
+            "rule_result_role": "fallback_override" if (final_source == "rule") else "reference_only",
         },
+        "verification_result": verification_result,
+        "verification_passed": verification_passed,
+        "verification_risk_level": verification_risk_level,
+        "verification_issues": verification_issues,
+        "verification_summary": verification_summary,
+        "status": response_status,
+        "treatment_skipped_due_need_confirm": need_confirm_waiting,
+        "treatment_available": treatment_available,
+        "verification_available": verification_available,
+        "manual_review_recommended": False,
+        "manual_review_required_before_execution": False,
+        "graph_treatment_generated": graph_treatment_generated,
+        "fallback_treatment_used": fallback_treatment_used,
     }
+    event = serialize_final_response(event)
     emit_node_event(trace_id, node="Persist", status="start", message="写入事件日志")
     try:
         append_event(event)
@@ -776,22 +1004,36 @@ async def diagnose_image(
         print(f"Warning: failed to append event: {exc}")
         emit_node_event(trace_id, node="Persist", status="error", message=f"事件落盘失败: {exc}")
 
-    emit_node_event(trace_id, node="Final", status="end", message="诊断流程完成", payload={"final_disease": final_disease})
+    if response_status == "waiting_for_confirmation":
+        emit_node_event(
+            trace_id,
+            node="AwaitUserConfirmation",
+            status="end",
+            message="当前轮返回追问，等待用户补充后进入二次诊断",
+            payload={"final_disease": final_disease, "status": response_status, "reason": "need_confirm_wait_user"},
+        )
+    else:
+        emit_final_event_once(
+            trace_id,
+            status=response_status,
+            message="诊断流程完成",
+            payload={"final_disease": final_disease, "status": response_status},
+        )
 
     return DiagnoseResponse(
         image_id=unique_name,
         image_url=image_url,
         image_result=ImageResult(**image_result_dict),
         fallback_used=fallback_used,
-        fallback_reason=trace_fallback_reason or fallback_reasons or None,
+        fallback_reason=response_fallback_reason,
         rule_result=rule_result,
         final_disease=final_disease,
         treatment=treatment,
         personalization_applied=personalization_applied,
         farmer_id=farmer_id,
-        risk_tags=[str(item) for item in (flags.get("risk_tags") or [])],
-        risk_items=[item.model_dump() if hasattr(item, "model_dump") else item for item in (flags.get("risk_items") or [])],
-        risk_summary="、".join([str(item).strip() for item in (flags.get("risk_tags") or []) if str(item).strip()]) or None,
+        risk_tags=canonical_risk_tags,
+        risk_items=canonical_risk_items,
+        risk_summary="、".join(canonical_risk_tags) if canonical_risk_tags else None,
         risk_updated_at=flags.get("risk_updated_at"),
         filtered=filtered,
         filtered_reasons=filtered_reasons,
@@ -804,7 +1046,7 @@ async def diagnose_image(
         profile_pesticide_access_level=flags.get("pesticide_access_level"),
         profile_equipment=[str(item) for item in (flags.get("equipment") or [])],
         profile_cultivation_mode=flags.get("cultivation_mode"),
-        selected_branch=flags.get("selected_branch"),
+        selected_branch=flags.get("selected_branch") if treatment_available else None,
         llm_failed=bool(flags.get("llm_failed")),
         trace_id=trace_id,
         need_confirm=need_confirm,
@@ -822,6 +1064,19 @@ async def diagnose_image(
         normalized_symptoms=list((final_state or {}).get("normalized_symptoms") or ((final_state or {}).get("structured_symptoms") or {}).get("normalized_symptoms") or []),
         workflow_degraded=workflow_degraded,
         degraded_reason=degraded_reason,
+        verification_result=verification_result,
+        verification_passed=verification_passed,
+        verification_risk_level=verification_risk_level,
+        verification_issues=verification_issues,
+        verification_summary=verification_summary,
+        status=response_status,
+        treatment_skipped_due_need_confirm=need_confirm_waiting,
+        treatment_available=treatment_available,
+        verification_available=verification_available,
+        manual_review_recommended=False,
+        manual_review_required_before_execution=False,
+        graph_treatment_generated=graph_treatment_generated,
+        fallback_treatment_used=fallback_treatment_used,
         debug_runtime={
             **(runtime_debug or {}),
             "diagnosis_debug": (final_state or {}).get("debug_diagnosis"),
@@ -855,6 +1110,33 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
     if not isinstance(symptoms, list):
         raise HTTPException(status_code=400, detail="symptoms 必须为列表")
 
+    # ConfirmFlow 是低置信度回退分支（复用同一 trace），不是独立于主图的平行业务流程。
+    # 因此确认输入症状必须与上一轮症状做增量合并，避免覆盖。
+    history_events = list_trace_events(trace_id)
+    historical_symptoms: list[str] = []
+    for event_like in reversed(history_events):
+        if not isinstance(event_like, dict):
+            continue
+        for section in ("outputs", "inputs", "payload"):
+            container = event_like.get(section)
+            if isinstance(container, dict) and isinstance(container.get("symptoms"), list):
+                historical_symptoms = [str(item).strip() for item in container.get("symptoms", []) if str(item).strip()]
+                break
+        if historical_symptoms:
+            break
+    symptom_alias_map = {
+        "病斑原形": "病斑圆形",
+        "水渍壮": "水渍状",
+        "卷叶": "叶片卷曲",
+    }
+    incoming_symptoms = [str(item).strip() for item in symptoms if str(item).strip()]
+    incoming_symptoms = [symptom_alias_map.get(item, item) for item in incoming_symptoms]
+    historical_symptoms = [symptom_alias_map.get(item, item) for item in historical_symptoms]
+    merged_symptoms: list[str] = []
+    for symptom in [*historical_symptoms, *incoming_symptoms]:
+        if symptom and symptom not in merged_symptoms:
+            merged_symptoms.append(symptom)
+
     emit_node_event(trace_id, node="ConfirmFlow", status="start", message="开始二次诊断确认")
 
     image_path = (UPLOAD_DIR / image_id).resolve()
@@ -873,18 +1155,40 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
     if personalization_flags:
         state["personalization_flags"] = personalization_flags
     state["trace_id"] = trace_id
-    state["image_path"] = str(image_path)
-    state["symptoms"] = [str(item).strip() for item in symptoms if str(item).strip()]
-    state["crop_type"] = crop_type
-    state["crop_growth_stage"] = growth_stage
-    state["diagnosis_model_id"] = model_id
-    state["current_step"] = "start"
+    previous_step_count = 0
+    previous_follow_ups: list[str] = []
+    confirm_round_index = 1
+    for event_like in history_events:
+        if not isinstance(event_like, dict):
+            continue
+        if event_like.get("agent") == "supervisor":
+            inputs = event_like.get("inputs")
+            if isinstance(inputs, dict):
+                previous_step_count = max(previous_step_count, int(inputs.get("step_count") or 0))
+        for section in ("outputs", "inputs", "payload"):
+            container = event_like.get(section)
+            if isinstance(container, dict) and isinstance(container.get("follow_up_questions"), list):
+                previous_follow_ups.extend([str(x).strip() for x in container.get("follow_up_questions") if str(x).strip()])
+        if event_like.get("agent") == "confirm_input":
+            confirm_round_index += 1
+
+    state["step_count"] = previous_step_count
+    state = resume_from_confirm_input(
+        state,
+        crop_type=crop_type,
+        growth_stage=growth_stage,
+        model_id=model_id,
+        image_path=str(image_path),
+        merged_symptoms=merged_symptoms,
+    )
 
     append_trace(
         state,
         agent="confirm_input",
         inputs={
             "symptoms": state["symptoms"],
+            "historical_symptoms": historical_symptoms,
+            "incoming_symptoms": incoming_symptoms,
             "crop_type": crop_type,
             "growth_stage": growth_stage,
             "image_id": image_id,
@@ -893,10 +1197,10 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
             "choice": choice,
             "farmer_id": farmer_id,
             "base_id": base_id,
+            "confirm_round_index": confirm_round_index,
         },
         outputs={},
     )
-    state["current_step"] = "confirm_input"
 
     state = diagnosis_agent(state)
 
@@ -913,8 +1217,31 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
             outputs={"final_disease": choice, "need_confirm": False},
         )
 
-    state = kb_retrieval_agent(state)
-    state = treatment_agent(state)
+    # 低置信度回退分支：由 supervisor 做统一路由决策，避免形成平行独立流程。
+    for _ in range(10):
+        state = supervisor_agent(state)
+        next_action = str(state.get("next_action") or "")
+        if next_action == "diagnosis":
+            state = diagnosis_agent(state)
+        elif next_action == "kb_retrieval":
+            state = kb_retrieval_agent(state)
+        elif next_action == "treatment":
+            state = treatment_agent(state)
+        elif next_action == "verification":
+            state = verification_agent(state)
+        elif next_action == "end":
+            break
+        else:
+            break
+
+    final_confidence = state.get("final_confidence")
+    final_source = state.get("final_source")
+    image_confidence = state.get("image_confidence")
+    text_confidence = state.get("text_confidence")
+    text_top3 = list(state.get("text_top3") or [])
+    fusion_top3 = list(state.get("fusion_top3") or [])
+    modality_conflict_flag = state.get("modality_conflict_flag")
+    diagnosis_evidence = state.get("diagnosis_evidence")
 
     image_diagnosis = state.get("image_diagnosis") or {}
     image_top1 = image_diagnosis.get("top1") or {}
@@ -932,7 +1259,39 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
     need_confirm = bool(flags.get("need_confirm"))
     if choice and choice != "other":
         need_confirm = False
+    manual_review_recommended = need_confirm
+    if manual_review_recommended:
+        need_confirm = False
+    manual_review_required_before_execution = manual_review_recommended
+    if manual_review_recommended:
+        state["treatment_plan"] = None
+        state["prevention_advice"] = None
+        state["verification_result"] = None
+        state["verification_passed"] = None
+        state["verification_risk_level"] = None
+        state["verification_issues"] = []
+        state["verification_summary"] = None
 
+    state["current_step"] = "uncertainty_router"
+    append_trace(
+        state,
+        agent="uncertainty_router",
+        inputs={
+            "need_confirm_from_diagnosis": bool(flags.get("need_confirm")),
+            "verification_passed": state.get("verification_passed"),
+        },
+        outputs={
+            "need_confirm": need_confirm,
+            "manual_review_recommended": manual_review_recommended,
+            "manual_review_required_before_execution": manual_review_required_before_execution,
+            "status": "manual_review_recommended" if manual_review_recommended else "completed",
+        },
+        decision={
+            "reason": "二诊后仍存在不确定性，转换为人工复核建议" if manual_review_recommended else "二诊确定，可正常收尾",
+        },
+    )
+
+    state["current_step"] = "confirm_finalize"
     append_trace(
         state,
         agent="confirm_finalize",
@@ -948,11 +1307,18 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
     personalization_applied = compute_personalization_applied(state, flags)
     flags["personalization_applied"] = personalization_applied
     filtered, filtered_reasons, filtered_components, filtered_actions = _normalize_filter_state(flags)
-    follow_up_questions = normalize_follow_up_questions(flags.get("follow_up_questions") or [])
+    follow_up_questions_raw = normalize_follow_up_questions(flags.get("follow_up_questions") or [])
+    follow_up_questions, historical_follow_up_questions = merge_follow_up_questions(
+        previous_follow_ups,
+        follow_up_questions_raw,
+        active=bool(need_confirm),
+    )
     flags["follow_up_questions"] = follow_up_questions
     missing_profile_fields = sorted({str(item).strip() for item in (flags.get("missing_profile_fields") or []) if str(item).strip()})
     confirm_message = None
-    if need_confirm:
+    if manual_review_recommended:
+        confirm_message = "二次诊断后仍存在不确定性，建议人工复核后再执行方案"
+    elif need_confirm:
         confirm_message = "置信度较低，建议补充症状或重新拍摄"
 
     emit_node_event(
@@ -960,32 +1326,21 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
         node="ConfirmFlow",
         status="end",
         message="二次诊断确认完成",
-        payload={"need_confirm": need_confirm, "final_disease": state.get("final_disease")},
+        payload={
+            "need_confirm": need_confirm,
+            "manual_review_recommended": manual_review_recommended,
+            "final_disease": state.get("final_disease"),
+        },
     )
-    emit_node_event(
+    confirm_status = "manual_review_recommended" if manual_review_recommended else "completed"
+    emit_final_event_once(
         trace_id,
-        node="Final",
-        status="end",
+        status=confirm_status,
         message="二次诊断流程完成",
-        payload={"final_disease": state.get("final_disease"), "confirm_round": True},
+        payload={"final_disease": state.get("final_disease"), "confirm_round": True, "status": confirm_status},
     )
 
     events = list_trace_events(trace_id)
-
-    emit_node_event(
-        trace_id,
-        node="ConfirmFlow",
-        status="end",
-        message="二次诊断确认完成",
-        payload={"need_confirm": need_confirm, "final_disease": state.get("final_disease")},
-    )
-    emit_node_event(
-        trace_id,
-        node="Final",
-        status="end",
-        message="二次诊断流程完成",
-        payload={"final_disease": state.get("final_disease"), "confirm_round": True},
-    )
 
     model_meta = state.get("diagnosis_model_meta") or {}
     event = {
@@ -1002,8 +1357,8 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
         "rule_result": None,
         "final_disease": state.get("final_disease"),
         "need_confirm": need_confirm,
-        "final_confidence": image_result.get("confidence_pct"),
-        "final_source": "confirm",
+        "final_confidence": final_confidence if final_confidence is not None else image_result.get("confidence_pct"),
+        "final_source": final_source or "confirm",
         "confirm_round": True,
         "source_stage": "confirm",
         "selected_branch": flags.get("selected_branch"),
@@ -1026,7 +1381,34 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
             "model_backend": model_meta.get("backend"),
             "resolved_model_path": model_meta.get("resolved_model_path"),
             "model_fallback_reason": model_meta.get("model_fallback_reason"),
+            "verification_result": state.get("verification_result"),
+            "verification_passed": state.get("verification_passed"),
+            "verification_risk_level": state.get("verification_risk_level"),
+            "verification_issues": list(state.get("verification_issues") or []),
+            "verification_summary": state.get("verification_summary"),
+            "manual_review_recommended": manual_review_recommended,
+            "rule_result_role": "fallback_override" if (state.get("final_source") == "rule") else "reference_only",
         },
+        "verification_result": state.get("verification_result"),
+        "verification_passed": state.get("verification_passed"),
+        "verification_risk_level": state.get("verification_risk_level"),
+        "verification_issues": list(state.get("verification_issues") or []),
+        "verification_summary": state.get("verification_summary"),
+        "final_confidence": final_confidence,
+        "image_confidence": image_confidence,
+        "text_confidence": text_confidence,
+        "text_top3": text_top3,
+        "fusion_top3": fusion_top3,
+        "modality_conflict_flag": modality_conflict_flag,
+        "diagnosis_evidence": diagnosis_evidence,
+        "manual_review_recommended": manual_review_recommended,
+        "manual_review_required_before_execution": manual_review_required_before_execution,
+        "status": confirm_status,
+        "treatment_available": bool(state.get("treatment_plan")) and not manual_review_recommended,
+        "verification_available": (state.get("verification_result") is not None) and not manual_review_recommended,
+        "graph_treatment_generated": bool(state.get("treatment_plan")),
+        "fallback_treatment_used": False,
+        "historical_follow_up_questions": historical_follow_up_questions,
     }
     emit_node_event(trace_id, node="Persist", status="start", message="写入确认轮事件日志")
     try:
@@ -1036,15 +1418,25 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
         print(f"Warning: failed to append confirm event: {exc}")
         emit_node_event(trace_id, node="Persist", status="error", message=f"确认轮事件落盘失败: {exc}")
 
-    return {
+    response_payload = {
         "trace_id": trace_id,
-        "previous_trace_id": previous_trace_id,
         "image_id": image_id,
         "final_disease": state.get("final_disease"),
         "image_result": image_result,
         "need_confirm": need_confirm,
+        "final_confidence": final_confidence,
+        "final_source": final_source,
+        "image_confidence": image_confidence,
+        "text_confidence": text_confidence,
+        "text_top3": text_top3,
+        "fusion_top3": fusion_top3,
+        "modality_conflict_flag": modality_conflict_flag,
+        "diagnosis_evidence": diagnosis_evidence,
+        "manual_review_recommended": manual_review_recommended,
+        "manual_review_required_before_execution": manual_review_required_before_execution,
+        "status": confirm_status,
         "confirm_message": confirm_message,
-        "treatment": {
+        "treatment": None if manual_review_recommended else {
             "plan": state.get("treatment_plan"),
             "prevention": state.get("prevention_advice"),
         },
@@ -1059,9 +1451,19 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
         "filtered_components": filtered_components,
         "filtered_actions": filtered_actions,
         "follow_up_questions": follow_up_questions,
+        "historical_follow_up_questions": historical_follow_up_questions,
         "missing_profile_fields": missing_profile_fields,
         "llm_failed": bool(flags.get("llm_failed")),
         "llm_failed_reason": flags.get("llm_failed_reason"),
+        "verification_result": None if manual_review_recommended else state.get("verification_result"),
+        "verification_passed": None if manual_review_recommended else state.get("verification_passed"),
+        "verification_risk_level": None if manual_review_recommended else state.get("verification_risk_level"),
+        "verification_issues": [] if manual_review_recommended else list(state.get("verification_issues") or []),
+        "verification_summary": None if manual_review_recommended else state.get("verification_summary"),
+        "treatment_available": bool(state.get("treatment_plan")) and not manual_review_recommended,
+        "verification_available": (state.get("verification_result") is not None) and not manual_review_recommended,
+        "graph_treatment_generated": bool(state.get("treatment_plan")),
+        "fallback_treatment_used": False,
         "meta": {
             **personalization_meta,
             "personalization_applied": personalization_applied,
@@ -1076,6 +1478,9 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
         },
         "events": events,
     }
+    if previous_trace_id and previous_trace_id != trace_id:
+        response_payload["previous_trace_id"] = previous_trace_id
+    return sanitize_user_text(response_payload)
 
 
 @app.get("/api/models")
@@ -1563,6 +1968,8 @@ async def stream_trace(trace_id: str):
                 stream_event = _to_stream_event(trace_id, event)
                 yield f"event: trace\ndata: {json.dumps(stream_event, ensure_ascii=False)}\n\n"
                 if stream_event.get("node") == "Final" and stream_event.get("status") in {"end", "error"}:
+                    break
+                if stream_event.get("node") == "AwaitUserConfirmation" and stream_event.get("status") == "end":
                     break
         finally:
             unsubscribe_trace(trace_id, queue)
