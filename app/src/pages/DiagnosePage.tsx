@@ -159,6 +159,14 @@ export function DiagnosePage() {
       return finalConfidence <= 1 ? finalConfidence * 100 : finalConfidence;
     }
 
+    const diagnosisEvidence = payload.diagnosis_evidence && typeof payload.diagnosis_evidence === 'object'
+      ? payload.diagnosis_evidence as Record<string, unknown>
+      : {};
+    const evidenceFinalConfidence = toNumber(diagnosisEvidence.final_confidence);
+    if (evidenceFinalConfidence !== null) {
+      return evidenceFinalConfidence <= 1 ? evidenceFinalConfidence * 100 : evidenceFinalConfidence;
+    }
+
     const imageResult = payload.image_result && typeof payload.image_result === 'object'
       ? payload.image_result as Record<string, unknown>
       : {};

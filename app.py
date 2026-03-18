@@ -916,6 +916,26 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
     if not isinstance(symptoms, list):
         raise HTTPException(status_code=400, detail="symptoms 必须为列表")
 
+    # ConfirmFlow 是低置信度回退分支（复用同一 trace），不是独立于主图的平行业务流程。
+    # 因此确认输入症状必须与上一轮症状做增量合并，避免覆盖。
+    history_events = list_trace_events(trace_id)
+    historical_symptoms: list[str] = []
+    for event_like in reversed(history_events):
+        if not isinstance(event_like, dict):
+            continue
+        for section in ("outputs", "inputs", "payload"):
+            container = event_like.get(section)
+            if isinstance(container, dict) and isinstance(container.get("symptoms"), list):
+                historical_symptoms = [str(item).strip() for item in container.get("symptoms", []) if str(item).strip()]
+                break
+        if historical_symptoms:
+            break
+    incoming_symptoms = [str(item).strip() for item in symptoms if str(item).strip()]
+    merged_symptoms: list[str] = []
+    for symptom in [*historical_symptoms, *incoming_symptoms]:
+        if symptom and symptom not in merged_symptoms:
+            merged_symptoms.append(symptom)
+
     emit_node_event(trace_id, node="ConfirmFlow", status="start", message="开始二次诊断确认")
 
     image_path = (UPLOAD_DIR / image_id).resolve()
@@ -935,7 +955,7 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
         state["personalization_flags"] = personalization_flags
     state["trace_id"] = trace_id
     state["image_path"] = str(image_path)
-    state["symptoms"] = [str(item).strip() for item in symptoms if str(item).strip()]
+    state["symptoms"] = merged_symptoms
     state["crop_type"] = crop_type
     state["crop_growth_stage"] = growth_stage
     state["diagnosis_model_id"] = model_id
@@ -946,6 +966,8 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
         agent="confirm_input",
         inputs={
             "symptoms": state["symptoms"],
+            "historical_symptoms": historical_symptoms,
+            "incoming_symptoms": incoming_symptoms,
             "crop_type": crop_type,
             "growth_stage": growth_stage,
             "image_id": image_id,
@@ -977,6 +999,15 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
     state = kb_retrieval_agent(state)
     state = treatment_agent(state)
     state = verification_agent(state)
+
+    final_confidence = state.get("final_confidence")
+    final_source = state.get("final_source")
+    image_confidence = state.get("image_confidence")
+    text_confidence = state.get("text_confidence")
+    text_top3 = list(state.get("text_top3") or [])
+    fusion_top3 = list(state.get("fusion_top3") or [])
+    modality_conflict_flag = state.get("modality_conflict_flag")
+    diagnosis_evidence = state.get("diagnosis_evidence")
 
     image_diagnosis = state.get("image_diagnosis") or {}
     image_top1 = image_diagnosis.get("top1") or {}
@@ -1058,8 +1089,8 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
         "rule_result": None,
         "final_disease": state.get("final_disease"),
         "need_confirm": need_confirm,
-        "final_confidence": image_result.get("confidence_pct"),
-        "final_source": "confirm",
+        "final_confidence": final_confidence if final_confidence is not None else image_result.get("confidence_pct"),
+        "final_source": final_source or "confirm",
         "confirm_round": True,
         "source_stage": "confirm",
         "selected_branch": flags.get("selected_branch"),
@@ -1094,6 +1125,13 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
         "verification_risk_level": state.get("verification_risk_level"),
         "verification_issues": list(state.get("verification_issues") or []),
         "verification_summary": state.get("verification_summary"),
+        "final_confidence": final_confidence,
+        "image_confidence": image_confidence,
+        "text_confidence": text_confidence,
+        "text_top3": text_top3,
+        "fusion_top3": fusion_top3,
+        "modality_conflict_flag": modality_conflict_flag,
+        "diagnosis_evidence": diagnosis_evidence,
         "manual_review_recommended": manual_review_recommended,
         "status": "manual_review_recommended" if manual_review_recommended else "completed",
         "treatment_available": bool(state.get("treatment_plan")),
@@ -1115,6 +1153,14 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
         "final_disease": state.get("final_disease"),
         "image_result": image_result,
         "need_confirm": need_confirm,
+        "final_confidence": final_confidence,
+        "final_source": final_source,
+        "image_confidence": image_confidence,
+        "text_confidence": text_confidence,
+        "text_top3": text_top3,
+        "fusion_top3": fusion_top3,
+        "modality_conflict_flag": modality_conflict_flag,
+        "diagnosis_evidence": diagnosis_evidence,
         "manual_review_recommended": manual_review_recommended,
         "status": "manual_review_recommended" if manual_review_recommended else "completed",
         "confirm_message": confirm_message,
