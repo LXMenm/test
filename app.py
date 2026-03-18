@@ -224,6 +224,94 @@ def sanitize_user_text(value: Any) -> Any:
     return value
 
 
+GROWTH_STAGE_CANONICAL = {
+    "苗期": "SEEDLING",
+    "开花期": "FLOWERING",
+    "坐果期": "FRUIT_SET",
+    "结果期": "FRUIT_SET",
+    "成熟期": "HARVEST",
+}
+
+RISK_CODE_ALIAS = {
+    "开花期_fruiting_sensitive": "FLOWERING_FRUITING_SENSITIVE",
+    "fruting_sensitive": "FLOWERING_FRUITING_SENSITIVE",
+    "fruting": "FLOWERING_FRUITING_SENSITIVE",
+}
+
+
+def normalize_growth_stage_code(value: Any) -> Any:
+    if not isinstance(value, str):
+        return value
+    text = value.strip()
+    if not text:
+        return value
+    normalized = normalize_growth_stage(text)
+    if normalized:
+        return normalized
+    return GROWTH_STAGE_CANONICAL.get(text, text)
+
+
+def normalize_risk_code(code: Any) -> str:
+    text = str(code or "").strip()
+    if not text:
+        return ""
+    lowered = text.lower().replace("-", "_")
+    if lowered in RISK_CODE_ALIAS:
+        return RISK_CODE_ALIAS[lowered]
+    if "开花期" in text and "FRUITING_SENSITIVE" in text:
+        return "FLOWERING_FRUITING_SENSITIVE"
+    return text.upper()
+
+
+def normalize_risk_codes(payload: dict[str, Any]) -> dict[str, Any]:
+    data = dict(payload)
+    tags = [normalize_risk_code(item) for item in (data.get("risk_tags") or []) if str(item).strip()]
+    data["risk_tags"] = tags
+    items = []
+    for item in (data.get("risk_items") or []):
+        if isinstance(item, dict):
+            one = dict(item)
+            one["code"] = normalize_risk_code(one.get("code") or one.get("label"))
+            items.append(one)
+    data["risk_items"] = items
+    if tags:
+        data["risk_summary"] = "、".join(tags)
+    elif isinstance(data.get("risk_summary"), str):
+        data["risk_summary"] = normalize_risk_code(data.get("risk_summary"))
+    data["growth_stage"] = normalize_growth_stage_code(data.get("growth_stage"))
+    return data
+
+
+def merge_follow_up_questions(
+    historical: list[str],
+    current: list[str],
+    *,
+    active: bool,
+) -> tuple[list[str], list[str]]:
+    merged_historical: list[str] = []
+    for item in [*historical, *current]:
+        text = str(item).strip()
+        if text and text not in merged_historical:
+            merged_historical.append(text)
+    visible_current = [str(item).strip() for item in current if str(item).strip()] if active else []
+    return visible_current, merged_historical
+
+
+def serialize_final_response(payload: dict[str, Any]) -> dict[str, Any]:
+    data = normalize_risk_codes(payload)
+    if "verification_summary" in data:
+        data["verification_summary"] = sanitize_user_text(data["verification_summary"])
+    treatment = data.get("treatment")
+    if isinstance(treatment, dict):
+        treatment = dict(treatment)
+        treatment["plan"] = sanitize_user_text(treatment.get("plan"))
+        treatment["prevention"] = sanitize_user_text(treatment.get("prevention"))
+        data["treatment"] = treatment
+    if "confirm_message" in data:
+        data["confirm_message"] = sanitize_user_text(data.get("confirm_message"))
+    return data
+
+
 def emit_node_event(
     trace_id: str,
     *,
@@ -352,6 +440,25 @@ def _build_personalization_meta(flags: dict, farmer_id: str | None, base_id: str
         "risk_updated_at": flags.get("risk_updated_at"),
         "risk_summary": "、".join([str(item).strip() for item in (flags.get("risk_tags") or []) if str(item).strip()]) or None,
     }
+
+
+def resume_from_confirm_input(
+    state: dict[str, Any],
+    *,
+    crop_type: str,
+    growth_stage: str | None,
+    model_id: str | None,
+    image_path: str,
+    merged_symptoms: list[str],
+) -> dict[str, Any]:
+    """将确认输入补丁写入状态，并回到 supervisor 可调度的诊断入口。"""
+    state["image_path"] = image_path
+    state["symptoms"] = merged_symptoms
+    state["crop_type"] = crop_type
+    state["crop_growth_stage"] = normalize_growth_stage_code(growth_stage)
+    state["diagnosis_model_id"] = model_id
+    state["current_step"] = "confirm_input"
+    return state
 
 
 def _normalize_filter_state(flags: dict) -> tuple[bool, list[str], list[str], list[str]]:
@@ -770,6 +877,18 @@ async def diagnose_image(
     verification_available = verification_result is not None
     treatment_available = treatment is not None
     response_fallback_reason = (trace_fallback_reason or fallback_reasons or None) if fallback_used else None
+    canonical_risk_tags = [normalize_risk_code(item) for item in (flags.get("risk_tags") or []) if str(item).strip()]
+    canonical_risk_items = []
+    for item in (flags.get("risk_items") or []):
+        if hasattr(item, "model_dump"):
+            raw = item.model_dump()
+        elif isinstance(item, dict):
+            raw = dict(item)
+        else:
+            raw = {"code": str(item)}
+        raw["code"] = normalize_risk_code(raw.get("code") or raw.get("label"))
+        canonical_risk_items.append(raw)
+    canonical_growth_stage = normalize_growth_stage_code((final_state or {}).get("crop_growth_stage") or growth_stage)
     if treatment is not None:
         treatment = TreatmentPlan(
             plan=str(sanitize_user_text(treatment.plan)),
@@ -799,9 +918,10 @@ async def diagnose_image(
         "elapsed_ms": round((time.perf_counter() - request_started) * 1000, 2),
         "image_confidence": final_state.get("image_confidence") if final_state else None,
         "treatment": treatment_or_none,
-        "risk_tags": list(flags.get("risk_tags") or []),
-        "risk_items": list(flags.get("risk_items") or []),
-        "risk_summary": "、".join([str(item).strip() for item in (flags.get("risk_tags") or []) if str(item).strip()]) or None,
+        "growth_stage": canonical_growth_stage,
+        "risk_tags": canonical_risk_tags,
+        "risk_items": canonical_risk_items,
+        "risk_summary": "、".join(canonical_risk_tags) if canonical_risk_tags else None,
         "risk_updated_at": flags.get("risk_updated_at"),
         "meta": {
             **personalization_meta,
@@ -821,9 +941,9 @@ async def diagnose_image(
             "model_fallback_reason": model_meta.get("model_fallback_reason"),
             "workflow_degraded": workflow_degraded,
             "degraded_reason": degraded_reason,
-            "risk_tags": list(flags.get("risk_tags") or []),
-            "risk_items": list(flags.get("risk_items") or []),
-            "risk_summary": "、".join([str(item).strip() for item in (flags.get("risk_tags") or []) if str(item).strip()]) or None,
+            "risk_tags": canonical_risk_tags,
+            "risk_items": canonical_risk_items,
+            "risk_summary": "、".join(canonical_risk_tags) if canonical_risk_tags else None,
             "risk_updated_at": flags.get("risk_updated_at"),
             "verification_result": verification_result,
             "verification_passed": verification_passed,
@@ -846,6 +966,7 @@ async def diagnose_image(
         "graph_treatment_generated": graph_treatment_generated,
         "fallback_treatment_used": fallback_treatment_used,
     }
+    event = serialize_final_response(event)
     emit_node_event(trace_id, node="Persist", status="start", message="写入事件日志")
     try:
         append_event(event)
@@ -867,9 +988,9 @@ async def diagnose_image(
         treatment=treatment,
         personalization_applied=personalization_applied,
         farmer_id=farmer_id,
-        risk_tags=[str(item) for item in (flags.get("risk_tags") or [])],
-        risk_items=[item.model_dump() if hasattr(item, "model_dump") else item for item in (flags.get("risk_items") or [])],
-        risk_summary="、".join([str(item).strip() for item in (flags.get("risk_tags") or []) if str(item).strip()]) or None,
+        risk_tags=canonical_risk_tags,
+        risk_items=canonical_risk_items,
+        risk_summary="、".join(canonical_risk_tags) if canonical_risk_tags else None,
         risk_updated_at=flags.get("risk_updated_at"),
         filtered=filtered,
         filtered_reasons=filtered_reasons,
@@ -991,12 +1112,32 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
     if personalization_flags:
         state["personalization_flags"] = personalization_flags
     state["trace_id"] = trace_id
-    state["image_path"] = str(image_path)
-    state["symptoms"] = merged_symptoms
-    state["crop_type"] = crop_type
-    state["crop_growth_stage"] = growth_stage
-    state["diagnosis_model_id"] = model_id
-    state["current_step"] = "start"
+    previous_step_count = 0
+    previous_follow_ups: list[str] = []
+    confirm_round_index = 1
+    for event_like in history_events:
+        if not isinstance(event_like, dict):
+            continue
+        if event_like.get("agent") == "supervisor":
+            inputs = event_like.get("inputs")
+            if isinstance(inputs, dict):
+                previous_step_count = max(previous_step_count, int(inputs.get("step_count") or 0))
+        for section in ("outputs", "inputs", "payload"):
+            container = event_like.get(section)
+            if isinstance(container, dict) and isinstance(container.get("follow_up_questions"), list):
+                previous_follow_ups.extend([str(x).strip() for x in container.get("follow_up_questions") if str(x).strip()])
+        if event_like.get("agent") == "confirm_input":
+            confirm_round_index += 1
+
+    state["step_count"] = previous_step_count
+    state = resume_from_confirm_input(
+        state,
+        crop_type=crop_type,
+        growth_stage=growth_stage,
+        model_id=model_id,
+        image_path=str(image_path),
+        merged_symptoms=merged_symptoms,
+    )
 
     append_trace(
         state,
@@ -1013,10 +1154,10 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
             "choice": choice,
             "farmer_id": farmer_id,
             "base_id": base_id,
+            "confirm_round_index": confirm_round_index,
         },
         outputs={},
     )
-    state["current_step"] = "confirm_input"
 
     state = diagnosis_agent(state)
 
@@ -1123,10 +1264,12 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
     personalization_applied = compute_personalization_applied(state, flags)
     flags["personalization_applied"] = personalization_applied
     filtered, filtered_reasons, filtered_components, filtered_actions = _normalize_filter_state(flags)
-    follow_up_questions = normalize_follow_up_questions(flags.get("follow_up_questions") or [])
-    historical_follow_up_questions = list(follow_up_questions)
-    if manual_review_recommended or not need_confirm:
-        follow_up_questions = []
+    follow_up_questions_raw = normalize_follow_up_questions(flags.get("follow_up_questions") or [])
+    follow_up_questions, historical_follow_up_questions = merge_follow_up_questions(
+        previous_follow_ups,
+        follow_up_questions_raw,
+        active=bool(need_confirm),
+    )
     flags["follow_up_questions"] = follow_up_questions
     missing_profile_fields = sorted({str(item).strip() for item in (flags.get("missing_profile_fields") or []) if str(item).strip()})
     confirm_message = None
