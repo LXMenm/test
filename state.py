@@ -66,6 +66,21 @@ class CropDiseaseState(TypedDict):
     # 治疗方案
     treatment_plan: Optional[str]  # 具体治疗方案
     prevention_advice: Optional[str]  # 预防建议
+    kb_snapshot: Optional[Dict[str, Any]]
+
+    # Verification / 农业合规审查
+    verification_result: Optional[Dict[str, Any]]
+    verification_passed: Optional[bool]
+    verification_risk_level: Optional[str]
+    verification_issues: List[str]
+    verification_must_fix: List[str]
+    verification_summary: Optional[str]
+    rewrite_count: int
+
+    # 天气上下文（预留给 weather 节点）
+    weather_summary: Optional[str]
+    humidity: Optional[float]
+    precipitation_probability: Optional[float]
 
     # 流程控制
     current_step: str  # 当前执行步骤
@@ -96,7 +111,7 @@ class CropDiseaseState(TypedDict):
     # Trace信息
     trace_id: str
     trace_events: List[Dict[str, Any]]
-    kb_snapshot: Optional[Dict[str, Any]]
+    debug_diagnosis: Dict[str, Any]
 
 
 def create_initial_state(
@@ -144,6 +159,17 @@ def create_initial_state(
         fusion_meta=None,
         treatment_plan=None,
         prevention_advice=None,
+        kb_snapshot=None,
+        verification_result=None,
+        verification_passed=None,
+        verification_risk_level=None,
+        verification_issues=[],
+        verification_must_fix=[],
+        verification_summary=None,
+        rewrite_count=0,
+        weather_summary=None,
+        humidity=None,
+        precipitation_probability=None,
         current_step="start",
         next_action=None,
         is_complete=False,
@@ -162,7 +188,7 @@ def create_initial_state(
         follow_up_questions=[],
         trace_id=uuid.uuid4().hex,
         trace_events=[],
-        kb_snapshot=None,
+        debug_diagnosis={},
     )
 
     if farmer_id:
