@@ -4,6 +4,7 @@ AGENT_NAME_CN = {
     "diagnosis": "诊断智能体",
     "kb_retrieval": "知识检索智能体",
     "treatment": "治疗方案智能体",
+    "verification": "农业合规审查智能体",
 }
 
 STEP_NAME_CN = {
@@ -12,6 +13,7 @@ STEP_NAME_CN = {
     "diagnosis_complete": "诊断完成",
     "kb_retrieval_complete": "知识检索完成",
     "treatment_complete": "方案生成完成",
+    "verification_complete": "合规审查完成",
     "end": "结束",
 }
 
