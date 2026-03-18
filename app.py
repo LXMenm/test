@@ -1563,6 +1563,7 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
         "manual_review_recommended": manual_review_recommended,
         "manual_review_required_before_execution": manual_review_required_before_execution,
         "status": confirm_status,
+        "status": confirm_status,
         "treatment_available": bool(state.get("treatment_plan")) and not manual_review_recommended,
         "verification_available": (state.get("verification_result") is not None) and not manual_review_recommended,
         "graph_treatment_generated": bool(state.get("treatment_plan")),
@@ -1595,6 +1596,8 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
         "manual_review_recommended": manual_review_recommended,
         "manual_review_required_before_execution": manual_review_required_before_execution,
         "status": confirm_status,
+        "status": confirm_status,
+
         "confirm_message": confirm_message,
         "treatment": None if manual_review_recommended else {
             "plan": state.get("treatment_plan"),
