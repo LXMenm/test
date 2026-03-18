@@ -28,6 +28,43 @@ from pathlib import Path
 # 获取知识库管理器实例
 kb_manager = get_kb_manager()
 
+VERIFICATION_SYSTEM_PROMPT = """
+你是一名严格的农业安全审查员（Verification Agent）。
+
+你的职责不是重新诊断病害，而是审查“治疗方案”和“预防建议”是否安全、合规、可执行。
+
+你必须重点检查：
+1. 是否包含禁用农药、禁用成分或明显高风险用药建议；
+2. 是否违反采收安全间隔要求；
+3. 是否与农户档案约束冲突（如购药能力、设备能力、家庭级/中等规模/企业级分档）；
+4. 是否忽略关键环境风险（如高湿、连阴雨、棚内通风差、临近采收）；
+5. 是否存在模糊、不可执行或容易误导用户的表述；
+6. 是否遗漏必要的安全提醒、复查建议、预防复发建议。
+
+审查原则：
+- 必须优先依据结构化字段做判断，不能凭空编造农业规范。
+- 如果信息不足，可以指出“信息不足导致无法完全审查”，但不能假装通过。
+- 如果发现问题，不要直接重写方案，而是给出“必须修改点”。
+- 输出必须严格为 JSON，不要输出额外解释。
+
+输出 JSON schema：
+{
+  "passed": true,
+  "risk_level": "low|medium|high",
+  "issues": ["..."],
+  "must_fix": ["..."],
+  "suggested_rewrite_points": ["..."],
+  "compliance_summary": "..."
+}
+"""
+
+TREATMENT_REWRITE_SYSTEM_PROMPT = """
+你是一名番茄病害治疗方案重写助手。
+上一版方案未通过农业合规审查，请根据审查意见重写。
+你必须逐项满足 must_fix，不能忽略任何一条。
+输出必须严格为 JSON，不要输出额外解释。
+"""
+
 
 def _diag_debug_enabled(state: CropDiseaseState) -> bool:
     flags = state.get("personalization_flags", {}) if isinstance(state, dict) else {}
@@ -770,10 +807,28 @@ def treatment_agent(state: CropDiseaseState) -> CropDiseaseState:
   "personalization_reasons": ["...来自policy.explanations..."],
   "follow_up_questions": ["...最多3个..."]
 }}"""
-    system_prompt = "你是番茄病害防治首席农艺师，输出必须专业、可执行、可审计，并严格遵守约束。"
     selected_branch = _resolve_treatment_branch(flags)
     flags["selected_branch"] = selected_branch
-    prompt = _build_prompt(selected_branch)
+    verification_result = state.get("verification_result") or {}
+    rewrite_mode = bool(verification_result and verification_result.get("passed") is False)
+
+    if rewrite_mode:
+        system_prompt = TREATMENT_REWRITE_SYSTEM_PROMPT
+        prompt = build_treatment_rewrite_prompt(
+            disease_type=disease_type,
+            crop_growth_stage=crop_growth_stage,
+            symptoms=symptoms,
+            disease_description=disease_description,
+            kb_snapshot=kb_snapshot,
+            policy=policy,
+            flags=flags,
+            old_treatment_plan=state.get("treatment_plan") or "",
+            old_prevention_advice=state.get("prevention_advice") or "",
+            verification_result=verification_result,
+        )
+    else:
+        system_prompt = "你是番茄病害防治首席农艺师，输出必须专业、可执行、可审计，并严格遵守约束。"
+        prompt = _build_prompt(selected_branch)
     for temperature in (0.4, 0.2):
         try:
             response = call_llm(prompt, system_prompt, temperature=temperature)
@@ -897,6 +952,14 @@ def treatment_agent(state: CropDiseaseState) -> CropDiseaseState:
     # 更新状态
     state["treatment_plan"] = treatment_plan
     state["prevention_advice"] = prevention_advice
+    if rewrite_mode:
+        # 重写完成后清空旧审查结果，确保 supervisor 进入新的 verification 节点复审
+        state["verification_result"] = None
+        state["verification_passed"] = None
+        state["verification_risk_level"] = None
+        state["verification_issues"] = []
+        state["verification_must_fix"] = []
+        state["verification_summary"] = None
     state["current_step"] = "treatment_complete"
     state["messages"] = [message]
     print(f"  - 治疗方案: {treatment_plan[:50]}...")
@@ -1071,6 +1134,207 @@ def _apply_branch_post_fixes(
     _ = (branch, hard_constraints, flags)
     return treatment_text, prevention_text
 
+
+def build_verification_prompt(payload: dict) -> str:
+    return f"""
+请对下面的番茄病害治疗方案进行农业合规性审查。
+
+【诊断结果】
+- 作物：{payload.get("crop_type")}
+- 病害：{payload.get("final_disease")}
+- 置信度：{payload.get("final_confidence")}
+- 症状：{payload.get("symptoms")}
+- 生长阶段：{payload.get("crop_growth_stage")}
+
+【农户档案约束】
+- 农场规模：{payload.get("farm_scale")}
+- 购药能力：{payload.get("pesticide_access_level")}
+- 设备：{payload.get("equipment")}
+- 栽培模式：{payload.get("cultivation_mode")}
+- 风险偏好：{payload.get("risk_preference")}
+- 偏好有机：{payload.get("prefer_organic")}
+- 采收窗口天数：{payload.get("harvest_window_days")}
+- 禁用成分：{payload.get("banned_ingredients")}
+- 分档：{payload.get("selected_branch")}
+
+【基地与环境】
+- 基地位置：{payload.get("location")}
+- 设施类型：{payload.get("facility")}
+- 环境描述：{payload.get("environment")}
+- 天气摘要：{payload.get("weather_summary")}
+- 湿度：{payload.get("humidity")}
+- 降雨概率：{payload.get("precipitation_probability")}
+- 风险标签：{payload.get("risk_tags")}
+
+【知识库证据】
+{json.dumps(payload.get("kb_snapshot") or {}, ensure_ascii=False)}
+
+【待审查治疗方案】
+{payload.get("treatment_plan")}
+
+【待审查预防建议】
+{payload.get("prevention_advice")}
+
+请严格输出 JSON：
+{{
+  "passed": true,
+  "risk_level": "low|medium|high",
+  "issues": ["..."],
+  "must_fix": ["..."],
+  "suggested_rewrite_points": ["..."],
+  "compliance_summary": "..."
+}}
+"""
+
+
+def build_treatment_rewrite_prompt(
+    *,
+    disease_type: str,
+    crop_growth_stage: str | None,
+    symptoms: list[str],
+    disease_description: str,
+    kb_snapshot: dict,
+    policy: dict,
+    flags: dict,
+    old_treatment_plan: str,
+    old_prevention_advice: str,
+    verification_result: dict,
+) -> str:
+    return f"""
+请根据未通过的农业合规审查意见，重写番茄病害处置方案。
+
+【病害信息】
+- 病害：{disease_type}
+- 生长阶段：{crop_growth_stage or "未知"}
+- 症状：{symptoms}
+- 诊断说明：{disease_description}
+
+【知识库证据】
+{json.dumps(kb_snapshot, ensure_ascii=False)}
+
+【个性化策略】
+{json.dumps(policy or {}, ensure_ascii=False)}
+
+【档案约束】
+{json.dumps(flags or {}, ensure_ascii=False)}
+
+【原治疗方案】
+{old_treatment_plan}
+
+【原预防建议】
+{old_prevention_advice}
+
+【审查问题】
+{verification_result.get("issues") or []}
+
+【必须修正】
+{verification_result.get("must_fix") or []}
+
+【建议改写方向】
+{verification_result.get("suggested_rewrite_points") or []}
+
+输出 JSON schema：
+{{
+  "overview": "...",
+  "immediate_actions": ["..."],
+  "treatment_plan": {{
+    "FAMILY": ["..."],
+    "MID": ["..."],
+    "ENTERPRISE": ["..."]
+  }},
+  "prevention_plan": ["..."],
+  "resistance_management": ["..."],
+  "safety_notes": ["..."],
+  "follow_up": ["..."],
+  "personalization_reasons": ["..."],
+  "follow_up_questions": ["..."]
+}}
+"""
+
+
+def _normalize_verification_result(result: dict | None) -> dict:
+    if not isinstance(result, dict):
+        return {
+            "passed": False,
+            "risk_level": "high",
+            "issues": ["verification_parse_error"],
+            "must_fix": ["请重新生成可审查的方案"],
+            "suggested_rewrite_points": [],
+            "compliance_summary": "审查结果解析失败，不能直接下发方案。",
+        }
+
+    return {
+        "passed": bool(result.get("passed")),
+        "risk_level": str(result.get("risk_level") or "high"),
+        "issues": [str(x) for x in (result.get("issues") or [])],
+        "must_fix": [str(x) for x in (result.get("must_fix") or [])],
+        "suggested_rewrite_points": [str(x) for x in (result.get("suggested_rewrite_points") or [])],
+        "compliance_summary": str(result.get("compliance_summary") or ""),
+    }
+
+
+def _rule_based_verification(payload: dict) -> list[str]:
+    issues: list[str] = []
+
+    treatment_text = str(payload.get("treatment_plan") or "")
+    prevention_text = str(payload.get("prevention_advice") or "")
+    full_text = "\n".join([treatment_text, prevention_text])
+
+    banned_ingredients = [str(x).strip() for x in (payload.get("banned_ingredients") or []) if str(x).strip()]
+    for ingredient in banned_ingredients:
+        if ingredient and ingredient in full_text:
+            issues.append(f"方案包含禁用成分：{ingredient}")
+
+    selected_branch = str(payload.get("selected_branch") or "").upper()
+    if selected_branch == "FAMILY":
+        for term in ["无人机", "规模化喷施", "SOP", "专业资质购药流程"]:
+            if term in full_text:
+                issues.append(f"家庭级方案不应包含：{term}")
+
+    harvest_window_days = payload.get("harvest_window_days")
+    try:
+        harvest_window_days = int(harvest_window_days) if harvest_window_days is not None else None
+    except Exception:
+        harvest_window_days = None
+
+    if harvest_window_days is not None and harvest_window_days <= 7:
+        if "安全间隔" not in full_text and "采收" not in full_text:
+            issues.append("采收窗口较短，但方案未明确提示安全间隔或采收注意事项")
+
+    humidity = payload.get("humidity")
+    try:
+        humidity = float(humidity) if humidity is not None else None
+    except Exception:
+        humidity = None
+
+    disease = str(payload.get("final_disease") or "")
+    if disease == "晚疫病" and humidity is not None and humidity >= 90:
+        if "高湿" not in full_text and "风险" not in full_text and "立即" not in full_text:
+            issues.append("晚疫病且湿度过高，但方案缺少病情爆发风险警示")
+
+    return dedupe_reasons(issues)
+
+
+def _extract_weather_numbers(summary: str | None) -> tuple[float | None, float | None]:
+    text = str(summary or "")
+    if not text:
+        return None, None
+    humidity = None
+    precipitation_probability = None
+    humidity_match = re.search(r"湿度\s*[:：]?\s*(\d+(?:\.\d+)?)\s*%", text)
+    rain_match = re.search(r"(降雨概率|降水概率)\s*[:：]?\s*(\d+(?:\.\d+)?)\s*%", text)
+    if humidity_match:
+        try:
+            humidity = float(humidity_match.group(1))
+        except Exception:
+            humidity = None
+    if rain_match:
+        try:
+            precipitation_probability = float(rain_match.group(2))
+        except Exception:
+            precipitation_probability = None
+    return humidity, precipitation_probability
+
 def _validate_treatment_output(
     *,
     branch: str,
@@ -1122,25 +1386,138 @@ def _summarize_constraints(constraints: TreatmentConstraint) -> str:
     if constraints.harvest_window_days:
         parts.append(f"采收临近：约{constraints.harvest_window_days}天")
     return "；".join(parts) if parts else "无"
+
+
+def verification_agent(state: CropDiseaseState) -> CropDiseaseState:
+    print("\n[农业合规审查智能体] 正在审查治疗方案...")
+
+    flags = state.get("personalization_flags", {}) or {}
+    profile, base_profile = _get_profile_from_state(state)
+    _ = (profile, base_profile)
+    weather_summary = state.get("weather_summary") or state.get("environment")
+    humidity = state.get("humidity")
+    precipitation_probability = state.get("precipitation_probability")
+    parsed_humidity, parsed_precip = _extract_weather_numbers(str(weather_summary) if weather_summary is not None else None)
+    if humidity is None:
+        humidity = parsed_humidity
+    if precipitation_probability is None:
+        precipitation_probability = parsed_precip
+
+    payload = {
+        "crop_type": state.get("crop_type", "番茄"),
+        "final_disease": state.get("final_disease") or state.get("disease_type"),
+        "final_confidence": state.get("final_confidence"),
+        "symptoms": state.get("symptoms") or [],
+        "crop_growth_stage": state.get("crop_growth_stage"),
+        "farm_scale": flags.get("farm_scale"),
+        "pesticide_access_level": flags.get("pesticide_access_level"),
+        "equipment": flags.get("equipment") or [],
+        "cultivation_mode": flags.get("cultivation_mode"),
+        "risk_preference": flags.get("risk_preference"),
+        "prefer_organic": flags.get("prefer_organic"),
+        "harvest_window_days": flags.get("harvest_window_days"),
+        "banned_ingredients": flags.get("banned_ingredients") or [],
+        "selected_branch": flags.get("selected_branch"),
+        "location": state.get("location"),
+        "facility": state.get("facility"),
+        "environment": state.get("environment"),
+        "weather_summary": weather_summary,
+        "humidity": humidity,
+        "precipitation_probability": precipitation_probability,
+        "risk_tags": flags.get("risk_tags") or [],
+        "kb_snapshot": state.get("kb_snapshot") or {},
+        "treatment_plan": state.get("treatment_plan") or "",
+        "prevention_advice": state.get("prevention_advice") or "",
+    }
+
+    rule_issues = _rule_based_verification(payload)
+
+    llm_result = None
+    try:
+        prompt = build_verification_prompt(payload)
+        response = call_llm(prompt, VERIFICATION_SYSTEM_PROMPT, temperature=0.1)
+        llm_result = extract_json_from_response(response)
+    except Exception as exc:
+        llm_result = {
+            "passed": False,
+            "risk_level": "high",
+            "issues": [f"verification_llm_error: {str(exc)}"],
+            "must_fix": ["请重新审查并重写方案"],
+            "suggested_rewrite_points": [],
+            "compliance_summary": "审查过程异常，不能直接下发方案。",
+        }
+
+    review_result = _normalize_verification_result(llm_result)
+
+    if rule_issues:
+        review_result["passed"] = False
+        review_result["risk_level"] = "high"
+        review_result["issues"] = dedupe_reasons(rule_issues + review_result["issues"])
+        review_result["must_fix"] = dedupe_reasons(
+            review_result["must_fix"] + [
+                "移除禁用成分或违规流程",
+                "补充与分档、设备能力、采收安全间隔一致的说明",
+            ]
+        )
+        if not review_result["compliance_summary"]:
+            review_result["compliance_summary"] = "规则审查发现明显农业合规风险。"
+
+    state["verification_result"] = review_result
+    state["verification_passed"] = bool(review_result.get("passed"))
+    state["verification_risk_level"] = str(review_result.get("risk_level") or "high")
+    state["verification_issues"] = list(review_result.get("issues") or [])
+    state["verification_must_fix"] = list(review_result.get("must_fix") or [])
+    state["verification_summary"] = str(review_result.get("compliance_summary") or "")
+    state["current_step"] = "verification_complete"
+    state["messages"] = [
+        f"农业合规审查智能体：审查{'通过' if state['verification_passed'] else '未通过'}，风险等级={state['verification_risk_level']}"
+    ]
+
+    append_trace(
+        state,
+        agent="verification",
+        inputs=payload,
+        outputs=review_result,
+        decision={
+            "next_action": "end" if state["verification_passed"] else "treatment",
+            "reason": state["verification_summary"],
+            "reasons": state["verification_issues"],
+        },
+    )
+
+    return state
+
+
 def _deterministic_supervisor_decision(state: CropDiseaseState, flags: dict, missing_profile_fields: list[str]) -> tuple[str, bool, str, list[str]]:
-    """确定性路由，避免同态循环。"""
-    # a) 无诊断结果 -> diagnosis
+    """确定性路由，增加 verification 闭环。"""
+
     has_diagnosis = bool(state.get("final_disease") or state.get("disease_type"))
     if not has_diagnosis:
         return "diagnosis", False, "番茄病害监督智能体：缺少诊断结果，先执行诊断智能体", ["missing_diagnosis"]
-    # b) need_confirm 时返回补充问题并结束当前轮，等待用户下一轮输入，避免 reception 自循环
+
     if flags.get("need_confirm"):
         return "end", True, "番茄病害监督智能体：需用户补充信息后再诊断，当前轮结束并返回追问问题", ["need_confirm_wait_user"]
-    # c) 无 kb_snapshot -> kb_retrieval
+
     if not state.get("kb_snapshot"):
         return "kb_retrieval", False, "番茄病害监督智能体：缺少知识快照，进入知识检索智能体", ["missing_kb_snapshot"]
-    # d) 无 treatment_plan/prevention_advice -> treatment
+
     treatment_plan = str(state.get("treatment_plan") or "").strip()
     prevention_advice = str(state.get("prevention_advice") or "").strip()
     if not treatment_plan or not prevention_advice:
         return "treatment", False, "番茄病害监督智能体：缺少治疗/预防方案，进入治疗方案智能体", ["missing_treatment_or_prevention"]
-    # e) 其他情况 end
-    return "end", True, "番茄病害监督智能体：核心结果齐备，流程结束", ["all_required_outputs_ready"]
+
+    if state.get("verification_result") is None:
+        return "verification", False, "番茄病害监督智能体：治疗方案已生成，进入农业合规审查", ["missing_verification"]
+
+    if state.get("verification_passed") is False:
+        rewrite_count = int(state.get("rewrite_count") or 0)
+        if rewrite_count >= 1:
+            return "end", True, "番茄病害监督智能体：审查未通过且达到重写上限，建议人工复核", ["verification_failed_max_retry"]
+
+        state["rewrite_count"] = rewrite_count + 1
+        return "treatment", False, "番茄病害监督智能体：审查未通过，回到治疗方案智能体重写", ["verification_failed_rewrite"]
+
+    return "end", True, "番茄病害监督智能体：治疗方案已通过农业合规审查，流程结束", ["all_required_outputs_ready"]
 def supervisor_agent(state: CropDiseaseState) -> CropDiseaseState:
     """监督智能体：执行确定性路由并带循环保护。"""
     print("\n[番茄病害监督智能体] 协调流程...")
