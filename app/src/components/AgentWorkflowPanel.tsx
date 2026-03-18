@@ -20,7 +20,7 @@ import { cn } from '@/lib/utils';
 import type { LucideIcon } from 'lucide-react';
 
 type AgentStatus = 'pending' | 'running' | 'completed' | 'error';
-type FixedAgentId = 'supervisor' | 'reception' | 'diagnosis' | 'kb_retrieval' | 'treatment' | 'final';
+type FixedAgentId = 'supervisor' | 'reception' | 'diagnosis' | 'kb_retrieval' | 'treatment' | 'verification' | 'final';
 
 interface AgentWorkflowPanelProps {
   traceId?: string;
@@ -158,11 +158,12 @@ const FIXED_AGENTS: AgentRowDef[] = [
   { id: 'reception', name: 'reception', description: '输入接待与要素提取', icon: Headset },
   { id: 'diagnosis', name: 'diagnosis', description: '病害诊断与置信度评估', icon: Stethoscope },
   { id: 'kb_retrieval', name: 'kb_retrieval', description: '知识库检索与信息补全', icon: BookOpen },
-  { id: 'treatment', name: 'treatment', description: '治疗方案生成与校验落盘', icon: Pill },
+  { id: 'treatment', name: 'treatment', description: '治疗方案生成与个性化约束处理', icon: Pill },
+  { id: 'verification', name: 'verification', description: '农业合规性审查与风险复核', icon: BadgeCheck },
   { id: 'final', name: 'final', description: '流程结束与结果输出', icon: Flag },
 ];
 
-const DIRECT_SET = new Set<FixedAgentId>(['supervisor', 'reception', 'diagnosis', 'kb_retrieval', 'treatment', 'final']);
+const DIRECT_SET = new Set<FixedAgentId>(['supervisor', 'reception', 'diagnosis', 'kb_retrieval', 'treatment', 'verification', 'final']);
 
 const MERGE_MAP: Record<string, FixedAgentId> = {
   parse_input: 'reception',
@@ -170,7 +171,10 @@ const MERGE_MAP: Record<string, FixedAgentId> = {
   confidence_gate: 'diagnosis',
   personalization: 'treatment',
   prescription: 'treatment',
-  validator: 'treatment',
+  validator: 'verification',
+  verification: 'verification',
+  compliance: 'verification',
+  review: 'verification',
   persist: 'treatment',
   final: 'final',
 };
@@ -240,9 +244,11 @@ const mapToFixedAgent = (agentId: string | undefined, node: string | undefined):
   const nodeLower = String(node || '').toLowerCase();
   if (nodeLower === 'final') return 'final';
   if (nodeLower.includes('final')) return 'final';
+  if (nodeLower.includes('verification') || nodeLower.includes('validator') || nodeLower.includes('review') || nodeLower.includes('compliance')) return 'verification';
   if (nodeLower.includes('retrieve') || nodeLower.includes('kb')) return 'kb_retrieval';
   if (nodeLower.includes('diagnosis') || nodeLower.includes('confidence')) return 'diagnosis';
-  if (nodeLower.includes('persist') || nodeLower.includes('validator') || nodeLower.includes('prescription') || nodeLower.includes('personalization') || nodeLower.includes('treatment')) return 'treatment';
+  if (nodeLower.includes('persist') || nodeLower.includes('prescription') || nodeLower.includes('personalization') || nodeLower.includes('treatment')) return 'treatment';
+  if (aid.includes('verification') || aid.includes('validator') || aid.includes('review') || aid.includes('compliance')) return 'verification';
   if (nodeLower.includes('parse') || nodeLower.includes('input') || nodeLower.includes('reception')) return 'reception';
   return 'supervisor';
 };
@@ -498,6 +504,25 @@ const extractHighlights = (agentId: FixedAgentId, allEvents: NormalizedEvent[]):
     ];
   }
 
+  if (agentId === 'verification') {
+    const verificationRaw = isRecord(outputs['verification_result']) ? outputs['verification_result'] : outputs;
+    const passed = verificationRaw['passed'] ?? outputs['verification_passed'];
+    const riskLevel = String(verificationRaw['risk_level'] ?? outputs['verification_risk_level'] ?? '-');
+    const issues = toStringArray(verificationRaw['issues'] ?? outputs['verification_issues']);
+    const mustFix = toStringArray(verificationRaw['must_fix'] ?? outputs['verification_must_fix']);
+    const summary = String(verificationRaw['compliance_summary'] ?? outputs['verification_summary'] ?? '').trim();
+
+    const lines = [
+      `审查结果：${passed === true ? '通过' : passed === false ? '未通过' : '待确认'}`,
+      `风险等级：${riskLevel || '-'}`,
+    ];
+    if (issues.length) lines.push(`主要问题：${issues.slice(0, 2).join('；')}`);
+    if (mustFix.length) lines.push(`必须修改：${mustFix.slice(0, 2).join('；')}`);
+    if (!issues.length && !mustFix.length && summary) lines.push(`摘要：${shortText(summary, 120)}`);
+    if (lines.length <= 2) lines.push(shortText(latest.message, 120) || '正在检查禁用成分与安全间隔...');
+    return lines.slice(0, 4);
+  }
+
   if (agentId === 'final') return ['流程完成'];
   return [shortText(latest.message, 100) || '等待事件'];
 };
@@ -574,6 +599,25 @@ const extractSubsteps = (agentId: FixedAgentId, allEvents: NormalizedEvent[]): A
       return;
     }
 
+    if (agentId === 'verification') {
+      const verificationRaw = isRecord(outputs['verification_result']) ? outputs['verification_result'] : outputs;
+      const passed = verificationRaw['passed'] ?? outputs['verification_passed'];
+      const riskLevel = String(verificationRaw['risk_level'] ?? outputs['verification_risk_level'] ?? '-');
+      const issues = toStringArray(verificationRaw['issues'] ?? outputs['verification_issues']);
+      const mustFix = toStringArray(verificationRaw['must_fix'] ?? outputs['verification_must_fix']);
+      const summary = String(verificationRaw['compliance_summary'] ?? outputs['verification_summary'] ?? '').trim();
+      const decisionAction = String(decision['next_action'] ?? '').trim();
+
+      push('load_constraints', { seq: event.seq, node: 'load_constraints', message: '加载农户档案约束与禁用成分清单' });
+      push('review_treatment', { seq: event.seq, node: 'review_treatment', message: '审查 treatment_plan / prevention_advice 的安全与可执行性' });
+      push('compliance_check', { seq: event.seq, node: 'compliance_check', message: `审查结果：${passed === true ? '通过' : passed === false ? '未通过' : '待确认'} / 风险等级=${riskLevel}` });
+      if (issues.length) push('issues', { seq: event.seq, node: 'issues', message: `主要问题：${issues.slice(0, 2).join('；')}` });
+      if (mustFix.length) push('must_fix', { seq: event.seq, node: 'must_fix', message: `必须修改：${mustFix.slice(0, 2).join('；')}` });
+      if (summary) push('summary', { seq: event.seq, node: 'summary', message: shortText(summary, 120) });
+      if (decisionAction) push('rewrite_decision', { seq: event.seq, node: 'rewrite_decision', message: decisionAction === 'treatment' ? '审查未通过，回写 treatment 重写' : '审查通过，进入流程收敛' });
+      return;
+    }
+
     if (agentId === 'final') push('final', { seq: event.seq, node: event.nodeName, message: shortText(event.message, 100) || '流程结束' });
   });
 
@@ -596,6 +640,7 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
     diagnosis: false,
     kb_retrieval: false,
     treatment: false,
+    verification: false,
     final: false,
   });
 
@@ -611,6 +656,7 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
     diagnosis: [],
     kb_retrieval: [],
     treatment: [],
+    verification: [],
     final: [],
   });
   const allEventsRef = useRef<NormalizedEvent[]>([]);
@@ -787,6 +833,7 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
         diagnosis: [],
         kb_retrieval: [],
         treatment: [],
+        verification: [],
         final: [],
       };
       allEventsRef.current = [];
@@ -814,6 +861,7 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
       diagnosis: [],
       kb_retrieval: [],
       treatment: [],
+      verification: [],
       final: [],
     };
     allEventsRef.current = [];
@@ -1094,11 +1142,17 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
                         {(showSystemNodes ? row.steps : row.steps.filter((step) => {
                           const node = String(step.node || '').toLowerCase();
                           const msg = String(step.message || '').toLowerCase();
-                          return !(node.includes('persist') || node.includes('validator') || msg.includes('落盘') || msg.includes('校验'));
+                          if (row.id === 'verification') {
+                            return !(node.includes('persist') || msg.includes('落盘'));
+                          }
+                          return !(node.includes('persist') || msg.includes('落盘'));
                         })).length ? (showSystemNodes ? row.steps : row.steps.filter((step) => {
                           const node = String(step.node || '').toLowerCase();
                           const msg = String(step.message || '').toLowerCase();
-                          return !(node.includes('persist') || node.includes('validator') || msg.includes('落盘') || msg.includes('校验'));
+                          if (row.id === 'verification') {
+                            return !(node.includes('persist') || msg.includes('落盘'));
+                          }
+                          return !(node.includes('persist') || msg.includes('落盘'));
                         })).map((step, index) => (
                           <div key={`${step.seq ?? 'na'}-${index}`} className="text-xs text-white/50">
                             <span className="text-white/70">{step.node}</span>
@@ -1129,7 +1183,7 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
       <div className="bg-white/5 border border-white/10 rounded-xl p-4">
         <div className="flex items-center justify-between text-sm mb-2">
           <span className="text-white/70">总体进度</span>
-          <span className="text-[#c8f7c5] font-mono">{completedCount}/6</span>
+          <span className="text-[#c8f7c5] font-mono">{completedCount}/{FIXED_AGENTS.length}</span>
         </div>
         <div className="h-2 rounded-full bg-white/10 overflow-hidden">
           <div className="h-full bg-[#4ade80] transition-all duration-500 progress-shine" style={{ width: `${totalProgress}%` }} />
