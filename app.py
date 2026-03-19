@@ -134,6 +134,7 @@ class DiagnoseResponse(BaseModel):
     profile_cultivation_mode: str | None = None
     selected_branch: str | None = None
     llm_failed: bool = False
+    llm_failed_reason: str | None = None
     trace_id: str
     need_confirm: bool | None = None
     final_confidence: float | None = None
@@ -1196,6 +1197,7 @@ async def diagnose_image(
         "profile_cultivation_mode": flags.get("cultivation_mode"),
         "selected_branch": flags.get("selected_branch") if treatment_available else None,
         "llm_failed": bool(flags.get("llm_failed")),
+        "llm_failed_reason": flags.get("llm_failed_reason"),
         "trace_id": trace_id,
         "need_confirm": need_confirm,
         "final_confidence": final_confidence,
@@ -1348,7 +1350,7 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
             "historical_symptoms": historical_symptoms,
             "incoming_symptoms": incoming_symptoms,
             "crop_type": crop_type,
-            "growth_stage": growth_stage,
+            "growth_stage": normalize_growth_stage_code(growth_stage),
             "image_id": image_id,
             "previous_trace_id": previous_trace_id,
             "model_id": model_id,
@@ -1359,8 +1361,6 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
         },
         outputs={},
     )
-    state["current_step"] = "await_user_confirmation"
-
     if choice and choice != "other":
         state["final_disease"] = choice
         state["disease_type"] = choice
@@ -1596,6 +1596,7 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
         "verification_available": (state.get("verification_result") is not None) and not manual_review_recommended,
         "graph_treatment_generated": bool(state.get("treatment_plan")),
         "fallback_treatment_used": False,
+        "treatment_skipped_due_need_confirm": False,
         "meta": response_meta,
         "events": events,
     }

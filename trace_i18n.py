@@ -18,6 +18,7 @@ STEP_NAME_CN = {
     "kb_retrieval_complete": "知识检索完成",
     "treatment_complete": "方案生成完成",
     "verification_complete": "合规审查完成",
+    "await_user_confirmation": "等待用户补充",
     "confirm_input": "二次补充输入",
     "confirm_finalize": "确认结果收尾",
     "uncertainty_router": "不确定性决策完成",
