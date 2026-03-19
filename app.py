@@ -475,6 +475,11 @@ def serialize_final_response(payload: dict[str, Any]) -> dict[str, Any]:
     return sanitize_user_text(data)
 
 
+def serialize_case_response(payload: dict[str, Any]) -> dict[str, Any]:
+    """Backward-compatible alias. Keep a single real serializer implementation."""
+    return serialize_final_response(payload)
+
+
 def emit_node_event(
     trace_id: str,
     *,
