@@ -1076,6 +1076,58 @@ export function DiagnosePage() {
                   </div>
 
                   <div>
+                    <h4 className="text-white/80 font-medium mb-2">农业合规性审查（Verification）</h4>
+                    <div
+                      className={cn(
+                        "rounded-xl p-4 border text-sm space-y-3",
+                        verificationPassed === true && "bg-green-500/10 border-green-400/30 text-green-100",
+                        verificationPassed === false && "bg-yellow-500/10 border-yellow-400/30 text-yellow-100",
+                        verificationPassed === undefined && "bg-white/5 border-white/20 text-white/80",
+                      )}
+                    >
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span>审查状态：</span>
+                        <Badge className={cn(
+                          verificationPassed === true && 'bg-green-500/30 text-green-100 border border-green-400/40',
+                          verificationPassed === false && 'bg-yellow-500/30 text-yellow-100 border border-yellow-400/40',
+                          verificationPassed === undefined && 'bg-white/10 text-white',
+                        )}>
+                          {verificationPassed === true ? '审查通过' : verificationPassed === false ? '审查未通过' : '尚未完成审查'}
+                        </Badge>
+                        <span className="text-xs opacity-80">风险等级：{verificationRiskLabel}{verificationRiskLevel ? ` (${verificationRiskLevel})` : ''}</span>
+                      </div>
+
+                      {verificationSummary ? (
+                        <p className="leading-relaxed">摘要：{verificationSummary}</p>
+                      ) : (
+                        <p className="text-white/60">尚未完成审查</p>
+                      )}
+
+                      {verificationIssues.length > 0 && (
+                        <div>
+                          <p className="font-medium mb-1">主要问题</p>
+                          <ul className="list-disc pl-5 space-y-1">
+                            {verificationIssues.map((item, idx) => (
+                              <li key={`verification-issue-${idx}`}>{item}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+
+                      {verificationPassed === false && verificationMustFix.length > 0 && (
+                        <div>
+                          <p className="font-medium mb-1">必须修改</p>
+                          <ul className="list-disc pl-5 space-y-1">
+                            {verificationMustFix.map((item, idx) => (
+                              <li key={`verification-must-fix-${idx}`}>{item}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  <div>
                     <h4 className="text-white/80 font-medium mb-2">待补充信息（用于提升个性化精度）</h4>
                     <div className={cn(
                       "rounded-xl p-4 border text-sm space-y-3",
