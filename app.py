@@ -1341,7 +1341,7 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
     state["historical_symptoms"] = historical_symptoms
     state["confirm_round_index"] = confirm_round_index
     state["user_choice"] = choice or None
-    state["current_step"] = "await_user_confirmation"
+    state["current_step"] = "confirm_input"
 
     append_trace(
         state,
@@ -1362,6 +1362,7 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
         },
         outputs={},
     )
+    state["current_step"] = "await_user_confirmation"
 
     if choice and choice != "other":
         state["final_disease"] = choice
@@ -1376,7 +1377,7 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
             outputs={"final_disease": choice, "need_confirm": False},
         )
 
-    # 低置信度回退分支：由 supervisor 做统一路由决策。
+    # 低置信度回退分支：由 supervisor 做统一路由决策，避免形成平行独立流程。
     for _ in range(10):
         state = supervisor_agent(state)
         next_action = str(state.get("next_action") or "")
@@ -1388,6 +1389,8 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
             state = treatment_agent(state)
         elif next_action == "verification":
             state = verification_agent(state)
+        elif next_action == "await_user_confirmation":
+            break
         elif next_action == "end":
             break
         else:
