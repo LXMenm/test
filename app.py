@@ -475,11 +475,6 @@ def serialize_final_response(payload: dict[str, Any]) -> dict[str, Any]:
     return sanitize_user_text(data)
 
 
-def serialize_case_response(payload: dict[str, Any]) -> dict[str, Any]:
-    """Backward-compatible alias. Keep a single real serializer implementation."""
-    return serialize_final_response(payload)
-
-
 def emit_node_event(
     trace_id: str,
     *,
@@ -1554,7 +1549,7 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
         "fallback_treatment_used": False,
         "historical_follow_up_questions": historical_follow_up_questions,
     }
-    event = serialize_case_response(event, terminal_stage=confirm_status)
+    event = serialize_final_response(event)
     emit_node_event(trace_id, node="Persist", status="start", message="写入确认轮事件日志")
     try:
         append_event(serialize_final_response(event))
