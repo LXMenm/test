@@ -770,7 +770,7 @@ def _collect_runtime_debug() -> dict[str, Any]:
     }
 
 
-@app.post("/api/diagnose-image", response_model=DiagnoseResponse)
+@app.post("/api/diagnose-image", response_model=DiagnoseResponse, response_model_exclude_none=True)
 async def diagnose_image(
     file: UploadFile = File(...),
     crop_type: str = Form("番茄"),
@@ -1512,7 +1512,7 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
     event = serialize_final_response(event)
     emit_node_event(trace_id, node="Persist", status="start", message="写入确认轮事件日志")
     try:
-        append_event(event)
+        append_event(serialize_final_response(event))
         emit_node_event(trace_id, node="Persist", status="end", message="确认轮事件落盘完成")
     except Exception as exc:
         print(f"Warning: failed to append confirm event: {exc}")
