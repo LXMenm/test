@@ -46,6 +46,18 @@ interface DiagnosisResult {
   risk_items?: Array<{ code?: string; label?: string; reason?: string; level?: string; source?: string }>;
   risk_summary?: string;
   risk_updated_at?: string;
+  verification_result?: {
+    passed?: boolean;
+    risk_level?: string;
+    issues?: string[];
+    must_fix?: string[];
+    suggested_rewrite_points?: string[];
+    compliance_summary?: string;
+  };
+  verification_passed?: boolean;
+  verification_risk_level?: string;
+  verification_issues?: string[];
+  verification_summary?: string;
 }
 
 interface ProfileListItem {
@@ -145,6 +157,14 @@ export function DiagnosePage() {
     const finalConfidence = toNumber(payload?.final_confidence);
     if (finalConfidence !== null) {
       return finalConfidence <= 1 ? finalConfidence * 100 : finalConfidence;
+    }
+
+    const diagnosisEvidence = payload.diagnosis_evidence && typeof payload.diagnosis_evidence === 'object'
+      ? payload.diagnosis_evidence as Record<string, unknown>
+      : {};
+    const evidenceFinalConfidence = toNumber(diagnosisEvidence.final_confidence);
+    if (evidenceFinalConfidence !== null) {
+      return evidenceFinalConfidence <= 1 ? evidenceFinalConfidence * 100 : evidenceFinalConfidence;
     }
 
     const imageResult = payload.image_result && typeof payload.image_result === 'object'
@@ -312,6 +332,31 @@ export function DiagnosePage() {
     const selectedBranch = typeof treatmentObj?.selected_branch === 'string'
       ? treatmentObj.selected_branch
       : (typeof payload.selected_branch === 'string' ? payload.selected_branch : undefined);
+    const rawVerification = payload.verification_result && typeof payload.verification_result === 'object'
+      ? payload.verification_result as Record<string, unknown>
+      : undefined;
+    const verificationResult = rawVerification
+      ? {
+        passed: typeof rawVerification.passed === 'boolean'
+          ? rawVerification.passed
+          : (typeof payload.verification_passed === 'boolean' ? payload.verification_passed : undefined),
+        risk_level: typeof rawVerification.risk_level === 'string'
+          ? rawVerification.risk_level
+          : (typeof payload.verification_risk_level === 'string' ? payload.verification_risk_level : undefined),
+        issues: Array.isArray(rawVerification.issues)
+          ? rawVerification.issues.map((item) => String(item))
+          : (Array.isArray(payload.verification_issues) ? payload.verification_issues.map((item) => String(item)) : []),
+        must_fix: Array.isArray(rawVerification.must_fix)
+          ? rawVerification.must_fix.map((item) => String(item))
+          : [],
+        suggested_rewrite_points: Array.isArray(rawVerification.suggested_rewrite_points)
+          ? rawVerification.suggested_rewrite_points.map((item) => String(item))
+          : [],
+        compliance_summary: typeof rawVerification.compliance_summary === 'string'
+          ? rawVerification.compliance_summary
+          : (typeof payload.verification_summary === 'string' ? payload.verification_summary : undefined),
+      }
+      : undefined;
 
     return ({
     image_url: typeof payload.image_url === 'string' ? payload.image_url : '',
@@ -346,6 +391,11 @@ export function DiagnosePage() {
     risk_items: normalizeRiskItems(payload.risk_items),
     risk_summary: typeof payload.risk_summary === 'string' ? payload.risk_summary : undefined,
     risk_updated_at: typeof payload.risk_updated_at === 'string' ? payload.risk_updated_at : undefined,
+    verification_result: verificationResult,
+    verification_passed: verificationResult?.passed ?? (typeof payload.verification_passed === 'boolean' ? payload.verification_passed : undefined),
+    verification_risk_level: verificationResult?.risk_level ?? (typeof payload.verification_risk_level === 'string' ? payload.verification_risk_level : undefined),
+    verification_issues: verificationResult?.issues ?? (Array.isArray(payload.verification_issues) ? payload.verification_issues.map((item) => String(item)) : []),
+    verification_summary: verificationResult?.compliance_summary ?? (typeof payload.verification_summary === 'string' ? payload.verification_summary : undefined),
   });
   };
 
@@ -629,6 +679,19 @@ export function DiagnosePage() {
 
   const renderTreatment = (t: unknown): JSX.Element | null => renderRichValue(t);
   const candidates = parseTop3Candidates(latestPayload ?? result ?? {}, result);
+  const verification = result?.verification_result;
+  const verificationPassed = verification?.passed ?? result?.verification_passed;
+  const verificationRiskLevel = (verification?.risk_level ?? result?.verification_risk_level ?? '').toLowerCase();
+  const verificationIssues = (verification?.issues ?? result?.verification_issues ?? []).slice(0, 3);
+  const verificationMustFix = (verification?.must_fix ?? []).slice(0, 3);
+  const verificationSummary = verification?.compliance_summary ?? result?.verification_summary ?? '';
+  const verificationRiskLabel = verificationRiskLevel === 'low'
+    ? '低'
+    : verificationRiskLevel === 'medium'
+      ? '中'
+      : verificationRiskLevel === 'high'
+        ? '高'
+        : '—';
   const shouldHideTreatment = confirmMode;
   const baseOptions: BaseOption[] = selectedProfile?.bases && typeof selectedProfile.bases === 'object'
     ? Object.entries(selectedProfile.bases).map(([baseId, base]) => ({
@@ -1034,6 +1097,58 @@ export function DiagnosePage() {
                   </div>
 
                   <div>
+                    <h4 className="text-white/80 font-medium mb-2">农业合规性审查（Verification）</h4>
+                    <div
+                      className={cn(
+                        "rounded-xl p-4 border text-sm space-y-3",
+                        verificationPassed === true && "bg-green-500/10 border-green-400/30 text-green-100",
+                        verificationPassed === false && "bg-yellow-500/10 border-yellow-400/30 text-yellow-100",
+                        verificationPassed === undefined && "bg-white/5 border-white/20 text-white/80",
+                      )}
+                    >
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span>审查状态：</span>
+                        <Badge className={cn(
+                          verificationPassed === true && 'bg-green-500/30 text-green-100 border border-green-400/40',
+                          verificationPassed === false && 'bg-yellow-500/30 text-yellow-100 border border-yellow-400/40',
+                          verificationPassed === undefined && 'bg-white/10 text-white',
+                        )}>
+                          {verificationPassed === true ? '审查通过' : verificationPassed === false ? '审查未通过' : '尚未完成审查'}
+                        </Badge>
+                        <span className="text-xs opacity-80">风险等级：{verificationRiskLabel}{verificationRiskLevel ? ` (${verificationRiskLevel})` : ''}</span>
+                      </div>
+
+                      {verificationSummary ? (
+                        <p className="leading-relaxed">摘要：{verificationSummary}</p>
+                      ) : (
+                        <p className="text-white/60">尚未完成审查</p>
+                      )}
+
+                      {verificationIssues.length > 0 && (
+                        <div>
+                          <p className="font-medium mb-1">主要问题</p>
+                          <ul className="list-disc pl-5 space-y-1">
+                            {verificationIssues.map((item, idx) => (
+                              <li key={`verification-issue-${idx}`}>{item}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+
+                      {verificationPassed === false && verificationMustFix.length > 0 && (
+                        <div>
+                          <p className="font-medium mb-1">必须修改</p>
+                          <ul className="list-disc pl-5 space-y-1">
+                            {verificationMustFix.map((item, idx) => (
+                              <li key={`verification-must-fix-${idx}`}>{item}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  <div>
                     <h4 className="text-white/80 font-medium mb-2">待补充信息（用于提升个性化精度）</h4>
                     <div className="bg-white/5 rounded-xl p-4 border border-[#c8f7c5]/20 text-sm text-white/80 space-y-2">
                       <div className="flex items-center gap-2">
@@ -1172,6 +1287,9 @@ export function DiagnosePage() {
               )}
             </CardHeader>
             <CardContent className="space-y-4">
+              <p className="text-xs text-white/60">
+                当前流程包含：接待解析 → 病害诊断 → 知识检索 → 方案生成 → 农业合规性审查。
+              </p>
               <AgentWorkflowPanel
                 key={`${traceId || 'idle'}-${workflowRefreshToken}`}
                 traceId={traceId || undefined}
