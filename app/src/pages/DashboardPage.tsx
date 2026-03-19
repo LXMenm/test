@@ -1230,13 +1230,13 @@ export function DashboardPage() {
         </Card>
       )}
 
-      {(modulePrefs.disease || modulePrefs.filter) && (
-        <div className="grid lg:grid-cols-2 gap-6">
+      {(modulePrefs.disease || modulePrefs.filter || modulePrefs.risk) && (
+        <div className="grid lg:grid-cols-3 gap-6">
           {modulePrefs.disease && (
-            <Card className="glass-card">
+            <Card className="glass-card flex flex-col">
               {renderModuleHeader('disease', `病害 Top ${Math.min(8, stats.length)}`, <TrendingUp className="w-5 h-5 text-[#c8f7c5]" />)}
               {!moduleCollapse.disease && (
-                <CardContent>
+                <CardContent className="flex-1">
                   <div className="space-y-3">
                     {stats.slice(0, 8).map((stat, index) => (
                       <div key={stat.disease} className="space-y-1">
@@ -1263,10 +1263,10 @@ export function DashboardPage() {
           )}
 
           {modulePrefs.filter && (
-            <Card className="glass-card">
+            <Card className="glass-card flex flex-col">
               {renderModuleHeader('filter', '过滤原因统计', <TrendingUp className="w-5 h-5 text-[#b8ddc7]" />)}
               {!moduleCollapse.filter && (
-                <CardContent>
+                <CardContent className="flex-1">
                   <div className="space-y-3">
                     {filteredReasonDistribution.map((item) => {
                       const max = Math.max(...filteredReasonDistribution.map((x) => x.count), 1);
@@ -1290,10 +1290,10 @@ export function DashboardPage() {
           )}
 
           {modulePrefs.risk && (
-            <Card className="glass-card">
+            <Card className="glass-card flex flex-col">
               {renderModuleHeader('risk', '风险标签统计', <AlertCircle className="w-5 h-5 text-[#b8ddc7]" />)}
               {!moduleCollapse.risk && (
-                <CardContent className="space-y-4">
+                <CardContent className="flex-1 space-y-4">
                   <div className="space-y-3">
                     {riskDistribution.map((item) => {
                       const max = Math.max(...riskDistribution.map((x) => x.count), 1);
@@ -1377,11 +1377,11 @@ export function DashboardPage() {
 
       <div className="grid lg:grid-cols-2 gap-6">
         {modulePrefs.recent && (
-          <Card className="glass-card">
+          <Card className="glass-card flex flex-col">
             {renderModuleHeader('recent', '最近诊断', <Calendar className="w-5 h-5 text-[#b8ddc7]" />)}
             {!moduleCollapse.recent && (
-              <CardContent>
-                <div className="space-y-2 max-h-[420px] overflow-y-auto dashboard-scrollbar">
+              <CardContent className="flex-1 min-h-0">
+                <div className="space-y-2 h-[420px] overflow-y-auto dashboard-scrollbar">
                   {filteredEvents.slice(0, 80).map((event) => (
                     <div
                       key={event.id}
@@ -1425,134 +1425,136 @@ export function DashboardPage() {
 
         {/* Detail Panel */}
         {modulePrefs.detail && (
-          <Card className="glass-card lg:col-span-1">
+          <Card className="glass-card lg:col-span-1 flex flex-col">
             {renderModuleHeader('detail', '详情', <AlertCircle className="w-5 h-5 text-[#c8f7c5]" />)}
             {!moduleCollapse.detail && (
-              <CardContent>
+              <CardContent className="flex-1 min-h-0 overflow-hidden">
                 {selectedEvent ? (
-              <Tabs defaultValue="case" className="w-full">
+              <Tabs defaultValue="case" className="w-full flex flex-col h-full">
                 <TabsList className="bg-white/5 border border-white/10 grid grid-cols-4">
                   <TabsTrigger value="case">病例</TabsTrigger>
                   <TabsTrigger value="personal">个性化</TabsTrigger>
                   <TabsTrigger value="trace">Trace</TabsTrigger>
                   <TabsTrigger value="kb">知识库</TabsTrigger>
                 </TabsList>
-                <TabsContent value="case" className="space-y-3 mt-3">
-                  {selectedEvent.imageUrl ? (
-                    <div className="bg-white/5 rounded-lg p-3">
-                      <div className="rounded-md overflow-hidden bg-black/30">
-                        <img src={selectedEvent.imageUrl} alt="诊断图片" className="w-full max-h-56 object-contain" />
-                      </div>
-                    </div>
-                  ) : null}
-                  <div className="bg-white/5 rounded-lg p-3">
-                    <p className="text-white/60 text-xs mb-1">最终病害 / 置信度</p>
-                    <button
-                      type="button"
-                      className="text-lg font-bold text-[#c8f7c5] hover:underline"
-                      onClick={() => navigateToKbDisease(selectedEvent.disease)}
-                    >
-                      {caseDiagnosis.disease}
-                    </button>
-                    <p className="text-white/80 text-sm">{caseDiagnosis.confidenceText}</p>
-                  </div>
-                  <div className="bg-white/5 rounded-lg p-3">
-                    <p className="text-white/60 text-xs mb-1">模型 / 时间 / 档位</p>
-                    <p className="text-white text-sm">{selectedEvent.modelName || selectedEvent.modelId}</p>
-                    <p className="text-white/60 text-xs mt-1">{safeDisplayTime(selectedEvent.ts)} · {caseBranchLabel}</p>
-                  </div>
-                  <div className="bg-white/5 rounded-lg p-3 text-sm text-white/80 space-y-2">
-                    <p className="text-white/60 text-xs">处方建议</p>
-                    <div className="whitespace-pre-wrap">{caseTreatmentSummary.plan || '暂无处方建议'}</div>
-                    {caseTreatmentSummary.prevention && (
-                      <div>
-                        <p className="text-white/60 text-xs mt-2 mb-1">补充建议</p>
-                        <div className="whitespace-pre-wrap">{caseTreatmentSummary.prevention}</div>
-                      </div>
-                    )}
-                  </div>
-                </TabsContent>
-                <TabsContent value="personal" className="space-y-2 mt-3 text-sm text-white/80">
-                  <div className="bg-[#1a3329] border border-[#2e7d63]/40 rounded-lg px-3 py-2 text-[#c8f7c5] text-xs">影响分档的主要因素</div>
-                  <div className="grid grid-cols-1 gap-2">
-                    {personalInfoRows.map((item) => (
-                      <div key={item.label} className="bg-white/5 rounded-lg p-2">
-                        <div className="text-white/60 text-xs">{item.label}</div>
-                        <div className="text-white mt-1">{item.value || '未设置'}</div>
-                      </div>
-                    ))}
-                  </div>
-                  <div className="bg-white/5 rounded-lg p-2 space-y-2">
-                    <div className="text-white/60 text-xs">农业风险标签（解释层）</div>
-                    <div className="flex flex-wrap gap-1">
-                      {selectedRiskSummary.tags.length > 0 ? selectedRiskSummary.tags.map((tag) => (
-                        <Badge key={tag} className="bg-[#c8f7c5]/20 text-[#c8f7c5] border border-[#c8f7c5]/40">{tag}</Badge>
-                      )) : <span className="text-white/40 text-xs">暂无风险标签</span>}
-                    </div>
-                    {selectedRiskSummary.reasons.length > 0 ? (
-                      <ul className="list-disc pl-5 text-white/80 text-xs space-y-1">
-                        {selectedRiskSummary.reasons.slice(0, 3).map((reason, idx) => <li key={`risk-reason-${idx}`}>{reason}</li>)}
-                      </ul>
-                    ) : null}
-                  </div>
-                </TabsContent>
-                <TabsContent value="trace" className="space-y-2 mt-3">
-                  {traceSummary.map((item) => (
-                    <div key={item.key} className="bg-white/5 rounded-lg p-3 text-xs">
-                      <div className="text-[#c8f7c5] mb-2">{item.title}</div>
-                      <div className="space-y-1">
-                        {item.rows.map((row) => (
-                          <div key={`${item.key}-${row.label}`} className="flex items-start justify-between gap-2">
-                            <span className="text-white/60">{row.label}</span>
-                            <span className="text-white text-right">{row.value}</span>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  ))}
-                  {traceSummary.length === 0 && <p className="text-white/40 text-sm">暂无可提炼的 Trace 摘要</p>}
-                  <Button size="sm" variant="outline" className="border-white/20 text-white" onClick={() => setShowRawTrace((prev) => !prev)}>{showRawTrace ? '收起原始 Trace' : '查看原始 Trace'}</Button>
-                  {showRawTrace && (
-                    <pre className="bg-black/30 rounded-lg p-2 text-[11px] text-white/70 max-h-40 overflow-auto">{JSON.stringify(traceRawEvents, null, 2)}</pre>
-                  )}
-                </TabsContent>
-                <TabsContent value="kb" className="space-y-2 mt-3 text-sm text-white/80">
-                  {kbSummary.name ? (
-                    <>
-                      <button type="button" className="text-[#c8f7c5] font-semibold hover:underline" onClick={() => navigateToKbDisease(kbSummary.name)}>
-                        {kbSummary.name}
-                      </button>
-                      <div className="bg-white/5 rounded-lg p-2 whitespace-pre-wrap">
-                        <div className="text-xs text-white/60 mb-1">病害描述</div>
-                        {kbSummary.description || '暂无描述'}
-                      </div>
-                      <div className="bg-white/5 rounded-lg p-2 whitespace-pre-wrap">
-                        <div className="text-xs text-white/60 mb-1">治疗方案</div>
-                        {kbSummary.treatment || '暂无'}
-                      </div>
-                      <div className="bg-white/5 rounded-lg p-2 whitespace-pre-wrap">
-                        <div className="text-xs text-white/60 mb-1">预防建议</div>
-                        {kbSummary.prevention || '暂无'}
-                      </div>
-                                            <div className="bg-white/5 rounded-lg p-2">
-                        <div className="text-xs text-white/60 mb-2">推荐成分</div>
-                        <div className="flex flex-wrap gap-1">
-                          {(kbSummary.ingredients.length ?? 0) > 0 ? kbSummary.ingredients.map((ingredient) => (
-                            <Badge key={ingredient} className="bg-[#c8f7c5]/20 text-[#c8f7c5]">{ingredient}</Badge>
-                          )) : <span className="text-white/40">暂无 ingredients</span>}
+                <div className="flex-1 overflow-y-auto dashboard-scrollbar pt-3">
+                  <TabsContent value="case" className="space-y-3 mt-0">
+                    {selectedEvent.imageUrl ? (
+                      <div className="bg-white/5 rounded-lg p-3">
+                        <div className="rounded-md overflow-hidden bg-black/30">
+                          <img src={selectedEvent.imageUrl} alt="诊断图片" className="w-full max-h-56 object-contain" />
                         </div>
                       </div>
-                      <Button size="sm" variant="outline" className="border-white/20 text-white" onClick={() => navigateToKbDisease(kbSummary.name)}>
-                        查看知识库详情
-                      </Button>
-                    </>
-                  ) : (
-                    <div className="bg-white/5 rounded-lg p-3 space-y-2">
-                      <p className="text-white/50">暂无知识库详情</p>
-                      <Button size="sm" variant="outline" disabled className="border-white/20 text-white/50">查看知识库详情</Button>
+                    ) : null}
+                    <div className="bg-white/5 rounded-lg p-3">
+                      <p className="text-white/60 text-xs mb-1">最终病害 / 置信度</p>
+                      <button
+                        type="button"
+                        className="text-lg font-bold text-[#c8f7c5] hover:underline"
+                        onClick={() => navigateToKbDisease(selectedEvent.disease)}
+                      >
+                        {caseDiagnosis.disease}
+                      </button>
+                      <p className="text-white/80 text-sm">{caseDiagnosis.confidenceText}</p>
                     </div>
-                  )}
-                </TabsContent>
+                    <div className="bg-white/5 rounded-lg p-3">
+                      <p className="text-white/60 text-xs mb-1">模型 / 时间 / 档位</p>
+                      <p className="text-white text-sm">{selectedEvent.modelName || selectedEvent.modelId}</p>
+                      <p className="text-white/60 text-xs mt-1">{safeDisplayTime(selectedEvent.ts)} · {caseBranchLabel}</p>
+                    </div>
+                    <div className="bg-white/5 rounded-lg p-3 text-sm text-white/80 space-y-2">
+                      <p className="text-white/60 text-xs">处方建议</p>
+                      <div className="whitespace-pre-wrap">{caseTreatmentSummary.plan || '暂无处方建议'}</div>
+                      {caseTreatmentSummary.prevention && (
+                        <div>
+                          <p className="text-white/60 text-xs mt-2 mb-1">补充建议</p>
+                          <div className="whitespace-pre-wrap">{caseTreatmentSummary.prevention}</div>
+                        </div>
+                      )}
+                    </div>
+                  </TabsContent>
+                  <TabsContent value="personal" className="space-y-2 mt-0 text-sm text-white/80">
+                    <div className="bg-[#1a3329] border border-[#2e7d63]/40 rounded-lg px-3 py-2 text-[#c8f7c5] text-xs">影响分档的主要因素</div>
+                    <div className="grid grid-cols-1 gap-2">
+                      {personalInfoRows.map((item) => (
+                        <div key={item.label} className="bg-white/5 rounded-lg p-2">
+                          <div className="text-white/60 text-xs">{item.label}</div>
+                          <div className="text-white mt-1">{item.value || '未设置'}</div>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="bg-white/5 rounded-lg p-2 space-y-2">
+                      <div className="text-white/60 text-xs">农业风险标签（解释层）</div>
+                      <div className="flex flex-wrap gap-1">
+                        {selectedRiskSummary.tags.length > 0 ? selectedRiskSummary.tags.map((tag) => (
+                          <Badge key={tag} className="bg-[#c8f7c5]/20 text-[#c8f7c5] border border-[#c8f7c5]/40">{tag}</Badge>
+                        )) : <span className="text-white/40 text-xs">暂无风险标签</span>}
+                      </div>
+                      {selectedRiskSummary.reasons.length > 0 ? (
+                        <ul className="list-disc pl-5 text-white/80 text-xs space-y-1">
+                          {selectedRiskSummary.reasons.slice(0, 3).map((reason, idx) => <li key={`risk-reason-${idx}`}>{reason}</li>)}
+                        </ul>
+                      ) : null}
+                    </div>
+                  </TabsContent>
+                  <TabsContent value="trace" className="space-y-2 mt-0">
+                    {traceSummary.map((item) => (
+                      <div key={item.key} className="bg-white/5 rounded-lg p-3 text-xs">
+                        <div className="text-[#c8f7c5] mb-2">{item.title}</div>
+                        <div className="space-y-1">
+                          {item.rows.map((row) => (
+                            <div key={`${item.key}-${row.label}`} className="flex items-start justify-between gap-2">
+                              <span className="text-white/60">{row.label}</span>
+                              <span className="text-white text-right">{row.value}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                    {traceSummary.length === 0 && <p className="text-white/40 text-sm">暂无可提炼的 Trace 摘要</p>}
+                    <Button size="sm" variant="outline" className="border-white/20 text-white" onClick={() => setShowRawTrace((prev) => !prev)}>{showRawTrace ? '收起原始 Trace' : '查看原始 Trace'}</Button>
+                    {showRawTrace && (
+                      <pre className="bg-black/30 rounded-lg p-2 text-[11px] text-white/70 max-h-40 overflow-auto">{JSON.stringify(traceRawEvents, null, 2)}</pre>
+                    )}
+                  </TabsContent>
+                  <TabsContent value="kb" className="space-y-2 mt-0 text-sm text-white/80">
+                    {kbSummary.name ? (
+                      <>
+                        <button type="button" className="text-[#c8f7c5] font-semibold hover:underline" onClick={() => navigateToKbDisease(kbSummary.name)}>
+                          {kbSummary.name}
+                        </button>
+                        <div className="bg-white/5 rounded-lg p-2 whitespace-pre-wrap">
+                          <div className="text-xs text-white/60 mb-1">病害描述</div>
+                          {kbSummary.description || '暂无描述'}
+                        </div>
+                        <div className="bg-white/5 rounded-lg p-2 whitespace-pre-wrap">
+                          <div className="text-xs text-white/60 mb-1">治疗方案</div>
+                          {kbSummary.treatment || '暂无'}
+                        </div>
+                        <div className="bg-white/5 rounded-lg p-2 whitespace-pre-wrap">
+                          <div className="text-xs text-white/60 mb-1">预防建议</div>
+                          {kbSummary.prevention || '暂无'}
+                        </div>
+                                              <div className="bg-white/5 rounded-lg p-2">
+                            <div className="text-xs text-white/60 mb-2">推荐成分</div>
+                            <div className="flex flex-wrap gap-1">
+                              {(kbSummary.ingredients.length ?? 0) > 0 ? kbSummary.ingredients.map((ingredient) => (
+                                <Badge key={ingredient} className="bg-[#c8f7c5]/20 text-[#c8f7c5]">{ingredient}</Badge>
+                              )) : <span className="text-white/40">暂无 ingredients</span>}
+                            </div>
+                          </div>
+                          <Button size="sm" variant="outline" className="border-white/20 text-white" onClick={() => navigateToKbDisease(kbSummary.name)}>
+                            查看知识库详情
+                          </Button>
+                        </>
+                      ) : (
+                        <div className="bg-white/5 rounded-lg p-3 space-y-2">
+                          <p className="text-white/50">暂无知识库详情</p>
+                          <Button size="sm" variant="outline" disabled className="border-white/20 text-white/50">查看知识库详情</Button>
+                        </div>
+                      )}
+                  </TabsContent>
+                </div>
               </Tabs>
             ) : (
               <div className="text-center py-12 text-white/40">

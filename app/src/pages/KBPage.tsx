@@ -449,12 +449,6 @@ export function KBPage({ focusDiseaseName = '' }: KBPageProps) {
                   <div className="text-white/60 mb-1">预防建议</div>
                   <div className="text-white whitespace-pre-wrap">{focusDiseaseDetail.prevention || '暂无预防建议'}</div>
                 </div>
-                {focusDiseaseDetail.actions && (
-                  <div>
-                    <div className="text-white/60 mb-1">结构化 Actions</div>
-                    <pre className="bg-white/5 border border-white/10 rounded-lg p-3 text-white/80 whitespace-pre-wrap break-words">{JSON.stringify(focusDiseaseDetail.actions, null, 2)}</pre>
-                  </div>
-                )}
                 {Array.isArray(focusDiseaseDetail.ingredients) && focusDiseaseDetail.ingredients.length > 0 && (
                   <div>
                     <div className="text-white/60 mb-1">有效成分</div>
