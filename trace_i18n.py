@@ -4,6 +4,11 @@ AGENT_NAME_CN = {
     "diagnosis": "诊断智能体",
     "kb_retrieval": "知识检索智能体",
     "treatment": "治疗方案智能体",
+    "verification": "农业合规审查智能体",
+    "confirm_input": "二次补充输入",
+    "confirm_finalize": "确认结果收尾",
+    "uncertainty_router": "不确定性决策",
+    "confirm_choice": "确认候选选择",
 }
 
 STEP_NAME_CN = {
@@ -12,6 +17,12 @@ STEP_NAME_CN = {
     "diagnosis_complete": "诊断完成",
     "kb_retrieval_complete": "知识检索完成",
     "treatment_complete": "方案生成完成",
+    "verification_complete": "合规审查完成",
+    "await_user_confirmation": "等待用户补充",
+    "confirm_input": "二次补充输入",
+    "confirm_finalize": "确认结果收尾",
+    "uncertainty_router": "不确定性决策完成",
+    "confirm_choice": "确认候选选择",
     "end": "结束",
 }
 

@@ -46,6 +46,18 @@ interface DiagnosisResult {
   risk_items?: Array<{ code?: string; label?: string; reason?: string; level?: string; source?: string }>;
   risk_summary?: string;
   risk_updated_at?: string;
+  verification_result?: {
+    passed?: boolean;
+    risk_level?: string;
+    issues?: string[];
+    must_fix?: string[];
+    suggested_rewrite_points?: string[];
+    compliance_summary?: string;
+  };
+  verification_passed?: boolean;
+  verification_risk_level?: string;
+  verification_issues?: string[];
+  verification_summary?: string;
 }
 
 interface ProfileListItem {
@@ -105,6 +117,7 @@ export function DiagnosePage() {
   const [confirmSymptoms, setConfirmSymptoms] = useState('');
   const [confirmSubmitting, setConfirmSubmitting] = useState(false);
   const [showRawTrace, setShowRawTrace] = useState(false);
+  const [workflowCollapsed, setWorkflowCollapsed] = useState(false);
   const [diagnosisStartTime, setDiagnosisStartTime] = useState<number | null>(null);
   const [workflowRefreshToken, setWorkflowRefreshToken] = useState(0);
   const [profiles, setProfiles] = useState<ProfileListItem[]>([]);
@@ -145,6 +158,14 @@ export function DiagnosePage() {
     const finalConfidence = toNumber(payload?.final_confidence);
     if (finalConfidence !== null) {
       return finalConfidence <= 1 ? finalConfidence * 100 : finalConfidence;
+    }
+
+    const diagnosisEvidence = payload.diagnosis_evidence && typeof payload.diagnosis_evidence === 'object'
+      ? payload.diagnosis_evidence as Record<string, unknown>
+      : {};
+    const evidenceFinalConfidence = toNumber(diagnosisEvidence.final_confidence);
+    if (evidenceFinalConfidence !== null) {
+      return evidenceFinalConfidence <= 1 ? evidenceFinalConfidence * 100 : evidenceFinalConfidence;
     }
 
     const imageResult = payload.image_result && typeof payload.image_result === 'object'
@@ -306,12 +327,40 @@ export function DiagnosePage() {
   };
 
   const buildResultFromPayload = (payload: Record<string, unknown>): DiagnosisResult => {
+    const meta = payload.meta && typeof payload.meta === 'object'
+      ? payload.meta as Record<string, unknown>
+      : {};
     const treatmentObj = payload.treatment && typeof payload.treatment === 'object'
       ? payload.treatment as Record<string, unknown>
       : undefined;
     const selectedBranch = typeof treatmentObj?.selected_branch === 'string'
       ? treatmentObj.selected_branch
       : (typeof payload.selected_branch === 'string' ? payload.selected_branch : undefined);
+    const rawVerification = payload.verification_result && typeof payload.verification_result === 'object'
+      ? payload.verification_result as Record<string, unknown>
+      : undefined;
+    const verificationResult = rawVerification
+      ? {
+        passed: typeof rawVerification.passed === 'boolean'
+          ? rawVerification.passed
+          : (typeof payload.verification_passed === 'boolean' ? payload.verification_passed : undefined),
+        risk_level: typeof rawVerification.risk_level === 'string'
+          ? rawVerification.risk_level
+          : (typeof payload.verification_risk_level === 'string' ? payload.verification_risk_level : undefined),
+        issues: Array.isArray(rawVerification.issues)
+          ? rawVerification.issues.map((item) => String(item))
+          : (Array.isArray(payload.verification_issues) ? payload.verification_issues.map((item) => String(item)) : []),
+        must_fix: Array.isArray(rawVerification.must_fix)
+          ? rawVerification.must_fix.map((item) => String(item))
+          : [],
+        suggested_rewrite_points: Array.isArray(rawVerification.suggested_rewrite_points)
+          ? rawVerification.suggested_rewrite_points.map((item) => String(item))
+          : [],
+        compliance_summary: typeof rawVerification.compliance_summary === 'string'
+          ? rawVerification.compliance_summary
+          : (typeof payload.verification_summary === 'string' ? payload.verification_summary : undefined),
+      }
+      : undefined;
 
     return ({
     image_url: typeof payload.image_url === 'string' ? payload.image_url : '',
@@ -342,10 +391,21 @@ export function DiagnosePage() {
     profile_equipment: Array.isArray(payload.profile_equipment) ? payload.profile_equipment.map((item) => String(item)) : [],
     profile_cultivation_mode: typeof payload.profile_cultivation_mode === 'string' ? payload.profile_cultivation_mode : undefined,
     selected_branch: selectedBranch,
-    risk_tags: Array.isArray(payload.risk_tags) ? payload.risk_tags.map((item) => String(item)) : [],
-    risk_items: normalizeRiskItems(payload.risk_items),
-    risk_summary: typeof payload.risk_summary === 'string' ? payload.risk_summary : undefined,
-    risk_updated_at: typeof payload.risk_updated_at === 'string' ? payload.risk_updated_at : undefined,
+    risk_tags: Array.isArray(payload.risk_tags)
+      ? payload.risk_tags.map((item) => String(item))
+      : (Array.isArray(meta.risk_tags) ? meta.risk_tags.map((item) => String(item)) : []),
+    risk_items: normalizeRiskItems(payload.risk_items ?? meta.risk_items),
+    risk_summary: typeof payload.risk_summary === 'string'
+      ? payload.risk_summary
+      : (typeof meta.risk_summary === 'string' ? meta.risk_summary : undefined),
+    risk_updated_at: typeof payload.risk_updated_at === 'string'
+      ? payload.risk_updated_at
+      : (typeof meta.risk_updated_at === 'string' ? meta.risk_updated_at : undefined),
+    verification_result: verificationResult,
+    verification_passed: verificationResult?.passed ?? (typeof payload.verification_passed === 'boolean' ? payload.verification_passed : undefined),
+    verification_risk_level: verificationResult?.risk_level ?? (typeof payload.verification_risk_level === 'string' ? payload.verification_risk_level : undefined),
+    verification_issues: verificationResult?.issues ?? (Array.isArray(payload.verification_issues) ? payload.verification_issues.map((item) => String(item)) : []),
+    verification_summary: verificationResult?.compliance_summary ?? (typeof payload.verification_summary === 'string' ? payload.verification_summary : undefined),
   });
   };
 
@@ -629,6 +689,25 @@ export function DiagnosePage() {
 
   const renderTreatment = (t: unknown): JSX.Element | null => renderRichValue(t);
   const candidates = parseTop3Candidates(latestPayload ?? result ?? {}, result);
+  const verification = result?.verification_result;
+  const verificationPassed = verification?.passed ?? result?.verification_passed;
+  const primaryRiskLabels = (() => {
+    if (!result) return [] as string[];
+    if (Array.isArray(result.risk_items) && result.risk_items.length > 0) {
+      const sorted = [...result.risk_items].sort((a, b) => {
+        const weight = (level?: string) => (level === 'high' ? 3 : level === 'medium' ? 2 : 1);
+        return weight(b.level) - weight(a.level);
+      });
+      const labels = sorted
+        .map((item) => (item.label || item.code || '').trim())
+        .filter(Boolean);
+      return Array.from(new Set(labels)).slice(0, 3);
+    }
+    if (Array.isArray(result.risk_tags) && result.risk_tags.length > 0) {
+      return Array.from(new Set(result.risk_tags.map((tag) => String(tag).trim()).filter(Boolean))).slice(0, 3);
+    }
+    return [] as string[];
+  })();
   const shouldHideTreatment = confirmMode;
   const baseOptions: BaseOption[] = selectedProfile?.bases && typeof selectedProfile.bases === 'object'
     ? Object.entries(selectedProfile.bases).map(([baseId, base]) => ({
@@ -762,7 +841,7 @@ export function DiagnosePage() {
                 </SelectTrigger>
                 <SelectContent side="bottom" align="start" sideOffset={6} className="bg-[#111] text-white border-white/20">
                   <SelectItem value="__EMPTY__">未设置</SelectItem>
-                  {TOMATO_GROWTH_STAGE_OPTIONS.map((stage) => (
+                  {TOMATO_GROWTH_STAGE_OPTIONS.map((stage: { value: string; label: string }) => (
                     <SelectItem key={stage.value} value={stage.value} className="text-white data-[highlighted]:bg-[#c8f7c5] data-[highlighted]:text-black">
                       {stage.label}
                     </SelectItem>
@@ -784,7 +863,7 @@ export function DiagnosePage() {
                   sideOffset={6}
                   className="bg-[#111] text-white border-white/20"
                 >
-                  {modelOptions.map((option) => (
+                  {modelOptions.map((option: { value: string; label: string }) => (
                     <SelectItem key={option.value} value={option.value} className="text-white data-[highlighted]:bg-[#c8f7c5] data-[highlighted]:text-black">
                       {option.label}
                     </SelectItem>
@@ -970,53 +1049,16 @@ export function DiagnosePage() {
                   <div>
                     <h4 className="text-white/80 font-medium mb-2">农业风险标签（辅助解释层）</h4>
                     <div className="bg-white/5 rounded-xl p-4 border border-[#c8f7c5]/20 text-sm text-white/80 space-y-4">
-                      {Array.isArray(result.risk_items) && result.risk_items.length > 0 ? (
+                      {primaryRiskLabels.length > 0 ? (
                         <>
                           <div className="flex flex-wrap gap-2">
-                            {result.risk_items.map((item, idx) => {
-                              const levelClass = item.level === 'high' 
-                                ? 'bg-yellow-500/20 text-yellow-200 border-yellow-500/40'
-                                : item.level === 'medium'
-                                ? 'bg-[#c8f7c5]/20 text-[#c8f7c5] border-[#c8f7c5]/40'
-                                : 'bg-green-500/20 text-green-200 border-green-500/40';
-                              return (
-                                <Badge key={`${item.code || item.label || 'risk'}-${idx}`} className={levelClass}>
-                                  {item.label || item.code || '风险标签'}
-                                </Badge>
-                              );
-                            })}
-                          </div>
-                          {result.risk_summary ? <p className="text-white/70">风险摘要：{result.risk_summary}</p> : null}
-                          <div className="space-y-3">
-                            {result.risk_items.map((item, idx) => {
-                              return (
-                                <div key={`risk-item-${idx}`} className="bg-white/5 p-3 rounded-lg">
-                                  <div className="flex justify-between items-center mb-1">
-                                    <span className="font-medium text-white">{item.label || item.code || '风险标签'}</span>
-                                    <Badge className={item.level === 'high' 
-                                      ? 'bg-yellow-500/30 text-yellow-200 border-yellow-500/50'
-                                      : item.level === 'medium'
-                                      ? 'bg-[#c8f7c5]/30 text-[#c8f7c5] border-[#c8f7c5]/50'
-                                      : 'bg-green-500/30 text-green-200 border-green-500/50'
-                                    }>
-                                      {item.level || 'unknown'}
-                                    </Badge>
-                                  </div>
-                                  <p className="text-white/70 mb-2">{item.reason || ''}</p>
-                                  {item.source && <p className="text-xs text-white/50">来源：{item.source}</p>}
-                                </div>
-                              );
-                            })}
-                          </div>
-                          {result.risk_updated_at && (
-                            <p className="text-xs text-white/50">更新时间：{formatRiskUpdatedAt(result.risk_updated_at)}</p>
-                          )}
-                        </>
-                      ) : Array.isArray(result.risk_tags) && result.risk_tags.length > 0 ? (
-                        <>
-                          <div className="flex flex-wrap gap-2">
-                            {result.risk_tags.map((tag) => (
-                              <Badge key={tag} className="bg-[#c8f7c5]/20 text-[#c8f7c5] border border-[#c8f7c5]/40">{tag}</Badge>
+                            {primaryRiskLabels.map((tag, idx) => (
+                              <span
+                                key={`${tag}-${idx}`}
+                                className="inline-flex items-center rounded-full border border-[#73d59f]/70 bg-[#73d59f]/20 px-3 py-1 text-xs font-medium text-[#baf7d3]"
+                              >
+                                {tag}
+                              </span>
                             ))}
                           </div>
                           {result.risk_summary ? <p className="text-white/70">风险摘要：{result.risk_summary}</p> : null}
@@ -1035,9 +1077,18 @@ export function DiagnosePage() {
 
                   <div>
                     <h4 className="text-white/80 font-medium mb-2">待补充信息（用于提升个性化精度）</h4>
-                    <div className="bg-white/5 rounded-xl p-4 border border-[#c8f7c5]/20 text-sm text-white/80 space-y-2">
+                    <div className={cn(
+                      "rounded-xl p-4 border text-sm space-y-3",
+                      verificationPassed === true && "bg-green-500/10 border-green-400/30 text-green-100",
+                      verificationPassed === false && "bg-yellow-500/10 border-yellow-400/30 text-yellow-100",
+                      verificationPassed === undefined && "bg-white/5 border-white/20 text-white/80",
+                    )}>
                       <div className="flex items-center gap-2">
-                        <Badge className="bg-[#c8f7c5]/20 text-[#c8f7c5] border border-[#c8f7c5]/40">建议补齐</Badge>
+                        <Badge className={cn(
+                          verificationPassed === true && 'bg-green-500/30 text-green-100 border border-green-400/40',
+                          verificationPassed === false && 'bg-yellow-500/30 text-yellow-100 border border-yellow-400/40',
+                          verificationPassed === undefined && 'bg-white/10 text-white',
+                        )}>建议补齐</Badge>
                       </div>
                       {Array.isArray(result.follow_up_questions) && result.follow_up_questions.length > 0 ? (
                         <ul className="list-disc pl-5 space-y-1">
@@ -1157,21 +1208,36 @@ export function DiagnosePage() {
                 <RefreshCw className="w-5 h-5 text-[#c8f7c5]" />
                 多智能体协作流程
               </CardTitle>
-              {traceId && (
-                <div className="flex items-center gap-3">
-                  <span className="text-white/40 text-sm">追踪ID: {traceId.slice(0, 16)}...</span>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={refreshTrace}
-                    className="border-white/20 text-white hover:bg-white/10"
-                  >
-                    <RefreshCw className="w-4 h-4" />
-                  </Button>
-                </div>
-              )}
+              <div className="flex items-center gap-3">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setWorkflowCollapsed((prev) => !prev)}
+                  className="text-white/70 hover:bg-white/10"
+                >
+                  {workflowCollapsed ? <ChevronDown className="w-4 h-4 mr-1" /> : <ChevronUp className="w-4 h-4 mr-1" />}
+                  {workflowCollapsed ? '展开流程' : '折叠流程'}
+                </Button>
+                {traceId && (
+                  <>
+                    <span className="text-white/40 text-sm">追踪ID: {traceId.slice(0, 16)}...</span>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={refreshTrace}
+                      className="border-white/20 text-white hover:bg-white/10"
+                    >
+                      <RefreshCw className="w-4 h-4" />
+                    </Button>
+                  </>
+                )}
+              </div>
             </CardHeader>
+            {!workflowCollapsed && (
             <CardContent className="space-y-4">
+              <p className="text-xs text-white/60">
+                当前流程包含：接待解析 → 病害诊断 → 知识检索 → 方案生成 → 农业合规审查。
+              </p>
               <AgentWorkflowPanel
                 key={`${traceId || 'idle'}-${workflowRefreshToken}`}
                 traceId={traceId || undefined}
@@ -1243,6 +1309,7 @@ export function DiagnosePage() {
                 <p className="text-xs text-white/40">诊断启动时间：{new Date(diagnosisStartTime).toLocaleTimeString()}</p>
               )}
             </CardContent>
+            )}
           </Card>
         </div>
       </div>
