@@ -1059,24 +1059,18 @@ export function DiagnosePage() {
 
                   <div>
                     <h4 className="text-white/80 font-medium mb-2">农业风险标签（辅助解释层）</h4>
-                    <div className="bg-white/5 rounded-xl p-4 border border-[#c8f7c5]/20 text-sm text-white/80 space-y-4">
+                    <div className="bg-white/5 rounded-xl p-4 border border-[#c8f7c5]/20 text-sm text-white/80">
                       {primaryRiskLabels.length > 0 ? (
-                        <>
-                          <div className="flex flex-wrap gap-2">
-                            {primaryRiskLabels.map((tag, idx) => (
-                              <span
-                                key={`${tag}-${idx}`}
-                                className="inline-flex items-center rounded-full border border-[#73d59f]/70 bg-[#73d59f]/20 px-3 py-1 text-xs font-medium text-[#baf7d3]"
-                              >
-                                {tag}
-                              </span>
-                            ))}
-                          </div>
-                          {result.risk_summary ? <p className="text-white/70">风险摘要：{result.risk_summary}</p> : null}
-                          {result.risk_updated_at && (
-                            <p className="text-xs text-white/50">更新时间：{formatRiskUpdatedAt(result.risk_updated_at)}</p>
-                          )}
-                        </>
+                        <div className="flex flex-wrap gap-2">
+                          {primaryRiskLabels.map((tag, idx) => (
+                            <span
+                              key={`${tag}-${idx}`}
+                              className="inline-flex items-center rounded-full border border-[#73d59f]/70 bg-[#73d59f]/20 px-3 py-1 text-xs font-medium text-[#baf7d3]"
+                            >
+                              {tag}
+                            </span>
+                          ))}
+                        </div>
                       ) : (
                         <div className="text-center py-4 text-white/50">
                           <p>暂无风险标签</p>
@@ -1086,72 +1080,13 @@ export function DiagnosePage() {
                     </div>
                   </div>
 
-                  <div>
-                    <h4 className="text-white/80 font-medium mb-2">农业合规性审查（Verification）</h4>
-                    <div
-                      className={cn(
-                        "rounded-xl p-4 border text-sm space-y-3",
-                        verificationPassed === true && "bg-green-500/10 border-green-400/30 text-green-100",
-                        verificationPassed === false && "bg-yellow-500/10 border-yellow-400/30 text-yellow-100",
-                        verificationPassed === undefined && "bg-white/5 border-white/20 text-white/80",
-                      )}
-                    >
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span>审查状态：</span>
-                        <Badge className={cn(
-                          verificationPassed === true && 'bg-green-500/30 text-green-100 border border-green-400/40',
-                          verificationPassed === false && 'bg-yellow-500/30 text-yellow-100 border border-yellow-400/40',
-                          verificationPassed === undefined && 'bg-white/10 text-white',
-                        )}>
-                          {verificationPassed === true ? '审查通过' : verificationPassed === false ? '审查未通过' : '尚未完成审查'}
-                        </Badge>
-                        <span className="text-xs opacity-80">风险等级：{verificationRiskLabel}{verificationRiskLevel ? ` (${verificationRiskLevel})` : ''}</span>
-                      </div>
 
-                      {verificationSummary ? (
-                        <p className="leading-relaxed">摘要：{verificationSummary}</p>
-                      ) : (
-                        <p className="text-white/60">尚未完成审查</p>
-                      )}
-
-                      {verificationIssues.length > 0 && (
-                        <div>
-                          <p className="font-medium mb-1">主要问题</p>
-                          <ul className="list-disc pl-5 space-y-1">
-                            {verificationIssues.map((item, idx) => (
-                              <li key={`verification-issue-${idx}`}>{item}</li>
-                            ))}
-                          </ul>
-                        </div>
-                      )}
-
-                      {verificationPassed === false && verificationMustFix.length > 0 && (
-                        <div>
-                          <p className="font-medium mb-1">必须修改</p>
-                          <ul className="list-disc pl-5 space-y-1">
-                            {verificationMustFix.map((item, idx) => (
-                              <li key={`verification-must-fix-${idx}`}>{item}</li>
-                            ))}
-                          </ul>
-                        </div>
-                      )}
-                    </div>
-                  </div>
 
                   <div>
                     <h4 className="text-white/80 font-medium mb-2">待补充信息（用于提升个性化精度）</h4>
-                    <div className={cn(
-                      "rounded-xl p-4 border text-sm space-y-3",
-                      verificationPassed === true && "bg-green-500/10 border-green-400/30 text-green-100",
-                      verificationPassed === false && "bg-yellow-500/10 border-yellow-400/30 text-yellow-100",
-                      verificationPassed === undefined && "bg-white/5 border-white/20 text-white/80",
-                    )}>
+                    <div className="bg-white/5 rounded-xl p-4 border border-[#c8f7c5]/20 text-sm text-white/80 space-y-3">
                       <div className="flex items-center gap-2">
-                        <Badge className={cn(
-                          verificationPassed === true && 'bg-green-500/30 text-green-100 border border-green-400/40',
-                          verificationPassed === false && 'bg-yellow-500/30 text-yellow-100 border border-yellow-400/40',
-                          verificationPassed === undefined && 'bg-white/10 text-white',
-                        )}>建议补齐</Badge>
+                        <Badge className="bg-[#c8f7c5]/20 text-[#c8f7c5] border border-[#c8f7c5]/40">建议补齐</Badge>
                       </div>
                       {Array.isArray(result.follow_up_questions) && result.follow_up_questions.length > 0 ? (
                         <ul className="list-disc pl-5 space-y-1">
