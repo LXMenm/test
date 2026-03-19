@@ -297,6 +297,7 @@ function normalizeNodeKey(event: Record<string, unknown>): string {
   if (raw.includes('diagnosis') || raw.includes('诊断')) return 'diagnosis';
   if (raw.includes('kb') || raw.includes('retrieval') || raw.includes('知识')) return 'kb_retrieval';
   if (raw.includes('treatment') || raw.includes('治疗')) return 'treatment';
+  if (raw.includes('verification') || raw.includes('compliance') || raw.includes('review') || raw.includes('审查')) return 'verification';
   if (raw.includes('supervisor') || raw.includes('监督')) return 'supervisor';
   return raw;
 }
@@ -385,6 +386,7 @@ function buildTraceSummary(rows: unknown[]): TraceSummaryItem[] {
     : (Array.isArray(kbOutputs.ingredients) ? kbOutputs.ingredients : []);
 
   const treatmentOutputs = getNodeOutputs(getLatestNode(nodeMap, 'treatment'));
+  const verificationOutputs = getNodeOutputs(getLatestNode(nodeMap, 'verification'));
   const personalizationNode = getLatestNode(nodeMap, 'personalization');
   const personalizationPayload = toRecord(personalizationNode?.payload);
   const personalizationMeta = toRecord(personalizationPayload?.meta) ?? {};
@@ -440,6 +442,12 @@ function buildTraceSummary(rows: unknown[]): TraceSummaryItem[] {
       { label: '触发过滤（treatment.outputs.filtered）', value: typeof treatmentOutputs.filtered === 'boolean' ? toYesNo(treatmentOutputs.filtered) : '' },
       { label: '过滤原因（treatment.outputs.filtered_reasons）', value: Array.isArray(treatmentOutputs.filtered_reasons) ? treatmentOutputs.filtered_reasons.map((item) => sanitizeTraceText(item)).filter(Boolean).join('、') : '' },
       { label: '个性化理由（treatment.outputs.personalization_reasons）', value: Array.isArray(treatmentOutputs.personalization_reasons) ? treatmentOutputs.personalization_reasons.map((item) => sanitizeTraceText(item)).filter(Boolean).slice(0, 3).join('；') : '' },
+    ]),
+    make('verification', '农业合规审查（verification）', [
+      { label: '审查通过（verification.outputs.passed）', value: typeof verificationOutputs.passed === 'boolean' ? toYesNo(verificationOutputs.passed) : '' },
+      { label: '风险等级（verification.outputs.risk_level）', value: sanitizeTraceText(verificationOutputs.risk_level) },
+      { label: '审查摘要（verification.outputs.compliance_summary）', value: sanitizeTraceText(verificationOutputs.compliance_summary ?? verificationOutputs.summary) },
+      { label: '问题列表（verification.outputs.issues）', value: Array.isArray(verificationOutputs.issues) ? verificationOutputs.issues.map((item) => sanitizeTraceText(item)).filter(Boolean).join('、') : '' },
     ]),
     make('risk', '农业风险解释（risk）', [
       { label: '风险标签（personalization.meta.risk_tags）', value: Array.isArray(personalizationMeta.risk_tags) ? personalizationMeta.risk_tags.map((item) => sanitizeTraceText(item)).filter(Boolean).join('、') : '' },
