@@ -615,6 +615,164 @@ def _latest_case_event_by_trace(trace_id: str) -> dict[str, Any]:
     return {}
 
 
+def _safe_float(value: Any) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _normalize_top3_candidates(value: Any) -> list[tuple[str, float]]:
+    normalized: list[tuple[str, float]] = []
+    for item in _as_clean_list(value):
+        disease = ""
+        prob: float | None = None
+        if isinstance(item, (list, tuple)) and len(item) >= 2:
+            disease = str(item[0]).strip()
+            prob = _safe_float(item[1])
+        elif isinstance(item, dict):
+            disease = str(
+                item.get("disease")
+                or item.get("label")
+                or item.get("name")
+                or ""
+            ).strip()
+            prob = _safe_float(item.get("prob"))
+            if prob is None:
+                prob_pct = _safe_float(item.get("prob_pct"))
+                prob = (prob_pct / 100.0) if prob_pct is not None else None
+            if prob is None:
+                prob = _safe_float(item.get("confidence"))
+            if prob is None:
+                confidence_pct = _safe_float(item.get("confidence_pct"))
+                prob = (confidence_pct / 100.0) if confidence_pct is not None else None
+        if disease and prob is not None:
+            normalized.append((disease, float(prob)))
+    return normalized
+
+
+def _build_image_diagnosis_from_event(event: dict[str, Any]) -> dict[str, Any]:
+    image_result = _safe_record(event.get("image_result"))
+    top3 = _normalize_top3_candidates(image_result.get("top3"))
+    top1_disease = str(image_result.get("disease") or "").strip()
+    top1_confidence = _safe_float(image_result.get("confidence"))
+    if top1_confidence is None:
+        confidence_pct = _safe_float(image_result.get("confidence_pct"))
+        top1_confidence = (confidence_pct / 100.0) if confidence_pct is not None else None
+
+    if not top3 and top1_disease and top1_confidence is not None:
+        top3 = [(top1_disease, top1_confidence)]
+    if (not top1_disease or top1_confidence is None) and top3:
+        top1_disease, top1_confidence = top3[0]
+
+    if not top1_disease and not top3:
+        return {}
+
+    return {
+        "top1": {
+            "disease": top1_disease,
+            "confidence": float(top1_confidence or 0.0),
+        },
+        "top3": [(name, float(prob)) for name, prob in top3],
+    }
+
+
+def _extract_event_model_meta(event: dict[str, Any]) -> dict[str, Any]:
+    meta = _safe_record(event.get("meta"))
+    fallback_reason = [
+        str(item).strip()
+        for item in _as_clean_list(meta.get("model_fallback_reason") or event.get("model_fallback_reason"))
+        if str(item).strip()
+    ]
+    return {
+        "model_id": meta.get("model_id") or event.get("model_id"),
+        "model_display_name": meta.get("model_display_name") or event.get("model_display_name"),
+        "backend": meta.get("model_backend") or meta.get("backend") or event.get("model_backend"),
+        "resolved_model_path": meta.get("resolved_model_path") or event.get("resolved_model_path"),
+        "model_fallback_reason": fallback_reason,
+    }
+
+
+def _resolve_confirm_choice_confidence(choice: str, previous_case_event: dict[str, Any]) -> float | None:
+    normalized_choice = str(choice or "").strip()
+    if not normalized_choice:
+        return None
+
+    for candidates in (
+        _normalize_top3_candidates(previous_case_event.get("fusion_top3")),
+        _normalize_top3_candidates(_safe_record(previous_case_event.get("image_result")).get("top3")),
+        _normalize_top3_candidates(previous_case_event.get("text_top3")),
+    ):
+        for disease, prob in candidates:
+            if disease == normalized_choice:
+                return float(prob)
+
+    diagnosis_evidence = _safe_record(previous_case_event.get("diagnosis_evidence"))
+    fallback_zero: float | None = None
+    for raw in (
+        previous_case_event.get("final_confidence"),
+        diagnosis_evidence.get("final_confidence"),
+        _safe_record(previous_case_event.get("image_result")).get("confidence"),
+        previous_case_event.get("image_confidence"),
+        previous_case_event.get("text_confidence"),
+    ):
+        value = _safe_float(raw)
+        if value is None:
+            continue
+        if value > 0:
+            return value
+        fallback_zero = value
+    return fallback_zero
+
+
+def _inherit_previous_diagnosis_context(
+    state: dict[str, Any],
+    *,
+    choice: str,
+    previous_case_event: dict[str, Any],
+) -> dict[str, Any]:
+    previous_image_result = _safe_record(previous_case_event.get("image_result"))
+    image_diagnosis = _build_image_diagnosis_from_event(previous_case_event)
+    model_meta = _extract_event_model_meta(previous_case_event)
+    text_top3 = _normalize_top3_candidates(previous_case_event.get("text_top3"))
+    fusion_top3 = _normalize_top3_candidates(previous_case_event.get("fusion_top3"))
+    diagnosis_evidence = previous_case_event.get("diagnosis_evidence")
+    resolved_confidence = _resolve_confirm_choice_confidence(choice, previous_case_event)
+    image_confidence = _safe_float(previous_case_event.get("image_confidence"))
+    if image_confidence is None:
+        image_confidence = _safe_float(previous_image_result.get("confidence"))
+    text_confidence = _safe_float(previous_case_event.get("text_confidence"))
+
+    state["final_disease"] = choice
+    state["disease_type"] = choice
+    state["final_source"] = "user_confirmed_candidate"
+    state["final_confidence"] = resolved_confidence
+    state["disease_confidence"] = resolved_confidence
+    state["image_confidence"] = image_confidence
+    state["text_confidence"] = text_confidence
+    state["text_top3"] = text_top3
+    state["fusion_top3"] = fusion_top3
+    state["diagnosis_evidence"] = diagnosis_evidence if isinstance(diagnosis_evidence, dict) else None
+    state["modality_conflict_flag"] = previous_case_event.get("modality_conflict_flag")
+    state["image_diagnosis"] = image_diagnosis
+    state["image_result"] = previous_image_result
+    state["diagnosis_model_meta"] = model_meta
+    if not state.get("diagnosis_model_id") and model_meta.get("model_id"):
+        state["diagnosis_model_id"] = model_meta.get("model_id")
+
+    return {
+        "final_confidence": resolved_confidence,
+        "final_source": state.get("final_source"),
+        "image_confidence": image_confidence,
+        "text_confidence": text_confidence,
+        "model_display_name": model_meta.get("model_display_name"),
+        "fusion_top3": fusion_top3,
+        "image_top3": image_diagnosis.get("top3") or [],
+    }
+
+
 def _build_personalization_meta(flags: dict, farmer_id: str | None, base_id: str | None) -> dict:
     risk_tags = [
         normalize_risk_code(item)
@@ -1279,6 +1437,7 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
     # 确认输入是同一张图内的“等待用户补充 -> 回边重试”状态折返。
     # 因此确认输入症状必须与上一轮症状做增量合并，避免覆盖。
     history_events = list_trace_events(trace_id)
+    previous_case_event = _latest_case_event_by_trace(trace_id)
     historical_symptoms: list[str] = []
     for event_like in reversed(history_events):
         if not isinstance(event_like, dict):
@@ -1369,8 +1528,11 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
         outputs={},
     )
     if choice and choice != "other":
-        state["final_disease"] = choice
-        state["disease_type"] = choice
+        inherited_context = _inherit_previous_diagnosis_context(
+            state,
+            choice=choice,
+            previous_case_event=previous_case_event,
+        )
         flags = state.get("personalization_flags") or {}
         flags["need_confirm"] = False
         state["personalization_flags"] = flags
@@ -1378,7 +1540,13 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
             state,
             agent="confirm_choice",
             inputs={"choice": choice},
-            outputs={"final_disease": choice, "need_confirm": False},
+            outputs={
+                "final_disease": choice,
+                "need_confirm": False,
+                "final_source": state.get("final_source"),
+                "final_confidence": state.get("final_confidence"),
+                "inherited_context": inherited_context,
+            },
         )
 
     # 低置信度回退分支：由 supervisor 做统一路由决策，避免形成平行独立流程。
@@ -1474,7 +1642,6 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
     else:
         confirm_status = "completed"
 
-    previous_case_event = _latest_case_event_by_trace(trace_id)
     carried_fallback_used = bool(previous_case_event.get("fallback_used")) if isinstance(previous_case_event, dict) else False
     carried_fallback_reason = previous_case_event.get("fallback_reason") if isinstance(previous_case_event, dict) else None
     carried_rule_result = previous_case_event.get("rule_result") if isinstance(previous_case_event, dict) else None
