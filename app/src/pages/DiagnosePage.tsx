@@ -58,6 +58,12 @@ interface DiagnosisResult {
   verification_risk_level?: string;
   verification_issues?: string[];
   verification_summary?: string;
+  status?: string;
+  confirm_message?: string;
+  expert_review_recommended?: boolean;
+  expert_review_selected?: boolean;
+  expert_review_status?: string;
+  treatment_available?: boolean;
 }
 
 interface ProfileListItem {
@@ -315,17 +321,6 @@ export function DiagnosePage() {
     });
   };
 
-  const formatRiskUpdatedAt = (value?: string) => {
-    if (!value) return '';
-    try {
-      const date = new Date(value);
-      if (isNaN(date.getTime())) return '';
-      return date.toLocaleString();
-    } catch {
-      return '';
-    }
-  };
-
   const buildResultFromPayload = (payload: Record<string, unknown>): DiagnosisResult => {
     const meta = payload.meta && typeof payload.meta === 'object'
       ? payload.meta as Record<string, unknown>
@@ -406,6 +401,12 @@ export function DiagnosePage() {
       verification_risk_level: verificationResult?.risk_level ?? (typeof payload.verification_risk_level === 'string' ? payload.verification_risk_level : undefined),
       verification_issues: verificationResult?.issues ?? (Array.isArray(payload.verification_issues) ? payload.verification_issues.map((item) => String(item)) : []),
       verification_summary: verificationResult?.compliance_summary ?? (typeof payload.verification_summary === 'string' ? payload.verification_summary : undefined),
+      status: typeof payload.status === 'string' ? payload.status : undefined,
+      confirm_message: typeof payload.confirm_message === 'string' ? payload.confirm_message : undefined,
+      expert_review_recommended: payload.expert_review_recommended === true,
+      expert_review_selected: payload.expert_review_selected === true,
+      expert_review_status: typeof payload.expert_review_status === 'string' ? payload.expert_review_status : undefined,
+      treatment_available: payload.treatment_available === true,
     };
   };
 
@@ -570,9 +571,11 @@ export function DiagnosePage() {
       setLatestPayload(payloadRecord);
 
       const candidates = parseTop3Candidates(payloadRecord, normalizedResult);
-      const needsConfirm = typeof payload.need_confirm === 'boolean'
-        ? payload.need_confirm
-        : deriveNeedConfirm(payloadRecord, candidates, normalizedResult.displayConfidencePct);
+      const needsConfirm = payload.status === 'waiting_for_supplement' && payload.expert_review_recommended !== true && (
+        typeof payload.need_confirm === 'boolean'
+          ? payload.need_confirm
+          : deriveNeedConfirm(payloadRecord, candidates, normalizedResult.displayConfidencePct)
+      );
       console.log('[confirm] candidates=', candidates);
       console.log('[confirm] derivedNeedConfirm=', needsConfirm);
       setConfirmMode(needsConfirm);
@@ -586,7 +589,7 @@ export function DiagnosePage() {
     }
   };
 
-  const handleConfirmSubmit = async () => {
+  const handleConfirmSubmit = async (expertReviewDecision?: 'accept' | 'decline') => {
     if (!traceId || !imageId) return;
     setDiagnosisStartTime(Date.now());
     setConfirmSubmitting(true);
@@ -596,7 +599,9 @@ export function DiagnosePage() {
         .map((item) => item.trim())
         .filter(Boolean);
       const symptomsForConfirm = additionalSymptoms;
-      const choiceForConfirm = (confirmChoice && confirmChoice !== 'other') ? confirmChoice : 'other';
+      const choiceForConfirm = expertReviewDecision
+        ? (result?.final_disease || ((confirmChoice && confirmChoice !== 'other') ? confirmChoice : 'other'))
+        : ((confirmChoice && confirmChoice !== 'other') ? confirmChoice : 'other');
 
       const resp = await fetch('/api/diagnose-confirm', {
         method: 'POST',
@@ -612,6 +617,7 @@ export function DiagnosePage() {
           notes: confirmSymptoms || null,
           farmer_id: selectedFarmerId || null,
           base_id: selectedBaseId || null,
+          expert_review_decision: expertReviewDecision ?? null,
         }),
       });
       const data = await resp.json();
@@ -639,9 +645,11 @@ export function DiagnosePage() {
       const payloadRecord = mergedPayload && typeof mergedPayload === 'object' ? mergedPayload as Record<string, unknown> : {};
       setLatestPayload(payloadRecord);
       const candidates = parseTop3Candidates(payloadRecord, nextResult);
-      const needsConfirm = typeof data?.need_confirm === 'boolean'
-        ? data.need_confirm
-        : deriveNeedConfirm(payloadRecord, candidates, nextResult.displayConfidencePct);
+      const needsConfirm = data?.status === 'waiting_for_supplement' && data?.expert_review_recommended !== true && (
+        typeof data?.need_confirm === 'boolean'
+          ? data.need_confirm
+          : deriveNeedConfirm(payloadRecord, candidates, nextResult.displayConfidencePct)
+      );
       console.log('[confirm] candidates=', candidates);
       console.log('[confirm] derivedNeedConfirm=', needsConfirm);
       setConfirmMode(needsConfirm);
@@ -689,19 +697,9 @@ export function DiagnosePage() {
 
   const renderTreatment = (t: unknown): JSX.Element | null => renderRichValue(t);
   const candidates = parseTop3Candidates(latestPayload ?? result ?? {}, result);
-  const verification = result?.verification_result;
-  const verificationPassed = verification?.passed ?? result?.verification_passed;
-  const verificationRiskLevel = verification?.risk_level ?? result?.verification_risk_level ?? '';
-  const verificationRiskLabel = verificationRiskLevel === 'high'
-    ? '高风险'
-    : verificationRiskLevel === 'medium'
-      ? '中风险'
-      : verificationRiskLevel === 'low'
-        ? '低风险'
-        : (verificationRiskLevel || '未评估');
-  const verificationSummary = verification?.compliance_summary ?? result?.verification_summary ?? '';
-  const verificationIssues: string[] = verification?.issues ?? result?.verification_issues ?? [];
-  const verificationMustFix: string[] = verification?.must_fix ?? [];
+  const expertReviewRecommended = result?.expert_review_recommended === true;
+  const expertReviewPending = result?.status === 'pending_expert_review' || result?.expert_review_status === 'PENDING';
+  const shouldShowExpertReviewDecision = result?.status === 'waiting_for_supplement' && expertReviewRecommended && !expertReviewPending;
   const primaryRiskLabels = (() => {
     if (!result) return [] as string[];
     if (Array.isArray(result.risk_items) && result.risk_items.length > 0) {
@@ -719,7 +717,7 @@ export function DiagnosePage() {
     }
     return [] as string[];
   })();
-  const shouldHideTreatment = confirmMode;
+  const shouldHideTreatment = confirmMode || shouldShowExpertReviewDecision || expertReviewPending;
   const baseOptions: BaseOption[] = selectedProfile?.bases && typeof selectedProfile.bases === 'object'
     ? Object.entries(selectedProfile.bases).map(([baseId, base]) => ({
       id: baseId,
@@ -1110,7 +1108,7 @@ export function DiagnosePage() {
 
                   {confirmMode ? (
                     <div className="bg-[#c8f7c5]/10 border border-[#c8f7c5]/30 rounded-xl p-4 space-y-4">
-                      <h4 className="text-[#c8f7c5] font-medium">二次诊断 / 确认入口</h4>
+                      <h4 className="text-[#c8f7c5] font-medium">补充诊断 / 候选确认</h4>
                       <p className="text-xs text-white/70">当前候选数量：{candidates.length}</p>
                       <div className="space-y-2">
                         <Label className="text-white/80">候选病害选择</Label>
@@ -1134,7 +1132,7 @@ export function DiagnosePage() {
                             checked={confirmChoice === 'other'}
                             onChange={(e) => setConfirmChoice(e.target.value)}
                           />
-                          <span>仍不确定 / 其他</span>
+                          <span>继续补充症状 / 其他</span>
                         </label>
                       </div>
 
@@ -1147,10 +1145,10 @@ export function DiagnosePage() {
                             placeholder="例如：叶片卷曲, 发黄, 斑点扩大"
                             className="bg-white/5 border-white/20 text-white placeholder:text-white/40"
                           />
-                          <p className="text-xs text-white/60">已选择“仍不确定/其他”，建议填写症状帮助模型继续判别。</p>
+                          <p className="text-xs text-white/60">已选择“继续补充症状 / 其他”，建议填写症状帮助模型继续判别。</p>
                         </div>
                       ) : (
-                        <p className="text-xs text-white/60">已选择具体病害，可直接提交确认；若仍不确定请切换到“仍不确定/其他”并补充症状。</p>
+                        <p className="text-xs text-white/60">已选择具体病害，可直接提交确认；若仍不确定请切换到“继续补充症状 / 其他”并补充症状。</p>
                       )}
 
                       <Button
@@ -1158,8 +1156,39 @@ export function DiagnosePage() {
                         disabled={confirmSubmitting || !traceId || !imageId}
                         className="bg-[#c8f7c5] text-black hover:bg-[#b8e7b5]"
                       >
-                        {confirmSubmitting ? '提交中...' : '提交确认'}
+                        {confirmSubmitting ? '提交中...' : '提交补充诊断'}
                       </Button>
+                    </div>
+                  ) : shouldShowExpertReviewDecision ? (
+                    <div className="bg-amber-500/10 border border-amber-400/30 rounded-xl p-4 space-y-4">
+                      <h4 className="text-amber-200 font-medium">补充诊断后仍建议专家复核</h4>
+                      <p className="text-sm text-white/80">
+                        {result.confirm_message || '多次补充后仍存在不确定性。你可以使用当前结果结束，或转入待专家复核状态。'}
+                      </p>
+                      <div className="flex flex-col sm:flex-row gap-3">
+                        <Button
+                          onClick={() => handleConfirmSubmit('decline')}
+                          disabled={confirmSubmitting || !traceId || !imageId}
+                          className="bg-[#c8f7c5] text-black hover:bg-[#b8e7b5]"
+                        >
+                          {confirmSubmitting ? '提交中...' : '使用当前结果结束'}
+                        </Button>
+                        <Button
+                          onClick={() => handleConfirmSubmit('accept')}
+                          disabled={confirmSubmitting || !traceId || !imageId}
+                          variant="outline"
+                          className="border-amber-300/50 text-amber-100 hover:bg-amber-500/10"
+                        >
+                          {confirmSubmitting ? '提交中...' : '转入专家复核'}
+                        </Button>
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {expertReviewPending ? (
+                    <div className="bg-blue-500/10 border border-blue-400/30 rounded-xl p-4 text-blue-100 text-sm space-y-2">
+                      <h4 className="font-medium">待专家复核</h4>
+                      <p>{result?.confirm_message || '当前病例已进入待专家复核状态，后续将由专家确认病害并补充最终方案。'}</p>
                     </div>
                   ) : null}
 
@@ -1168,7 +1197,11 @@ export function DiagnosePage() {
                   {/* Treatment */}
                   {shouldHideTreatment && (
                     <div className="bg-yellow-500/10 border border-yellow-400/30 rounded-xl p-4 text-yellow-200 text-sm">
-                      置信度不足，建议先二次诊断确认病害或补充症状。
+                      {expertReviewPending
+                        ? '当前病例已进入待专家复核状态，治疗/预防方案将在后续专家确认后下发。'
+                        : shouldShowExpertReviewDecision
+                          ? '当前结果已支持结束或转入专家复核，请先完成选择。'
+                          : '置信度不足，建议先完成补充诊断、确认候选病害或补充症状。'}
                     </div>
                   )}
 

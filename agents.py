@@ -1586,8 +1586,8 @@ def _deterministic_supervisor_decision(state: CropDiseaseState, flags: dict, mis
     if flags.get("need_confirm"):
         confirm_round_index = int(state.get("confirm_round_index") or 0)
         if confirm_round_index >= 1:
-            return "manual_review", True, "番茄病害监督智能体：二次诊断后仍不确定，建议转人工复核", ["need_confirm_manual_review"]
-        return "await_user_confirmation", True, "番茄病害监督智能体：需用户补充信息后再诊断，当前轮结束并返回追问问题", ["need_confirm_wait_user"]
+            return "manual_review", True, "番茄病害监督智能体：补充诊断后仍不确定，建议结束当前图并由用户决定是否转入专家复核", ["need_confirm_manual_review"]
+        return "await_user_confirmation", True, "番茄病害监督智能体：需用户进入补充诊断，当前轮结束并返回追问问题", ["need_confirm_wait_user"]
 
     if not state.get("kb_snapshot"):
         return "kb_retrieval", False, "番茄病害监督智能体：缺少知识快照，进入知识检索智能体", ["missing_kb_snapshot"]
@@ -1603,7 +1603,7 @@ def _deterministic_supervisor_decision(state: CropDiseaseState, flags: dict, mis
     if state.get("verification_passed") is False:
         rewrite_count = int(state.get("rewrite_count") or 0)
         if rewrite_count >= 1:
-            return "end", True, "番茄病害监督智能体：审查未通过且达到重写上限，建议人工复核", ["verification_failed_max_retry"]
+            return "end", True, "番茄病害监督智能体：审查未通过且达到重写上限，建议后续转入专家复核", ["verification_failed_max_retry"]
 
         state["rewrite_count"] = rewrite_count + 1
         return "treatment", False, "番茄病害监督智能体：审查未通过，回到治疗方案智能体重写", ["verification_failed_rewrite"]
