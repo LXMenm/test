@@ -315,17 +315,6 @@ export function DiagnosePage() {
     });
   };
 
-  const formatRiskUpdatedAt = (value?: string) => {
-    if (!value) return '';
-    try {
-      const date = new Date(value);
-      if (isNaN(date.getTime())) return '';
-      return date.toLocaleString();
-    } catch {
-      return '';
-    }
-  };
-
   const buildResultFromPayload = (payload: Record<string, unknown>): DiagnosisResult => {
     const meta = payload.meta && typeof payload.meta === 'object'
       ? payload.meta as Record<string, unknown>
@@ -689,19 +678,6 @@ export function DiagnosePage() {
 
   const renderTreatment = (t: unknown): JSX.Element | null => renderRichValue(t);
   const candidates = parseTop3Candidates(latestPayload ?? result ?? {}, result);
-  const verification = result?.verification_result;
-  const verificationPassed = verification?.passed ?? result?.verification_passed;
-  const verificationRiskLevel = verification?.risk_level ?? result?.verification_risk_level ?? '';
-  const verificationRiskLabel = verificationRiskLevel === 'high'
-    ? '高风险'
-    : verificationRiskLevel === 'medium'
-      ? '中风险'
-      : verificationRiskLevel === 'low'
-        ? '低风险'
-        : (verificationRiskLevel || '未评估');
-  const verificationSummary = verification?.compliance_summary ?? result?.verification_summary ?? '';
-  const verificationIssues: string[] = verification?.issues ?? result?.verification_issues ?? [];
-  const verificationMustFix: string[] = verification?.must_fix ?? [];
   const primaryRiskLabels = (() => {
     if (!result) return [] as string[];
     if (Array.isArray(result.risk_items) && result.risk_items.length > 0) {
