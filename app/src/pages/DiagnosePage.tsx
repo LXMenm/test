@@ -362,51 +362,51 @@ export function DiagnosePage() {
       }
       : undefined;
 
-    return ({
-    image_url: typeof payload.image_url === 'string' ? payload.image_url : '',
-    final_disease: typeof payload.final_disease === 'string'
-      ? payload.final_disease
-      : (payload.image_result && typeof payload.image_result === 'object' && typeof (payload.image_result as Record<string, unknown>).disease === 'string'
-        ? String((payload.image_result as Record<string, unknown>).disease)
-        : '未知'),
-    displayConfidencePct: resolveDisplayConfidencePct(payload),
-    model_display_name: typeof payload.model_display_name === 'string'
-      ? payload.model_display_name
-      : (typeof payload.model_id === 'string' ? payload.model_id : '-'),
-    top3: payload.top3 ?? ((payload.image_result && typeof payload.image_result === 'object')
-      ? (payload.image_result as Record<string, unknown>).top3
-      : undefined),
-    image_result: payload.image_result,
-    treatment: payload?.treatment,
-    prevention: payload?.prevention ?? ((payload.treatment && typeof payload.treatment === 'object') ? (payload.treatment as Record<string, unknown>).prevention : undefined),
-    trace_id: typeof payload.trace_id === 'string' ? payload.trace_id : '',
-    personalization_applied: payload.personalization_applied === true,
-    filtered: payload.filtered === true,
-    filtered_reasons: Array.isArray(payload.filtered_reasons) ? payload.filtered_reasons.map((item) => String(item)) : [],
-    personalization_reasons: Array.isArray(payload.personalization_reasons) ? payload.personalization_reasons.map((item) => String(item)) : [],
-    follow_up_questions: Array.isArray(payload.follow_up_questions) ? payload.follow_up_questions.map((item) => String(item)) : [],
-    missing_profile_fields: Array.isArray(payload.missing_profile_fields) ? payload.missing_profile_fields.map((item) => String(item)) : [],
-    profile_farm_scale: typeof payload.profile_farm_scale === 'string' ? payload.profile_farm_scale : undefined,
-    profile_pesticide_access_level: typeof payload.profile_pesticide_access_level === 'string' ? payload.profile_pesticide_access_level : undefined,
-    profile_equipment: Array.isArray(payload.profile_equipment) ? payload.profile_equipment.map((item) => String(item)) : [],
-    profile_cultivation_mode: typeof payload.profile_cultivation_mode === 'string' ? payload.profile_cultivation_mode : undefined,
-    selected_branch: selectedBranch,
-    risk_tags: Array.isArray(payload.risk_tags)
-      ? payload.risk_tags.map((item) => String(item))
-      : (Array.isArray(meta.risk_tags) ? meta.risk_tags.map((item) => String(item)) : []),
-    risk_items: normalizeRiskItems(payload.risk_items ?? meta.risk_items),
-    risk_summary: typeof payload.risk_summary === 'string'
-      ? payload.risk_summary
-      : (typeof meta.risk_summary === 'string' ? meta.risk_summary : undefined),
-    risk_updated_at: typeof payload.risk_updated_at === 'string'
-      ? payload.risk_updated_at
-      : (typeof meta.risk_updated_at === 'string' ? meta.risk_updated_at : undefined),
-    verification_result: verificationResult,
-    verification_passed: verificationResult?.passed ?? (typeof payload.verification_passed === 'boolean' ? payload.verification_passed : undefined),
-    verification_risk_level: verificationResult?.risk_level ?? (typeof payload.verification_risk_level === 'string' ? payload.verification_risk_level : undefined),
-    verification_issues: verificationResult?.issues ?? (Array.isArray(payload.verification_issues) ? payload.verification_issues.map((item) => String(item)) : []),
-    verification_summary: verificationResult?.compliance_summary ?? (typeof payload.verification_summary === 'string' ? payload.verification_summary : undefined),
-  });
+    return {
+      image_url: typeof payload.image_url === 'string' ? payload.image_url : '',
+      final_disease: typeof payload.final_disease === 'string'
+        ? payload.final_disease
+        : (payload.image_result && typeof payload.image_result === 'object' && typeof (payload.image_result as Record<string, unknown>).disease === 'string'
+          ? String((payload.image_result as Record<string, unknown>).disease)
+          : '未知'),
+      displayConfidencePct: resolveDisplayConfidencePct(payload),
+      model_display_name: typeof payload.model_display_name === 'string'
+        ? payload.model_display_name
+        : (typeof payload.model_id === 'string' ? payload.model_id : '-'),
+      top3: payload.top3 ?? ((payload.image_result && typeof payload.image_result === 'object')
+        ? (payload.image_result as Record<string, unknown>).top3
+        : undefined),
+      image_result: payload.image_result,
+      treatment: payload?.treatment,
+      prevention: payload?.prevention ?? ((payload.treatment && typeof payload.treatment === 'object') ? (payload.treatment as Record<string, unknown>).prevention : undefined),
+      trace_id: typeof payload.trace_id === 'string' ? payload.trace_id : '',
+      personalization_applied: payload.personalization_applied === true,
+      filtered: payload.filtered === true,
+      filtered_reasons: Array.isArray(payload.filtered_reasons) ? payload.filtered_reasons.map((item) => String(item)) : [],
+      personalization_reasons: Array.isArray(payload.personalization_reasons) ? payload.personalization_reasons.map((item) => String(item)) : [],
+      follow_up_questions: Array.isArray(payload.follow_up_questions) ? payload.follow_up_questions.map((item) => String(item)) : [],
+      missing_profile_fields: Array.isArray(payload.missing_profile_fields) ? payload.missing_profile_fields.map((item) => String(item)) : [],
+      profile_farm_scale: typeof payload.profile_farm_scale === 'string' ? payload.profile_farm_scale : undefined,
+      profile_pesticide_access_level: typeof payload.profile_pesticide_access_level === 'string' ? payload.profile_pesticide_access_level : undefined,
+      profile_equipment: Array.isArray(payload.profile_equipment) ? payload.profile_equipment.map((item) => String(item)) : [],
+      profile_cultivation_mode: typeof payload.profile_cultivation_mode === 'string' ? payload.profile_cultivation_mode : undefined,
+      selected_branch: selectedBranch,
+      risk_tags: Array.isArray(payload.risk_tags)
+        ? payload.risk_tags.map((item) => String(item))
+        : (Array.isArray(meta.risk_tags) ? meta.risk_tags.map((item) => String(item)) : []),
+      risk_items: normalizeRiskItems(payload.risk_items ?? meta.risk_items),
+      risk_summary: typeof payload.risk_summary === 'string'
+        ? payload.risk_summary
+        : (typeof meta.risk_summary === 'string' ? meta.risk_summary : undefined),
+      risk_updated_at: typeof payload.risk_updated_at === 'string'
+        ? payload.risk_updated_at
+        : (typeof meta.risk_updated_at === 'string' ? meta.risk_updated_at : undefined),
+      verification_result: verificationResult,
+      verification_passed: verificationResult?.passed ?? (typeof payload.verification_passed === 'boolean' ? payload.verification_passed : undefined),
+      verification_risk_level: verificationResult?.risk_level ?? (typeof payload.verification_risk_level === 'string' ? payload.verification_risk_level : undefined),
+      verification_issues: verificationResult?.issues ?? (Array.isArray(payload.verification_issues) ? payload.verification_issues.map((item) => String(item)) : []),
+      verification_summary: verificationResult?.compliance_summary ?? (typeof payload.verification_summary === 'string' ? payload.verification_summary : undefined),
+    };
   };
 
   const normalizeTraceEvents = (eventsLike: unknown): TraceEvent[] => {
@@ -691,6 +691,17 @@ export function DiagnosePage() {
   const candidates = parseTop3Candidates(latestPayload ?? result ?? {}, result);
   const verification = result?.verification_result;
   const verificationPassed = verification?.passed ?? result?.verification_passed;
+  const verificationRiskLevel = verification?.risk_level ?? result?.verification_risk_level ?? '';
+  const verificationRiskLabel = verificationRiskLevel === 'high'
+    ? '高风险'
+    : verificationRiskLevel === 'medium'
+      ? '中风险'
+      : verificationRiskLevel === 'low'
+        ? '低风险'
+        : (verificationRiskLevel || '未评估');
+  const verificationSummary = verification?.compliance_summary ?? result?.verification_summary ?? '';
+  const verificationIssues: string[] = verification?.issues ?? result?.verification_issues ?? [];
+  const verificationMustFix: string[] = verification?.must_fix ?? [];
   const primaryRiskLabels = (() => {
     if (!result) return [] as string[];
     if (Array.isArray(result.risk_items) && result.risk_items.length > 0) {
