@@ -1270,7 +1270,7 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
     if not isinstance(symptoms, list):
         raise HTTPException(status_code=400, detail="symptoms 必须为列表")
 
-    # ConfirmFlow 是低置信度回退分支（复用同一 trace），不是独立于主图的平行业务流程。
+    # 确认输入是同一张图内的“等待用户补充 -> 回边重试”状态折返。
     # 因此确认输入症状必须与上一轮症状做增量合并，避免覆盖。
     history_events = list_trace_events(trace_id)
     historical_symptoms: list[str] = []
@@ -1297,11 +1297,8 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
         if symptom and symptom not in merged_symptoms:
             merged_symptoms.append(symptom)
 
-    emit_node_event(trace_id, node="ConfirmFlow", status="start", message="开始二次诊断确认")
-
     image_path = (UPLOAD_DIR / image_id).resolve()
     if not image_path.exists():
-        emit_node_event(trace_id, node="ConfirmFlow", status="error", message="二次诊断图片不存在")
         raise HTTPException(status_code=404, detail="图片不存在")
 
     state = create_initial_state(f"confirm:{image_id}", farmer_id=farmer_id, base_id=base_id)
@@ -1341,6 +1338,10 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
         image_path=str(image_path),
         merged_symptoms=merged_symptoms,
     )
+    state["historical_symptoms"] = historical_symptoms
+    state["confirm_round_index"] = confirm_round_index
+    state["user_choice"] = choice or None
+    state["current_step"] = "await_user_confirmation"
 
     append_trace(
         state,
@@ -1375,7 +1376,7 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
             outputs={"final_disease": choice, "need_confirm": False},
         )
 
-    # 低置信度回退分支：由 supervisor 做统一路由决策，避免形成平行独立流程。
+    # 低置信度回退分支：由 supervisor 做统一路由决策。
     for _ in range(10):
         state = supervisor_agent(state)
         next_action = str(state.get("next_action") or "")
@@ -1430,37 +1431,6 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
         state["verification_issues"] = []
         state["verification_summary"] = None
 
-    state["current_step"] = "uncertainty_router"
-    append_trace(
-        state,
-        agent="uncertainty_router",
-        inputs={
-            "need_confirm_from_diagnosis": bool(flags.get("need_confirm")),
-            "verification_passed": state.get("verification_passed"),
-        },
-        outputs={
-            "need_confirm": need_confirm,
-            "manual_review_recommended": manual_review_recommended,
-            "manual_review_required_before_execution": manual_review_required_before_execution,
-            "status": "manual_review_recommended" if manual_review_recommended else "completed",
-        },
-        decision={
-            "reason": "二诊后仍存在不确定性，转换为人工复核建议" if manual_review_recommended else "二诊确定，可正常收尾",
-        },
-    )
-
-    state["current_step"] = "confirm_finalize"
-    append_trace(
-        state,
-        agent="confirm_finalize",
-        inputs={"choice": choice or "other"},
-        outputs={
-            "final_disease": state.get("final_disease"),
-            "need_confirm": need_confirm,
-            "has_treatment": bool(state.get("treatment_plan")),
-        },
-    )
-
     personalization_applied = compute_personalization_applied(state, flags)
     flags["personalization_applied"] = personalization_applied
     filtered, filtered_reasons, filtered_components, filtered_actions = _normalize_filter_state(flags)
@@ -1478,17 +1448,6 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
     elif need_confirm:
         confirm_message = "置信度较低，建议补充症状或重新拍摄"
 
-    emit_node_event(
-        trace_id,
-        node="ConfirmFlow",
-        status="end",
-        message="二次诊断确认完成",
-        payload={
-            "need_confirm": need_confirm,
-            "manual_review_recommended": manual_review_recommended,
-            "final_disease": state.get("final_disease"),
-        },
-    )
     confirm_status = "manual_review_recommended" if manual_review_recommended else "completed"
 
     model_meta = state.get("diagnosis_model_meta") or {}
