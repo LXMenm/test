@@ -841,7 +841,7 @@ export function DiagnosePage() {
                 </SelectTrigger>
                 <SelectContent side="bottom" align="start" sideOffset={6} className="bg-[#111] text-white border-white/20">
                   <SelectItem value="__EMPTY__">未设置</SelectItem>
-                  {TOMATO_GROWTH_STAGE_OPTIONS.map((stage) => (
+                  {TOMATO_GROWTH_STAGE_OPTIONS.map((stage: { value: string; label: string }) => (
                     <SelectItem key={stage.value} value={stage.value} className="text-white data-[highlighted]:bg-[#c8f7c5] data-[highlighted]:text-black">
                       {stage.label}
                     </SelectItem>
@@ -863,7 +863,7 @@ export function DiagnosePage() {
                   sideOffset={6}
                   className="bg-[#111] text-white border-white/20"
                 >
-                  {modelOptions.map((option) => (
+                  {modelOptions.map((option: { value: string; label: string }) => (
                     <SelectItem key={option.value} value={option.value} className="text-white data-[highlighted]:bg-[#c8f7c5] data-[highlighted]:text-black">
                       {option.label}
                     </SelectItem>
