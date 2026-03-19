@@ -1125,6 +1125,7 @@ async def diagnose_image(
         "source_stage": "initial",
         "selected_branch": flags.get("selected_branch"),
         "personalization_applied": personalization_applied,
+        "personalization_reasons": dedupe_reasons(flags.get("personalization_reasons") or []),
         "filtered": filtered,
         "filtered_reasons": filtered_reasons,
         "filtered_components": filtered_components,
@@ -1584,6 +1585,11 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
         "text_confidence": text_confidence,
         "text_top3": text_top3,
         "fusion_top3": fusion_top3,
+        "normalized_symptoms": list(
+            state.get("normalized_symptoms")
+            or ((state.get("structured_symptoms") or {}).get("normalized_symptoms") or [])
+            or []
+        ),
         "modality_conflict_flag": modality_conflict_flag,
         "diagnosis_evidence": diagnosis_evidence,
         "manual_review_recommended": manual_review_recommended,
@@ -1600,6 +1606,7 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
         "resolved_model_path": model_meta.get("resolved_model_path"),
         "model_fallback_reason": model_meta.get("model_fallback_reason"),
         "personalization_applied": personalization_applied,
+        "personalization_reasons": dedupe_reasons(flags.get("personalization_reasons") or []),
         "filtered": filtered,
         "filtered_reasons": filtered_reasons,
         "filtered_components": filtered_components,
