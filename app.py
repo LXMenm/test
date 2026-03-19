@@ -608,6 +608,13 @@ def _resolve_profile_and_base(
     return profile, base_profile, resolved_base_id
 
 
+def _latest_case_event_by_trace(trace_id: str) -> dict[str, Any]:
+    for item in list_events(limit=500):
+        if isinstance(item, dict) and item.get("trace_id") == trace_id:
+            return item
+    return {}
+
+
 def _build_personalization_meta(flags: dict, farmer_id: str | None, base_id: str | None) -> dict:
     risk_tags = [
         normalize_risk_code(item)
@@ -1375,6 +1382,7 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
         )
 
     # 低置信度回退分支：由 supervisor 做统一路由决策，避免形成平行独立流程。
+    terminal_action: str | None = None
     for _ in range(10):
         state = supervisor_agent(state)
         next_action = str(state.get("next_action") or "")
@@ -1387,10 +1395,16 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
         elif next_action == "verification":
             state = verification_agent(state)
         elif next_action == "await_user_confirmation":
+            terminal_action = "await_user_confirmation"
+            break
+        elif next_action == "manual_review":
+            terminal_action = "manual_review"
             break
         elif next_action == "end":
+            terminal_action = "end"
             break
         else:
+            terminal_action = next_action or "end"
             break
 
     final_confidence = state.get("final_confidence")
@@ -1416,11 +1430,16 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
     }
     flags = state.get("personalization_flags") or {}
     need_confirm = bool(flags.get("need_confirm"))
-    if choice and choice != "other":
+    if terminal_action == "await_user_confirmation":
+        manual_review_recommended = False
+        need_confirm = True
+    elif terminal_action == "manual_review":
+        manual_review_recommended = True
         need_confirm = False
-    manual_review_recommended = need_confirm
-    if manual_review_recommended:
-        need_confirm = False
+    else:
+        if choice and choice != "other":
+            need_confirm = False
+        manual_review_recommended = False
     manual_review_required_before_execution = manual_review_recommended
     if manual_review_recommended:
         state["treatment_plan"] = None
@@ -1448,7 +1467,20 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
     elif need_confirm:
         confirm_message = "置信度较低，建议补充症状或重新拍摄"
 
-    confirm_status = "manual_review_recommended" if manual_review_recommended else "completed"
+    if terminal_action == "await_user_confirmation":
+        confirm_status = "waiting_for_confirmation"
+    elif terminal_action == "manual_review":
+        confirm_status = "manual_review_recommended"
+    else:
+        confirm_status = "completed"
+
+    previous_case_event = _latest_case_event_by_trace(trace_id)
+    carried_fallback_used = bool(previous_case_event.get("fallback_used")) if isinstance(previous_case_event, dict) else False
+    carried_fallback_reason = previous_case_event.get("fallback_reason") if isinstance(previous_case_event, dict) else None
+    carried_rule_result = previous_case_event.get("rule_result") if isinstance(previous_case_event, dict) else None
+    carried_personalization_reasons = dedupe_reasons(
+        (flags.get("personalization_reasons") or (previous_case_event.get("personalization_reasons") if isinstance(previous_case_event, dict) else []) or [])
+    )
 
     model_meta = state.get("diagnosis_model_meta") or {}
     response_meta = _build_response_meta(
@@ -1467,9 +1499,9 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
         "image_id": image_id,
         "image_url": f"/uploads/{image_id}",
         "image_result": image_result,
-        "fallback_used": False,
-        "fallback_reason": None,
-        "rule_result": None,
+        "fallback_used": carried_fallback_used,
+        "fallback_reason": carried_fallback_reason,
+        "rule_result": carried_rule_result,
         "final_disease": state.get("final_disease"),
         "need_confirm": need_confirm,
         "final_confidence": final_confidence if final_confidence is not None else image_result.get("confidence"),
@@ -1506,7 +1538,7 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
         "treatment_available": bool(state.get("treatment_plan")) and not manual_review_recommended,
         "verification_available": (state.get("verification_result") is not None) and not manual_review_recommended,
         "graph_treatment_generated": bool(state.get("treatment_plan")),
-        "fallback_treatment_used": False,
+        "fallback_treatment_used": bool(previous_case_event.get("fallback_treatment_used")) if isinstance(previous_case_event, dict) else False,
         "historical_follow_up_questions": historical_follow_up_questions,
     }
     event = serialize_final_response(event)
@@ -1519,16 +1551,29 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
         emit_node_event(trace_id, node="Persist", status="error", message=f"确认轮事件落盘失败: {exc}")
 
     # Final 必须在 Persist 之后，才是真正终点
-    emit_final_event_once(
-        trace_id,
-        status=confirm_status,
-        message="二次诊断流程完成",
-        payload={
-            "final_disease": state.get("final_disease"),
-            "confirm_round": True,
-            "status": confirm_status,
-        },
-    )
+    if confirm_status == "waiting_for_confirmation":
+        emit_node_event(
+            trace_id,
+            node="AwaitUserConfirmation",
+            status="end",
+            message="当前轮返回追问，等待用户补充后进入二次诊断",
+            payload={
+                "final_disease": state.get("final_disease"),
+                "status": confirm_status,
+                "reason": "need_confirm_wait_user",
+            },
+        )
+    else:
+        emit_final_event_once(
+            trace_id,
+            status=confirm_status,
+            message="二次诊断流程完成",
+            payload={
+                "final_disease": state.get("final_disease"),
+                "confirm_round": True,
+                "status": confirm_status,
+            },
+        )
 
     events = list_trace_events(trace_id)
 
@@ -1536,9 +1581,9 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
         "trace_id": trace_id,
         "image_id": image_id,
         "image_url": f"/uploads/{image_id}",
-        "fallback_used": False,
-        "fallback_reason": None,
-        "rule_result": None,
+        "fallback_used": carried_fallback_used,
+        "fallback_reason": carried_fallback_reason,
+        "rule_result": carried_rule_result,
         "final_disease": state.get("final_disease"),
         "image_result": image_result,
         "farmer_id": farmer_id,
@@ -1574,10 +1619,10 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
         "profile_equipment": [str(item) for item in (flags.get("equipment") or [])],
         "profile_cultivation_mode": flags.get("cultivation_mode"),
         "selected_branch": flags.get("selected_branch") if (bool(state.get("treatment_plan")) and not manual_review_recommended) else None,
-        "workflow_degraded": False,
-        "degraded_reason": None,
+        "workflow_degraded": bool(previous_case_event.get("workflow_degraded")) if isinstance(previous_case_event, dict) else False,
+        "degraded_reason": previous_case_event.get("degraded_reason") if isinstance(previous_case_event, dict) else None,
         "personalization_applied": personalization_applied,
-        "personalization_reasons": dedupe_reasons(flags.get("personalization_reasons") or []),
+        "personalization_reasons": carried_personalization_reasons,
         "filtered": filtered,
         "filtered_reasons": filtered_reasons,
         "filtered_components": filtered_components,
@@ -1595,8 +1640,8 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
         "treatment_available": bool(state.get("treatment_plan")) and not manual_review_recommended,
         "verification_available": (state.get("verification_result") is not None) and not manual_review_recommended,
         "graph_treatment_generated": bool(state.get("treatment_plan")),
-        "fallback_treatment_used": False,
-        "treatment_skipped_due_need_confirm": False,
+        "fallback_treatment_used": bool(previous_case_event.get("fallback_treatment_used")) if isinstance(previous_case_event, dict) else False,
+        "treatment_skipped_due_need_confirm": bool(confirm_status == "waiting_for_confirmation"),
         "meta": response_meta,
         "events": events,
     }

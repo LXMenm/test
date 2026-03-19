@@ -33,6 +33,8 @@ def route_next_step(state: CropDiseaseState) -> str:
         return "verification"
     elif next_action == "await_user_confirmation":
         return END
+    elif next_action == "manual_review":
+        return END
     elif next_action == "end":
         return END
     else:
@@ -71,6 +73,7 @@ def build_graph() -> StateGraph:
             "treatment": "treatment",
             "verification": "verification",
             "await_user_confirmation": END,
+            "manual_review": END,
             END: END
         }
     )
