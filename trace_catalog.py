@@ -36,4 +36,5 @@ NODE_TO_AGENT = {
     "ValidatorAgent": "validator",
     "Persist": "persist",
     "Final": "final",
+    "AwaitUserConfirmation": "supervisor",
 }
