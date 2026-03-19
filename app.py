@@ -1549,6 +1549,7 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
         "fallback_treatment_used": False,
         "historical_follow_up_questions": historical_follow_up_questions,
     }
+    event = serialize_case_response(event, terminal_stage=confirm_status)
     emit_node_event(trace_id, node="Persist", status="start", message="写入确认轮事件日志")
     try:
         append_event(serialize_final_response(event))
