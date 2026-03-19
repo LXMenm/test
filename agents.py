@@ -28,6 +28,23 @@ from pathlib import Path
 # 获取知识库管理器实例
 kb_manager = get_kb_manager()
 
+GROWTH_STAGE_CANONICAL = {
+    "苗期": "SEEDLING",
+    "开花期": "FLOWERING",
+    "坐果期": "FRUIT_SET",
+    "结果期": "FRUIT_SET",
+    "成熟期": "HARVEST",
+}
+
+
+def _canonicalize_growth_stage(value: str | None) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if text in GROWTH_STAGE_CANONICAL.values():
+        return text
+    return GROWTH_STAGE_CANONICAL.get(text, text)
+
 VERIFICATION_SYSTEM_PROMPT = """
 你是一名严格的农业安全审查员（Verification Agent）。
 
@@ -219,6 +236,7 @@ def reception_agent(state: CropDiseaseState) -> CropDiseaseState:
         except Exception as e:
             print(f"大模型调用失败，使用规则匹配: {e}")
             _, crop_growth_stage, symptoms = _fallback_extraction(query_for_extract)
+    crop_growth_stage = _canonicalize_growth_stage(crop_growth_stage)
     # 强制设置作物类型为番茄
     crop_type = "番茄"
     _fill_missing_from_profile(state, base_profile)
@@ -249,7 +267,7 @@ def reception_agent(state: CropDiseaseState) -> CropDiseaseState:
     message = "，".join(message_parts)
     # 更新状态
     state["crop_type"] = crop_type
-    state["crop_growth_stage"] = crop_growth_stage
+    state["crop_growth_stage"] = _canonicalize_growth_stage(crop_growth_stage)
     normalized_symptoms = kb_manager.normalize_symptoms(symptoms)
     state["symptoms"] = symptoms
     state["structured_symptoms"] = {"normalized_symptoms": normalized_symptoms}
@@ -268,7 +286,7 @@ def reception_agent(state: CropDiseaseState) -> CropDiseaseState:
         inputs={"user_query": state.get("user_query"), "cleaned_query": cleaned_query},
         outputs={
             "crop_type": crop_type,
-            "crop_growth_stage": crop_growth_stage,
+            "crop_growth_stage": _canonicalize_growth_stage(crop_growth_stage),
             "symptoms": symptoms,
             "normalized_symptoms": normalized_symptoms,
             "image_path": image_path,
@@ -309,7 +327,7 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
     print("\n[番茄病害诊断智能体] 正在分析病害...")
     crop_type = state.get("crop_type", "番茄")
     symptoms = state.get("symptoms", []) or []
-    crop_growth_stage = state.get("crop_growth_stage")
+    crop_growth_stage = _canonicalize_growth_stage(state.get("crop_growth_stage"))
     image_path = state.get("image_path")
     flags = state.get("personalization_flags", {}) or {}
     flags["need_confirm"] = False
@@ -722,7 +740,7 @@ def treatment_agent(state: CropDiseaseState) -> CropDiseaseState:
     print("\n[番茄病害治疗方案智能体] 正在制定治疗方案...")
     disease_type = state.get("final_disease") or state.get("disease_type")
     crop_type = "番茄"
-    crop_growth_stage = state.get("crop_growth_stage")
+    crop_growth_stage = _canonicalize_growth_stage(state.get("crop_growth_stage"))
     symptoms = state.get("symptoms") or []
     disease_description = state.get("disease_description", "")
     profile, base_profile = _get_profile_from_state(state)
@@ -736,7 +754,7 @@ def treatment_agent(state: CropDiseaseState) -> CropDiseaseState:
     base_info = {
         "facility": flags.get("facility") or (base_profile.facility if base_profile else None),
         "environment": flags.get("environment") or (base_profile.environment if base_profile else None),
-        "growth_stage": flags.get("growth_stage") or (base_profile.growth_stage if base_profile else None),
+        "growth_stage": _canonicalize_growth_stage(flags.get("growth_stage") or (base_profile.growth_stage if base_profile else None)),
         "province": flags.get("province") or (base_profile.province if base_profile else None),
     }
     must_forbid_professional = bool(hard_constraints.get("forbid_professional_pesticides"))
@@ -1020,7 +1038,7 @@ def _fill_missing_from_profile(state: CropDiseaseState, base_profile: Optional[B
     if not state.get("environment") and base_profile.environment:
         state["environment"] = base_profile.environment
     if not state.get("crop_growth_stage") and base_profile.growth_stage:
-        state["crop_growth_stage"] = base_profile.growth_stage
+        state["crop_growth_stage"] = _canonicalize_growth_stage(base_profile.growth_stage)
 REQUIRED_PROFILE_FIELDS = ["farm_scale", "pesticide_access_level", "prefer_organic", "harvest_window_days"]
 OPTIONAL_PROFILE_FIELDS = ["equipment", "growth_stage", "experience_level", "cultivation_mode", "risk_preference", "environment"]
 
