@@ -28,8 +28,12 @@ from text_model.infer_text_classifier import BertTextClassifier
 
 # 获取知识库管理器实例
 kb_manager = get_kb_manager()
-FUSE_MULTIMODAL_VERSION = "fuse_v2_text_evidence_gate_20260316"
+FUSE_MULTIMODAL_VERSION = "fuse_v3_text_reliability_gate_20260319"
 PREDICT_TEXT_PROBA_VERSION = "text_v3_bert_with_rule_fallback_20260316"
+IMAGE_RELIABLE_TOP1_THRESHOLD = 0.70
+IMAGE_RELIABLE_MARGIN_THRESHOLD = 0.15
+TEXT_RELIABLE_TOP1_THRESHOLD = 0.25
+TEXT_RELIABLE_MARGIN_THRESHOLD = 0.05
 
 # 从知识库获取病害类别
 DISEASE_CLASSES = kb_manager.get_disease_classes()
@@ -571,47 +575,91 @@ class DiseaseDiagnosisEngine:
         prior_probs = self._normalized(prior_probs)
 
         has_image = bool(image_probs)
-        has_text = bool(text_probs)
-        if text_evidence_active is not None:
-            has_text = bool(has_text and text_evidence_active)
-        if not has_text:
-            text_probs = {}
+        has_text = bool(text_evidence_active) if text_evidence_active is not None else bool(text_probs)
         has_prior = bool(prior_probs)
-        reliable_image = image_confidence >= 0.6
-        reliable_text = text_confidence >= 0.6
 
         image_top3 = self._topk(image_probs, 3)
         text_top3 = self._topk(text_probs, 3)
         prior_top3 = self._topk(prior_probs, 3)
+        image_top1_conf = float(image_top3[0][1]) if image_top3 else 0.0
+        image_top2_conf = float(image_top3[1][1]) if len(image_top3) > 1 else 0.0
+        image_margin = image_top1_conf - image_top2_conf
+        reliable_image = bool(
+            image_top3
+            and image_top1_conf >= IMAGE_RELIABLE_TOP1_THRESHOLD
+            and image_margin >= IMAGE_RELIABLE_MARGIN_THRESHOLD
+        )
+        text_top1_conf = float(text_top3[0][1]) if text_top3 else 0.0
+        text_top2_conf = float(text_top3[1][1]) if len(text_top3) > 1 else 0.0
+        text_margin = text_top1_conf - text_top2_conf
+        reliable_text = bool(
+            text_top3
+            and text_top1_conf >= TEXT_RELIABLE_TOP1_THRESHOLD
+            and text_margin >= TEXT_RELIABLE_MARGIN_THRESHOLD
+        )
+        text_probs_for_fusion = text_probs if reliable_text else {}
         image_top1 = image_top3[0][0] if image_top3 else None
         text_top1 = text_top3[0][0] if text_top3 else None
-        conflict = bool(has_image and has_text and image_top1 and text_top1 and image_top1 != text_top1)
+        conflict = bool(
+            has_image
+            and has_text
+            and reliable_image
+            and reliable_text
+            and image_top1
+            and text_top1
+            and image_top1 != text_top1
+        )
 
         base_weights = {"image": 0.0, "text": 0.0, "prior": 0.0}
         confidence_drop_reason = None
+        fusion_case = "none"
 
         if has_image and has_text:
-            if conflict:
-                base_weights = {"image": 0.45, "text": 0.45, "prior": 0.10 if has_prior else 0.0}
+            if reliable_image and reliable_text and conflict:
+                fusion_case = "conflict"
+                base_weights = {"image": 0.50, "text": 0.50, "prior": 0.0}
                 confidence_drop_reason = "image_text_conflict"
             elif reliable_image and reliable_text:
-                base_weights = {"image": 0.60, "text": 0.35, "prior": 0.05 if has_prior else 0.0}
-            elif reliable_image:
-                base_weights = {"image": 0.65, "text": 0.30, "prior": 0.05 if has_prior else 0.0}
+                fusion_case = "consistent"
+                base_weights = {"image": 0.65, "text": 0.35, "prior": 0.0}
+            elif reliable_image and not reliable_text:
+                fusion_case = "image_strong_text_weak"
+                base_weights = {"image": 1.0, "text": 0.0, "prior": 0.0}
+            elif (not reliable_image) and reliable_text:
+                fusion_case = "image_weak_text_strong"
+                base_weights = {"image": 0.2, "text": 0.8, "prior": 0.0}
             else:
-                base_weights = {"image": 0.40, "text": 0.55, "prior": 0.05 if has_prior else 0.0}
+                fusion_case = "both_weak"
+                base_weights = {"image": 0.5, "text": 0.5, "prior": 0.0}
         elif has_image:
-            # IMAGE_ONLY：prior 只能弱修正，避免 0.97 被异常拉低。
-            base_weights = {"image": 0.95, "text": 0.0, "prior": 0.05 if has_prior else 0.0}
+            fusion_case = "image_only"
+            base_weights = {"image": 1.0, "text": 0.0, "prior": 0.0}
         elif has_text:
-            base_weights = {"image": 0.0, "text": 0.90, "prior": 0.10 if has_prior else 0.0}
+            fusion_case = "text_only"
+            base_weights = {"image": 0.0, "text": 1.0, "prior": 0.0}
         else:
+            fusion_case = "prior_only"
             base_weights = {"image": 0.0, "text": 0.0, "prior": 1.0 if has_prior else 0.0}
+
+        if not reliable_text and fusion_case != "both_weak":
+            text_probs_for_fusion = {}
+        if fusion_case == "both_weak":
+            text_probs_for_fusion = text_probs
+
+        # 无文本证据时，避免 text 权重被误激活。
+        if not has_text:
+            base_weights["text"] = 0.0
+        # 无图像证据时，避免 image 权重被误激活。
+        if not has_image:
+            base_weights["image"] = 0.0
+
+        if confidence_drop_reason and not conflict:
+            confidence_drop_reason = None
 
         # 仅对存在模态做权重重分配，缺失模态不参与。
         active = {
             "image": has_image,
-            "text": has_text,
+            "text": has_text and bool(text_probs_for_fusion),
             "prior": has_prior and base_weights.get("prior", 0.0) > 0,
         }
         active_sum = sum(base_weights[k] for k, on in active.items() if on)
@@ -632,6 +680,11 @@ class DiseaseDiagnosisEngine:
                 "has_prior": has_prior,
                 "image_reliable": reliable_image,
                 "text_reliable": reliable_text,
+                "image_top1_conf": image_top1_conf,
+                "text_top1_conf": text_top1_conf,
+                "image_margin": image_margin,
+                "text_margin": text_margin,
+                "fusion_case": fusion_case,
                 "normalized_weights": normalized_weights,
                 "pre_fusion_top1": {"image": image_top3[:1], "text": text_top3[:1], "prior": prior_top3[:1]},
                 "pre_fusion_top3": {"image": image_top3, "text": text_top3, "prior": prior_top3},
@@ -645,7 +698,7 @@ class DiseaseDiagnosisEngine:
         for key in keys:
             fused[key] = (
                 normalized_weights["image"] * image_probs.get(key, 0.0)
-                + normalized_weights["text"] * text_probs.get(key, 0.0)
+                + normalized_weights["text"] * text_probs_for_fusion.get(key, 0.0)
                 + normalized_weights["prior"] * prior_probs.get(key, 0.0)
             )
         fused = self._normalized(fused)
@@ -656,6 +709,11 @@ class DiseaseDiagnosisEngine:
             "has_prior": has_prior,
             "image_reliable": reliable_image,
             "text_reliable": reliable_text,
+            "image_top1_conf": image_top1_conf,
+            "text_top1_conf": text_top1_conf,
+            "image_margin": image_margin,
+            "text_margin": text_margin,
+            "fusion_case": fusion_case,
             "normalized_weights": normalized_weights,
             "pre_fusion_top1": {"image": image_top3[:1], "text": text_top3[:1], "prior": prior_top3[:1]},
             "pre_fusion_top3": {"image": image_top3, "text": text_top3, "prior": prior_top3},

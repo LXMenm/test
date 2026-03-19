@@ -58,6 +58,10 @@ interface DiagnosisResult {
   verification_risk_level?: string;
   verification_issues?: string[];
   verification_summary?: string;
+  expert_review_recommended?: boolean;
+  expert_review_selected?: boolean;
+  expert_review_status?: "NONE" | "DECLINED" | "PENDING" | "COMPLETED" | string;
+  treatment_available?: boolean;
 }
 
 interface ProfileListItem {
@@ -362,51 +366,56 @@ export function DiagnosePage() {
       }
       : undefined;
 
-    return ({
-    image_url: typeof payload.image_url === 'string' ? payload.image_url : '',
-    final_disease: typeof payload.final_disease === 'string'
-      ? payload.final_disease
-      : (payload.image_result && typeof payload.image_result === 'object' && typeof (payload.image_result as Record<string, unknown>).disease === 'string'
-        ? String((payload.image_result as Record<string, unknown>).disease)
-        : '未知'),
-    displayConfidencePct: resolveDisplayConfidencePct(payload),
-    model_display_name: typeof payload.model_display_name === 'string'
-      ? payload.model_display_name
-      : (typeof payload.model_id === 'string' ? payload.model_id : '-'),
-    top3: payload.top3 ?? ((payload.image_result && typeof payload.image_result === 'object')
-      ? (payload.image_result as Record<string, unknown>).top3
-      : undefined),
-    image_result: payload.image_result,
-    treatment: payload?.treatment,
-    prevention: payload?.prevention ?? ((payload.treatment && typeof payload.treatment === 'object') ? (payload.treatment as Record<string, unknown>).prevention : undefined),
-    trace_id: typeof payload.trace_id === 'string' ? payload.trace_id : '',
-    personalization_applied: payload.personalization_applied === true,
-    filtered: payload.filtered === true,
-    filtered_reasons: Array.isArray(payload.filtered_reasons) ? payload.filtered_reasons.map((item) => String(item)) : [],
-    personalization_reasons: Array.isArray(payload.personalization_reasons) ? payload.personalization_reasons.map((item) => String(item)) : [],
-    follow_up_questions: Array.isArray(payload.follow_up_questions) ? payload.follow_up_questions.map((item) => String(item)) : [],
-    missing_profile_fields: Array.isArray(payload.missing_profile_fields) ? payload.missing_profile_fields.map((item) => String(item)) : [],
-    profile_farm_scale: typeof payload.profile_farm_scale === 'string' ? payload.profile_farm_scale : undefined,
-    profile_pesticide_access_level: typeof payload.profile_pesticide_access_level === 'string' ? payload.profile_pesticide_access_level : undefined,
-    profile_equipment: Array.isArray(payload.profile_equipment) ? payload.profile_equipment.map((item) => String(item)) : [],
-    profile_cultivation_mode: typeof payload.profile_cultivation_mode === 'string' ? payload.profile_cultivation_mode : undefined,
-    selected_branch: selectedBranch,
-    risk_tags: Array.isArray(payload.risk_tags)
-      ? payload.risk_tags.map((item) => String(item))
-      : (Array.isArray(meta.risk_tags) ? meta.risk_tags.map((item) => String(item)) : []),
-    risk_items: normalizeRiskItems(payload.risk_items ?? meta.risk_items),
-    risk_summary: typeof payload.risk_summary === 'string'
-      ? payload.risk_summary
-      : (typeof meta.risk_summary === 'string' ? meta.risk_summary : undefined),
-    risk_updated_at: typeof payload.risk_updated_at === 'string'
-      ? payload.risk_updated_at
-      : (typeof meta.risk_updated_at === 'string' ? meta.risk_updated_at : undefined),
-    verification_result: verificationResult,
-    verification_passed: verificationResult?.passed ?? (typeof payload.verification_passed === 'boolean' ? payload.verification_passed : undefined),
-    verification_risk_level: verificationResult?.risk_level ?? (typeof payload.verification_risk_level === 'string' ? payload.verification_risk_level : undefined),
-    verification_issues: verificationResult?.issues ?? (Array.isArray(payload.verification_issues) ? payload.verification_issues.map((item) => String(item)) : []),
-    verification_summary: verificationResult?.compliance_summary ?? (typeof payload.verification_summary === 'string' ? payload.verification_summary : undefined),
-  });
+    return {
+      image_url: typeof payload.image_url === 'string' ? payload.image_url : '',
+      final_disease: typeof payload.final_disease === 'string'
+        ? payload.final_disease
+        : (payload.image_result && typeof payload.image_result === 'object' && typeof (payload.image_result as Record<string, unknown>).disease === 'string'
+          ? String((payload.image_result as Record<string, unknown>).disease)
+          : '未知'),
+      displayConfidencePct: resolveDisplayConfidencePct(payload),
+      model_display_name: typeof payload.model_display_name === 'string'
+        ? payload.model_display_name
+        : (typeof payload.model_id === 'string' ? payload.model_id : '-'),
+      top3: payload.top3 ?? ((payload.image_result && typeof payload.image_result === 'object')
+        ? (payload.image_result as Record<string, unknown>).top3
+        : undefined),
+      image_result: payload.image_result,
+      treatment: payload?.treatment,
+      prevention: payload?.prevention ?? ((payload.treatment && typeof payload.treatment === 'object') ? (payload.treatment as Record<string, unknown>).prevention : undefined),
+      trace_id: typeof payload.trace_id === 'string' ? payload.trace_id : '',
+      personalization_applied: payload.personalization_applied === true,
+      filtered: payload.filtered === true,
+      filtered_reasons: Array.isArray(payload.filtered_reasons) ? payload.filtered_reasons.map((item) => String(item)) : [],
+      personalization_reasons: Array.isArray(payload.personalization_reasons) ? payload.personalization_reasons.map((item) => String(item)) : [],
+      follow_up_questions: Array.isArray(payload.follow_up_questions) ? payload.follow_up_questions.map((item) => String(item)) : [],
+      missing_profile_fields: Array.isArray(payload.missing_profile_fields) ? payload.missing_profile_fields.map((item) => String(item)) : [],
+      profile_farm_scale: typeof payload.profile_farm_scale === 'string' ? payload.profile_farm_scale : undefined,
+      profile_pesticide_access_level: typeof payload.profile_pesticide_access_level === 'string' ? payload.profile_pesticide_access_level : undefined,
+      profile_equipment: Array.isArray(payload.profile_equipment) ? payload.profile_equipment.map((item) => String(item)) : [],
+      profile_cultivation_mode: typeof payload.profile_cultivation_mode === 'string' ? payload.profile_cultivation_mode : undefined,
+      selected_branch: selectedBranch,
+      risk_tags: Array.isArray(payload.risk_tags)
+        ? payload.risk_tags.map((item) => String(item))
+        : (Array.isArray(meta.risk_tags) ? meta.risk_tags.map((item) => String(item)) : []),
+      risk_items: normalizeRiskItems(payload.risk_items ?? meta.risk_items),
+      risk_summary: typeof payload.risk_summary === 'string'
+        ? payload.risk_summary
+        : (typeof meta.risk_summary === 'string' ? meta.risk_summary : undefined),
+      risk_updated_at: typeof payload.risk_updated_at === 'string'
+        ? payload.risk_updated_at
+        : (typeof meta.risk_updated_at === 'string' ? meta.risk_updated_at : undefined),
+      verification_result: verificationResult,
+      verification_passed: verificationResult?.passed ?? (typeof payload.verification_passed === 'boolean' ? payload.verification_passed : undefined),
+      verification_risk_level: verificationResult?.risk_level ?? (typeof payload.verification_risk_level === 'string' ? payload.verification_risk_level : undefined),
+      verification_issues: verificationResult?.issues ?? (Array.isArray(payload.verification_issues) ? payload.verification_issues.map((item) => String(item)) : []),
+      verification_summary: verificationResult?.compliance_summary ?? (typeof payload.verification_summary === 'string' ? payload.verification_summary : undefined),
+      status: typeof payload.status === 'string' ? payload.status : 'completed',
+      expert_review_recommended: payload.expert_review_recommended === true,
+      expert_review_selected: payload.expert_review_selected === true,
+      expert_review_status: typeof payload.expert_review_status === 'string' ? payload.expert_review_status : 'NONE',
+      treatment_available: payload.treatment_available === true,
+    };
   };
 
   const normalizeTraceEvents = (eventsLike: unknown): TraceEvent[] => {
@@ -586,7 +595,7 @@ export function DiagnosePage() {
     }
   };
 
-  const handleConfirmSubmit = async () => {
+  const handleConfirmSubmit = async (expertReviewDecision?: 'accept' | 'decline') => {
     if (!traceId || !imageId) return;
     setDiagnosisStartTime(Date.now());
     setConfirmSubmitting(true);
@@ -609,6 +618,7 @@ export function DiagnosePage() {
           growth_stage: growthStage || null,
           model_id: modelId || null,
           choice: choiceForConfirm,
+          expert_review_decision: expertReviewDecision ?? null,
           notes: confirmSymptoms || null,
           farmer_id: selectedFarmerId || null,
           base_id: selectedBaseId || null,
@@ -691,6 +701,17 @@ export function DiagnosePage() {
   const candidates = parseTop3Candidates(latestPayload ?? result ?? {}, result);
   const verification = result?.verification_result;
   const verificationPassed = verification?.passed ?? result?.verification_passed;
+  const verificationRiskLevel = verification?.risk_level ?? result?.verification_risk_level ?? '';
+  const verificationRiskLabel = verificationRiskLevel === 'high'
+    ? '高风险'
+    : verificationRiskLevel === 'medium'
+      ? '中风险'
+      : verificationRiskLevel === 'low'
+        ? '低风险'
+        : (verificationRiskLevel || '未评估');
+  const verificationSummary = verification?.compliance_summary ?? result?.verification_summary ?? '';
+  const verificationIssues: string[] = verification?.issues ?? result?.verification_issues ?? [];
+  const verificationMustFix: string[] = verification?.must_fix ?? [];
   const primaryRiskLabels = (() => {
     if (!result) return [] as string[];
     if (Array.isArray(result.risk_items) && result.risk_items.length > 0) {
@@ -708,7 +729,7 @@ export function DiagnosePage() {
     }
     return [] as string[];
   })();
-  const shouldHideTreatment = confirmMode;
+  const shouldHideTreatment = confirmMode || result?.status === 'pending_expert_review';
   const baseOptions: BaseOption[] = selectedProfile?.bases && typeof selectedProfile.bases === 'object'
     ? Object.entries(selectedProfile.bases).map(([baseId, base]) => ({
       id: baseId,
@@ -1164,7 +1185,7 @@ export function DiagnosePage() {
 
                   {confirmMode ? (
                     <div className="bg-[#c8f7c5]/10 border border-[#c8f7c5]/30 rounded-xl p-4 space-y-4">
-                      <h4 className="text-[#c8f7c5] font-medium">二次诊断 / 确认入口</h4>
+                      <h4 className="text-[#c8f7c5] font-medium">补充诊断 / 候选确认</h4>
                       <p className="text-xs text-white/70">当前候选数量：{candidates.length}</p>
                       <div className="space-y-2">
                         <Label className="text-white/80">候选病害选择</Label>
@@ -1208,12 +1229,34 @@ export function DiagnosePage() {
                       )}
 
                       <Button
-                        onClick={handleConfirmSubmit}
+                        onClick={() => handleConfirmSubmit()}
                         disabled={confirmSubmitting || !traceId || !imageId}
                         className="bg-[#c8f7c5] text-black hover:bg-[#b8e7b5]"
                       >
                         {confirmSubmitting ? '提交中...' : '提交确认'}
                       </Button>
+                      {result?.expert_review_recommended && (
+                        <div className="rounded-lg border border-yellow-400/40 bg-yellow-500/10 p-3 space-y-2">
+                          <p className="text-sm text-yellow-100">补充诊断后仍不确定，请选择后续处理方式：</p>
+                          <div className="flex flex-wrap gap-2">
+                            <Button
+                              onClick={() => handleConfirmSubmit('decline')}
+                              disabled={confirmSubmitting || !traceId || !imageId}
+                              variant="secondary"
+                              className="bg-white/10 text-white hover:bg-white/20"
+                            >
+                              使用当前结果结束
+                            </Button>
+                            <Button
+                              onClick={() => handleConfirmSubmit('accept')}
+                              disabled={confirmSubmitting || !traceId || !imageId}
+                              className="bg-yellow-400 text-black hover:bg-yellow-300"
+                            >
+                              转入专家复核
+                            </Button>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   ) : null}
 
@@ -1222,7 +1265,13 @@ export function DiagnosePage() {
                   {/* Treatment */}
                   {shouldHideTreatment && (
                     <div className="bg-yellow-500/10 border border-yellow-400/30 rounded-xl p-4 text-yellow-200 text-sm">
-                      置信度不足，建议先二次诊断确认病害或补充症状。
+                      置信度不足，建议先进行补充诊断 / 候选确认或补充症状。
+                    </div>
+                  )}
+
+                  {result?.status === 'pending_expert_review' && (
+                    <div className="bg-yellow-500/10 border border-yellow-400/30 rounded-xl p-4 text-yellow-100 text-sm">
+                      当前病例已进入待专家复核状态，最终治疗/预防方案将在专家确认后下发。
                     </div>
                   )}
 

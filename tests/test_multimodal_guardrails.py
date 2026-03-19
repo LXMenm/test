@@ -95,7 +95,7 @@ def test_supervisor_need_confirm_ends_current_round_without_reception_loop():
     }
 
     out = agents_module.supervisor_agent(state)
-    assert out["next_action"] == "end"
+    assert out["next_action"] == "await_user_confirmation"
     assert out["is_complete"] is True
     assert out.get("workflow_error") is None
     assert out.get("follow_up_questions")

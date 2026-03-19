@@ -166,6 +166,9 @@ class DiagnoseResponse(BaseModel):
     graph_treatment_generated: bool = False
     fallback_treatment_used: bool = False
     manual_review_required_before_execution: bool = False
+    expert_review_recommended: bool = False
+    expert_review_selected: bool = False
+    expert_review_status: str = "NONE"
     meta: dict[str, Any] | None = None
     events: list[dict[str, Any]] = []
 
@@ -492,7 +495,7 @@ def emit_node_event(
     )
 
 
-TERMINAL_CASE_STATUSES = {"completed", "manual_review_recommended", "failed", "cancelled"}
+TERMINAL_CASE_STATUSES = {"completed", "pending_expert_review", "failed", "cancelled"}
 
 
 def has_terminal_final_event(trace_id: str) -> bool:
@@ -1079,7 +1082,7 @@ async def diagnose_image(
         "model_fallback_reason": model_fallback_reason,
     }
 
-    response_status = "waiting_for_confirmation" if need_confirm_waiting else "completed"
+    response_status = "waiting_for_supplement" if need_confirm_waiting else "completed"
     verification_available = verification_result is not None
     treatment_available = treatment is not None
     response_fallback_reason = (trace_fallback_reason or fallback_reasons or None) if fallback_used else None
@@ -1151,6 +1154,9 @@ async def diagnose_image(
         "verification_available": verification_available,
         "manual_review_recommended": False,
         "manual_review_required_before_execution": False,
+        "expert_review_recommended": False,
+        "expert_review_selected": False,
+        "expert_review_status": "NONE",
         "graph_treatment_generated": graph_treatment_generated,
         "fallback_treatment_used": fallback_treatment_used,
     }
@@ -1163,12 +1169,12 @@ async def diagnose_image(
         print(f"Warning: failed to append event: {exc}")
         emit_node_event(trace_id, node="Persist", status="error", message=f"事件落盘失败: {exc}")
 
-    if response_status == "waiting_for_confirmation":
+    if response_status == "waiting_for_supplement":
         emit_node_event(
             trace_id,
             node="AwaitUserConfirmation",
             status="end",
-            message="当前轮返回追问，等待用户补充后进入二次诊断",
+            message="当前轮返回追问，等待用户补充后进入补充诊断",
             payload={"final_disease": final_disease, "status": response_status, "reason": "need_confirm_wait_user"},
         )
     else:
@@ -1237,6 +1243,9 @@ async def diagnose_image(
         "verification_available": verification_available,
         "manual_review_recommended": False,
         "manual_review_required_before_execution": False,
+        "expert_review_recommended": False,
+        "expert_review_selected": False,
+        "expert_review_status": "NONE",
         "graph_treatment_generated": graph_treatment_generated,
         "fallback_treatment_used": fallback_treatment_used,
         "meta": response_meta,
@@ -1261,13 +1270,15 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
     growth_stage = payload.get("growth_stage")
     model_id = payload.get("model_id")
     choice = str(payload.get("choice") or "").strip()
+    expert_review_decision_raw = payload.get("expert_review_decision")
+    expert_review_decision = str(expert_review_decision_raw or "").strip().lower() or None
     farmer_id = payload.get("farmer_id")
     base_id = payload.get("base_id")
 
     if not image_id:
         raise HTTPException(status_code=400, detail="image_id 不能为空")
 
-    # 保持二次诊断沿用首轮 trace，便于流程面板展示完整链路
+    # 保持补充诊断沿用首轮 trace，便于流程面板展示完整链路
     if not trace_id and previous_trace_id:
         trace_id = previous_trace_id
     if not trace_id:
@@ -1275,6 +1286,8 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
 
     if not isinstance(symptoms, list):
         raise HTTPException(status_code=400, detail="symptoms 必须为列表")
+    if expert_review_decision not in {None, "accept", "decline"}:
+        raise HTTPException(status_code=400, detail="expert_review_decision 仅支持 accept/decline/null")
 
     # 确认输入是同一张图内的“等待用户补充 -> 回边重试”状态折返。
     # 因此确认输入症状必须与上一轮症状做增量合并，避免覆盖。
@@ -1362,6 +1375,7 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
             "previous_trace_id": previous_trace_id,
             "model_id": model_id,
             "choice": choice,
+            "expert_review_decision": expert_review_decision,
             "farmer_id": farmer_id,
             "base_id": base_id,
             "confirm_round_index": confirm_round_index,
@@ -1397,9 +1411,6 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
         elif next_action == "await_user_confirmation":
             terminal_action = "await_user_confirmation"
             break
-        elif next_action == "manual_review":
-            terminal_action = "manual_review"
-            break
         elif next_action == "end":
             terminal_action = "end"
             break
@@ -1430,18 +1441,30 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
     }
     flags = state.get("personalization_flags") or {}
     need_confirm = bool(flags.get("need_confirm"))
+    expert_review_recommended = bool(flags.get("expert_review_recommended")) or bool(terminal_action == "end" and need_confirm)
+    expert_review_selected = False
+    expert_review_status = "NONE"
     if terminal_action == "await_user_confirmation":
         manual_review_recommended = False
         need_confirm = True
-    elif terminal_action == "manual_review":
-        manual_review_recommended = True
-        need_confirm = False
+        expert_review_recommended = False
     else:
-        if choice and choice != "other":
+        if expert_review_recommended:
+            if expert_review_decision == "accept":
+                expert_review_selected = True
+                expert_review_status = "PENDING"
+                need_confirm = False
+            elif expert_review_decision == "decline":
+                expert_review_selected = False
+                expert_review_status = "DECLINED"
+                need_confirm = False
+            else:
+                need_confirm = True
+        elif choice and choice != "other":
             need_confirm = False
         manual_review_recommended = False
-    manual_review_required_before_execution = manual_review_recommended
-    if manual_review_recommended:
+    manual_review_required_before_execution = False
+    if expert_review_status == "PENDING":
         state["treatment_plan"] = None
         state["prevention_advice"] = None
         state["verification_result"] = None
@@ -1462,15 +1485,21 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
     flags["follow_up_questions"] = follow_up_questions
     missing_profile_fields = sorted({str(item).strip() for item in (flags.get("missing_profile_fields") or []) if str(item).strip()})
     confirm_message = None
-    if manual_review_recommended:
-        confirm_message = "二次诊断后仍存在不确定性，建议人工复核后再执行方案"
+    if expert_review_status == "PENDING":
+        confirm_message = "已进入待专家复核状态，后续由专家确认病害并给出方案。"
+    elif expert_review_recommended and expert_review_status == "DECLINED":
+        confirm_message = "已使用当前补充诊断结果结束；如需更稳妥建议，可后续申请专家复核。"
+    elif expert_review_recommended and need_confirm:
+        confirm_message = "补充诊断后仍不确定，建议选择“使用当前结果结束”或“转入专家复核”。"
     elif need_confirm:
-        confirm_message = "置信度较低，建议补充症状或重新拍摄"
+        confirm_message = "置信度较低，建议补充诊断 / 候选确认或重新拍摄。"
 
     if terminal_action == "await_user_confirmation":
-        confirm_status = "waiting_for_confirmation"
-    elif terminal_action == "manual_review":
-        confirm_status = "manual_review_recommended"
+        confirm_status = "waiting_for_supplement"
+    elif expert_review_status == "PENDING":
+        confirm_status = "pending_expert_review"
+    elif expert_review_recommended and need_confirm:
+        confirm_status = "waiting_for_supplement"
     else:
         confirm_status = "completed"
 
@@ -1516,16 +1545,16 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
         "filtered_actions": filtered_actions,
         "llm_failed": bool(flags.get("llm_failed")),
         "elapsed_ms": round((time.perf_counter() - request_started) * 1000, 2),
-        "treatment": None if manual_review_recommended else {
+        "treatment": None if expert_review_status == "PENDING" else {
             "plan": state.get("treatment_plan"),
             "prevention": state.get("prevention_advice"),
         },
         "meta": response_meta,
-        "verification_result": None if manual_review_recommended else state.get("verification_result"),
-        "verification_passed": None if manual_review_recommended else state.get("verification_passed"),
-        "verification_risk_level": None if manual_review_recommended else state.get("verification_risk_level"),
-        "verification_issues": [] if manual_review_recommended else list(state.get("verification_issues") or []),
-        "verification_summary": None if manual_review_recommended else state.get("verification_summary"),
+        "verification_result": None if expert_review_status == "PENDING" else state.get("verification_result"),
+        "verification_passed": None if expert_review_status == "PENDING" else state.get("verification_passed"),
+        "verification_risk_level": None if expert_review_status == "PENDING" else state.get("verification_risk_level"),
+        "verification_issues": [] if expert_review_status == "PENDING" else list(state.get("verification_issues") or []),
+        "verification_summary": None if expert_review_status == "PENDING" else state.get("verification_summary"),
         "image_confidence": image_confidence,
         "text_confidence": text_confidence,
         "text_top3": text_top3,
@@ -1534,9 +1563,12 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
         "diagnosis_evidence": diagnosis_evidence,
         "manual_review_recommended": manual_review_recommended,
         "manual_review_required_before_execution": manual_review_required_before_execution,
+        "expert_review_recommended": expert_review_recommended,
+        "expert_review_selected": expert_review_selected,
+        "expert_review_status": expert_review_status,
         "status": confirm_status,
-        "treatment_available": bool(state.get("treatment_plan")) and not manual_review_recommended,
-        "verification_available": (state.get("verification_result") is not None) and not manual_review_recommended,
+        "treatment_available": bool(state.get("treatment_plan")) and expert_review_status != "PENDING",
+        "verification_available": (state.get("verification_result") is not None) and expert_review_status != "PENDING",
         "graph_treatment_generated": bool(state.get("treatment_plan")),
         "fallback_treatment_used": bool(previous_case_event.get("fallback_treatment_used")) if isinstance(previous_case_event, dict) else False,
         "historical_follow_up_questions": historical_follow_up_questions,
@@ -1551,12 +1583,12 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
         emit_node_event(trace_id, node="Persist", status="error", message=f"确认轮事件落盘失败: {exc}")
 
     # Final 必须在 Persist 之后，才是真正终点
-    if confirm_status == "waiting_for_confirmation":
+    if confirm_status == "waiting_for_supplement":
         emit_node_event(
             trace_id,
             node="AwaitUserConfirmation",
             status="end",
-            message="当前轮返回追问，等待用户补充后进入二次诊断",
+            message="当前轮返回追问，等待用户补充后进入补充诊断",
             payload={
                 "final_disease": state.get("final_disease"),
                 "status": confirm_status,
@@ -1567,7 +1599,7 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
         emit_final_event_once(
             trace_id,
             status=confirm_status,
-            message="二次诊断流程完成",
+            message="补充诊断流程完成",
             payload={
                 "final_disease": state.get("final_disease"),
                 "confirm_round": True,
@@ -1603,9 +1635,12 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
         "diagnosis_evidence": diagnosis_evidence,
         "manual_review_recommended": manual_review_recommended,
         "manual_review_required_before_execution": manual_review_required_before_execution,
+        "expert_review_recommended": expert_review_recommended,
+        "expert_review_selected": expert_review_selected,
+        "expert_review_status": expert_review_status,
         "status": confirm_status,
         "confirm_message": confirm_message,
-        "treatment": None if manual_review_recommended else {
+        "treatment": None if expert_review_status == "PENDING" else {
             "plan": state.get("treatment_plan"),
             "prevention": state.get("prevention_advice"),
         },
@@ -1618,7 +1653,7 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
         "profile_pesticide_access_level": flags.get("pesticide_access_level"),
         "profile_equipment": [str(item) for item in (flags.get("equipment") or [])],
         "profile_cultivation_mode": flags.get("cultivation_mode"),
-        "selected_branch": flags.get("selected_branch") if (bool(state.get("treatment_plan")) and not manual_review_recommended) else None,
+        "selected_branch": flags.get("selected_branch") if (bool(state.get("treatment_plan")) and expert_review_status != "PENDING") else None,
         "workflow_degraded": bool(previous_case_event.get("workflow_degraded")) if isinstance(previous_case_event, dict) else False,
         "degraded_reason": previous_case_event.get("degraded_reason") if isinstance(previous_case_event, dict) else None,
         "personalization_applied": personalization_applied,
@@ -1632,16 +1667,16 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
         "missing_profile_fields": missing_profile_fields,
         "llm_failed": bool(flags.get("llm_failed")),
         "llm_failed_reason": flags.get("llm_failed_reason"),
-        "verification_result": None if manual_review_recommended else state.get("verification_result"),
-        "verification_passed": None if manual_review_recommended else state.get("verification_passed"),
-        "verification_risk_level": None if manual_review_recommended else state.get("verification_risk_level"),
-        "verification_issues": [] if manual_review_recommended else list(state.get("verification_issues") or []),
-        "verification_summary": None if manual_review_recommended else state.get("verification_summary"),
-        "treatment_available": bool(state.get("treatment_plan")) and not manual_review_recommended,
-        "verification_available": (state.get("verification_result") is not None) and not manual_review_recommended,
+        "verification_result": None if expert_review_status == "PENDING" else state.get("verification_result"),
+        "verification_passed": None if expert_review_status == "PENDING" else state.get("verification_passed"),
+        "verification_risk_level": None if expert_review_status == "PENDING" else state.get("verification_risk_level"),
+        "verification_issues": [] if expert_review_status == "PENDING" else list(state.get("verification_issues") or []),
+        "verification_summary": None if expert_review_status == "PENDING" else state.get("verification_summary"),
+        "treatment_available": bool(state.get("treatment_plan")) and expert_review_status != "PENDING",
+        "verification_available": (state.get("verification_result") is not None) and expert_review_status != "PENDING",
         "graph_treatment_generated": bool(state.get("treatment_plan")),
         "fallback_treatment_used": bool(previous_case_event.get("fallback_treatment_used")) if isinstance(previous_case_event, dict) else False,
-        "treatment_skipped_due_need_confirm": bool(confirm_status == "waiting_for_confirmation"),
+        "treatment_skipped_due_need_confirm": bool(confirm_status == "waiting_for_supplement"),
         "meta": response_meta,
         "events": events,
     }
