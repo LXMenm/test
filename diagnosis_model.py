@@ -28,7 +28,7 @@ from text_model.infer_text_classifier import BertTextClassifier
 
 # 获取知识库管理器实例
 kb_manager = get_kb_manager()
-FUSE_MULTIMODAL_VERSION = "fuse_v2_text_evidence_gate_20260316"
+FUSE_MULTIMODAL_VERSION = "fuse_v3_text_reliability_gate_20260319"
 PREDICT_TEXT_PROBA_VERSION = "text_v3_bert_with_rule_fallback_20260316"
 
 # 从知识库获取病害类别
@@ -571,33 +571,48 @@ class DiseaseDiagnosisEngine:
         prior_probs = self._normalized(prior_probs)
 
         has_image = bool(image_probs)
-        has_text = bool(text_probs)
-        if text_evidence_active is not None:
-            has_text = bool(has_text and text_evidence_active)
-        if not has_text:
-            text_probs = {}
+        has_text = bool(text_evidence_active) if text_evidence_active is not None else bool(text_probs)
         has_prior = bool(prior_probs)
         reliable_image = image_confidence >= 0.6
-        reliable_text = text_confidence >= 0.6
 
         image_top3 = self._topk(image_probs, 3)
         text_top3 = self._topk(text_probs, 3)
         prior_top3 = self._topk(prior_probs, 3)
+        text_top1_conf = float(text_top3[0][1]) if text_top3 else 0.0
+        text_top2_conf = float(text_top3[1][1]) if len(text_top3) > 1 else 0.0
+        text_top12_margin = text_top1_conf - text_top2_conf
+        reliable_text = bool(
+            text_top3
+            and text_top1_conf >= 0.25
+            and text_top12_margin >= 0.05
+        )
+        text_probs_for_fusion = text_probs if reliable_text else {}
         image_top1 = image_top3[0][0] if image_top3 else None
         text_top1 = text_top3[0][0] if text_top3 else None
-        conflict = bool(has_image and has_text and image_top1 and text_top1 and image_top1 != text_top1)
+        conflict = bool(
+            has_image
+            and has_text
+            and reliable_image
+            and reliable_text
+            and image_top1
+            and text_top1
+            and image_top1 != text_top1
+        )
 
         base_weights = {"image": 0.0, "text": 0.0, "prior": 0.0}
         confidence_drop_reason = None
 
         if has_image and has_text:
-            if conflict:
+            if not reliable_text:
+                # 有文本输入但证据不可靠时，避免弱文本对高置信图像产生冲突降权。
+                base_weights = {"image": 0.95, "text": 0.0, "prior": 0.05 if has_prior else 0.0}
+            elif conflict:
                 base_weights = {"image": 0.45, "text": 0.45, "prior": 0.10 if has_prior else 0.0}
                 confidence_drop_reason = "image_text_conflict"
             elif reliable_image and reliable_text:
-                base_weights = {"image": 0.60, "text": 0.35, "prior": 0.05 if has_prior else 0.0}
+                base_weights = {"image": 0.68, "text": 0.32, "prior": 0.0}
             elif reliable_image:
-                base_weights = {"image": 0.65, "text": 0.30, "prior": 0.05 if has_prior else 0.0}
+                base_weights = {"image": 0.90, "text": 0.10, "prior": 0.0}
             else:
                 base_weights = {"image": 0.40, "text": 0.55, "prior": 0.05 if has_prior else 0.0}
         elif has_image:
@@ -611,7 +626,7 @@ class DiseaseDiagnosisEngine:
         # 仅对存在模态做权重重分配，缺失模态不参与。
         active = {
             "image": has_image,
-            "text": has_text,
+            "text": has_text and reliable_text and bool(text_probs_for_fusion),
             "prior": has_prior and base_weights.get("prior", 0.0) > 0,
         }
         active_sum = sum(base_weights[k] for k, on in active.items() if on)
@@ -645,7 +660,7 @@ class DiseaseDiagnosisEngine:
         for key in keys:
             fused[key] = (
                 normalized_weights["image"] * image_probs.get(key, 0.0)
-                + normalized_weights["text"] * text_probs.get(key, 0.0)
+                + normalized_weights["text"] * text_probs_for_fusion.get(key, 0.0)
                 + normalized_weights["prior"] * prior_probs.get(key, 0.0)
             )
         fused = self._normalized(fused)

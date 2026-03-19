@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import agents as agents_module
+from diagnosis_model import DiseaseDiagnosisEngine
 from state import create_initial_state
 
 
@@ -225,6 +226,128 @@ class _EngineConflictSpecific:
 
 def test_specific_conflict_sets_modality_flag_and_need_confirm(monkeypatch):
     state = _run_with_engine(monkeypatch, _EngineConflictSpecific(), symptoms=["发黄", "卷曲"], image_path="exam.JPG")
+    assert state["modality_conflict_flag"] is True
+    assert state["fusion_meta"].get("confidence_drop_reason") == "image_text_conflict"
+    assert state["personalization_flags"].get("need_confirm") is True
+
+
+class _EngineRealFusionWeakText:
+    def __init__(self):
+        self._fuser = DiseaseDiagnosisEngine.__new__(DiseaseDiagnosisEngine)
+
+    def predict_image_proba(self, _):
+        return {"细菌性斑点病": 0.9607, "早疫病": 0.0393}
+
+    def predict_text_proba(self, **kwargs):
+        return {"健康": 0.1425, "细菌性斑点病": 0.1385, "晚疫病": 0.1000}
+
+    def build_prior_proba(self, **kwargs):
+        return {}
+
+    def fuse_multimodal_probs(self, image_probs, text_probs, prior_probs, image_confidence=0.0, text_confidence=0.0, text_evidence_active=None):
+        return DiseaseDiagnosisEngine.fuse_multimodal_probs(
+            self._fuser,
+            image_probs=image_probs,
+            text_probs=text_probs,
+            prior_probs=prior_probs,
+            image_confidence=image_confidence,
+            text_confidence=text_confidence,
+            text_evidence_active=text_evidence_active,
+        )
+
+    def build_diagnosis_evidence(self, **kwargs):
+        return {
+            "modality_conflict_flag": kwargs["modality_conflict_flag"],
+            "detailed_reason": "real-fusion-weak-text",
+            "concise_summary": "real-fusion-weak-text",
+            "summary": "real-fusion-weak-text",
+        }
+
+    def _get_disease_description(self, disease_type, symptoms):
+        return disease_type
+
+
+class _EngineRealFusionConsistentReliable:
+    def __init__(self):
+        self._fuser = DiseaseDiagnosisEngine.__new__(DiseaseDiagnosisEngine)
+
+    def predict_image_proba(self, _):
+        return {"细菌性斑点病": 0.91, "早疫病": 0.09}
+
+    def predict_text_proba(self, **kwargs):
+        return {"细菌性斑点病": 0.72, "晚疫病": 0.20, "健康": 0.08}
+
+    def build_prior_proba(self, **kwargs):
+        return {}
+
+    def fuse_multimodal_probs(self, image_probs, text_probs, prior_probs, image_confidence=0.0, text_confidence=0.0, text_evidence_active=None):
+        return DiseaseDiagnosisEngine.fuse_multimodal_probs(
+            self._fuser,
+            image_probs=image_probs,
+            text_probs=text_probs,
+            prior_probs=prior_probs,
+            image_confidence=image_confidence,
+            text_confidence=text_confidence,
+            text_evidence_active=text_evidence_active,
+        )
+
+    def build_diagnosis_evidence(self, **kwargs):
+        return {"modality_conflict_flag": kwargs["modality_conflict_flag"], "summary": "consistent-reliable"}
+
+    def _get_disease_description(self, disease_type, symptoms):
+        return disease_type
+
+
+class _EngineRealFusionConflictReliable:
+    def __init__(self):
+        self._fuser = DiseaseDiagnosisEngine.__new__(DiseaseDiagnosisEngine)
+
+    def predict_image_proba(self, _):
+        return {"细菌性斑点病": 0.90, "早疫病": 0.10}
+
+    def predict_text_proba(self, **kwargs):
+        return {"健康": 0.70, "细菌性斑点病": 0.20, "晚疫病": 0.10}
+
+    def build_prior_proba(self, **kwargs):
+        return {}
+
+    def fuse_multimodal_probs(self, image_probs, text_probs, prior_probs, image_confidence=0.0, text_confidence=0.0, text_evidence_active=None):
+        return DiseaseDiagnosisEngine.fuse_multimodal_probs(
+            self._fuser,
+            image_probs=image_probs,
+            text_probs=text_probs,
+            prior_probs=prior_probs,
+            image_confidence=image_confidence,
+            text_confidence=text_confidence,
+            text_evidence_active=text_evidence_active,
+        )
+
+    def build_diagnosis_evidence(self, **kwargs):
+        return {"modality_conflict_flag": kwargs["modality_conflict_flag"], "summary": "conflict-reliable"}
+
+    def _get_disease_description(self, disease_type, symptoms):
+        return disease_type
+
+
+def test_image_strong_text_weak_no_conflict_and_no_confirm(monkeypatch):
+    state = _run_with_engine(monkeypatch, _EngineRealFusionWeakText(), symptoms=["叶片有斑点"], image_path="exam.JPG")
+    assert state["fusion_meta"].get("text_reliable") is False
+    assert state["modality_conflict_flag"] is False
+    assert state["fusion_meta"].get("confidence_drop_reason") != "image_text_conflict"
+    assert state["personalization_flags"].get("need_confirm") is False
+    assert state["final_confidence"] >= 0.85
+
+
+def test_image_strong_text_consistent_reliable(monkeypatch):
+    state = _run_with_engine(monkeypatch, _EngineRealFusionConsistentReliable(), symptoms=["叶片有斑点"], image_path="exam.JPG")
+    assert state["fusion_meta"].get("text_reliable") is True
+    assert state["modality_conflict_flag"] is False
+    assert state["final_confidence"] >= 0.70
+
+
+def test_image_strong_text_conflict_reliable_sets_need_confirm(monkeypatch):
+    state = _run_with_engine(monkeypatch, _EngineRealFusionConflictReliable(), symptoms=["叶片疑似健康"], image_path="exam.JPG")
+    assert state["fusion_meta"].get("text_reliable") is True
     assert state["modality_conflict_flag"] is True
     assert state["fusion_meta"].get("confidence_drop_reason") == "image_text_conflict"
     assert state["personalization_flags"].get("need_confirm") is True
