@@ -326,6 +326,9 @@ export function DiagnosePage() {
   };
 
   const buildResultFromPayload = (payload: Record<string, unknown>): DiagnosisResult => {
+    const meta = payload.meta && typeof payload.meta === 'object'
+      ? payload.meta as Record<string, unknown>
+      : {};
     const treatmentObj = payload.treatment && typeof payload.treatment === 'object'
       ? payload.treatment as Record<string, unknown>
       : undefined;
@@ -387,10 +390,16 @@ export function DiagnosePage() {
     profile_equipment: Array.isArray(payload.profile_equipment) ? payload.profile_equipment.map((item) => String(item)) : [],
     profile_cultivation_mode: typeof payload.profile_cultivation_mode === 'string' ? payload.profile_cultivation_mode : undefined,
     selected_branch: selectedBranch,
-    risk_tags: Array.isArray(payload.risk_tags) ? payload.risk_tags.map((item) => String(item)) : [],
-    risk_items: normalizeRiskItems(payload.risk_items),
-    risk_summary: typeof payload.risk_summary === 'string' ? payload.risk_summary : undefined,
-    risk_updated_at: typeof payload.risk_updated_at === 'string' ? payload.risk_updated_at : undefined,
+    risk_tags: Array.isArray(payload.risk_tags)
+      ? payload.risk_tags.map((item) => String(item))
+      : (Array.isArray(meta.risk_tags) ? meta.risk_tags.map((item) => String(item)) : []),
+    risk_items: normalizeRiskItems(payload.risk_items ?? meta.risk_items),
+    risk_summary: typeof payload.risk_summary === 'string'
+      ? payload.risk_summary
+      : (typeof meta.risk_summary === 'string' ? meta.risk_summary : undefined),
+    risk_updated_at: typeof payload.risk_updated_at === 'string'
+      ? payload.risk_updated_at
+      : (typeof meta.risk_updated_at === 'string' ? meta.risk_updated_at : undefined),
     verification_result: verificationResult,
     verification_passed: verificationResult?.passed ?? (typeof payload.verification_passed === 'boolean' ? payload.verification_passed : undefined),
     verification_risk_level: verificationResult?.risk_level ?? (typeof payload.verification_risk_level === 'string' ? payload.verification_risk_level : undefined),
