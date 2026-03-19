@@ -490,17 +490,44 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
     final_confidence = float(fusion_top3[0][1]) if fusion_top3 else max(image_confidence, text_confidence, 0.0)
 
     fusion_conflict_reason = (fusion_meta.get("confidence_drop_reason") if isinstance(fusion_meta, dict) else None)
-    has_image_active = bool(fusion_meta.get("has_image")) if isinstance(fusion_meta, dict) else bool(image_probs)
-    has_text_active = bool(fusion_meta.get("has_text")) if isinstance(fusion_meta, dict) else bool(text_probs)
-    top1_conflict = bool(has_image_active and has_text_active and image_top1 and text_top1 and image_top1 != text_top1)
-    modality_conflict_flag = bool(top1_conflict or fusion_conflict_reason == "image_text_conflict")
+    has_image_active = (
+        bool(fusion_meta.get("has_image"))
+        if isinstance(fusion_meta, dict) and "has_image" in fusion_meta
+        else bool(image_probs)
+    )
+    has_text_active = (
+        bool(fusion_meta.get("has_text"))
+        if isinstance(fusion_meta, dict) and "has_text" in fusion_meta
+        else bool(text_probs)
+    )
+    image_reliable = (
+        bool(fusion_meta.get("image_reliable"))
+        if isinstance(fusion_meta, dict) and "image_reliable" in fusion_meta
+        else bool(image_confidence >= 0.6)
+    )
+    text_reliable = (
+        bool(fusion_meta.get("text_reliable"))
+        if isinstance(fusion_meta, dict) and "text_reliable" in fusion_meta
+        else bool(text_confidence >= 0.6)
+    )
+    top1_conflict = bool(
+        has_image_active
+        and has_text_active
+        and image_reliable
+        and text_reliable
+        and image_top1
+        and text_top1
+        and image_top1 != text_top1
+    )
+    modality_conflict_flag = bool(top1_conflict)
 
     debug_payload.update(
         {
             "text_evidence_active": bool(text_evidence_active),
             "text_probs_source": text_probs_source,
             "text_probs": dict(text_probs),
-            "has_text": bool(text_probs),
+            "has_text": has_text_active,
+            "text_reliable": text_reliable,
             "fusion_weights": (fusion_meta.get("normalized_weights") if isinstance(fusion_meta, dict) else {}),
             "confidence_drop_reason": fusion_conflict_reason,
             "fuse_version": (fusion_meta.get("fuse_version") if isinstance(fusion_meta, dict) else None),
@@ -541,6 +568,16 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
     if confidence_policy.get("need_confirm"):
         flags["need_confirm"] = True
         flags["fallback_reason"] = list(confidence_policy.get("reasons") or [])
+
+    # 高置信图像 + 文本不可靠时，不因弱文本飘逸触发确认。
+    if has_image_active and image_reliable and not text_reliable and not modality_conflict_flag:
+        if final_confidence >= DIAGNOSIS_CONFIDENCE_THRESHOLD:
+            flags["need_confirm"] = False
+            reasons = [r for r in list(flags.get("fallback_reason") or []) if r != "low_margin"]
+            if reasons:
+                flags["fallback_reason"] = reasons
+            else:
+                flags.pop("fallback_reason", None)
 
     disease_description = diagnosis_engine._get_disease_description(final_disease, normalized_symptoms)
 
