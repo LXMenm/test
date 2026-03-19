@@ -469,10 +469,7 @@ def serialize_final_response(payload: dict[str, Any]) -> dict[str, Any]:
     if "confirm_message" in data and data["confirm_message"] is not None:
         data["confirm_message"] = sanitize_user_text(data["confirm_message"])
 
-    if "meta" in data:
-        data["meta"] = sanitize_user_text(data["meta"])
-
-    return sanitize_user_text(data)
+    return data
 
 
 def emit_node_event(
@@ -1538,8 +1535,13 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
     response_payload = {
         "trace_id": trace_id,
         "image_id": image_id,
+        "image_url": f"/uploads/{image_id}",
+        "fallback_used": False,
+        "fallback_reason": None,
+        "rule_result": None,
         "final_disease": state.get("final_disease"),
         "image_result": image_result,
+        "farmer_id": farmer_id,
         "need_confirm": need_confirm,
         "final_confidence": final_confidence,
         "final_source": final_source,
@@ -1567,6 +1569,13 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
         "model_backend": model_meta.get("backend"),
         "resolved_model_path": model_meta.get("resolved_model_path"),
         "model_fallback_reason": model_meta.get("model_fallback_reason"),
+        "profile_farm_scale": flags.get("farm_scale"),
+        "profile_pesticide_access_level": flags.get("pesticide_access_level"),
+        "profile_equipment": [str(item) for item in (flags.get("equipment") or [])],
+        "profile_cultivation_mode": flags.get("cultivation_mode"),
+        "selected_branch": flags.get("selected_branch") if (bool(state.get("treatment_plan")) and not manual_review_recommended) else None,
+        "workflow_degraded": False,
+        "degraded_reason": None,
         "personalization_applied": personalization_applied,
         "personalization_reasons": dedupe_reasons(flags.get("personalization_reasons") or []),
         "filtered": filtered,
