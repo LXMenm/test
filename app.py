@@ -30,6 +30,7 @@ import knowledge_base.kb_manager as kb_manager_module
 from agents import append_trace, diagnosis_agent, kb_retrieval_agent, treatment_agent, verification_agent, supervisor_agent
 from event_store import (
     append_event,
+    get_latest_event_by_trace,
     list_events,
     stats_by_disease,
     timeseries,
@@ -45,7 +46,13 @@ from personalization import profile_rules
 from personalization.profile_constants import estimate_harvest_window_days, growth_stage_label, normalize_growth_stage
 from personalization.profile_models import BaseProfile, FarmerProfile, TreatmentConstraint
 from personalization.profile_context import build_personalization_context, build_personalization_flags
-from personalization.profile_store import get_profile_path, load_profile, list_profile_ids, save_profile as persist_profile
+from personalization.profile_store import (
+    delete_profile as delete_profile_store,
+    get_profile_path,
+    load_profile,
+    list_profile_ids,
+    save_profile as persist_profile,
+)
 from personalization.utils import dedupe_reasons, compute_personalization_applied, normalize_follow_up_questions
 from state import create_initial_state
 from trace_store import list_trace_events, subscribe as subscribe_trace, unsubscribe as unsubscribe_trace, emit_trace_event
@@ -612,10 +619,8 @@ def _resolve_profile_and_base(
 
 
 def _latest_case_event_by_trace(trace_id: str) -> dict[str, Any]:
-    for item in list_events(limit=500):
-        if isinstance(item, dict) and item.get("trace_id") == trace_id:
-            return item
-    return {}
+    event = get_latest_event_by_trace(trace_id)
+    return event if isinstance(event, dict) else {}
 
 
 def _safe_float(value: Any) -> float | None:
@@ -2000,24 +2005,17 @@ def _normalize_profile_payload_for_save(farmer_id: str, payload: dict) -> Farmer
 
 def _generate_farmer_id() -> str | None:
     """生成唯一的农户ID"""
-    from personalization.profile_store import PROFILE_DIR
-    
-    if not PROFILE_DIR.exists():
-        return "F0001"
-    
-    # 获取所有现有农户ID
     existing_ids = []
-    for file in PROFILE_DIR.glob("*.json"):
+    for farmer_id in list_profile_ids():
         try:
-            id = file.stem
-            if id.startswith("F") and id[1:].isdigit():
-                existing_ids.append(int(id[1:]))
-        except:
+            if farmer_id.startswith("F") and farmer_id[1:].isdigit():
+                existing_ids.append(int(farmer_id[1:]))
+        except Exception:
             pass
-    
+
     if not existing_ids:
         return "F0001"
-    
+
     # 生成下一个ID
     next_id = max(existing_ids) + 1
     return f"F{next_id:04d}"
@@ -2032,8 +2030,7 @@ def create_profile(payload: dict = Body(...)) -> dict[str, bool | str]:
         farmer_id = _generate_farmer_id()
         if not farmer_id:
             raise HTTPException(status_code=409, detail="农户ID已满")
-    path = get_profile_path(farmer_id)
-    if path.exists():
+    if load_profile(farmer_id) is not None:
         raise HTTPException(status_code=409, detail="农户ID已存在")
 
     profile = FarmerProfile(farmer_id=farmer_id, name=payload.get("name"))
@@ -2057,8 +2054,7 @@ def create_profile(payload: dict = Body(...)) -> dict[str, bool | str]:
     profile.ensure_timestamp()
     profile.updated_at = _utc_now_iso()
     try:
-        with path.open("w", encoding="utf-8") as f:
-            json.dump(profile.model_dump(), f, ensure_ascii=False, indent=2)
+        persist_profile(profile)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"创建档案失败: {exc}") from exc
     return {"ok": True, "id": farmer_id}
@@ -2089,11 +2085,10 @@ def save_profile_route(farmer_id: str, payload: dict = Body(...)) -> dict[str, b
 
 @app.delete("/api/profiles/{farmer_id}")
 def delete_profile(farmer_id: str) -> dict[str, bool]:
-    path = get_profile_path(farmer_id)
-    if not path.exists():
+    if load_profile(farmer_id) is None:
         raise HTTPException(status_code=404, detail="档案不存在")
     try:
-        path.unlink()
+        delete_profile_store(farmer_id)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"删除档案失败: {exc}") from exc
     return {"ok": True}
@@ -2363,6 +2358,14 @@ def _to_stream_event(trace_id: str, event: dict) -> dict:
     }
 
 
+def _should_close_trace_stream(stream_event: dict[str, Any]) -> bool:
+    if stream_event.get("node") == "Final" and stream_event.get("status") in {"end", "error"}:
+        return True
+    if stream_event.get("node") == "AwaitUserConfirmation" and stream_event.get("status") == "end":
+        return True
+    return False
+
+
 @app.get("/api/traces/{trace_id}/stream")
 async def stream_trace(trace_id: str):
     async def event_generator():
@@ -2372,13 +2375,13 @@ async def stream_trace(trace_id: str):
             for event in history:
                 stream_event = _to_stream_event(trace_id, event)
                 yield f"event: trace\ndata: {json.dumps(stream_event, ensure_ascii=False)}\n\n"
+                if _should_close_trace_stream(stream_event):
+                    return
             while True:
                 event = await queue.get()
                 stream_event = _to_stream_event(trace_id, event)
                 yield f"event: trace\ndata: {json.dumps(stream_event, ensure_ascii=False)}\n\n"
-                if stream_event.get("node") == "Final" and stream_event.get("status") in {"end", "error"}:
-                    break
-                if stream_event.get("node") == "AwaitUserConfirmation" and stream_event.get("status") == "end":
+                if _should_close_trace_stream(stream_event):
                     break
         finally:
             unsubscribe_trace(trace_id, queue)

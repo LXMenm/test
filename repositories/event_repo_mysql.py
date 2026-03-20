@@ -249,6 +249,23 @@ def list_events_mysql(limit: int = 100) -> List[Dict[str, Any]]:
     return [_row_to_event_payload(row) for row in rows]
 
 
+def get_latest_event_by_trace_mysql(trace_id: str) -> dict[str, Any]:
+    normalized_trace_id = str(trace_id or "").strip()
+    if not normalized_trace_id:
+        return {}
+
+    with get_db_session() as session:
+        row = session.execute(
+            select(DiagnosisEventORM)
+            .where(DiagnosisEventORM.trace_id == normalized_trace_id)
+            .order_by(DiagnosisEventORM.ts.desc(), DiagnosisEventORM.id.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+        if row is None:
+            return {}
+        return _row_to_event_payload(row)
+
+
 def list_events_range_mysql(
     start: Any = None,
     end: Any = None,

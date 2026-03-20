@@ -27,6 +27,7 @@ def _get_mysql_repo():
         append_event_mysql,
         geo_points_mysql,
         geo_points_range_mysql,
+        get_latest_event_by_trace_mysql,
         list_events_mysql,
         list_events_range_mysql,
         model_usage_mysql,
@@ -39,6 +40,7 @@ def _get_mysql_repo():
 
     return {
         "append_event_mysql": append_event_mysql,
+        "get_latest_event_by_trace_mysql": get_latest_event_by_trace_mysql,
         "list_events_mysql": list_events_mysql,
         "list_events_range_mysql": list_events_range_mysql,
         "stats_by_disease_mysql": stats_by_disease_mysql,
@@ -173,6 +175,16 @@ def _list_events_from_file(limit: int = 50) -> List[Dict[str, Any]]:
         reverse=True,
     )
     return events[:limit]
+
+
+def _latest_event_by_trace_from_file(trace_id: str) -> Dict[str, Any]:
+    normalized_trace_id = str(trace_id or "").strip()
+    if not normalized_trace_id:
+        return {}
+    for event in _list_events_from_file(limit=200000):
+        if isinstance(event, dict) and event.get("trace_id") == normalized_trace_id:
+            return event
+    return {}
 
 
 def _stats_by_disease_from_file(days: int = 30) -> Dict[str, int]:
@@ -349,6 +361,17 @@ def list_events(limit: int = 50) -> List[Dict[str, Any]]:
         return repo["list_events_mysql"](limit=limit)
 
     return _list_events_from_file(limit=limit)
+
+
+def get_latest_event_by_trace(trace_id: str) -> Dict[str, Any]:
+    """Return the latest event for a trace id using the active store."""
+    mode = (EVENT_STORE_MODE or "file").lower()
+    if mode == "mysql":
+        _log_store_action(f"get_latest_event_by_trace trace_id={trace_id} via mysql")
+        repo = _get_mysql_repo()
+        return repo["get_latest_event_by_trace_mysql"](trace_id)
+
+    return _latest_event_by_trace_from_file(trace_id)
 
 
 def stats_by_disease(days: int = 30) -> Dict[str, int]:
