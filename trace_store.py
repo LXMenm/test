@@ -65,11 +65,51 @@ def _parse_ts(value: Any) -> datetime | None:
     return None
 
 
-def _normalize_event(trace_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
+def _coerce_seq(value: Any) -> int | None:
+    try:
+        seq = int(value)
+    except (TypeError, ValueError):
+        return None
+    return seq if seq > 0 else None
+
+
+def _max_seq_from_events(events: List[Dict[str, Any]]) -> int:
+    max_seq = 0
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        seq = _coerce_seq(event.get("seq"))
+        if seq is not None:
+            max_seq = max(max_seq, seq)
+    return max_seq
+
+
+def _current_max_seq_from_file(trace_id: str) -> int:
+    return _max_seq_from_events(_list_trace_events_from_file(trace_id))
+
+
+def _current_max_seq_from_mysql(trace_id: str) -> int:
+    return _max_seq_from_events(_list_trace_events_mysql(trace_id))
+
+
+def _next_seq(trace_id: str, mode: str) -> int:
+    persisted_max = 0
+    if mode in {"file", "dual"}:
+        persisted_max = max(persisted_max, _current_max_seq_from_file(trace_id))
+    if mode == "mysql" or (mode == "dual" and persisted_max == 0):
+        persisted_max = max(persisted_max, _current_max_seq_from_mysql(trace_id))
+
+    with _LOCK:
+        _SEQ[trace_id] = max(_SEQ[trace_id], persisted_max) + 1
+        return _SEQ[trace_id]
+
+
+def _normalize_event(trace_id: str, event: Dict[str, Any], mode: str | None = None) -> Dict[str, Any]:
     normalized = dict(event)
     if "ts" not in normalized:
         normalized["ts"] = _now_iso()
     normalized["trace_id"] = trace_id
+    store_mode = mode or _store_mode()
 
     node = normalized.get("node") or normalized.get("agent")
     payload = normalized.get("payload")
@@ -84,17 +124,14 @@ def _normalize_event(trace_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
         normalized["agent_id"] = agent_id
         payload["agent_id"] = agent_id
     normalized["payload"] = payload
-    with _LOCK:
-        if "seq" not in normalized:
-            _SEQ[trace_id] += 1
-            normalized["seq"] = _SEQ[trace_id]
-        else:
-            try:
-                seq_val = int(normalized["seq"])
-                _SEQ[trace_id] = max(_SEQ[trace_id], seq_val)
-            except Exception:
-                _SEQ[trace_id] += 1
-                normalized["seq"] = _SEQ[trace_id]
+
+    seq_val = _coerce_seq(normalized.get("seq"))
+    if seq_val is None:
+        normalized["seq"] = _next_seq(trace_id, store_mode)
+    else:
+        with _LOCK:
+            _SEQ[trace_id] = max(_SEQ[trace_id], seq_val)
+        normalized["seq"] = seq_val
     return normalized
 
 
@@ -141,8 +178,8 @@ def _fanout(trace_id: str, event: Dict[str, Any]) -> None:
 
 def append_trace_event(trace_id: str, event: Dict[str, Any]) -> None:
     """Append a single trace event to the configured store and fanout to subscribers."""
-    normalized = _normalize_event(trace_id, event)
     mode = _store_mode()
+    normalized = _normalize_event(trace_id, event, mode=mode)
 
     if mode == "mysql":
         _log("append_trace_event", "via mysql")
@@ -160,8 +197,8 @@ def append_trace_event(trace_id: str, event: Dict[str, Any]) -> None:
 
 def emit_trace_event(trace_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
     """Normalized append+publish helper for streaming trace events."""
-    normalized = _normalize_event(trace_id, event)
     mode = _store_mode()
+    normalized = _normalize_event(trace_id, event, mode=mode)
 
     if mode == "mysql":
         _log("emit_trace_event", "via mysql")
