@@ -1,6 +1,6 @@
 """
 数据库初始化脚本
-用于创建 MySQL 数据库和表结构。
+用于创建 MySQL 表结构。
 """
 
 from __future__ import annotations
