@@ -15,6 +15,17 @@ except ImportError:
     # 环境变量仍可通过系统环境变量设置
     pass
 
+# 持久化/存储配置
+DATABASE_URL = os.getenv(
+    "DATABASE_URL",
+    "mysql+pymysql://root:123456@127.0.0.1:3306/tomato_diagnosis?charset=utf8mb4"
+)
+
+PROFILE_STORE_MODE = os.getenv("PROFILE_STORE_MODE", "file")
+EVENT_STORE_MODE = os.getenv("EVENT_STORE_MODE", "file")
+TRACE_STORE_MODE = os.getenv("TRACE_STORE_MODE", "file")
+KB_STORE_MODE = os.getenv("KB_STORE_MODE", "file")
+
 # 大模型API配置
 # 支持多种API：openai, qwen(通义千问), wenxin(文心一言)
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "openai")  # 默认使用openai

@@ -24,3 +24,17 @@ requests>=2.31.0
 fastapi>=0.110.0
 uvicorn>=0.29.0
 python-multipart>=0.0.9
+
+# 系统现有功能补充依赖
+tensorflow
+keras
+transformers
+datasets
+pandas
+scikit-learn
+matplotlib
+
+# MySQL 持久化
+sqlalchemy
+pymysql
+alembic
