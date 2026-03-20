@@ -67,7 +67,7 @@ class FarmBaseORM(TimestampMixin, Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
 
     farmer_id = Column(String(64), nullable=False, index=True)
-    base_id = Column(String(64), nullable=False, unique=True, index=True)
+    base_id = Column(String(64), nullable=False, index=True)
     internal_base_uid = Column(String(64), nullable=True, index=True)
 
     name = Column(String(128), nullable=True)
@@ -99,6 +99,7 @@ class FarmBaseORM(TimestampMixin, Base):
     extra_json = Column(JSON, nullable=True)
 
     __table_args__ = (
+        UniqueConstraint("farmer_id", "base_id", name="uq_farm_bases_farmer_id_base_id"),
         Index("idx_farm_bases_farmer_base", "farmer_id", "base_id"),
         Index("idx_farm_bases_geo", "latitude", "longitude"),
     )
