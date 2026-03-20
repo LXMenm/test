@@ -1,4 +1,4 @@
-"""Event store for diagnosis events using JSONL."""
+"""Event store supporting file / dual / mysql modes."""
 
 from __future__ import annotations
 
@@ -7,6 +7,8 @@ import json
 import os
 from typing import Any, Dict, List, Optional
 
+from config import EVENT_STORE_MODE
+
 
 _EVENTS_DIR = os.path.join(".cache", "events")
 _EVENTS_PATH = os.path.join(_EVENTS_DIR, "diagnosis_events.jsonl")
@@ -14,6 +16,40 @@ _EVENTS_PATH = os.path.join(_EVENTS_DIR, "diagnosis_events.jsonl")
 
 def _ensure_dir() -> None:
     os.makedirs(_EVENTS_DIR, exist_ok=True)
+
+
+def _log_store_action(message: str) -> None:
+    print(f"[EventStore:{EVENT_STORE_MODE}] {message}")
+
+
+def _get_mysql_repo():
+    from repositories.event_repo_mysql import (
+        append_event_mysql,
+        geo_points_mysql,
+        geo_points_range_mysql,
+        list_events_mysql,
+        list_events_range_mysql,
+        model_usage_mysql,
+        model_usage_range_mysql,
+        stats_by_disease_mysql,
+        stats_by_disease_range_mysql,
+        timeseries_mysql,
+        timeseries_range_mysql,
+    )
+
+    return {
+        "append_event_mysql": append_event_mysql,
+        "list_events_mysql": list_events_mysql,
+        "list_events_range_mysql": list_events_range_mysql,
+        "stats_by_disease_mysql": stats_by_disease_mysql,
+        "stats_by_disease_range_mysql": stats_by_disease_range_mysql,
+        "timeseries_mysql": timeseries_mysql,
+        "timeseries_range_mysql": timeseries_range_mysql,
+        "geo_points_mysql": geo_points_mysql,
+        "geo_points_range_mysql": geo_points_range_mysql,
+        "model_usage_mysql": model_usage_mysql,
+        "model_usage_range_mysql": model_usage_range_mysql,
+    }
 
 
 def _now_iso() -> str:
@@ -34,6 +70,8 @@ def _parse_ts(value: Any) -> datetime | None:
             return datetime.fromisoformat(ts)
         except ValueError:
             return None
+    if isinstance(value, datetime):
+        return value
     return None
 
 
@@ -77,17 +115,17 @@ def _get_confidence_pct(event: Dict[str, Any]) -> Optional[float]:
     return event.get("confidence_pct")
 
 
-def append_event(event: Dict[str, Any]) -> None:
-    """Append a single diagnosis event to the JSONL store."""
-    if "ts" not in event:
-        event["ts"] = _now_iso()
+def _append_event_to_file(event: Dict[str, Any]) -> None:
+    payload = dict(event)
+    if "ts" not in payload:
+        payload["ts"] = _now_iso()
     _ensure_dir()
     with open(_EVENTS_PATH, "a", encoding="utf-8") as handle:
-        handle.write(json.dumps(event, ensure_ascii=False))
+        handle.write(json.dumps(payload, ensure_ascii=False))
         handle.write("\n")
 
 
-def _read_events() -> List[Dict[str, Any]]:
+def _read_events_from_file() -> List[Dict[str, Any]]:
     if not os.path.exists(_EVENTS_PATH):
         return []
     events: List[Dict[str, Any]] = []
@@ -107,12 +145,15 @@ def _within_days(ts: datetime, days: int, now: datetime) -> bool:
     return ts >= now - timedelta(days=days)
 
 
-def list_events_range(start: str | None = None, end: str | None = None, limit: int = 50) -> List[Dict[str, Any]]:
-    """Return recent events sorted by ts descending within a date range."""
+def _list_events_range_from_file(
+    start: str | None = None,
+    end: str | None = None,
+    limit: int = 50,
+) -> List[Dict[str, Any]]:
     start_date = _parse_date_str(start)
     end_date = _parse_date_str(end)
     events = []
-    for event in _read_events():
+    for event in _read_events_from_file():
         ts = _parse_ts(event.get("ts"))
         if ts is None or not _in_date_range(ts, start_date, end_date):
             continue
@@ -124,9 +165,8 @@ def list_events_range(start: str | None = None, end: str | None = None, limit: i
     return events[:limit]
 
 
-def list_events(limit: int = 50) -> List[Dict[str, Any]]:
-    """Return recent events sorted by ts descending."""
-    events = _read_events()
+def _list_events_from_file(limit: int = 50) -> List[Dict[str, Any]]:
+    events = _read_events_from_file()
     events.sort(
         key=lambda event: _parse_ts(event.get("ts")) or datetime.min,
         reverse=True,
@@ -134,11 +174,10 @@ def list_events(limit: int = 50) -> List[Dict[str, Any]]:
     return events[:limit]
 
 
-def stats_by_disease(days: int = 30) -> Dict[str, int]:
-    """Aggregate counts by disease for events within the last N days."""
+def _stats_by_disease_from_file(days: int = 30) -> Dict[str, int]:
     now = datetime.utcnow()
     counts: Dict[str, int] = {}
-    for event in _read_events():
+    for event in _read_events_from_file():
         ts = _parse_ts(event.get("ts"))
         if ts is None or not _within_days(ts, days, now):
             continue
@@ -149,12 +188,11 @@ def stats_by_disease(days: int = 30) -> Dict[str, int]:
     return counts
 
 
-def stats_by_disease_range(start: str | None = None, end: str | None = None) -> Dict[str, int]:
-    """Aggregate counts by disease for events within a date range."""
+def _stats_by_disease_range_from_file(start: str | None = None, end: str | None = None) -> Dict[str, int]:
     start_date = _parse_date_str(start)
     end_date = _parse_date_str(end)
     counts: Dict[str, int] = {}
-    for event in _read_events():
+    for event in _read_events_from_file():
         ts = _parse_ts(event.get("ts"))
         if ts is None or not _in_date_range(ts, start_date, end_date):
             continue
@@ -165,40 +203,37 @@ def stats_by_disease_range(start: str | None = None, end: str | None = None) -> 
     return counts
 
 
-def timeseries(days: int = 30) -> List[Dict[str, Any]]:
-    """Return daily counts for events within the last N days."""
+def _timeseries_from_file(days: int = 30) -> List[Dict[str, Any]]:
     now = datetime.utcnow()
     counts: Dict[str, int] = {}
-    for event in _read_events():
+    for event in _read_events_from_file():
         ts = _parse_ts(event.get("ts"))
         if ts is None or not _within_days(ts, days, now):
             continue
         date_key = ts.date().isoformat()
         counts[date_key] = counts.get(date_key, 0) + 1
     dates = sorted(counts.keys())
-    return [{"date": date, "count": counts[date]} for date in dates]
+    return [{"date": day, "count": counts[day]} for day in dates]
 
 
-def timeseries_range(start: str | None = None, end: str | None = None) -> List[Dict[str, Any]]:
-    """Return daily counts for events within a date range."""
+def _timeseries_range_from_file(start: str | None = None, end: str | None = None) -> List[Dict[str, Any]]:
     start_date = _parse_date_str(start)
     end_date = _parse_date_str(end)
     counts: Dict[str, int] = {}
-    for event in _read_events():
+    for event in _read_events_from_file():
         ts = _parse_ts(event.get("ts"))
         if ts is None or not _in_date_range(ts, start_date, end_date):
             continue
         date_key = ts.date().isoformat()
         counts[date_key] = counts.get(date_key, 0) + 1
     dates = sorted(counts.keys())
-    return [{"date": date, "count": counts[date]} for date in dates]
+    return [{"date": day, "count": counts[day]} for day in dates]
 
 
-def geo_points(days: int = 30) -> List[Dict[str, Any]]:
-    """Return geo points for recent events with location data."""
+def _geo_points_from_file(days: int = 30) -> List[Dict[str, Any]]:
     now = datetime.utcnow()
     points: List[Dict[str, Any]] = []
-    for event in _read_events():
+    for event in _read_events_from_file():
         ts = _parse_ts(event.get("ts"))
         if ts is None or not _within_days(ts, days, now):
             continue
@@ -225,12 +260,11 @@ def geo_points(days: int = 30) -> List[Dict[str, Any]]:
     return points
 
 
-def geo_points_range(start: str | None = None, end: str | None = None) -> List[Dict[str, Any]]:
-    """Return geo points for events within a date range."""
+def _geo_points_range_from_file(start: str | None = None, end: str | None = None) -> List[Dict[str, Any]]:
     start_date = _parse_date_str(start)
     end_date = _parse_date_str(end)
     points: List[Dict[str, Any]] = []
-    for event in _read_events():
+    for event in _read_events_from_file():
         ts = _parse_ts(event.get("ts"))
         if ts is None or not _in_date_range(ts, start_date, end_date):
             continue
@@ -257,12 +291,11 @@ def geo_points_range(start: str | None = None, end: str | None = None) -> List[D
     return points
 
 
-def model_usage_range(start: str | None = None, end: str | None = None) -> Dict[str, int]:
-    """Aggregate model usage counts within a date range."""
+def _model_usage_range_from_file(start: str | None = None, end: str | None = None) -> Dict[str, int]:
     start_date = _parse_date_str(start)
     end_date = _parse_date_str(end)
     counts: Dict[str, int] = {}
-    for event in _read_events():
+    for event in _read_events_from_file():
         ts = _parse_ts(event.get("ts"))
         if ts is None or not _in_date_range(ts, start_date, end_date):
             continue
@@ -276,3 +309,122 @@ def model_usage_range(start: str | None = None, end: str | None = None) -> Dict[
         )
         counts[label] = counts.get(label, 0) + 1
     return counts
+
+
+def append_event(event: Dict[str, Any]) -> None:
+    """Append a single diagnosis event to the active store."""
+    mode = (EVENT_STORE_MODE or "file").lower()
+    if mode == "mysql":
+        _log_store_action("append_event via mysql")
+        repo = _get_mysql_repo()
+        repo["append_event_mysql"](event)
+        return
+
+    _log_store_action("append_event via file")
+    _append_event_to_file(event)
+    if mode == "dual":
+        _log_store_action("append_event dual-write mysql")
+        repo = _get_mysql_repo()
+        repo["append_event_mysql"](event)
+
+
+def list_events_range(start: str | None = None, end: str | None = None, limit: int = 50) -> List[Dict[str, Any]]:
+    """Return recent events sorted by ts descending within a date range."""
+    mode = (EVENT_STORE_MODE or "file").lower()
+    if mode == "mysql":
+        _log_store_action("list_events_range via mysql")
+        repo = _get_mysql_repo()
+        return repo["list_events_range_mysql"](start=start, end=end, limit=limit)
+
+    return _list_events_range_from_file(start=start, end=end, limit=limit)
+
+
+def list_events(limit: int = 50) -> List[Dict[str, Any]]:
+    """Return recent events sorted by ts descending."""
+    mode = (EVENT_STORE_MODE or "file").lower()
+    if mode == "mysql":
+        _log_store_action("list_events via mysql")
+        repo = _get_mysql_repo()
+        return repo["list_events_mysql"](limit=limit)
+
+    return _list_events_from_file(limit=limit)
+
+
+def stats_by_disease(days: int = 30) -> Dict[str, int]:
+    """Aggregate counts by disease for events within the last N days."""
+    mode = (EVENT_STORE_MODE or "file").lower()
+    if mode == "mysql":
+        _log_store_action("stats_by_disease via mysql")
+        start = (datetime.utcnow() - timedelta(days=days)).date().isoformat()
+        repo = _get_mysql_repo()
+        return repo["stats_by_disease_mysql"](start=start, end=None)
+
+    return _stats_by_disease_from_file(days=days)
+
+
+def stats_by_disease_range(start: str | None = None, end: str | None = None) -> Dict[str, int]:
+    """Aggregate counts by disease for events within a date range."""
+    mode = (EVENT_STORE_MODE or "file").lower()
+    if mode == "mysql":
+        _log_store_action("stats_by_disease_range via mysql")
+        repo = _get_mysql_repo()
+        return repo["stats_by_disease_range_mysql"](start=start, end=end)
+
+    return _stats_by_disease_range_from_file(start=start, end=end)
+
+
+def timeseries(days: int = 30) -> List[Dict[str, Any]]:
+    """Return daily counts for events within the last N days."""
+    mode = (EVENT_STORE_MODE or "file").lower()
+    if mode == "mysql":
+        _log_store_action("timeseries via mysql")
+        start = (datetime.utcnow() - timedelta(days=days)).date().isoformat()
+        repo = _get_mysql_repo()
+        return repo["timeseries_mysql"](start=start, end=None)
+
+    return _timeseries_from_file(days=days)
+
+
+def timeseries_range(start: str | None = None, end: str | None = None) -> List[Dict[str, Any]]:
+    """Return daily counts for events within a date range."""
+    mode = (EVENT_STORE_MODE or "file").lower()
+    if mode == "mysql":
+        _log_store_action("timeseries_range via mysql")
+        repo = _get_mysql_repo()
+        return repo["timeseries_range_mysql"](start=start, end=end)
+
+    return _timeseries_range_from_file(start=start, end=end)
+
+
+def geo_points(days: int = 30) -> List[Dict[str, Any]]:
+    """Return geo points for recent events with location data."""
+    mode = (EVENT_STORE_MODE or "file").lower()
+    if mode == "mysql":
+        _log_store_action("geo_points via mysql")
+        start = (datetime.utcnow() - timedelta(days=days)).date().isoformat()
+        repo = _get_mysql_repo()
+        return repo["geo_points_mysql"](start=start, end=None)
+
+    return _geo_points_from_file(days=days)
+
+
+def geo_points_range(start: str | None = None, end: str | None = None) -> List[Dict[str, Any]]:
+    """Return geo points for events within a date range."""
+    mode = (EVENT_STORE_MODE or "file").lower()
+    if mode == "mysql":
+        _log_store_action("geo_points_range via mysql")
+        repo = _get_mysql_repo()
+        return repo["geo_points_range_mysql"](start=start, end=end)
+
+    return _geo_points_range_from_file(start=start, end=end)
+
+
+def model_usage_range(start: str | None = None, end: str | None = None) -> Dict[str, int]:
+    """Aggregate model usage counts within a date range."""
+    mode = (EVENT_STORE_MODE or "file").lower()
+    if mode == "mysql":
+        _log_store_action("model_usage_range via mysql")
+        repo = _get_mysql_repo()
+        return repo["model_usage_range_mysql"](start=start, end=end)
+
+    return _model_usage_range_from_file(start=start, end=end)

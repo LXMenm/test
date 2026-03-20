@@ -1,9 +1,11 @@
-"""农户档案的文件读写工具（JSON 持久化）。"""
+"""农户档案统一存储入口，支持 file / dual / mysql 三种模式。"""
 from __future__ import annotations
 
 import json
 from pathlib import Path
 from typing import List, Optional
+
+from config import PROFILE_STORE_MODE
 
 from .profile_constants import estimate_harvest_window_days
 from .profile_models import BaseProfile, FarmerProfile, RiskItem, TreatmentConstraint
@@ -23,8 +25,30 @@ def get_profile_path(farmer_id: str) -> Path:
     return PROFILE_DIR / f"{farmer_id}.json"
 
 
-def list_profile_ids() -> List[str]:
-    """列出已有的 farmer_id 列表。"""
+def _log_store_action(message: str) -> None:
+    print(f"[ProfileStore:{PROFILE_STORE_MODE}] {message}")
+
+
+def _get_mysql_repo():
+    from repositories.profile_repo_mysql import (
+        delete_profile as delete_profile_mysql,
+        get_profile as get_profile_mysql,
+        list_all_base_ids as list_all_base_ids_mysql,
+        list_profile_ids as list_profile_ids_mysql,
+        save_profile_payload,
+    )
+
+    return {
+        "get_profile_mysql": get_profile_mysql,
+        "list_profile_ids_mysql": list_profile_ids_mysql,
+        "list_all_base_ids_mysql": list_all_base_ids_mysql,
+        "save_profile_payload": save_profile_payload,
+        "delete_profile_mysql": delete_profile_mysql,
+    }
+
+
+def _list_profile_ids_from_file() -> List[str]:
+    """列出文件中的 farmer_id 列表。"""
     _ensure_dir()
     return sorted(p.stem for p in PROFILE_DIR.glob("*.json"))
 
@@ -61,8 +85,8 @@ def _ensure_profile_compatibility(profile: FarmerProfile) -> FarmerProfile:
     return profile
 
 
-def load_profile(farmer_id: str) -> Optional[FarmerProfile]:
-    """读取指定农户档案。"""
+def _load_profile_from_file(farmer_id: str) -> Optional[FarmerProfile]:
+    """从 JSON 文件读取指定农户档案。"""
     path = get_profile_path(farmer_id)
     if not path.exists():
         return None
@@ -76,13 +100,132 @@ def load_profile(farmer_id: str) -> Optional[FarmerProfile]:
     return _ensure_profile_compatibility(profile)
 
 
-def save_profile(profile: FarmerProfile) -> Path:
-    """保存农户档案到 JSON。"""
-    normalized = _ensure_profile_compatibility(profile)
-    path = get_profile_path(normalized.farmer_id)
+def _load_profile_from_mysql(farmer_id: str) -> Optional[FarmerProfile]:
+    repo = _get_mysql_repo()
+    payload = repo["get_profile_mysql"](farmer_id)
+    if payload is None:
+        return None
+    try:
+        profile = FarmerProfile.model_validate(payload)
+    except Exception:
+        return None
+    return _ensure_profile_compatibility(profile)
+
+
+def _save_profile_to_file(profile: FarmerProfile) -> Path:
+    """保存农户档案到 JSON 文件。"""
+    path = get_profile_path(profile.farmer_id)
     with path.open("w", encoding="utf-8") as f:
-        json.dump(normalized.model_dump(), f, ensure_ascii=False, indent=2)
+        json.dump(profile.model_dump(), f, ensure_ascii=False, indent=2)
     return path
+
+
+def _save_profile_to_mysql(profile: FarmerProfile) -> None:
+    repo = _get_mysql_repo()
+    repo["save_profile_payload"](profile.model_dump())
+
+
+def _delete_profile_from_file(farmer_id: str) -> None:
+    path = get_profile_path(farmer_id)
+    if path.exists():
+        path.unlink()
+
+
+def _delete_profile_from_mysql(farmer_id: str) -> None:
+    repo = _get_mysql_repo()
+    repo["delete_profile_mysql"](farmer_id)
+
+
+def load_profile(farmer_id: str) -> Optional[FarmerProfile]:
+    """读取指定农户档案。"""
+    mode = (PROFILE_STORE_MODE or "file").lower()
+    if mode == "mysql":
+        _log_store_action(f"load_profile farmer_id={farmer_id} via mysql")
+        return _load_profile_from_mysql(farmer_id)
+
+    profile = _load_profile_from_file(farmer_id)
+    if profile is not None:
+        if mode == "dual":
+            _log_store_action(f"load_profile farmer_id={farmer_id} via file")
+        return profile
+
+    if mode == "dual":
+        _log_store_action(f"load_profile farmer_id={farmer_id} fallback to mysql")
+        return _load_profile_from_mysql(farmer_id)
+
+    return None
+
+
+def list_profile_ids() -> List[str]:
+    """列出已有的 farmer_id 列表。"""
+    mode = (PROFILE_STORE_MODE or "file").lower()
+    if mode == "mysql":
+        _log_store_action("list_profile_ids via mysql")
+        repo = _get_mysql_repo()
+        return repo["list_profile_ids_mysql"]()
+
+    file_ids = _list_profile_ids_from_file()
+    if mode == "dual":
+        _log_store_action("list_profile_ids merge file + mysql")
+        repo = _get_mysql_repo()
+        mysql_ids = repo["list_profile_ids_mysql"]()
+        return sorted(set(file_ids) | set(mysql_ids))
+
+    return file_ids
+
+
+def list_all_base_ids() -> dict[str, str]:
+    """列出 base_id 到 farmer_id 的映射。"""
+    mode = (PROFILE_STORE_MODE or "file").lower()
+    mapping: dict[str, str] = {}
+
+    if mode in {"file", "dual"}:
+        for farmer_id in _list_profile_ids_from_file():
+            profile = _load_profile_from_file(farmer_id)
+            if profile is None:
+                continue
+            for base_id in profile.bases.keys():
+                mapping[base_id] = farmer_id
+
+    if mode in {"dual", "mysql"}:
+        repo = _get_mysql_repo()
+        mapping.update(repo["list_all_base_ids_mysql"]())
+
+    return dict(sorted(mapping.items()))
+
+
+def save_profile(profile: FarmerProfile) -> Path:
+    """按当前模式保存农户档案。"""
+    normalized = _ensure_profile_compatibility(profile)
+    mode = (PROFILE_STORE_MODE or "file").lower()
+
+    if mode == "mysql":
+        _log_store_action(f"save_profile farmer_id={normalized.farmer_id} via mysql")
+        _save_profile_to_mysql(normalized)
+        return get_profile_path(normalized.farmer_id)
+
+    _log_store_action(f"save_profile farmer_id={normalized.farmer_id} via file")
+    path = _save_profile_to_file(normalized)
+    if mode == "dual":
+        _log_store_action(f"save_profile farmer_id={normalized.farmer_id} dual-write mysql")
+        _save_profile_to_mysql(normalized)
+    return path
+
+
+def delete_profile(farmer_id: str) -> None:
+    """按当前模式删除农户档案。"""
+    mode = (PROFILE_STORE_MODE or "file").lower()
+
+    if mode == "mysql":
+        _log_store_action(f"delete_profile farmer_id={farmer_id} via mysql")
+        _delete_profile_from_mysql(farmer_id)
+        return
+
+    _log_store_action(f"delete_profile farmer_id={farmer_id} via file")
+    _delete_profile_from_file(farmer_id)
+    if mode == "dual":
+        _log_store_action(f"delete_profile farmer_id={farmer_id} dual-delete mysql")
+        _delete_profile_from_mysql(farmer_id)
 
 
 def upsert_base(
