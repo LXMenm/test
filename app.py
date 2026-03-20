@@ -2358,6 +2358,14 @@ def _to_stream_event(trace_id: str, event: dict) -> dict:
     }
 
 
+def _should_close_trace_stream(stream_event: dict[str, Any]) -> bool:
+    if stream_event.get("node") == "Final" and stream_event.get("status") in {"end", "error"}:
+        return True
+    if stream_event.get("node") == "AwaitUserConfirmation" and stream_event.get("status") == "end":
+        return True
+    return False
+
+
 @app.get("/api/traces/{trace_id}/stream")
 async def stream_trace(trace_id: str):
     async def event_generator():
@@ -2367,13 +2375,13 @@ async def stream_trace(trace_id: str):
             for event in history:
                 stream_event = _to_stream_event(trace_id, event)
                 yield f"event: trace\ndata: {json.dumps(stream_event, ensure_ascii=False)}\n\n"
+                if _should_close_trace_stream(stream_event):
+                    return
             while True:
                 event = await queue.get()
                 stream_event = _to_stream_event(trace_id, event)
                 yield f"event: trace\ndata: {json.dumps(stream_event, ensure_ascii=False)}\n\n"
-                if stream_event.get("node") == "Final" and stream_event.get("status") in {"end", "error"}:
-                    break
-                if stream_event.get("node") == "AwaitUserConfirmation" and stream_event.get("status") == "end":
+                if _should_close_trace_stream(stream_event):
                     break
         finally:
             unsubscribe_trace(trace_id, queue)
