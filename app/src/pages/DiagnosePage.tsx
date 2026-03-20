@@ -1273,6 +1273,7 @@ export function DiagnosePage() {
                 key={`${traceId || 'idle'}-${workflowRefreshToken}`}
                 traceId={traceId || undefined}
                 confidencePct={result?.displayConfidencePct ?? undefined}
+                phaseStartMs={diagnosisStartTime ?? undefined}
                 refreshToken={workflowRefreshToken}
               />
 
