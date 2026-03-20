@@ -30,6 +30,7 @@ import knowledge_base.kb_manager as kb_manager_module
 from agents import append_trace, diagnosis_agent, kb_retrieval_agent, treatment_agent, verification_agent, supervisor_agent
 from event_store import (
     append_event,
+    get_latest_event_by_trace,
     list_events,
     stats_by_disease,
     timeseries,
@@ -618,10 +619,8 @@ def _resolve_profile_and_base(
 
 
 def _latest_case_event_by_trace(trace_id: str) -> dict[str, Any]:
-    for item in list_events(limit=500):
-        if isinstance(item, dict) and item.get("trace_id") == trace_id:
-            return item
-    return {}
+    event = get_latest_event_by_trace(trace_id)
+    return event if isinstance(event, dict) else {}
 
 
 def _safe_float(value: Any) -> float | None:
