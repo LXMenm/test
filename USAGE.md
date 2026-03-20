@@ -171,6 +171,18 @@ print(f"治疗方案: {result['治疗方案']}")
 USE_GPU=true
 ```
 
+### 推荐默认持久化配置（生产/部署建议）
+
+```env
+DATABASE_URL=mysql+pymysql://root:123456@127.0.0.1:3306/tomato_diagnosis?charset=utf8mb4
+PROFILE_STORE_MODE=mysql
+EVENT_STORE_MODE=mysql
+TRACE_STORE_MODE=mysql
+KB_STORE_MODE=mysql
+```
+
+> 如需兼容旧文件存储，仍可分别覆盖为 `file` / `dual` / `mysql`。应用启动时会输出 `[StorageResolved] ...` 以确认当前模式。
+
 ### 模型选择
 根据需求选择不同的诊断模型：
 
@@ -197,6 +209,12 @@ pip install -r requirements.txt
 
 ```bash
 uvicorn app:app --reload --host 0.0.0.0 --port 8000
+```
+
+启动后请确认日志中包含：
+
+```text
+[StorageResolved] DATABASE_URL=... PROFILE_STORE_MODE=mysql EVENT_STORE_MODE=mysql TRACE_STORE_MODE=mysql KB_STORE_MODE=mysql
 ```
 
 ### 3) 浏览器访问

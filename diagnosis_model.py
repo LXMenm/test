@@ -26,8 +26,24 @@ from knowledge_base import get_kb_manager
 from text_model.infer_text_classifier import BertTextClassifier
 
 
-# 获取知识库管理器实例
-kb_manager = get_kb_manager()
+_kb_manager = None
+_disease_classes_cache = None
+
+
+def _get_kb_manager():
+    global _kb_manager
+    if _kb_manager is None:
+        _kb_manager = get_kb_manager()
+    return _kb_manager
+
+
+def _get_disease_classes() -> list[str]:
+    global _disease_classes_cache
+    if _disease_classes_cache is None:
+        _disease_classes_cache = list(_get_kb_manager().get_disease_classes())
+    return list(_disease_classes_cache)
+
+
 FUSE_MULTIMODAL_VERSION = "fuse_v3_text_reliability_gate_20260319"
 PREDICT_TEXT_PROBA_VERSION = "text_v3_bert_with_rule_fallback_20260316"
 IMAGE_RELIABLE_TOP1_THRESHOLD = 0.70
@@ -35,16 +51,13 @@ IMAGE_RELIABLE_MARGIN_THRESHOLD = 0.15
 TEXT_RELIABLE_TOP1_THRESHOLD = 0.25
 TEXT_RELIABLE_MARGIN_THRESHOLD = 0.05
 
-# 从知识库获取病害类别
-DISEASE_CLASSES = kb_manager.get_disease_classes()
-
 
 class DiagnosisModel(nn.Module):
     """诊断模型基类"""
     
-    def __init__(self, num_classes: int = len(DISEASE_CLASSES)):
+    def __init__(self, num_classes: int | None = None):
         super(DiagnosisModel, self).__init__()
-        self.num_classes = num_classes
+        self.num_classes = num_classes or len(_get_disease_classes())
     
     def forward(self, x):
         raise NotImplementedError
@@ -53,11 +66,11 @@ class DiagnosisModel(nn.Module):
 class DenseNet121Model(DiagnosisModel):
     """DenseNet121模型"""
     
-    def __init__(self, num_classes: int = len(DISEASE_CLASSES)):
+    def __init__(self, num_classes: int | None = None):
         super(DenseNet121Model, self).__init__(num_classes)
         self.model = models.densenet121(pretrained=True)
         num_features = self.model.classifier.in_features
-        self.model.classifier = nn.Linear(num_features, num_classes)
+        self.model.classifier = nn.Linear(num_features, self.num_classes)
     
     def forward(self, x):
         return self.model(x)
@@ -66,11 +79,11 @@ class DenseNet121Model(DiagnosisModel):
 class ResNet50Model(DiagnosisModel):
     """ResNet50模型"""
     
-    def __init__(self, num_classes: int = len(DISEASE_CLASSES)):
+    def __init__(self, num_classes: int | None = None):
         super(ResNet50Model, self).__init__(num_classes)
         self.model = models.resnet50(pretrained=True)
         num_features = self.model.fc.in_features
-        self.model.fc = nn.Linear(num_features, num_classes)
+        self.model.fc = nn.Linear(num_features, self.num_classes)
     
     def forward(self, x):
         return self.model(x)
@@ -79,17 +92,17 @@ class ResNet50Model(DiagnosisModel):
 class ViTModel(DiagnosisModel):
     """Vision Transformer模型"""
     
-    def __init__(self, num_classes: int = len(DISEASE_CLASSES)):
+    def __init__(self, num_classes: int | None = None):
         super(ViTModel, self).__init__(num_classes)
         self.model = models.vit_b_16(pretrained=True)
         num_features = self.model.heads.head.in_features
-        self.model.heads.head = nn.Linear(num_features, num_classes)
+        self.model.heads.head = nn.Linear(num_features, self.num_classes)
     
     def forward(self, x):
         return self.model(x)
 
 
-def create_model(model_type: str = DIAGNOSIS_MODEL_TYPE, num_classes: int = len(DISEASE_CLASSES)) -> DiagnosisModel:
+def create_model(model_type: str = DIAGNOSIS_MODEL_TYPE, num_classes: int | None = None) -> DiagnosisModel:
     """
     创建诊断模型
 
@@ -310,12 +323,13 @@ class DiseaseDiagnosisEngine:
                 confidence, predicted = torch.max(probabilities, 1)
                 
                 # 获取所有类别的概率
+                disease_classes = _get_disease_classes()
                 probs_dict = {
-                    DISEASE_CLASSES[i]: probabilities[0][i].item()
-                    for i in range(len(DISEASE_CLASSES))
+                    disease_classes[i]: probabilities[0][i].item()
+                    for i in range(len(disease_classes))
                 }
                 
-                disease_type = DISEASE_CLASSES[predicted.item()]
+                disease_type = disease_classes[predicted.item()]
                 confidence_score = confidence.item()
                 
                 return disease_type, confidence_score, probs_dict
@@ -345,7 +359,7 @@ class DiseaseDiagnosisEngine:
             return "非番茄作物", 0.0, "本系统仅支持番茄病害诊断"
         
         # 使用知识库管理器进行规则诊断
-        diagnosis_result = kb_manager.rule_diagnosis(crop_type, symptoms)
+        diagnosis_result = _get_kb_manager().rule_diagnosis(crop_type, symptoms)
         
         # 获取病害描述
         description = self._get_disease_description(diagnosis_result["disease_type"], symptoms)
@@ -364,7 +378,7 @@ class DiseaseDiagnosisEngine:
             return "非番茄作物", 0.0, "本系统仅支持番茄病害诊断"
         
         # 使用知识库管理器进行规则诊断
-        diagnosis_result = kb_manager.rule_diagnosis(crop_type, symptoms)
+        diagnosis_result = _get_kb_manager().rule_diagnosis(crop_type, symptoms)
         
         # 获取病害描述
         description = self._get_disease_description(diagnosis_result["disease_type"], symptoms)
@@ -380,7 +394,7 @@ class DiseaseDiagnosisEngine:
         获取病害描述
         """
         # 使用知识库管理器获取病害描述
-        base_description = kb_manager.get_disease_description(disease_type)
+        base_description = _get_kb_manager().get_disease_description(disease_type)
         symptom_text = "、".join(symptoms)
         return f"{base_description} 当前观察到的症状包括：{symptom_text}。"
 
@@ -389,7 +403,7 @@ class DiseaseDiagnosisEngine:
         _, _, probs = self.diagnose_from_image(image_path)
         canonical_probs: Dict[str, float] = {}
         for label, prob in (probs or {}).items():
-            disease = kb_manager.map_image_label_to_disease(label)
+            disease = _get_kb_manager().map_image_label_to_disease(label)
             canonical_probs[disease] = canonical_probs.get(disease, 0.0) + float(prob)
         total = sum(v for v in canonical_probs.values() if v > 0)
         if total <= 0:
@@ -427,10 +441,10 @@ class DiseaseDiagnosisEngine:
         province: Optional[str] = None,
     ) -> Dict[str, float]:
         """KB 规则版文本概率诊断（fallback）。"""
-        normalized_symptoms = kb_manager.normalize_symptoms(symptoms or [])
-        if not kb_manager.has_effective_text_evidence(normalized_symptoms):
+        normalized_symptoms = _get_kb_manager().normalize_symptoms(symptoms or [])
+        if not _get_kb_manager().has_effective_text_evidence(normalized_symptoms):
             return {}
-        return kb_manager.score_diseases_from_text(
+        return _get_kb_manager().score_diseases_from_text(
             crop_type="番茄",
             symptoms=normalized_symptoms,
             growth_stage=growth_stage,
@@ -448,7 +462,7 @@ class DiseaseDiagnosisEngine:
         facility: Optional[str] = None,
         province: Optional[str] = None,
     ) -> Dict[str, float]:
-        normalized_symptoms = kb_manager.normalize_symptoms(symptoms or [])
+        normalized_symptoms = _get_kb_manager().normalize_symptoms(symptoms or [])
         classifier = self._load_text_classifier()
         if not classifier:
             return {}
@@ -461,7 +475,8 @@ class DiseaseDiagnosisEngine:
             facility=facility,
             province=province,
         )
-        filtered = {k: float(v) for k, v in (probs or {}).items() if k in DISEASE_CLASSES}
+        disease_classes = _get_disease_classes()
+        filtered = {k: float(v) for k, v in (probs or {}).items() if k in disease_classes}
         # 输出格式与融合层兼容：只保留 canonical disease 且归一化
         return self._normalized(filtered)
 
@@ -475,7 +490,7 @@ class DiseaseDiagnosisEngine:
         province: Optional[str] = None,
     ) -> Dict[str, float]:
         """优先 BERT 文本分类器，失败时回退 KB 规则。"""
-        normalized_symptoms = kb_manager.normalize_symptoms(symptoms or [])
+        normalized_symptoms = _get_kb_manager().normalize_symptoms(symptoms or [])
         text_evidence_active = bool(normalized_symptoms)
         if not text_evidence_active:
             return {}

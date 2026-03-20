@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 import asyncio
 import json
 import os
@@ -22,7 +23,7 @@ from fastapi.staticfiles import StaticFiles
 from PIL import Image
 from pydantic import BaseModel
 
-from config import DIAGNOSIS_CONFIDENCE_THRESHOLD, DIAGNOSIS_ALLOW_TORCH
+from config import DIAGNOSIS_CONFIDENCE_THRESHOLD, DIAGNOSIS_ALLOW_TORCH, log_resolved_storage_config
 from diagnosis_model import get_diagnosis_engine
 import diagnosis_model as diagnosis_model_module
 import agents as agents_module
@@ -61,8 +62,21 @@ from workflow import build_graph
 from trace_catalog import AGENTS_CATALOG, NODE_TO_AGENT
 
 
-app = FastAPI(title="Tomato Diagnosis API", version="1.0.0")
-kb = get_kb_manager()
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    log_resolved_storage_config()
+    yield
+
+
+app = FastAPI(title="Tomato Diagnosis API", version="1.0.0", lifespan=lifespan)
+
+
+class _LazyKBProxy:
+    def __getattr__(self, item: str):
+        return getattr(get_kb_manager(), item)
+
+
+kb = _LazyKBProxy()
 UPLOAD_DIR = Path(".cache/uploads")
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
