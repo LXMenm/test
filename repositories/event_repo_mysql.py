@@ -296,6 +296,7 @@ def geo_points_mysql(start: Any = None, end: Any = None) -> List[Dict[str, Any]]
         payload = _row_to_event_payload(row)
         points.append(
             {
+                "event_id": row.event_id,
                 "lat": lat,
                 "lon": lon,
                 "disease": row.final_disease,

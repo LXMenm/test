@@ -61,17 +61,18 @@ def _parse_ts(value: Any) -> datetime | None:
         return None
     if isinstance(value, (int, float)):
         try:
-            return datetime.utcfromtimestamp(value)
+            return datetime.utcfromtimestamp(value).replace(tzinfo=None)
         except (OverflowError, OSError, ValueError):
             return None
     if isinstance(value, str):
         ts = value.rstrip("Z")
         try:
-            return datetime.fromisoformat(ts)
+            dt = datetime.fromisoformat(ts)
+            return dt.replace(tzinfo=None)
         except ValueError:
             return None
     if isinstance(value, datetime):
-        return value
+        return value.replace(tzinfo=None)
     return None
 
 
