@@ -45,7 +45,13 @@ from personalization import profile_rules
 from personalization.profile_constants import estimate_harvest_window_days, growth_stage_label, normalize_growth_stage
 from personalization.profile_models import BaseProfile, FarmerProfile, TreatmentConstraint
 from personalization.profile_context import build_personalization_context, build_personalization_flags
-from personalization.profile_store import get_profile_path, load_profile, list_profile_ids, save_profile as persist_profile
+from personalization.profile_store import (
+    delete_profile as delete_profile_store,
+    get_profile_path,
+    load_profile,
+    list_profile_ids,
+    save_profile as persist_profile,
+)
 from personalization.utils import dedupe_reasons, compute_personalization_applied, normalize_follow_up_questions
 from state import create_initial_state
 from trace_store import list_trace_events, subscribe as subscribe_trace, unsubscribe as unsubscribe_trace, emit_trace_event
@@ -2000,24 +2006,17 @@ def _normalize_profile_payload_for_save(farmer_id: str, payload: dict) -> Farmer
 
 def _generate_farmer_id() -> str | None:
     """生成唯一的农户ID"""
-    from personalization.profile_store import PROFILE_DIR
-    
-    if not PROFILE_DIR.exists():
-        return "F0001"
-    
-    # 获取所有现有农户ID
     existing_ids = []
-    for file in PROFILE_DIR.glob("*.json"):
+    for farmer_id in list_profile_ids():
         try:
-            id = file.stem
-            if id.startswith("F") and id[1:].isdigit():
-                existing_ids.append(int(id[1:]))
-        except:
+            if farmer_id.startswith("F") and farmer_id[1:].isdigit():
+                existing_ids.append(int(farmer_id[1:]))
+        except Exception:
             pass
-    
+
     if not existing_ids:
         return "F0001"
-    
+
     # 生成下一个ID
     next_id = max(existing_ids) + 1
     return f"F{next_id:04d}"
@@ -2032,8 +2031,7 @@ def create_profile(payload: dict = Body(...)) -> dict[str, bool | str]:
         farmer_id = _generate_farmer_id()
         if not farmer_id:
             raise HTTPException(status_code=409, detail="农户ID已满")
-    path = get_profile_path(farmer_id)
-    if path.exists():
+    if load_profile(farmer_id) is not None:
         raise HTTPException(status_code=409, detail="农户ID已存在")
 
     profile = FarmerProfile(farmer_id=farmer_id, name=payload.get("name"))
@@ -2057,8 +2055,7 @@ def create_profile(payload: dict = Body(...)) -> dict[str, bool | str]:
     profile.ensure_timestamp()
     profile.updated_at = _utc_now_iso()
     try:
-        with path.open("w", encoding="utf-8") as f:
-            json.dump(profile.model_dump(), f, ensure_ascii=False, indent=2)
+        persist_profile(profile)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"创建档案失败: {exc}") from exc
     return {"ok": True, "id": farmer_id}
@@ -2089,11 +2086,10 @@ def save_profile_route(farmer_id: str, payload: dict = Body(...)) -> dict[str, b
 
 @app.delete("/api/profiles/{farmer_id}")
 def delete_profile(farmer_id: str) -> dict[str, bool]:
-    path = get_profile_path(farmer_id)
-    if not path.exists():
+    if load_profile(farmer_id) is None:
         raise HTTPException(status_code=404, detail="档案不存在")
     try:
-        path.unlink()
+        delete_profile_store(farmer_id)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"删除档案失败: {exc}") from exc
     return {"ok": True}
