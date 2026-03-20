@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import subprocess
+import sys
 from typing import Any
 
 import knowledge_base.kb_store as kb_store
@@ -143,13 +145,56 @@ def test_kb_manager_key_behaviors_remain_stable_in_dual_mode(monkeypatch, tmp_pa
 
 
 
-def test_kb_mysql_mode_reads_from_mysql_repo(monkeypatch, tmp_path: Path) -> None:
+def test_kb_mysql_mode_matches_file_mode_for_key_manager_behaviors(monkeypatch, tmp_path: Path) -> None:
     payloads = _load_fixture_payloads()
     repo = _InMemoryKBMysqlRepo(seed=payloads)
-    _install_kb_store(monkeypatch, tmp_path, mode="mysql", repo=repo)
+    _install_kb_store(monkeypatch, tmp_path, mode="file", repo=repo)
 
-    diseases = kb_store.load_diseases()
-    assert diseases == payloads["diseases"]
+    file_manager = KnowledgeBaseManager()
+    file_snapshot = {
+        "normalized": file_manager.normalize_symptoms(["叶片发黄", "卷叶"]),
+        "candidates": file_manager.get_candidate_diseases_from_symptoms(["叶片发黄", "卷叶"]),
+        "scores": file_manager.score_diseases_from_text(
+            "番茄",
+            ["叶片发黄", "卷叶"],
+            growth_stage="VEGETATIVE",
+            environment="白粉虱多发 高湿",
+            facility="温室",
+            province="山东",
+        ),
+        "treatment": file_manager.get_treatment_plan("晚疫病"),
+    }
 
-    manager = KnowledgeBaseManager()
-    assert manager.get_candidate_diseases_from_symptoms(["小斑点"])
+    monkeypatch.setattr(kb_store, "KB_STORE_MODE", "mysql")
+    mysql_manager = KnowledgeBaseManager()
+    mysql_snapshot = {
+        "normalized": mysql_manager.normalize_symptoms(["叶片发黄", "卷叶"]),
+        "candidates": mysql_manager.get_candidate_diseases_from_symptoms(["叶片发黄", "卷叶"]),
+        "scores": mysql_manager.score_diseases_from_text(
+            "番茄",
+            ["叶片发黄", "卷叶"],
+            growth_stage="VEGETATIVE",
+            environment="白粉虱多发 高湿",
+            facility="温室",
+            province="山东",
+        ),
+        "treatment": mysql_manager.get_treatment_plan("晚疫病"),
+    }
+
+    assert kb_store.load_diseases() == payloads["diseases"]
+    assert file_snapshot == mysql_snapshot
+    assert mysql_snapshot["treatment"]["actions"]["treatment_plan"]
+    assert mysql_snapshot["treatment"]["ingredients"]
+
+
+def test_kb_parity_verification_script_passes_with_sqlite(tmp_path: Path) -> None:
+    sqlite_path = tmp_path / "kb-parity.db"
+    command = [
+        sys.executable,
+        "scripts/verify_kb_file_mysql_parity.py",
+        "--reset-schema",
+    ]
+    env = dict(**__import__("os").environ, DATABASE_URL=f"sqlite:///{sqlite_path}")
+    completed = subprocess.run(command, cwd=Path(__file__).resolve().parents[1], env=env, capture_output=True, text=True, check=True)
+    assert "[kb-verify] payload parity: ok" in completed.stdout
+    assert "[kb-verify] KnowledgeBaseManager parity: ok" in completed.stdout
