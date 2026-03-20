@@ -1152,7 +1152,7 @@ export function DiagnosePage() {
                       )}
 
                       <Button
-                        onClick={handleConfirmSubmit}
+                        onClick={() => handleConfirmSubmit()}
                         disabled={confirmSubmitting || !traceId || !imageId}
                         className="bg-[#c8f7c5] text-black hover:bg-[#b8e7b5]"
                       >
