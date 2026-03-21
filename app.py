@@ -132,6 +132,7 @@ class DiagnoseResponse(BaseModel):
     image_result: ImageResult
     fallback_used: bool
     fallback_reason: Optional[list[str]]
+    confirm_reasons: list[str] = []
     rule_result: Optional[RuleResult]
     final_disease: str
     treatment: Optional[TreatmentPlan] = None
@@ -160,6 +161,7 @@ class DiagnoseResponse(BaseModel):
     need_confirm: bool | None = None
     final_confidence: float | None = None
     final_source: str | None = None
+    fusion_mode: str | None = None
     model_id: str | None = None
     model_display_name: str | None = None
     model_backend: str | None = None
@@ -194,6 +196,7 @@ class DiagnoseResponse(BaseModel):
     graph_treatment_generated: bool = False
     fallback_treatment_used: bool = False
     manual_review_required_before_execution: bool = False
+    confirm_round_parent_trace_id: str | None = None
     meta: dict[str, Any] | None = None
     events: list[dict[str, Any]] = []
 
@@ -337,6 +340,7 @@ LIST_FIELDS_ALWAYS = {
     "fusion_top3",
     "normalized_symptoms",
     "model_fallback_reason",
+    "confirm_reasons",
     "events",
 }
 
@@ -396,12 +400,20 @@ def _normalize_meta_payload(meta: Any) -> dict[str, Any]:
         if str(item).strip()
     ]
     payload["model_fallback_reason"] = [
-        str(item).strip()
+        str(item).strip().strip("。.;；,，")
         for item in _as_clean_list(payload.get("model_fallback_reason"))
-        if str(item).strip()
+        if str(item).strip().strip("。.;；,，")
     ]
 
     return payload
+
+
+def _normalize_reason_codes(value: Any) -> list[str]:
+    return [
+        str(item).strip().strip("。.;；,，")
+        for item in _as_clean_list(value)
+        if str(item).strip().strip("。.;；,，")
+    ]
 
 
 def _build_response_meta(
@@ -485,6 +497,12 @@ def serialize_final_response(payload: dict[str, Any]) -> dict[str, Any]:
     for key in LIST_FIELDS_ALWAYS:
         data[key] = _as_clean_list(data.get(key))
 
+    if "fallback_reason" in data:
+        reasons = _normalize_reason_codes(data.get("fallback_reason"))
+        data["fallback_reason"] = reasons or None
+    if "confirm_reasons" in data:
+        data["confirm_reasons"] = _normalize_reason_codes(data.get("confirm_reasons"))
+
     if "verification_summary" in data and data["verification_summary"] is not None:
         data["verification_summary"] = sanitize_user_text(data["verification_summary"])
 
@@ -499,6 +517,26 @@ def serialize_final_response(payload: dict[str, Any]) -> dict[str, Any]:
         data["confirm_message"] = sanitize_user_text(data["confirm_message"])
 
     return data
+
+
+def _derive_fusion_mode(final_source: Any, diagnosis_evidence: Any) -> str | None:
+    if str(final_source or "").strip().lower() != "fusion":
+        return None
+    evidence = _safe_record(diagnosis_evidence)
+    weights = _safe_record(evidence.get("weights"))
+    image_weight = _safe_float(weights.get("image"))
+    text_weight = _safe_float(weights.get("text"))
+    prior_weight = _safe_float(weights.get("prior"))
+    if image_weight is None and text_weight is None:
+        return None
+    image_weight = float(image_weight or 0.0)
+    text_weight = float(text_weight or 0.0)
+    prior_weight = float(prior_weight or 0.0)
+    if image_weight >= 0.999 and text_weight <= 0.001 and prior_weight <= 0.001:
+        return "gated_image_only"
+    if text_weight >= 0.999 and image_weight <= 0.001 and prior_weight <= 0.001:
+        return "gated_text_only"
+    return "blended"
 
 
 def emit_node_event(
@@ -1298,6 +1336,8 @@ async def diagnose_image(
     verification_available = verification_result is not None
     treatment_available = treatment is not None
     response_fallback_reason = (trace_fallback_reason or fallback_reasons or None) if fallback_used else None
+    confirm_reasons = dedupe_reasons(trace_fallback_reason or [])
+    fusion_mode = _derive_fusion_mode(final_source, (final_state or {}).get("diagnosis_evidence"))
     canonical_risk_tags = [normalize_risk_code(item) for item in (flags.get("risk_tags") or []) if str(item).strip()]
     canonical_risk_items = []
     for item in (flags.get("risk_items") or []):
@@ -1335,11 +1375,13 @@ async def diagnose_image(
         "image_result": image_result_dict,
         "fallback_used": fallback_used,
         "fallback_reason": response_fallback_reason,
+        "confirm_reasons": confirm_reasons,
         "rule_result": rule_result_dict,
         "final_disease": final_state.get("final_disease") if final_state else final_disease,
         "need_confirm": need_confirm,
         "final_confidence": final_confidence,
         "final_source": final_source,
+        "fusion_mode": fusion_mode,
         "confirm_round": False,
         "source_stage": "initial",
         "selected_branch": flags.get("selected_branch"),
@@ -1405,6 +1447,7 @@ async def diagnose_image(
         "image_result": image_result_dict,
         "fallback_used": fallback_used,
         "fallback_reason": response_fallback_reason,
+        "confirm_reasons": confirm_reasons,
         "rule_result": rule_result_dict,
         "final_disease": final_disease,
         "treatment": treatment_or_none,
@@ -1429,6 +1472,7 @@ async def diagnose_image(
         "need_confirm": need_confirm,
         "final_confidence": final_confidence,
         "final_source": final_source,
+        "fusion_mode": fusion_mode,
         "model_id": model_meta.get("model_id"),
         "model_display_name": model_meta.get("model_display_name"),
         "model_backend": model_meta.get("backend"),
@@ -1588,7 +1632,8 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
             "crop_type": crop_type,
             "growth_stage": normalize_growth_stage_code(growth_stage),
             "image_id": image_id,
-            "previous_trace_id": previous_trace_id,
+            "previous_trace_id": previous_trace_id or trace_id,
+            "confirm_round_parent_trace_id": trace_id,
             "model_id": model_id,
             "choice": choice,
             "farmer_id": farmer_id,
@@ -1760,6 +1805,8 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
     carried_fallback_used = bool(previous_case_event.get("fallback_used")) if isinstance(previous_case_event, dict) else False
     carried_fallback_reason = previous_case_event.get("fallback_reason") if isinstance(previous_case_event, dict) else None
     carried_rule_result = previous_case_event.get("rule_result") if isinstance(previous_case_event, dict) else None
+    confirm_reasons = dedupe_reasons(flags.get("fallback_reason") or [])
+    fusion_mode = _derive_fusion_mode(final_source, diagnosis_evidence)
     carried_personalization_reasons = dedupe_reasons(
         (flags.get("personalization_reasons") or (previous_case_event.get("personalization_reasons") if isinstance(previous_case_event, dict) else []) or [])
     )
@@ -1782,12 +1829,15 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
         "image_result": image_result,
         "fallback_used": carried_fallback_used,
         "fallback_reason": carried_fallback_reason,
+        "confirm_reasons": confirm_reasons,
         "rule_result": carried_rule_result,
         "final_disease": state.get("final_disease"),
         "need_confirm": need_confirm,
         "final_confidence": final_confidence if final_confidence is not None else image_result.get("confidence"),
         "final_source": final_source or "confirm",
+        "fusion_mode": fusion_mode,
         "confirm_round": True,
+        "confirm_round_parent_trace_id": trace_id,
         "source_stage": "confirm",
         "selected_branch": flags.get("selected_branch"),
         "personalization_applied": personalization_applied,
@@ -1870,6 +1920,7 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
         **_build_image_refs(image_id),
         "fallback_used": carried_fallback_used,
         "fallback_reason": carried_fallback_reason,
+        "confirm_reasons": confirm_reasons,
         "rule_result": carried_rule_result,
         "final_disease": state.get("final_disease"),
         "image_result": image_result,
@@ -1877,6 +1928,7 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
         "need_confirm": need_confirm,
         "final_confidence": final_confidence,
         "final_source": final_source,
+        "fusion_mode": fusion_mode,
         "image_confidence": image_confidence,
         "text_confidence": text_confidence,
         "text_top3": text_top3,
@@ -1936,11 +1988,11 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
         "graph_treatment_generated": bool(state.get("treatment_plan")),
         "fallback_treatment_used": bool(previous_case_event.get("fallback_treatment_used")) if isinstance(previous_case_event, dict) else False,
         "treatment_skipped_due_need_confirm": bool(confirm_status == "waiting_for_supplement"),
+        "confirm_round_parent_trace_id": trace_id,
         "meta": response_meta,
         "events": events,
     }
-    if previous_trace_id and previous_trace_id != trace_id:
-        response_payload["previous_trace_id"] = previous_trace_id
+    response_payload["previous_trace_id"] = previous_trace_id or trace_id
     return serialize_final_response(response_payload)
 
 
