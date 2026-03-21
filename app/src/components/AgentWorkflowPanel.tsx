@@ -23,6 +23,7 @@ import {
   calcPhaseDurationsByAgent,
   calcOverallPhaseDuration,
   formatDurationMs,
+  isReplayTerminalWaitingEvent,
   isWaitingForUserInputEvent,
   parseTsMs,
   shouldIncludeEvent,
@@ -621,7 +622,7 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
     });
   }, []);
 
-  const applyNormalizedEvent = useCallback((event: NormalizedEvent): boolean => {
+  const applyNormalizedEvent = useCallback((event: NormalizedEvent, options?: { preserveReplayFlow?: boolean }): boolean => {
     if (workflowDoneRef.current || updatesStoppedRef.current) return false;
 
     const seq = event.seq;
@@ -633,7 +634,7 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
     }
 
     const waitingForUserInput = isWaitingForUserInputEvent(event);
-    if (waitingForUserInput) {
+    if (waitingForUserInput && !options?.preserveReplayFlow) {
       waitingStableRef.current = true;
       updatesStoppedRef.current = true;
       allEventsRef.current = dedupBySeq([...allEventsRef.current, event]);
@@ -645,6 +646,9 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
       clearTicker();
       closeStream();
       stopPolling(true);
+    } else if (waitingForUserInput) {
+      allEventsRef.current = dedupBySeq([...allEventsRef.current, event]);
+      setAllEvents(allEventsRef.current);
     } else if (event.status === 'running') {
       setPausedByUserInput(false);
       setTracePausedStable(false);
@@ -867,16 +871,17 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
 
         let replayed = 0;
         let replayPausedByUserInput = false;
-        sorted.forEach((raw: RawTraceEvent) => {
+        sorted.forEach((raw: RawTraceEvent, index: number) => {
           if (cancelled || workflowDoneRef.current || updatesStoppedRef.current || waitingStableRef.current) return;
           const normalized = normalizeEvent(raw as RawTraceEvent);
-          if (isWaitingForUserInputEvent(normalized)) {
+          const terminalWaitingEvent = isReplayTerminalWaitingEvent(sorted as RawTraceEvent[], index);
+          if (terminalWaitingEvent) {
             replayPausedByUserInput = true;
           }
           if (normalized.status === 'running') {
             replayPausedByUserInput = false;
           }
-          if (applyNormalizedEvent(normalized)) replayed += 1;
+          if (applyNormalizedEvent(normalized, { preserveReplayFlow: !terminalWaitingEvent })) replayed += 1;
         });
         setPausedByUserInput(replayPausedByUserInput);
 

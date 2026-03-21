@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {
   calcTracePhaseTiming,
   calcPhaseDurationsByAgent,
+  isReplayTerminalWaitingEvent,
   isWaitingForUserInputEvent,
   parseTsMs,
   sliceCurrentPhaseEvents,
@@ -130,4 +131,19 @@ test('calcTracePhaseTiming rebuilds phase1 and phase2 from a reused trace', () =
   assert.equal(timing.phase1Ms, 5000);
   assert.equal(timing.phase2Ms, 8000);
   assert.equal(timing.totalMs, 13000);
+});
+
+test('isReplayTerminalWaitingEvent ignores historical waiting nodes when a confirm round resumes later', () => {
+  const resumedEvents = [
+    { seq: 1, agent: 'supervisor', ts: '2026-03-20T10:00:00.000Z' },
+    { seq: 2, node: 'AwaitUserConfirmation', status: 'end', ts: '2026-03-20T10:00:05.000Z', payload: { status: 'waiting_for_supplement' } },
+    { seq: 3, agent: 'confirm_input', ts: '2026-03-20T10:07:00.000Z' },
+  ];
+  const waitingOnlyEvents = [
+    { seq: 1, agent: 'supervisor', ts: '2026-03-20T10:00:00.000Z' },
+    { seq: 2, node: 'AwaitUserConfirmation', status: 'end', ts: '2026-03-20T10:00:05.000Z', payload: { status: 'waiting_for_supplement' } },
+  ];
+
+  assert.equal(isReplayTerminalWaitingEvent(resumedEvents, 1), false);
+  assert.equal(isReplayTerminalWaitingEvent(waitingOnlyEvents, 1), true);
 });

@@ -172,6 +172,19 @@ export const isWorkflowTerminalRawEvent = (event: RawTraceEvent): boolean => {
   );
 };
 
+export const isReplayTerminalWaitingEvent = (events: RawTraceEvent[], index: number): boolean => {
+  const current = normalizeRawEventForTiming(events[index] || {});
+  if (!isWaitingForUserInputEvent(current)) return false;
+
+  for (let i = index + 1; i < events.length; i += 1) {
+    const later = normalizeRawEventForTiming(events[i] || {});
+    const sameSeq = typeof current.seq === 'number' && typeof later.seq === 'number' && current.seq === later.seq;
+    if (sameSeq) continue;
+    return false;
+  }
+  return true;
+};
+
 export const sliceCurrentPhaseEvents = (events: RawTraceEvent[], phaseStartMs?: number): RawTraceEvent[] => {
   const sorted = [...events].sort(compareEvents);
   if (!phaseStartMs || !Number.isFinite(phaseStartMs)) return sorted;
