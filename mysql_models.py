@@ -19,8 +19,12 @@ from sqlalchemy import (
     UniqueConstraint,
 )
 from sqlalchemy.dialects.mysql import JSON
+from sqlalchemy.dialects.mysql import DATETIME as MYSQL_DATETIME
 
 from db import Base
+
+
+TRACE_EVENT_DATETIME = DateTime().with_variant(MYSQL_DATETIME(fsp=3), "mysql")
 
 
 class TimestampMixin:
@@ -53,11 +57,41 @@ class FarmerProfileORM(TimestampMixin, Base):
     experience_level = Column(String(32), nullable=True)
     risk_preference = Column(String(32), nullable=True)
 
+    prefer_organic = Column(Boolean, nullable=False, default=False)
+    harvest_window_days = Column(Integer, nullable=True)
     constraints_json = Column(JSON, nullable=True)
     meta_json = Column(JSON, nullable=True)
 
     __table_args__ = (
         Index("idx_farmer_profiles_name", "name"),
+    )
+
+
+class FarmerProfileEquipmentORM(TimestampMixin, Base):
+    __tablename__ = "farmer_profile_equipment"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    farmer_id = Column(String(64), nullable=False, index=True)
+    equipment_code = Column(String(64), nullable=False)
+    seq = Column(Integer, nullable=False, default=1)
+
+    __table_args__ = (
+        UniqueConstraint("farmer_id", "seq", name="uq_farmer_profile_equipment_farmer_seq"),
+        Index("idx_farmer_profile_equipment_farmer", "farmer_id", "seq"),
+    )
+
+
+class FarmerProfileBannedIngredientORM(TimestampMixin, Base):
+    __tablename__ = "farmer_profile_banned_ingredients"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    farmer_id = Column(String(64), nullable=False, index=True)
+    ingredient_name = Column(String(128), nullable=False)
+    seq = Column(Integer, nullable=False, default=1)
+
+    __table_args__ = (
+        UniqueConstraint("farmer_id", "seq", name="uq_farmer_profile_banned_ingredients_farmer_seq"),
+        Index("idx_farmer_profile_banned_ingredients_farmer", "farmer_id", "seq"),
     )
 
 
@@ -102,6 +136,36 @@ class FarmBaseORM(TimestampMixin, Base):
         UniqueConstraint("farmer_id", "base_id", name="uq_farm_bases_farmer_id_base_id"),
         Index("idx_farm_bases_farmer_base", "farmer_id", "base_id"),
         Index("idx_farm_bases_geo", "latitude", "longitude"),
+    )
+
+
+class FarmBaseRiskTagORM(TimestampMixin, Base):
+    __tablename__ = "farm_base_risk_tags"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    farmer_id = Column(String(64), nullable=False, index=True)
+    base_id = Column(String(64), nullable=False, index=True)
+    risk_tag = Column(String(128), nullable=False, index=True)
+
+    __table_args__ = (
+        UniqueConstraint("farmer_id", "base_id", "risk_tag", name="uq_farm_base_risk_tags_farmer_base_tag"),
+        Index("idx_farm_base_risk_tags_farmer_base", "farmer_id", "base_id"),
+    )
+
+
+class FarmBaseRiskItemORM(TimestampMixin, Base):
+    __tablename__ = "farm_base_risk_items"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    farmer_id = Column(String(64), nullable=False, index=True)
+    base_id = Column(String(64), nullable=False, index=True)
+    risk_code = Column(String(64), nullable=True)
+    risk_level = Column(String(32), nullable=True)
+    risk_message = Column(Text, nullable=True)
+    payload_json = Column(JSON, nullable=True)
+
+    __table_args__ = (
+        Index("idx_farm_base_risk_items_farmer_base", "farmer_id", "base_id"),
     )
 
 
@@ -205,8 +269,8 @@ class TraceEventORM(Base):
     message = Column(String(255), nullable=True)
     payload_json = Column(JSON, nullable=False)
 
-    ts = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    ts = Column(TRACE_EVENT_DATETIME, nullable=False, default=datetime.utcnow, index=True)
+    created_at = Column(TRACE_EVENT_DATETIME, default=datetime.utcnow, nullable=False)
 
     __table_args__ = (
         UniqueConstraint("trace_id", "seq", name="uq_trace_events_trace_seq"),
@@ -239,6 +303,40 @@ class KBTreatmentORM(TimestampMixin, Base):
     meta_json = Column(JSON, nullable=True)
 
 
+class KBTreatmentActionORM(TimestampMixin, Base):
+    __tablename__ = "kb_treatment_actions"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+
+    disease_name = Column(String(128), nullable=False, index=True)
+    action_section = Column(String(64), nullable=False, index=True)
+    seq = Column(Integer, nullable=False)
+    action_text = Column(Text, nullable=False)
+    payload_json = Column(JSON, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("disease_name", "action_section", "seq", name="uq_kb_treatment_action_section_seq"),
+        Index("idx_kb_treatment_actions_disease_section", "disease_name", "action_section"),
+    )
+
+
+class KBTreatmentIngredientORM(TimestampMixin, Base):
+    __tablename__ = "kb_treatment_ingredients"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+
+    disease_name = Column(String(128), nullable=False, index=True)
+    seq = Column(Integer, nullable=False)
+    ingredient_name = Column(String(128), nullable=False, index=True)
+    ingredient_type = Column(String(64), nullable=True)
+    payload_json = Column(JSON, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("disease_name", "ingredient_name", "seq", name="uq_kb_treatment_ingredient_name_seq"),
+        Index("idx_kb_treatment_ingredients_disease_seq", "disease_name", "seq"),
+    )
+
+
 class KBRuleORM(TimestampMixin, Base):
     __tablename__ = "kb_rules"
 
@@ -268,3 +366,32 @@ class KBSymptomMapORM(TimestampMixin, Base):
     aliases_json = Column(JSON, nullable=True)
     disease_candidates_json = Column(JSON, nullable=True)
     meta_json = Column(JSON, nullable=True)
+
+
+class KBSymptomAliasORM(TimestampMixin, Base):
+    __tablename__ = "kb_symptom_aliases"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+
+    symptom_key = Column(String(128), nullable=False, index=True)
+    alias = Column(String(128), nullable=False, index=True)
+
+    __table_args__ = (
+        UniqueConstraint("symptom_key", "alias", name="uq_kb_symptom_aliases_symptom_alias"),
+        Index("idx_kb_symptom_aliases_symptom_alias", "symptom_key", "alias"),
+    )
+
+
+class KBSymptomCandidateDiseaseORM(TimestampMixin, Base):
+    __tablename__ = "kb_symptom_candidate_diseases"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+
+    symptom_key = Column(String(128), nullable=False, index=True)
+    disease_name = Column(String(128), nullable=False, index=True)
+    rank_no = Column(Integer, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("symptom_key", "disease_name", name="uq_kb_symptom_candidate_disease"),
+        Index("idx_kb_symptom_candidate_diseases_symptom_rank", "symptom_key", "rank_no"),
+    )
