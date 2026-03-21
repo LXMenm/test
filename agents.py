@@ -4,7 +4,7 @@
 """
 from state import CropDiseaseState
 from llm_utils import call_llm, extract_json_from_response
-from diagnosis_model import get_diagnosis_engine
+from diagnosis_model import build_reliability_summary, get_diagnosis_engine
 from knowledge_base import get_kb_manager
 from config import DIAGNOSIS_CONFIDENCE_THRESHOLD, DIAGNOSIS_ALLOW_TORCH
 from confidence_policy import make_confidence_flags
@@ -516,6 +516,15 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
         else bool(text_confidence >= 0.6)
     )
     fusion_case = (fusion_meta.get("fusion_case") if isinstance(fusion_meta, dict) else None) or "unknown"
+    weak_conflict_candidate = bool(
+        fusion_meta.get("weak_conflict_candidate")
+        if isinstance(fusion_meta, dict)
+        else False
+    )
+    weak_conflict_flag = bool(
+        weak_conflict_candidate
+        and final_confidence < 0.5
+    )
     top1_conflict = bool(
         has_image_active
         and has_text_active
@@ -526,6 +535,24 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
         and image_top1 != text_top1
     )
     modality_conflict_flag = bool(top1_conflict)
+    reliability_summary = build_reliability_summary(
+        image_reliable=image_reliable,
+        text_reliable=text_reliable,
+        modality_conflict_flag=modality_conflict_flag,
+    )
+    reliability_issue_types = list(
+        (fusion_meta.get("reliability_issue_types") if isinstance(fusion_meta, dict) else None)
+        or reliability_summary["reliability_issue_types"]
+    )
+    supplement_mode = str(
+        (fusion_meta.get("supplement_mode") if isinstance(fusion_meta, dict) else None)
+        or reliability_summary["supplement_mode"]
+    )
+    if isinstance(fusion_meta, dict):
+        fusion_meta["image_reliable"] = image_reliable
+        fusion_meta["text_reliable"] = text_reliable
+        fusion_meta["reliability_issue_types"] = reliability_issue_types
+        fusion_meta["supplement_mode"] = supplement_mode
 
     debug_payload.update(
         {
@@ -539,6 +566,12 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
             "fusion_case": fusion_case,
             "fuse_version": (fusion_meta.get("fuse_version") if isinstance(fusion_meta, dict) else None),
             "modality_conflict_flag": modality_conflict_flag,
+            "image_reliable": image_reliable,
+            "text_reliable": text_reliable,
+            "reliability_issue_types": reliability_issue_types,
+            "supplement_mode": supplement_mode,
+            "weak_conflict_candidate": weak_conflict_candidate,
+            "weak_conflict_flag": weak_conflict_flag,
             "final_confidence": float(final_confidence),
         }
     )
@@ -568,6 +601,10 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
             "weights": (fusion_meta.get("normalized_weights") if isinstance(fusion_meta, dict) else {}),
             "fusion_meta": fusion_meta,
             "modality_conflict_flag": modality_conflict_flag,
+            "image_reliable": image_reliable,
+            "text_reliable": text_reliable,
+            "reliability_issue_types": reliability_issue_types,
+            "supplement_mode": supplement_mode,
             "summary": f"融合诊断Top1: {final_disease}",
         }
 
@@ -582,13 +619,18 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
         flags.setdefault("fallback_reason", [])
         if "image_text_conflict" not in flags["fallback_reason"]:
             flags["fallback_reason"].append("image_text_conflict")
+    elif weak_conflict_flag:
+        flags["need_confirm"] = True
+        flags.setdefault("fallback_reason", [])
+        if "weak_image_text_conflict" not in flags["fallback_reason"]:
+            flags["fallback_reason"].append("weak_image_text_conflict")
     elif fusion_case == "both_weak":
         flags["need_confirm"] = True
         flags.setdefault("fallback_reason", [])
         if "both_modalities_weak" not in flags["fallback_reason"]:
             flags["fallback_reason"].append("both_modalities_weak")
     elif fusion_case in {"image_strong_text_weak", "image_weak_text_strong", "consistent", "image_only", "text_only"}:
-        should_clear_confirm = final_confidence >= DIAGNOSIS_CONFIDENCE_THRESHOLD or (fusion_case == "image_weak_text_strong" and text_reliable)
+        should_clear_confirm = final_confidence >= DIAGNOSIS_CONFIDENCE_THRESHOLD
         if should_clear_confirm:
             flags["need_confirm"] = False
             reasons = [r for r in list(flags.get("fallback_reason") or []) if r != "low_margin"]
@@ -620,7 +662,12 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
         except Exception:
             pass
 
-    should_skip_low_conf_confirm = fusion_case == "image_weak_text_strong" and text_reliable
+    should_skip_low_conf_confirm = (
+        fusion_case == "image_weak_text_strong"
+        and text_reliable
+        and final_confidence >= 0.5
+        and not weak_conflict_flag
+    )
     if flags.get("confirm_when_low_confidence") and final_confidence < DIAGNOSIS_CONFIDENCE_THRESHOLD and not should_skip_low_conf_confirm:
         follow_ups = [
             "请补充叶片正反面近照。",
@@ -667,6 +714,12 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
     state["diagnosis_evidence"] = diagnosis_evidence
     state["fusion_meta"] = fusion_meta if isinstance(fusion_meta, dict) else {}
     state["modality_conflict_flag"] = modality_conflict_flag
+    state["image_reliable"] = image_reliable
+    state["text_reliable"] = text_reliable
+    state["reliability_issue_types"] = reliability_issue_types
+    state["supplement_mode"] = supplement_mode
+    state["weak_conflict_flag"] = weak_conflict_flag
+    state["weak_conflict_candidate"] = weak_conflict_candidate
     state["debug_diagnosis"] = debug_payload
     state["personalization_flags"] = flags
     state["current_step"] = "diagnosis_complete"
@@ -698,6 +751,12 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
             "text_top3": text_top3,
             "fusion_top3": fusion_top3,
             "modality_conflict_flag": modality_conflict_flag,
+            "image_reliable": image_reliable,
+            "text_reliable": text_reliable,
+            "reliability_issue_types": reliability_issue_types,
+            "supplement_mode": supplement_mode,
+            "weak_conflict_flag": weak_conflict_flag,
+            "weak_conflict_candidate": weak_conflict_candidate,
             "diagnosis_evidence": diagnosis_evidence,
             "follow_up_questions": flags.get("follow_up_questions"),
             "need_confirm": flags.get("need_confirm"),

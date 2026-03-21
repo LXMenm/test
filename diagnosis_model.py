@@ -44,12 +44,48 @@ def _get_disease_classes() -> list[str]:
     return list(_disease_classes_cache)
 
 
-FUSE_MULTIMODAL_VERSION = "fuse_v3_text_reliability_gate_20260319"
+FUSE_MULTIMODAL_VERSION = "fuse_v4_text_gate_with_weak_conflict_20260321"
 PREDICT_TEXT_PROBA_VERSION = "text_v3_bert_with_rule_fallback_20260316"
 IMAGE_RELIABLE_TOP1_THRESHOLD = 0.70
 IMAGE_RELIABLE_MARGIN_THRESHOLD = 0.15
-TEXT_RELIABLE_TOP1_THRESHOLD = 0.25
-TEXT_RELIABLE_MARGIN_THRESHOLD = 0.05
+TEXT_RELIABLE_TOP1_THRESHOLD = 0.45
+TEXT_RELIABLE_MARGIN_THRESHOLD = 0.10
+WEAK_CONFLICT_MIN_IMAGE_TOP1 = 0.50
+WEAK_CONFLICT_MIN_TEXT_TOP1 = 0.40
+
+
+def build_reliability_summary(
+    *,
+    image_reliable: bool,
+    text_reliable: bool,
+    modality_conflict_flag: bool,
+) -> Dict[str, object]:
+    reliability_issue_types: List[str]
+    supplement_mode: str
+
+    if image_reliable and text_reliable:
+        if modality_conflict_flag:
+            reliability_issue_types = ["conflict"]
+            supplement_mode = "image_and_text"
+        else:
+            reliability_issue_types = []
+            supplement_mode = "none"
+    elif image_reliable and not text_reliable:
+        reliability_issue_types = ["text_weak"]
+        supplement_mode = "text_only"
+    elif (not image_reliable) and text_reliable:
+        reliability_issue_types = ["image_weak"]
+        supplement_mode = "image_only"
+    else:
+        reliability_issue_types = ["both_weak"]
+        supplement_mode = "image_and_text"
+
+    return {
+        "image_reliable": bool(image_reliable),
+        "text_reliable": bool(text_reliable),
+        "reliability_issue_types": reliability_issue_types,
+        "supplement_mode": supplement_mode,
+    }
 
 
 class DiagnosisModel(nn.Module):
@@ -624,6 +660,22 @@ class DiseaseDiagnosisEngine:
             and text_top1
             and image_top1 != text_top1
         )
+        weak_conflict_candidate = bool(
+            has_image
+            and has_text
+            and image_top1
+            and text_top1
+            and image_top1 != text_top1
+            and (
+                image_top1_conf >= WEAK_CONFLICT_MIN_IMAGE_TOP1
+                or text_top1_conf >= WEAK_CONFLICT_MIN_TEXT_TOP1
+            )
+        )
+        reliability_summary = build_reliability_summary(
+            image_reliable=reliable_image,
+            text_reliable=reliable_text,
+            modality_conflict_flag=conflict,
+        )
 
         base_weights = {"image": 0.0, "text": 0.0, "prior": 0.0}
         confidence_drop_reason = None
@@ -693,8 +745,7 @@ class DiseaseDiagnosisEngine:
                 "has_image": has_image,
                 "has_text": has_text,
                 "has_prior": has_prior,
-                "image_reliable": reliable_image,
-                "text_reliable": reliable_text,
+                **reliability_summary,
                 "image_top1_conf": image_top1_conf,
                 "text_top1_conf": text_top1_conf,
                 "image_margin": image_margin,
@@ -706,6 +757,7 @@ class DiseaseDiagnosisEngine:
                 "post_fusion_top3": [("健康", 1.0)],
                 "confidence_drop_reason": confidence_drop_reason,
                 "modality_conflict_flag": conflict,
+                "weak_conflict_candidate": weak_conflict_candidate,
             }
             return {"健康": 1.0}, meta
 
@@ -722,8 +774,7 @@ class DiseaseDiagnosisEngine:
             "has_image": has_image,
             "has_text": has_text,
             "has_prior": has_prior,
-            "image_reliable": reliable_image,
-            "text_reliable": reliable_text,
+            **reliability_summary,
             "image_top1_conf": image_top1_conf,
             "text_top1_conf": text_top1_conf,
             "image_margin": image_margin,
@@ -735,6 +786,7 @@ class DiseaseDiagnosisEngine:
             "post_fusion_top3": self._topk(fused, 3),
             "confidence_drop_reason": confidence_drop_reason,
             "modality_conflict_flag": conflict,
+            "weak_conflict_candidate": weak_conflict_candidate,
         }
         return fused, meta
 
@@ -779,6 +831,10 @@ class DiseaseDiagnosisEngine:
             "weights": fusion_meta.get("normalized_weights") if isinstance(fusion_meta, dict) else {},
             "fusion_meta": fusion_meta,
             "modality_conflict_flag": modality_conflict_flag,
+            "image_reliable": bool(fusion_meta.get("image_reliable")) if isinstance(fusion_meta, dict) else False,
+            "text_reliable": bool(fusion_meta.get("text_reliable")) if isinstance(fusion_meta, dict) else False,
+            "reliability_issue_types": list(fusion_meta.get("reliability_issue_types") or []) if isinstance(fusion_meta, dict) else [],
+            "supplement_mode": str(fusion_meta.get("supplement_mode") or "none") if isinstance(fusion_meta, dict) else "none",
             "final_disease": final_disease,
             "final_confidence": final_confidence,
             "final_source": final_source,
