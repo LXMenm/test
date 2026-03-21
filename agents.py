@@ -704,6 +704,19 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
     state["text_confidence"] = text_confidence
     state["final_confidence"] = final_confidence
     state["final_source"] = "fusion"
+    state["fusion_mode"] = "gated_image_only" if (
+        isinstance(fusion_meta, dict)
+        and float(((fusion_meta.get("normalized_weights") or {}).get("image") or 0.0)) >= 0.999
+        and float(((fusion_meta.get("normalized_weights") or {}).get("text") or 0.0)) <= 0.001
+        and float(((fusion_meta.get("normalized_weights") or {}).get("prior") or 0.0)) <= 0.001
+    ) else (
+        "gated_text_only" if (
+            isinstance(fusion_meta, dict)
+            and float(((fusion_meta.get("normalized_weights") or {}).get("text") or 0.0)) >= 0.999
+            and float(((fusion_meta.get("normalized_weights") or {}).get("image") or 0.0)) <= 0.001
+            and float(((fusion_meta.get("normalized_weights") or {}).get("prior") or 0.0)) <= 0.001
+        ) else "blended"
+    )
     state["disease_description"] = disease_description
     state["image_probs"] = image_probs
     state["text_probs"] = text_probs
@@ -760,7 +773,9 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
             "diagnosis_evidence": diagnosis_evidence,
             "follow_up_questions": flags.get("follow_up_questions"),
             "need_confirm": flags.get("need_confirm"),
+            "confirm_reasons": flags.get("fallback_reason"),
             "fallback_reason": flags.get("fallback_reason"),
+            "fusion_mode": state.get("fusion_mode"),
             "model_id": model_meta["model_id"],
             "model_display_name": model_meta["model_display_name"],
             "backend": model_meta["backend"],

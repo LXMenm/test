@@ -21,6 +21,7 @@ import {
 } from '@/lib/profileLabels';
 import { resolveModelOptions } from '@/lib/modelOptions';
 import { fetchTraceEvents } from '@/lib/traceClient';
+import { calcTracePhaseTiming, formatDurationMs } from '@/components/agentWorkflowTiming';
 
 interface DiagnosisResult {
   image_url: string;
@@ -65,6 +66,8 @@ interface DiagnosisResult {
   expert_review_selected?: boolean;
   expert_review_status?: string;
   treatment_available?: boolean;
+  confirm_reasons?: string[];
+  fusion_mode?: string;
 }
 
 interface ProfileListItem {
@@ -129,6 +132,7 @@ export function DiagnosePage() {
   const [phase2StartTime, setPhase2StartTime] = useState<number | null>(null);
   const [phase1FrozenMs, setPhase1FrozenMs] = useState<number | null>(null);
   const [workflowRefreshToken, setWorkflowRefreshToken] = useState(0);
+  const [timingNowMs, setTimingNowMs] = useState(() => Date.now());
   const [profiles, setProfiles] = useState<ProfileListItem[]>([]);
   const [selectedFarmerId, setSelectedFarmerId] = useState('');
   const [selectedBaseId, setSelectedBaseId] = useState('');
@@ -201,6 +205,12 @@ export function DiagnosePage() {
       const reason = String(item || '');
       return reason === 'low_confidence' || reason === 'low_margin';
     });
+  };
+
+  const getConfirmReasons = (payloadLike: unknown): string[] => {
+    const payload = payloadLike && typeof payloadLike === 'object' ? payloadLike as Record<string, unknown> : {};
+    const preferred = Array.isArray(payload.confirm_reasons) ? payload.confirm_reasons : payload.fallback_reason;
+    return Array.isArray(preferred) ? preferred.map((item) => String(item)) : [];
   };
 
   const parseTop3Candidates = (payloadLike: unknown, resultLike?: DiagnosisResult | null): Top3Candidate[] => {
@@ -288,7 +298,7 @@ export function DiagnosePage() {
   ): boolean => {
     const payload = payloadLike && typeof payloadLike === 'object' ? payloadLike as Record<string, unknown> : {};
     if (payload.need_confirm === true) return true;
-    if (hasLowConfidenceReason(payload.fallback_reason)) return true;
+    if (hasLowConfidenceReason(getConfirmReasons(payload))) return true;
 
     const imageResult = payload.image_result && typeof payload.image_result === 'object'
       ? payload.image_result as Record<string, unknown>
@@ -303,7 +313,7 @@ export function DiagnosePage() {
         const event = eventLike as Record<string, unknown>;
         if (String(event.agent ?? '').toLowerCase() !== 'diagnosis') return false;
         const outputs = event.outputs && typeof event.outputs === 'object' ? event.outputs as Record<string, unknown> : undefined;
-        return outputs?.need_confirm === true || hasLowConfidenceReason(outputs?.fallback_reason);
+        return outputs?.need_confirm === true || hasLowConfidenceReason(getConfirmReasons(outputs));
       });
       if (hasDiagnosisNeedConfirm) return true;
     }
@@ -413,6 +423,8 @@ export function DiagnosePage() {
       expert_review_selected: payload.expert_review_selected === true,
       expert_review_status: typeof payload.expert_review_status === 'string' ? payload.expert_review_status : undefined,
       treatment_available: payload.treatment_available === true,
+      confirm_reasons: getConfirmReasons(payload),
+      fusion_mode: typeof payload.fusion_mode === 'string' ? payload.fusion_mode : undefined,
     };
   };
 
@@ -519,6 +531,19 @@ export function DiagnosePage() {
     if (phase1StartTime === null) return;
     setPhase1FrozenMs(Math.max(0, Date.now() - phase1StartTime));
   }, [result?.status, phase1StartTime, phase1FrozenMs, phase2StartTime]);
+
+  useEffect(() => {
+    const shouldTick =
+      loading
+      || confirmSubmitting
+      || (phase1StartTime !== null && !['completed', 'pending_expert_review', 'waiting_for_supplement'].includes(result?.status ?? ''));
+    if (!shouldTick) {
+      setTimingNowMs(Date.now());
+      return undefined;
+    }
+    const timer = window.setInterval(() => setTimingNowMs(Date.now()), 200);
+    return () => window.clearInterval(timer);
+  }, [loading, confirmSubmitting, phase1StartTime, result?.status]);
 
   const handleSubmit = async () => {
     if (!file || !selectedFarmerId) return;
@@ -808,6 +833,21 @@ export function DiagnosePage() {
       traceFetchAbortRef.current = null;
     };
   }, [traceId]);
+
+  const rawTraceTimingEvents = traceEvents.map((event) => event.raw);
+  const traceTiming = calcTracePhaseTiming(rawTraceTimingEvents, timingNowMs);
+  const fallbackTiming = phase1StartTime === null
+    ? null
+    : {
+      phase1Ms: phase1FrozenMs ?? Math.max(0, ((phase2StartTime ?? timingNowMs) - phase1StartTime)),
+      phase2Ms: phase2StartTime === null ? 0 : Math.max(0, timingNowMs - phase2StartTime),
+      totalMs: 0,
+    };
+  if (fallbackTiming) {
+    fallbackTiming.totalMs = fallbackTiming.phase1Ms + fallbackTiming.phase2Ms;
+  }
+  const displayedTiming = traceTiming.hasTraceTiming ? traceTiming : fallbackTiming;
+  const timingSourceLabel = traceTiming.hasTraceTiming ? 'trace events' : (displayedTiming ? '本地提交兜底' : null);
 
   return (
     <div className="space-y-6 animate-fadeIn">
@@ -1315,10 +1355,16 @@ export function DiagnosePage() {
               <p className="text-xs text-white/60">
                 当前流程包含：接待解析 → 病害诊断 → 知识检索 → 方案生成 → 农业合规审查。
               </p>
+              {displayedTiming && timingSourceLabel && (
+                <div className="rounded-lg border border-white/10 bg-white/5 px-3 py-2">
+                  <p className="text-xs text-white/65">
+                    耗时真值来源：{timingSourceLabel}。总耗时 {formatDurationMs(displayedTiming.totalMs)}（一诊 {formatDurationMs(displayedTiming.phase1Ms)} / 二诊 {formatDurationMs(displayedTiming.phase2Ms)}）
+                  </p>
+                </div>
+              )}
               <AgentWorkflowPanel
                 traceId={traceId || undefined}
                 confidencePct={result?.displayConfidencePct ?? undefined}
-                phaseStartMs={(phase2StartTime ?? phase1StartTime) ?? undefined}
                 refreshToken={workflowRefreshToken}
               />
 
@@ -1381,14 +1427,6 @@ export function DiagnosePage() {
                   <p className="text-sm">暂未收到追踪事件，面板将使用模拟进度降级展示</p>
                 </div>
               ))}
-
-              {phase1StartTime && (
-                <div className="space-y-1">
-                  <p className="text-xs text-white/40">一诊启动时间：{new Date(phase1StartTime).toLocaleTimeString()}</p>
-                  {phase1FrozenMs !== null && <p className="text-xs text-white/40">一诊冻结耗时：{(phase1FrozenMs / 1000).toFixed(2)}s</p>}
-                  {phase2StartTime && <p className="text-xs text-white/40">二诊启动时间：{new Date(phase2StartTime).toLocaleTimeString()}</p>}
-                </div>
-              )}
             </CardContent>
             )}
           </Card>
