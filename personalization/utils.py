@@ -4,6 +4,44 @@ import re
 from typing import Any, Iterable, Mapping
 
 
+def _normalize_follow_up_question_text(text: str) -> str:
+    return re.sub(r"\s+", "", text).replace("？", "").replace("?", "").rstrip("。.!！:：；;")
+
+
+def _infer_follow_up_intent_key(text: str) -> str:
+    normalized = _normalize_follow_up_question_text(text)
+    if not normalized:
+        return ""
+
+    intent_patterns = [
+        ("image_capture", ("清晰近照", "病叶正反面", "整体株型", "重新拍摄", "补充图片", "上传图片", "叶片正反面")),
+        ("spot_morphology", ("病斑颜色", "边缘是否清晰", "水渍感", "霉层", "病斑是同心轮纹", "靶心状", "水渍状扩展", "病斑形态", "斑点形态", "斑点边缘")),
+        ("recent_humidity_ventilation", ("高湿", "连阴雨", "通风", "棚内", "湿度")),
+        ("pest_vector_activity", ("白粉虱", "蚜虫", "虫害", "虫口", "媒介昆虫")),
+        ("growth_stage", ("生育期", "苗期", "开花", "结果")),
+        ("equipment", ("喷施设备", "喷雾器", "弥雾机", "无人机")),
+        ("farm_scale", ("种植规模", "家庭（小）", "中等", "企业级（大）")),
+        ("pesticide_access_level", ("购药能力", "购药渠道", "NONE", "LIMITED", "FULL")),
+        ("cultivation_mode", ("栽培模式", "土培", "水培", "基质栽培")),
+        ("harvest_window_days", ("计划采收", "采收还有多少天", "距离采收")),
+        ("prefer_organic", ("有机", "低残留")),
+        ("banned_ingredients", ("禁用成分", "禁用药剂")),
+    ]
+
+    for intent_key, patterns in intent_patterns:
+        if any(pattern in normalized for pattern in patterns):
+            return intent_key
+    return normalized
+
+
+def _canonicalize_follow_up_question(text: str, intent_key: str) -> str:
+    canonical_map = {
+        "recent_humidity_ventilation": "近3天是否出现高湿、连阴雨或棚内通风不足？",
+        "spot_morphology": "请描述病斑颜色、边缘是否清晰、是否有水渍感或霉层。",
+    }
+    return canonical_map.get(intent_key, text)
+
+
 def _normalize_reason(reason: str) -> str:
     text = reason.strip()
     if not text:
@@ -107,9 +145,6 @@ def normalize_follow_up_questions(items: Iterable[str | None]) -> list[str]:
     question_starts = ("是否", "请问", "当前", "有没有", "能否", "需要", "具备", "距离", "大概", "您的", "你")
     reason_starts = ("优先", "强调", "策略", "建议", "偏好", "购药能力受限", "未配置", "基于", "由于", "因此")
 
-    def _clean(text: str) -> str:
-        return re.sub(r"\s+", "", text).replace("？", "").replace("?", "").rstrip("。.!！:：；;")
-
     seen: set[str] = set()
     normalized: list[str] = []
 
@@ -133,7 +168,11 @@ def normalize_follow_up_questions(items: Iterable[str | None]) -> list[str]:
         if not text.endswith(("?", "？")):
             text = text.rstrip("。.!！:：；;") + "？"
 
-        key = _clean(text)
+        intent_key = _infer_follow_up_intent_key(text)
+        text = _canonicalize_follow_up_question(text, intent_key)
+        if not text.endswith(("?", "？")):
+            text = text.rstrip("。.!！:：；;") + "？"
+        key = intent_key or _normalize_follow_up_question_text(text)
         if not key or key in seen:
             continue
         seen.add(key)

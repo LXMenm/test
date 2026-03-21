@@ -161,6 +161,16 @@ const chartPalette = {
   purpleSoft: '#8f84af',
 };
 
+const IMAGE_PLACEHOLDER_DATA_URI = `data:image/svg+xml;utf8,${encodeURIComponent(
+  `<svg xmlns="http://www.w3.org/2000/svg" width="320" height="180" viewBox="0 0 320 180">
+    <rect width="320" height="180" fill="#10231c"/>
+    <rect x="20" y="20" width="280" height="140" rx="14" fill="#173128" stroke="#2e7d63" stroke-width="2"/>
+    <circle cx="110" cy="78" r="18" fill="#79b996" opacity="0.85"/>
+    <path d="M64 132l42-40 32 28 38-45 64 57H64z" fill="#6da8aa" opacity="0.85"/>
+    <text x="160" y="154" text-anchor="middle" fill="#cde8d8" font-size="16" font-family="Arial, sans-serif">图片不可用</text>
+  </svg>`,
+)}`;
+
 function formatDate(date: Date): string {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, '0');
@@ -505,6 +515,14 @@ function normalizeEvent(eventLike: unknown, index: number): DiagnosisEvent {
   const selectedBranchRaw = resolveSelectedBranch(event, Array.isArray(event.trace_events) ? event.trace_events : []);
   const modelId = readableText(meta?.model_id ?? event.model_id, '未记录模型');
 
+  const resolvedImageUrl = typeof event.image_url === 'string' && event.image_url
+    ? event.image_url
+    : (typeof event.image_id === 'string' && event.image_id
+      ? `/uploads/${event.image_id}`
+      : (typeof meta?.image_url === 'string' && meta.image_url
+        ? meta.image_url
+        : (typeof meta?.image_id === 'string' && meta.image_id ? `/uploads/${meta.image_id}` : '')));
+
   return {
     id: typeof event.id === 'string' ? event.id : `${String(event.ts ?? event.timestamp ?? 'event')}-${index}`,
     ts: typeof event.ts === 'string'
@@ -512,7 +530,7 @@ function normalizeEvent(eventLike: unknown, index: number): DiagnosisEvent {
       : (typeof event.timestamp === 'string' ? event.timestamp : new Date().toISOString()),
     disease: readableText(event.final_disease ?? imageResult?.disease, '未识别病害'),
     traceId: typeof event.trace_id === 'string' ? event.trace_id : '',
-    imageUrl: typeof event.image_url === 'string' ? event.image_url : '',
+    imageUrl: resolvedImageUrl,
     modelId,
     modelName: readableText(meta?.model_display_name ?? event.model_display_name, getModelLabel(modelId)),
     selectedBranchRaw: selectedBranchRaw ?? '',
@@ -1388,6 +1406,17 @@ export function DashboardPage() {
                       onClick={() => setSelectedEvent(event)}
                       className={cn('p-3 rounded-xl cursor-pointer transition-all duration-300 border', selectedEvent?.id === event.id ? 'bg-[#203b31] border-[#84b89d]' : 'bg-white/5 hover:bg-white/10 border-transparent')}
                     >
+                      <div className="mb-3 rounded-lg overflow-hidden border border-white/10 bg-black/20">
+                        <img
+                          src={event.imageUrl || IMAGE_PLACEHOLDER_DATA_URI}
+                          alt={`${event.disease} 缩略图`}
+                          className="h-28 w-full object-cover"
+                          loading="lazy"
+                          onError={(evt) => {
+                            evt.currentTarget.src = IMAGE_PLACEHOLDER_DATA_URI;
+                          }}
+                        />
+                      </div>
                       <div className="flex items-center justify-between gap-2">
                         <p className="text-white/60 text-xs">{safeDisplayTime(event.ts)}</p>
                         <Badge variant="outline" className="text-[10px] border-[#c8f7c5]/40 text-[#c8f7c5]">
@@ -1442,10 +1471,23 @@ export function DashboardPage() {
                     {selectedEvent.imageUrl ? (
                       <div className="bg-white/5 rounded-lg p-3">
                         <div className="rounded-md overflow-hidden bg-black/30">
-                          <img src={selectedEvent.imageUrl} alt="诊断图片" className="w-full max-h-56 object-contain" />
+                          <img
+                            src={selectedEvent.imageUrl || IMAGE_PLACEHOLDER_DATA_URI}
+                            alt="诊断图片"
+                            className="w-full max-h-56 object-contain"
+                            onError={(evt) => {
+                              evt.currentTarget.src = IMAGE_PLACEHOLDER_DATA_URI;
+                            }}
+                          />
                         </div>
                       </div>
-                    ) : null}
+                    ) : (
+                      <div className="bg-white/5 rounded-lg p-3">
+                        <div className="rounded-md overflow-hidden bg-black/30">
+                          <img src={IMAGE_PLACEHOLDER_DATA_URI} alt="诊断图片占位" className="w-full max-h-56 object-contain" />
+                        </div>
+                      </div>
+                    )}
                     <div className="bg-white/5 rounded-lg p-3">
                       <p className="text-white/60 text-xs mb-1">最终病害 / 置信度</p>
                       <button

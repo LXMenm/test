@@ -22,7 +22,8 @@ def test_normalize_follow_up_questions_filters_reasons_and_keeps_questions():
     assert any("生育期" in q for q in normalized)
 
 
-def test_supervisor_follow_ups_only_from_missing_fields_not_personalization_reasons():
+def test_supervisor_follow_ups_only_from_missing_fields_not_personalization_reasons(monkeypatch):
+    monkeypatch.setattr(agents_module, "append_trace", lambda *args, **kwargs: None)
     state = create_initial_state("作物类型：番茄")
     state["current_step"] = "diagnosis_complete"
     state["final_disease"] = "早疫病"
@@ -49,3 +50,18 @@ def test_supervisor_follow_ups_only_from_missing_fields_not_personalization_reas
     assert all("购药能力受限" not in item for item in follow_ups)
     assert any("喷施设备" in item for item in follow_ups)
     assert any("生育期" in item for item in follow_ups)
+
+
+def test_normalize_follow_up_questions_semantic_dedup_keeps_single_environment_prompt():
+    items = [
+        "近期是否高湿、连阴雨、棚内通风差？",
+        "近3天是否出现高湿、连阴雨或棚内通风不足？",
+        "请描述病斑颜色、边缘是否清晰、是否有水渍感或霉层。",
+        "病斑是同心轮纹、靶心状还是水渍状扩展？",
+    ]
+
+    normalized = normalize_follow_up_questions(items)
+
+    assert normalized.count("近3天是否出现高湿、连阴雨或棚内通风不足？") == 1
+    assert sum("病斑" in item for item in normalized) == 1
+    assert all(item.endswith(("？", "?")) for item in normalized)
