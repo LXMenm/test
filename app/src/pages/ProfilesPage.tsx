@@ -1198,7 +1198,7 @@ export function ProfilesPage() {
                               </SelectTrigger>
                               <SelectContent className="bg-[#111] text-white border-white/20 max-h-56 overflow-y-auto">
                                 <SelectItem value="__EMPTY__">未设置</SelectItem>
-                                {TOMATO_GROWTH_STAGE_OPTIONS.map((stage) => (
+                                {TOMATO_GROWTH_STAGE_OPTIONS.map((stage: { value: string; label: string }) => (
                                   <SelectItem key={stage.value} value={stage.value}>{stage.label}</SelectItem>
                                 ))}
                               </SelectContent>
