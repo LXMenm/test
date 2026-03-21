@@ -1147,7 +1147,7 @@ export function DashboardPage() {
             </select>
             <select value={selectedModel} onChange={(e) => setSelectedModel(e.target.value)} className="h-10 bg-[#114a38] border border-[#2e7d63] rounded-lg px-3 text-[#e8fff0] font-medium w-full leading-none">
               <option value="ALL" className="bg-[#0b241b] text-[#e8fff0]">模型：全部</option>
-              {modelOptions.map((item) => <option key={item.value} value={item.value} className="bg-[#0b241b] text-[#e8fff0]">{item.label}</option>)}
+              {modelOptions.map((item: { value: string; label: string }) => <option key={item.value} value={item.value} className="bg-[#0b241b] text-[#e8fff0]">{item.label}</option>)}
             </select>
           </div>
         </CardContent>

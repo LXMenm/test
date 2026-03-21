@@ -583,6 +583,16 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
     clearTicker();
   }, [closeStream, clearTicker]);
 
+  useEffect(() => {
+    console.debug('[AgentWorkflowPanel]', {
+      waitingStableRef: waitingStableRef.current,
+      updatesStoppedRef: updatesStoppedRef.current,
+      connectionState,
+      connectionHint,
+      traceId: traceId ?? null,
+    });
+  }, [connectionState, connectionHint, traceId, tracePausedStable, pausedByUserInput, workflowDone]);
+
   const maybeStartTicker = useCallback((snapshot: Record<FixedAgentId, AgentRowState>, done: boolean, paused: boolean = pausedByUserInput) => {
     const hasRunning = FIXED_AGENTS.some((agent) => snapshot[agent.id].status === 'running');
     const hasPhaseTimer = typeof phaseStartMs === 'number' && Number.isFinite(phaseStartMs);

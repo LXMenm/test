@@ -317,6 +317,17 @@
     };
     const stepState = Object.fromEntries(FLOW_STEPS.map((name) => [name, 'waiting']));
 
+    function isTraceTerminalPause(event) {
+      if (!event || typeof event !== 'object') return false;
+      const node = event.node || '';
+      const status = event.status || '';
+      const payload = event.payload && typeof event.payload === 'object' ? event.payload : {};
+      const payloadStatus = payload.status || '';
+      return (node === 'AwaitUserConfirmation' && status === 'end')
+        || status === 'waiting_for_supplement'
+        || payloadStatus === 'waiting_for_supplement';
+    }
+
     function setLoading(loading) {
       submitBtn.disabled = loading;
       statusEl.textContent = loading ? '诊断中...' : '';
@@ -401,7 +412,7 @@
         renderStepper();
       }
       appendLiveLog(event);
-      if (node === 'Final' && (status === 'end' || status === 'error')) {
+      if (isTraceTerminalPause(event) || (node === 'Final' && (status === 'end' || status === 'error'))) {
         closeTraceStream();
       }
     }
@@ -494,6 +505,9 @@
         }
         const events = Array.isArray(payload.events) ? payload.events : [];
         renderTrace(events);
+        if (events.some(isTraceTerminalPause)) {
+          closeTraceStream();
+        }
         const needsConfirm = shouldShowNeedConfirm(events);
         const diag = events.find(evt => evt.agent === 'diagnosis');
         const outputs = diag && diag.outputs ? diag.outputs : {};
