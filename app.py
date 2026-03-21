@@ -1134,7 +1134,8 @@ async def diagnose_image(
         "top3": top3,
     }
     rule_result_dict = rule_result.model_dump() if rule_result else None
-    image_url = f"/uploads/{unique_name}"
+    image_refs = _build_image_refs(unique_name)
+    image_url = image_refs["image_url"]
 
     need_confirm = None
     trace_fallback_reason: list[str] | None = None
@@ -1318,8 +1319,7 @@ async def diagnose_image(
         "trace_id": trace_id,
         "crop_type": crop_type,
         "symptoms": symptoms_list,
-        "image_id": unique_name,
-        "image_url": image_url,
+        **image_refs,
         "image_result": image_result_dict,
         "fallback_used": fallback_used,
         "fallback_reason": response_fallback_reason,
@@ -1385,8 +1385,7 @@ async def diagnose_image(
         )
 
     response_payload = {
-        "image_id": unique_name,
-        "image_url": image_url,
+        **image_refs,
         "image_result": image_result_dict,
         "fallback_used": fallback_used,
         "fallback_reason": response_fallback_reason,
@@ -1751,8 +1750,7 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
         "trace_id": trace_id,
         "crop_type": crop_type,
         "symptoms": state.get("symptoms") or [],
-        "image_id": image_id,
-        "image_url": f"/uploads/{image_id}",
+        **_build_image_refs(image_id),
         "image_result": image_result,
         "fallback_used": carried_fallback_used,
         "fallback_reason": carried_fallback_reason,
@@ -1837,8 +1835,7 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
 
     response_payload = {
         "trace_id": trace_id,
-        "image_id": image_id,
-        "image_url": f"/uploads/{image_id}",
+        **_build_image_refs(image_id),
         "fallback_used": carried_fallback_used,
         "fallback_reason": carried_fallback_reason,
         "rule_result": carried_rule_result,
@@ -1933,6 +1930,13 @@ def list_profiles() -> dict[str, list[dict[str, str | None]]]:
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def _build_image_refs(image_id: str | None) -> dict[str, str]:
+    normalized = str(image_id or "").strip()
+    if not normalized:
+        return {"image_id": "", "image_url": ""}
+    return {"image_id": normalized, "image_url": f"/uploads/{normalized}"}
 
 
 

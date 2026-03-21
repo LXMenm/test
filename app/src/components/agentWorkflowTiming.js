@@ -42,6 +42,17 @@ export const shouldIncludeEvent = (event, phaseStartMs) => {
   return tsMs >= (phaseStartMs - 120_000);
 };
 
+export const isWaitingForUserInputRawEvent = (event) => {
+  const node = String(event.node || '').toLowerCase();
+  const status = String(event.status || '').toLowerCase();
+  const agent = String(event.agent || event.agent_id || '').toLowerCase();
+  return (
+    node === 'awaituserconfirmation'
+    || status === 'waiting_for_supplement'
+    || agent === 'await_user_confirmation'
+  );
+};
+
 export const sliceCurrentPhaseEvents = (events, phaseStartMs) => {
   const sorted = [...events].sort(compareEvents);
   if (!phaseStartMs || !Number.isFinite(phaseStartMs)) return sorted;
@@ -68,6 +79,25 @@ export const isSecondPhaseBoundaryEvent = (event) => {
   if (node === 'confirmflow' && event.status === 'running') return true;
   const agent = String((event.data && (event.data.agent ?? event.data.agent_id)) || '').toLowerCase();
   return agent === 'confirm_input' || node === 'confirm_input';
+};
+
+export const isWaitingForUserInputEvent = (event) => {
+  const node = String(event.nodeName || '').toLowerCase();
+  const agent = String((event.data && (event.data.agent ?? event.data.agent_id)) || '').toLowerCase();
+  const payloadStatus = String(
+    (event.data && (
+      event.data.status
+      ?? (typeof event.data.payload === 'object' && event.data.payload !== null
+        ? event.data.payload.status
+        : undefined)
+    )) || '',
+  ).toLowerCase();
+
+  return (
+    node === 'awaituserconfirmation'
+    || payloadStatus === 'waiting_for_supplement'
+    || agent === 'await_user_confirmation'
+  );
 };
 
 export const calcPhaseDurationsByAgent = (events, nowMs, workflowDone) => {
@@ -101,7 +131,7 @@ export const calcPhaseDurationsByAgent = (events, nowMs, workflowDone) => {
     }
 
     const last = phaseEvents[phaseEvents.length - 1];
-    if (!workflowDone && typeof last.tsMs === 'number') {
+    if (!workflowDone && typeof last.tsMs === 'number' && !isWaitingForUserInputEvent(last)) {
       totals[last.agentId] += Math.max(0, nowMs - last.tsMs);
     }
 

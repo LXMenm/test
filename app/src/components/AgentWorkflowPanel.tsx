@@ -20,6 +20,7 @@ import { cn } from '@/lib/utils';
 import type { LucideIcon } from 'lucide-react';
 import {
   calcPhaseDurationsByAgent,
+  isWaitingForUserInputEvent,
   parseTsMs,
   shouldIncludeEvent,
   sliceCurrentPhaseEvents,
@@ -167,6 +168,7 @@ const isRecord = (v: unknown): v is Record<string, unknown> => !!v && typeof v =
 
 const normalizeStatus = (status: unknown): AgentStatus | 'info' => {
   const text = String(status || '').toLowerCase();
+  if (text === 'waiting_for_supplement') return 'info';
   if (['start', 'started', 'begin', 'running', '执行中', '开始'].includes(text)) return 'running';
   if (['progress', 'processing', '进行中'].includes(text)) return 'running';
   if (['end', 'done', 'completed', 'finish', '结束', '完成'].includes(text)) return 'completed';
@@ -522,6 +524,7 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
   const [replayedCount, setReplayedCount] = useState(0);
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [workflowDone, setWorkflowDone] = useState(false);
+  const [pausedByUserInput, setPausedByUserInput] = useState(false);
   const [diagnosisConfidencePct, setDiagnosisConfidencePct] = useState<number | undefined>(undefined);
   const [allEvents, setAllEvents] = useState<NormalizedEvent[]>([]);
   const [showSystemNodes, setShowSystemNodes] = useState(false);
@@ -575,17 +578,17 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
     // 保留明确入口，便于在流程结束时统一停止后续轮询/流更新
   }, []);
 
-  const maybeStartTicker = useCallback((snapshot: Record<FixedAgentId, AgentRowState>, done: boolean) => {
+  const maybeStartTicker = useCallback((snapshot: Record<FixedAgentId, AgentRowState>, done: boolean, paused: boolean = pausedByUserInput) => {
     const hasRunning = FIXED_AGENTS.some((agent) => snapshot[agent.id].status === 'running');
     const hasPhaseTimer = typeof phaseStartMs === 'number' && Number.isFinite(phaseStartMs);
-    if (!done && (hasRunning || hasPhaseTimer)) {
+    if (!done && !paused && (hasRunning || hasPhaseTimer)) {
       if (!tickerRef.current) {
         tickerRef.current = setInterval(() => setNowMs(Date.now()), 100);
       }
     } else {
       clearTicker();
     }
-  }, [phaseStartMs, clearTicker]);
+  }, [phaseStartMs, clearTicker, pausedByUserInput]);
 
   const completeSupervisorOnDone = useCallback((doneTs?: number) => {
     setRows((prev) => {
@@ -610,6 +613,16 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
     }
     if (typeof seq === 'number' && Number.isFinite(seq)) {
       lastSeqRef.current = seq;
+    }
+
+    const waitingForUserInput = isWaitingForUserInputEvent(event);
+    if (waitingForUserInput) {
+      allEventsRef.current = dedupBySeq([...allEventsRef.current, event]);
+      setAllEvents(allEventsRef.current);
+      setPausedByUserInput(true);
+      clearTicker();
+    } else if (event.status === 'running') {
+      setPausedByUserInput(false);
     }
 
     if (event.status === 'info') return false;
@@ -693,7 +706,7 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
         }
       }
 
-      maybeStartTicker(next, markDone || workflowDoneRef.current);
+      maybeStartTicker(next, markDone || workflowDoneRef.current, waitingForUserInput);
       return next;
     });
 
@@ -716,6 +729,7 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
       clearExternal();
       replayedCountRef.current = 0;
       workflowDoneRef.current = false;
+      setPausedByUserInput(false);
       lastSeqRef.current = -1;
       finalTsRef.current = undefined;
       eventHistoryRef.current = {
@@ -741,6 +755,7 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
       setConnectionHint('正在回放历史事件...');
       setReplayedCount(0);
       setWorkflowDone(false);
+      setPausedByUserInput(false);
     });
     replayedCountRef.current = 0;
     workflowDoneRef.current = false;
@@ -801,10 +816,18 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
         if (cancelled) return;
 
         let replayed = 0;
+        let replayPausedByUserInput = false;
         sorted.forEach((raw: RawTraceEvent) => {
           const normalized = normalizeEvent(raw as RawTraceEvent);
+          if (isWaitingForUserInputEvent(normalized)) {
+            replayPausedByUserInput = true;
+          }
+          if (normalized.status === 'running') {
+            replayPausedByUserInput = false;
+          }
           if (applyNormalizedEvent(normalized)) replayed += 1;
         });
+        setPausedByUserInput(replayPausedByUserInput);
 
         const maxSeq = sorted.reduce((max: number, eventLike: RawTraceEvent) => {
           const seq = eventLike?.seq;
@@ -847,17 +870,36 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
   }, [workflowDone, clearTicker, closeStream, completeSupervisorOnDone]);
 
   useEffect(() => {
-    if (workflowDone) return;
+    if (workflowDone || pausedByUserInput) return;
     if (typeof phaseStartMs === 'number' && Number.isFinite(phaseStartMs) && !tickerRef.current) {
       tickerRef.current = setInterval(() => setNowMs(Date.now()), 100);
     }
-  }, [phaseStartMs, workflowDone]);
+  }, [phaseStartMs, workflowDone, pausedByUserInput]);
 
 
   const phaseDurationsByAgent = useMemo(
     () => calcPhaseDurationsByAgent(allEvents, nowMs, workflowDone) as Record<FixedAgentId, AgentPhaseDurations>,
     [allEvents, nowMs, workflowDone],
   );
+
+  const activePhaseLabel = useMemo(() => {
+    const hasSecondPhase = allEvents.some((event) => {
+      const node = String(event.nodeName || '').toLowerCase();
+      const data = isRecord(event.data) ? event.data : {};
+      const rawAgent = String(data['agent'] ?? data['agent_id'] ?? '').toLowerCase();
+      return rawAgent === 'confirm_input' || node === 'confirm_input' || (node === 'confirmflow' && event.status === 'running');
+    });
+    return hasSecondPhase ? '当前显示二诊阶段链路' : '当前显示一诊阶段链路';
+  }, [allEvents]);
+
+  const receptionDebugSummary = useMemo(() => {
+    const receptionEvents = getEventsByAgent(allEvents, 'reception');
+    const lastReceptionEvent = receptionEvents[receptionEvents.length - 1];
+    return {
+      count: receptionEvents.length,
+      lastSeq: lastReceptionEvent?.seq,
+    };
+  }, [allEvents]);
 
   const renderedRows = useMemo(() => {
     return FIXED_AGENTS.map((def) => {
@@ -914,6 +956,14 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
             <BadgeCheck className="w-3 h-3 mr-1" />流程已结束
           </Badge>
         )}
+        {pausedByUserInput && (
+          <Badge className="bg-amber-500/20 text-amber-200 border border-amber-400/40">
+            <Timer className="w-3 h-3 mr-1" />等待用户补充，计时已暂停
+          </Badge>
+        )}
+        <Badge variant="outline" className="border-white/15 text-white/60">
+          {activePhaseLabel}
+        </Badge>
         <button
           type="button"
           onClick={() => setShowSystemNodes((v) => !v)}
@@ -1030,6 +1080,11 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
 
                     {debugOpen[row.id] && (
                       <div className="mt-1 space-y-1">
+                        {row.id === 'reception' && (
+                          <div className="text-xs text-[#c8f7c5]/75">
+                            reception 原始事件：{receptionDebugSummary.count} 条 / 最后一条 seq：{receptionDebugSummary.lastSeq ?? '—'}
+                          </div>
+                        )}
                         {(showSystemNodes ? row.steps : row.steps.filter((step) => {
                           const node = String(step.node || '').toLowerCase();
                           const msg = String(step.message || '').toLowerCase();

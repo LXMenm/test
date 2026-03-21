@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import {
   calcPhaseDurationsByAgent,
+  isWaitingForUserInputEvent,
   parseTsMs,
   sliceCurrentPhaseEvents,
 } from './agentWorkflowTiming.js';
@@ -69,4 +70,44 @@ test('calcPhaseDurationsByAgent does not accumulate supervisor time across round
   assert.equal(durations.supervisor.phase2Ms, 300);
   assert.equal(durations.diagnosis.phase2Ms, 300);
   assert.equal(durations.final.phase2Ms, 0);
+});
+
+test('calcPhaseDurationsByAgent pauses when workflow is waiting for user supplement', () => {
+  const waitingEvent = {
+    seq: 3,
+    ts: '2026-03-20T10:00:20.000Z',
+    tsMs: parseTsMs('2026-03-20T10:00:20.000Z'),
+    agentId: 'supervisor',
+    nodeName: 'AwaitUserConfirmation',
+    status: 'info',
+    data: { status: 'waiting_for_supplement' },
+  };
+
+  const events = [
+    {
+      seq: 1,
+      ts: '2026-03-20T10:00:00.000Z',
+      tsMs: parseTsMs('2026-03-20T10:00:00.000Z'),
+      agentId: 'supervisor',
+      nodeName: 'supervisor_route',
+      status: 'running',
+      data: { agent: 'supervisor' },
+    },
+    {
+      seq: 2,
+      ts: '2026-03-20T10:00:20.000Z',
+      tsMs: parseTsMs('2026-03-20T10:00:20.000Z'),
+      agentId: 'diagnosis',
+      nodeName: 'diagnosis',
+      status: 'completed',
+      data: { agent: 'diagnosis' },
+    },
+    waitingEvent,
+  ];
+
+  const durations = calcPhaseDurationsByAgent(events, parseTsMs('2026-03-20T10:02:20.000Z'), false);
+
+  assert.equal(isWaitingForUserInputEvent(waitingEvent), true);
+  assert.equal(durations.supervisor.phase1Ms, 20000);
+  assert.equal(durations.diagnosis.phase1Ms, 0);
 });

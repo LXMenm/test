@@ -124,7 +124,9 @@ export function DiagnosePage() {
   const [confirmSubmitting, setConfirmSubmitting] = useState(false);
   const [showRawTrace, setShowRawTrace] = useState(false);
   const [workflowCollapsed, setWorkflowCollapsed] = useState(false);
-  const [diagnosisStartTime, setDiagnosisStartTime] = useState<number | null>(null);
+  const [phase1StartTime, setPhase1StartTime] = useState<number | null>(null);
+  const [phase2StartTime, setPhase2StartTime] = useState<number | null>(null);
+  const [phase1FrozenMs, setPhase1FrozenMs] = useState<number | null>(null);
   const [workflowRefreshToken, setWorkflowRefreshToken] = useState(0);
   const [profiles, setProfiles] = useState<ProfileListItem[]>([]);
   const [selectedFarmerId, setSelectedFarmerId] = useState('');
@@ -358,7 +360,9 @@ export function DiagnosePage() {
       : undefined;
 
     return {
-      image_url: typeof payload.image_url === 'string' ? payload.image_url : '',
+      image_url: typeof payload.image_url === 'string'
+        ? payload.image_url
+        : (typeof payload.image_id === 'string' && payload.image_id ? `/uploads/${payload.image_id}` : ''),
       final_disease: typeof payload.final_disease === 'string'
         ? payload.final_disease
         : (payload.image_result && typeof payload.image_result === 'object' && typeof (payload.image_result as Record<string, unknown>).disease === 'string'
@@ -507,6 +511,13 @@ export function DiagnosePage() {
     fetchProfileDetail(selectedFarmerId);
   }, [selectedFarmerId]);
 
+  useEffect(() => {
+    if (result?.status !== 'waiting_for_supplement') return;
+    if (phase1FrozenMs !== null || phase2StartTime !== null) return;
+    if (phase1StartTime === null) return;
+    setPhase1FrozenMs(Math.max(0, Date.now() - phase1StartTime));
+  }, [result?.status, phase1StartTime, phase1FrozenMs, phase2StartTime]);
+
   const handleSubmit = async () => {
     if (!file || !selectedFarmerId) return;
 
@@ -516,7 +527,10 @@ export function DiagnosePage() {
     setConfirmMode(false);
     setConfirmChoice('other');
     setConfirmSymptoms('');
-    setDiagnosisStartTime(Date.now());
+    const now = Date.now();
+    setPhase1StartTime(now);
+    setPhase2StartTime(null);
+    setPhase1FrozenMs(null);
     setWorkflowRefreshToken((prev) => prev + 1);
 
     try {
@@ -591,7 +605,7 @@ export function DiagnosePage() {
 
   const handleConfirmSubmit = async (expertReviewDecision?: 'accept' | 'decline') => {
     if (!traceId || !imageId) return;
-    setDiagnosisStartTime(Date.now());
+    setPhase2StartTime(Date.now());
     setConfirmSubmitting(true);
     try {
       const additionalSymptoms = confirmSymptoms
@@ -638,7 +652,11 @@ export function DiagnosePage() {
 
       const mergedPayload = {
         ...data,
-        image_url: result?.image_url || '',
+        image_url: (typeof data?.image_url === 'string' && data.image_url)
+          ? data.image_url
+          : (typeof data?.image_id === 'string' && data.image_id)
+            ? `/uploads/${data.image_id}`
+            : (result?.image_url || ''),
       };
       const nextResult = buildResultFromPayload(mergedPayload as Record<string, unknown>);
       setResult(nextResult);
@@ -1273,7 +1291,7 @@ export function DiagnosePage() {
                 key={`${traceId || 'idle'}-${workflowRefreshToken}`}
                 traceId={traceId || undefined}
                 confidencePct={result?.displayConfidencePct ?? undefined}
-                phaseStartMs={diagnosisStartTime ?? undefined}
+                phaseStartMs={(phase2StartTime ?? phase1StartTime) ?? undefined}
                 refreshToken={workflowRefreshToken}
               />
 
@@ -1337,8 +1355,12 @@ export function DiagnosePage() {
                 </div>
               ))}
 
-              {diagnosisStartTime && (
-                <p className="text-xs text-white/40">诊断启动时间：{new Date(diagnosisStartTime).toLocaleTimeString()}</p>
+              {phase1StartTime && (
+                <div className="space-y-1">
+                  <p className="text-xs text-white/40">一诊启动时间：{new Date(phase1StartTime).toLocaleTimeString()}</p>
+                  {phase1FrozenMs !== null && <p className="text-xs text-white/40">一诊冻结耗时：{(phase1FrozenMs / 1000).toFixed(2)}s</p>}
+                  {phase2StartTime && <p className="text-xs text-white/40">二诊启动时间：{new Date(phase2StartTime).toLocaleTimeString()}</p>}
+                </div>
               )}
             </CardContent>
             )}
