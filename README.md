@@ -64,12 +64,32 @@ cp .env.example .env
    - **通义千问**：设置 `QWEN_API_KEY`，并设置 `LLM_PROVIDER=qwen`
    - **文心一言**：设置 `WENXIN_API_KEY` 和 `WENXIN_SECRET_KEY`，并设置 `LLM_PROVIDER=wenxin`
 
-3. **配置诊断模型**（可选）：
+3. **配置持久化存储**（推荐默认全部使用 MySQL）：
+   - `DATABASE_URL`：MySQL 连接串
+   - `PROFILE_STORE_MODE=mysql`
+   - `EVENT_STORE_MODE=mysql`
+   - `TRACE_STORE_MODE=mysql`
+   - `KB_STORE_MODE=mysql`
+   - 若需要兼容旧路径，仍可按需切回 `file` / `dual` / `mysql`
+
+4. **配置诊断模型**（可选）：
    - `DIAGNOSIS_MODEL_TYPE`：选择模型类型（densenet121, resnet50, vit）
    - `DIAGNOSIS_MODEL_PATH`：自定义模型路径（如果已训练）
    - `USE_GPU`：是否使用GPU加速
 
 ## 使用方法
+
+### 推荐默认运行配置
+
+```env
+DATABASE_URL=mysql+pymysql://root:123456@127.0.0.1:3306/tomato_diagnosis?charset=utf8mb4
+PROFILE_STORE_MODE=mysql
+EVENT_STORE_MODE=mysql
+TRACE_STORE_MODE=mysql
+KB_STORE_MODE=mysql
+```
+
+应用启动时会输出 `[StorageResolved] ...` 日志，便于确认当前实际运行模式。
 
 ### 方式1：运行示例脚本
 
