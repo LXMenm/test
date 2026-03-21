@@ -68,6 +68,10 @@ interface DiagnosisResult {
   treatment_available?: boolean;
   confirm_reasons?: string[];
   fusion_mode?: string;
+  image_reliable?: boolean;
+  text_reliable?: boolean;
+  reliability_issue_types?: string[];
+  supplement_mode?: "none" | "text_only" | "image_only" | "image_and_text" | string;
 }
 
 interface ProfileListItem {
@@ -126,6 +130,8 @@ export function DiagnosePage() {
   const [confirmChoice, setConfirmChoice] = useState('other');
   const [confirmSymptoms, setConfirmSymptoms] = useState('');
   const [confirmSubmitting, setConfirmSubmitting] = useState(false);
+  const [resubmitFile, setResubmitFile] = useState<File | null>(null);
+  const [resubmitPreview, setResubmitPreview] = useState('');
   const [showRawTrace, setShowRawTrace] = useState(false);
   const [workflowCollapsed, setWorkflowCollapsed] = useState(false);
   const [phase1StartTime, setPhase1StartTime] = useState<number | null>(null);
@@ -157,6 +163,20 @@ export function DiagnosePage() {
       };
       reader.readAsDataURL(selectedFile);
     }
+  };
+
+  const handleResubmitFileChange = (e: ChangeEvent<HTMLInputElement>) => {
+    const selectedFile = e.target.files?.[0] ?? null;
+    setResubmitFile(selectedFile);
+    if (!selectedFile) {
+      setResubmitPreview('');
+      return;
+    }
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      setResubmitPreview((reader.result as string) || '');
+    };
+    reader.readAsDataURL(selectedFile);
   };
 
   const toNumber = (value: unknown): number | null => {
@@ -425,6 +445,12 @@ export function DiagnosePage() {
       treatment_available: payload.treatment_available === true,
       confirm_reasons: getConfirmReasons(payload),
       fusion_mode: typeof payload.fusion_mode === 'string' ? payload.fusion_mode : undefined,
+      image_reliable: typeof payload.image_reliable === 'boolean' ? payload.image_reliable : undefined,
+      text_reliable: typeof payload.text_reliable === 'boolean' ? payload.text_reliable : undefined,
+      reliability_issue_types: Array.isArray(payload.reliability_issue_types)
+        ? payload.reliability_issue_types.map((item) => String(item))
+        : [],
+      supplement_mode: typeof payload.supplement_mode === 'string' ? payload.supplement_mode : undefined,
     };
   };
 
@@ -554,6 +580,8 @@ export function DiagnosePage() {
     setConfirmMode(false);
     setConfirmChoice('other');
     setConfirmSymptoms('');
+    setResubmitFile(null);
+    setResubmitPreview('');
     const now = Date.now();
     setPhase1StartTime(now);
     setPhase2StartTime(null);
@@ -745,6 +773,17 @@ export function DiagnosePage() {
   const expertReviewRecommended = result?.expert_review_recommended === true;
   const expertReviewPending = result?.status === 'pending_expert_review' || result?.expert_review_status === 'PENDING';
   const shouldShowExpertReviewDecision = result?.status === 'waiting_for_supplement' && expertReviewRecommended && !expertReviewPending;
+  const supplementMode = result?.supplement_mode ?? (confirmMode ? 'text_only' : 'none');
+  const shouldShowTextSupplement = confirmMode && (supplementMode === 'text_only' || supplementMode === 'image_and_text');
+  const shouldShowImageSupplement = confirmMode && (supplementMode === 'image_only' || supplementMode === 'image_and_text');
+  const shouldHideSupplementSection = !confirmMode || supplementMode === 'none';
+  const handleResubmitDiagnose = () => {
+    console.log('[TODO] resubmit image and rediagnose', {
+      traceId,
+      imageId,
+      fileName: resubmitFile?.name ?? null,
+    });
+  };
   const primaryRiskLabels = (() => {
     if (!result) return [] as string[];
     if (Array.isArray(result.risk_items) && result.risk_items.length > 0) {
@@ -762,7 +801,7 @@ export function DiagnosePage() {
     }
     return [] as string[];
   })();
-  const shouldHideTreatment = confirmMode || shouldShowExpertReviewDecision || expertReviewPending;
+  const shouldHideTreatment = !shouldHideSupplementSection || shouldShowExpertReviewDecision || expertReviewPending;
   const baseOptions: BaseOption[] = selectedProfile?.bases && typeof selectedProfile.bases === 'object'
     ? Object.entries(selectedProfile.bases).map(([baseId, base]) => ({
       id: baseId,
@@ -1192,58 +1231,105 @@ export function DiagnosePage() {
                     </div>
                   </div>
 
-                  {confirmMode ? (
+                  {!shouldHideSupplementSection ? (
                     <div className="bg-[#c8f7c5]/10 border border-[#c8f7c5]/30 rounded-xl p-4 space-y-4">
                       <h4 className="text-[#c8f7c5] font-medium">补充诊断 / 候选确认</h4>
-                      <p className="text-xs text-white/70">当前候选数量：{candidates.length}</p>
-                      <div className="space-y-2">
-                        <Label className="text-white/80">候选病害选择</Label>
-                        {candidates.map((item) => (
-                          <label key={item.disease} className="flex items-center gap-2 text-sm text-white/80 cursor-pointer">
-                            <input
-                              type="radio"
-                              name="confirmDisease"
-                              value={item.disease}
-                              checked={confirmChoice === item.disease}
-                              onChange={(e) => setConfirmChoice(e.target.value)}
-                            />
-                            <span>{item.disease} ({item.probPct.toFixed(2)}%) · {getCandidateSymptomHint(item.disease)}</span>
-                          </label>
-                        ))}
-                        <label className="flex items-center gap-2 text-sm text-white/80 cursor-pointer">
-                          <input
-                            type="radio"
-                            name="confirmDisease"
-                            value="other"
-                            checked={confirmChoice === 'other'}
-                            onChange={(e) => setConfirmChoice(e.target.value)}
-                          />
-                          <span>继续补充症状 / 其他</span>
-                        </label>
-                      </div>
-
-                      {confirmChoice === 'other' ? (
-                        <div className="space-y-2">
-                          <Label className="text-white/80">补充症状（必填建议，逗号分隔）</Label>
-                          <Input
-                            value={confirmSymptoms}
-                            onChange={(e) => setConfirmSymptoms(e.target.value)}
-                            placeholder="例如：叶片卷曲, 发黄, 斑点扩大"
-                            className="bg-white/5 border-white/20 text-white placeholder:text-white/40"
-                          />
-                          <p className="text-xs text-white/60">已选择“继续补充症状 / 其他”，建议填写症状帮助模型继续判别。</p>
-                        </div>
-                      ) : (
-                        <p className="text-xs text-white/60">已选择具体病害，可直接提交确认；若仍不确定请切换到“继续补充症状 / 其他”并补充症状。</p>
+                      {(shouldShowTextSupplement || shouldShowImageSupplement) && (
+                        <p className="text-xs text-white/70">当前候选数量：{candidates.length}</p>
                       )}
 
-                      <Button
-                        onClick={() => handleConfirmSubmit()}
-                        disabled={confirmSubmitting || !traceId || !imageId}
-                        className="bg-[#c8f7c5] text-black hover:bg-[#b8e7b5]"
-                      >
-                        {confirmSubmitting ? '提交中...' : '提交补充诊断'}
-                      </Button>
+                      {shouldShowImageSupplement ? (
+                        <div className="space-y-2">
+                          <p className="text-sm text-white/85">
+                            当前图片信息不足，建议重新上传更清晰图片
+                          </p>
+                          <p className="text-xs text-white/60">
+                            可补拍叶片正面、背面及病斑近照
+                          </p>
+                          <Input
+                            type="file"
+                            accept="image/*"
+                            onChange={handleResubmitFileChange}
+                            className="bg-white/5 border-white/20 text-white placeholder:text-white/40"
+                          />
+                          {resubmitPreview ? (
+                            <img
+                              src={resubmitPreview}
+                              alt="Resubmit Preview"
+                              className="max-h-44 rounded-lg object-contain border border-white/15"
+                            />
+                          ) : resubmitFile ? (
+                            <p className="text-xs text-white/70">已选择文件：{resubmitFile.name}</p>
+                          ) : null}
+                        </div>
+                      ) : null}
+
+                      {shouldShowTextSupplement ? (
+                        <>
+                          <div className="space-y-2">
+                            <Label className="text-white/80">候选病害选择</Label>
+                            {candidates.map((item) => (
+                              <label key={item.disease} className="flex items-center gap-2 text-sm text-white/80 cursor-pointer">
+                                <input
+                                  type="radio"
+                                  name="confirmDisease"
+                                  value={item.disease}
+                                  checked={confirmChoice === item.disease}
+                                  onChange={(e) => setConfirmChoice(e.target.value)}
+                                />
+                                <span>{item.disease} ({item.probPct.toFixed(2)}%) · {getCandidateSymptomHint(item.disease)}</span>
+                              </label>
+                            ))}
+                            <label className="flex items-center gap-2 text-sm text-white/80 cursor-pointer">
+                              <input
+                                type="radio"
+                                name="confirmDisease"
+                                value="other"
+                                checked={confirmChoice === 'other'}
+                                onChange={(e) => setConfirmChoice(e.target.value)}
+                              />
+                              <span>继续补充症状 / 其他</span>
+                            </label>
+                          </div>
+
+                          {confirmChoice === 'other' ? (
+                            <div className="space-y-2">
+                              <Label className="text-white/80">补充症状（必填建议，逗号分隔）</Label>
+                              <Input
+                                value={confirmSymptoms}
+                                onChange={(e) => setConfirmSymptoms(e.target.value)}
+                                placeholder="例如：叶片卷曲, 发黄, 斑点扩大"
+                                className="bg-white/5 border-white/20 text-white placeholder:text-white/40"
+                              />
+                              <p className="text-xs text-white/60">已选择“继续补充症状 / 其他”，建议填写症状帮助模型继续判别。</p>
+                            </div>
+                          ) : (
+                            <p className="text-xs text-white/60">已选择具体病害，可直接提交确认；若仍不确定请切换到“继续补充症状 / 其他”并补充症状。</p>
+                          )}
+                        </>
+                      ) : null}
+
+                      <div className="flex flex-col sm:flex-row gap-3">
+                        {shouldShowTextSupplement ? (
+                          <Button
+                            onClick={() => handleConfirmSubmit()}
+                            disabled={confirmSubmitting || !traceId || !imageId}
+                            className="bg-[#c8f7c5] text-black hover:bg-[#b8e7b5]"
+                          >
+                            {confirmSubmitting ? '提交中...' : '提交补充诊断'}
+                          </Button>
+                        ) : null}
+                        {shouldShowImageSupplement ? (
+                          <Button
+                            onClick={handleResubmitDiagnose}
+                            disabled={!resubmitFile}
+                            variant="outline"
+                            className="border-[#c8f7c5]/40 text-[#c8f7c5] hover:bg-[#c8f7c5]/10"
+                          >
+                            重新上传图片并重新诊断
+                          </Button>
+                        ) : null}
+                      </div>
                     </div>
                   ) : shouldShowExpertReviewDecision ? (
                     <div className="bg-amber-500/10 border border-amber-400/30 rounded-xl p-4 space-y-4">
