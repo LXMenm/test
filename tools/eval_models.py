@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from collections import defaultdict
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -66,20 +65,39 @@ def evaluate_model(model_id: str, data_dir: Path, limit: int) -> dict[str, objec
             "fallback_reason": fallback_reasons,
         }
 
-    engine = get_diagnosis_engine(
-        model_path=resolved_model.model_path,
-        backend=resolved_model.backend,
-        allow_torch=allow_torch,
-    )
+    try:
+        engine = get_diagnosis_engine(
+            model_path=resolved_model.model_path,
+            backend=resolved_model.backend,
+            allow_torch=allow_torch,
+        )
+    except Exception as exc:
+        return {
+            "model_id": model_id,
+            "resolved_model_id": resolved_model.model_id,
+            "backend": resolved_model.backend,
+            "resolved_model_path": resolved_model.model_path,
+            "fallback_reason": fallback_reasons,
+            "skipped": True,
+            "reason": "model_load_error",
+            "load_error": str(exc),
+        }
 
     class_names = _load_class_names()
     label_map = _load_label_map()
     if engine.tf_backend and engine.tf_model is not None:
         output_dim = engine.tf_model.output_shape[-1]
         if output_dim != len(class_names):
-            raise ValueError(
-                f"output_dim({output_dim}) != len(class_names)({len(class_names)})"
-            )
+            return {
+                "model_id": model_id,
+                "resolved_model_id": resolved_model.model_id,
+                "backend": resolved_model.backend,
+                "resolved_model_path": resolved_model.model_path,
+                "fallback_reason": fallback_reasons,
+                "skipped": True,
+                "reason": "class_count_mismatch",
+                "load_error": f"output_dim({output_dim}) != len(class_names)({len(class_names)})",
+            }
 
     samples = _iter_images(data_dir, limit)
     total = 0
@@ -141,7 +159,8 @@ def main() -> None:
     print("\nSummary")
     for item in results:
         if item.get("skipped"):
-            print(f"- {item['model_id']}: skipped ({item['reason']})")
+            extra = f": {item.get('load_error')}" if item.get("load_error") else ""
+            print(f"- {item['model_id']}: skipped ({item['reason']}){extra}")
             continue
         print(
             f"- {item['model_id']} ({item['backend']}): "
