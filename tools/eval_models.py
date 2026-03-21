@@ -5,6 +5,8 @@ import json
 import sys
 from pathlib import Path
 
+import numpy as np
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -47,6 +49,65 @@ def _iter_images(data_dir: Path, limit: int) -> list[tuple[str, Path]]:
     return samples
 
 
+def _resolve_light_model_alpha() -> float:
+    history_path = PROJECT_ROOT / "tomato" / "mobilenetv3_light_v1_history.json"
+    if not history_path.exists():
+        return 0.75
+    try:
+        payload = json.loads(history_path.read_text(encoding="utf-8"))
+        return float(payload.get("alpha", 0.75))
+    except Exception:
+        return 0.75
+
+
+def _load_manual_tf_model(model_path: str, class_names: list[str]):
+    lower_name = Path(model_path).name.lower()
+
+    if "light_v1" in lower_name or "mobilenet" in lower_name:
+        from tomato.mobilenetv3_light_v1 import build_mobilenetv3_light_v1
+
+        wrapper = build_mobilenetv3_light_v1(
+            num_classes=len(class_names),
+            image_size=224,
+            alpha=_resolve_light_model_alpha(),
+            backbone_trainable=False,
+        )
+        model = wrapper.model
+        model.load_weights(model_path)
+        return model, "manual_tf_loader_light_v1"
+
+    if "paper_opt" in lower_name or "cbam" in lower_name:
+        from tomato.densenet121_paper_opt import build_paper_optimized_densenet121
+
+        wrapper = build_paper_optimized_densenet121(
+            num_classes=len(class_names),
+            image_size=224,
+            backbone_trainable=False,
+        )
+        model = wrapper.model
+        model.load_weights(model_path)
+        return model, "manual_tf_loader_paper_opt"
+
+    raise RuntimeError(f"没有可用的手工TF加载器: {model_path}")
+
+
+def _predict_with_manual_tf_model(model, image_path: str, class_names: list[str], label_map: dict[str, str]):
+    from tensorflow.keras.preprocessing.image import img_to_array, load_img
+
+    img = load_img(image_path, target_size=(224, 224))
+    img_array = img_to_array(img).astype("float32") / 255.0
+    img_array = np.expand_dims(img_array, axis=0)
+    probs = model.predict(img_array, verbose=0)[0]
+    pred_idx = int(np.argmax(probs))
+    confidence = float(probs[pred_idx])
+    raw_label = class_names[pred_idx]
+    pred_label = label_map.get(raw_label, raw_label)
+    probs_dict = {label_map.get(label, label): float(prob) for label, prob in zip(class_names, probs)}
+    if confidence < DIAGNOSIS_CONFIDENCE_THRESHOLD:
+        pred_label = "疑似病害（置信度不足）"
+    return pred_label, confidence, probs_dict
+
+
 def evaluate_model(model_id: str, data_dir: Path, limit: int) -> dict[str, object]:
     allow_torch = str(DIAGNOSIS_ALLOW_TORCH).lower() in {"1", "true", "yes"}
     resolved_model, fallback_reasons = resolve_model(model_id, allow_torch=allow_torch)
@@ -65,6 +126,12 @@ def evaluate_model(model_id: str, data_dir: Path, limit: int) -> dict[str, objec
             "fallback_reason": fallback_reasons,
         }
 
+    class_names = _load_class_names()
+    label_map = _load_label_map()
+    engine = None
+    manual_model = None
+    load_mode = "diagnosis_engine"
+
     try:
         engine = get_diagnosis_engine(
             model_path=resolved_model.model_path,
@@ -72,21 +139,48 @@ def evaluate_model(model_id: str, data_dir: Path, limit: int) -> dict[str, objec
             allow_torch=allow_torch,
         )
     except Exception as exc:
-        return {
-            "model_id": model_id,
-            "resolved_model_id": resolved_model.model_id,
-            "backend": resolved_model.backend,
-            "resolved_model_path": resolved_model.model_path,
-            "fallback_reason": fallback_reasons,
-            "skipped": True,
-            "reason": "model_load_error",
-            "load_error": str(exc),
-        }
+        if resolved_model.backend == "tf":
+            try:
+                manual_model, load_mode = _load_manual_tf_model(resolved_model.model_path, class_names)
+            except Exception as manual_exc:
+                return {
+                    "model_id": model_id,
+                    "resolved_model_id": resolved_model.model_id,
+                    "backend": resolved_model.backend,
+                    "resolved_model_path": resolved_model.model_path,
+                    "fallback_reason": fallback_reasons,
+                    "skipped": True,
+                    "reason": "model_load_error",
+                    "load_error": f"engine_error={exc}; manual_error={manual_exc}",
+                }
+        else:
+            return {
+                "model_id": model_id,
+                "resolved_model_id": resolved_model.model_id,
+                "backend": resolved_model.backend,
+                "resolved_model_path": resolved_model.model_path,
+                "fallback_reason": fallback_reasons,
+                "skipped": True,
+                "reason": "model_load_error",
+                "load_error": str(exc),
+            }
 
-    class_names = _load_class_names()
-    label_map = _load_label_map()
-    if engine.tf_backend and engine.tf_model is not None:
+    if engine is not None and engine.tf_backend and engine.tf_model is not None:
         output_dim = engine.tf_model.output_shape[-1]
+        if output_dim != len(class_names):
+            return {
+                "model_id": model_id,
+                "resolved_model_id": resolved_model.model_id,
+                "backend": resolved_model.backend,
+                "resolved_model_path": resolved_model.model_path,
+                "fallback_reason": fallback_reasons,
+                "skipped": True,
+                "reason": "class_count_mismatch",
+                "load_error": f"output_dim({output_dim}) != len(class_names)({len(class_names)})",
+            }
+
+    if manual_model is not None:
+        output_dim = manual_model.output_shape[-1]
         if output_dim != len(class_names):
             return {
                 "model_id": model_id,
@@ -110,7 +204,15 @@ def evaluate_model(model_id: str, data_dir: Path, limit: int) -> dict[str, objec
         total += 1
         mapped_true = label_map.get(true_label, true_label)
         try:
-            pred_label, confidence, _ = engine.diagnose_from_image(str(image_path))
+            if manual_model is not None:
+                pred_label, confidence, _ = _predict_with_manual_tf_model(
+                    manual_model,
+                    str(image_path),
+                    class_names,
+                    label_map,
+                )
+            else:
+                pred_label, confidence, _ = engine.diagnose_from_image(str(image_path))
         except Exception:
             failed += 1
             continue
@@ -132,6 +234,7 @@ def evaluate_model(model_id: str, data_dir: Path, limit: int) -> dict[str, objec
         "backend": resolved_model.backend,
         "resolved_model_path": resolved_model.model_path,
         "fallback_reason": fallback_reasons,
+        "load_mode": load_mode,
         "total": total,
         "accuracy": round(accuracy, 4),
         "avg_confidence": round(avg_conf, 4),
@@ -162,10 +265,11 @@ def main() -> None:
             extra = f": {item.get('load_error')}" if item.get("load_error") else ""
             print(f"- {item['model_id']}: skipped ({item['reason']}){extra}")
             continue
+        load_mode = f", load_mode={item['load_mode']}" if item.get("load_mode") else ""
         print(
             f"- {item['model_id']} ({item['backend']}): "
             f"acc={item['accuracy']}, avg_conf={item['avg_confidence']}, "
-            f"low_conf={item['low_confidence_ratio']}, failed={item['failed']}"
+            f"low_conf={item['low_confidence_ratio']}, failed={item['failed']}{load_mode}"
         )
 
 
