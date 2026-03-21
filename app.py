@@ -171,6 +171,10 @@ class DiagnoseResponse(BaseModel):
     fusion_top3: list[tuple[str, float]] = []
     diagnosis_evidence: dict[str, Any] | None = None
     modality_conflict_flag: bool | None = None
+    image_reliable: bool | None = None
+    text_reliable: bool | None = None
+    reliability_issue_types: list[str] = []
+    supplement_mode: str = "none"
     normalized_symptoms: list[str] = []
     debug_runtime: dict[str, Any] | None = None
     verification_result: dict[str, Any] | None = None
@@ -778,6 +782,10 @@ def _inherit_previous_diagnosis_context(
     state["fusion_top3"] = fusion_top3
     state["diagnosis_evidence"] = diagnosis_evidence if isinstance(diagnosis_evidence, dict) else None
     state["modality_conflict_flag"] = previous_case_event.get("modality_conflict_flag")
+    state["image_reliable"] = previous_case_event.get("image_reliable")
+    state["text_reliable"] = previous_case_event.get("text_reliable")
+    state["reliability_issue_types"] = list(previous_case_event.get("reliability_issue_types") or [])
+    state["supplement_mode"] = str(previous_case_event.get("supplement_mode") or "none")
     state["image_diagnosis"] = image_diagnosis
     state["image_result"] = previous_image_result
     state["diagnosis_model_meta"] = model_meta
@@ -1148,6 +1156,10 @@ async def diagnose_image(
     fusion_top3: list[tuple[str, float]] = []
     diagnosis_evidence: dict[str, Any] | None = None
     modality_conflict_flag: bool | None = None
+    image_reliable: bool | None = None
+    text_reliable: bool | None = None
+    reliability_issue_types: list[str] = []
+    supplement_mode: str = "none"
     normalized_symptoms: list[str] = []
     try:
         query_text = build_trace_query(
@@ -1347,6 +1359,10 @@ async def diagnose_image(
         "verification_risk_level": verification_risk_level,
         "verification_issues": verification_issues,
         "verification_summary": verification_summary,
+        "image_reliable": (final_state or {}).get("image_reliable"),
+        "text_reliable": (final_state or {}).get("text_reliable"),
+        "reliability_issue_types": list((final_state or {}).get("reliability_issue_types") or []),
+        "supplement_mode": str((final_state or {}).get("supplement_mode") or "none"),
         "status": response_status,
         "treatment_skipped_due_need_confirm": need_confirm_waiting,
         "treatment_available": treatment_available,
@@ -1422,6 +1438,10 @@ async def diagnose_image(
         "fusion_top3": list((final_state or {}).get("fusion_top3") or []),
         "diagnosis_evidence": (final_state or {}).get("diagnosis_evidence"),
         "modality_conflict_flag": (final_state or {}).get("modality_conflict_flag"),
+        "image_reliable": (final_state or {}).get("image_reliable"),
+        "text_reliable": (final_state or {}).get("text_reliable"),
+        "reliability_issue_types": list((final_state or {}).get("reliability_issue_types") or []),
+        "supplement_mode": str((final_state or {}).get("supplement_mode") or "none"),
         "normalized_symptoms": list(
             (final_state or {}).get("normalized_symptoms")
             or ((final_state or {}).get("structured_symptoms") or {}).get("normalized_symptoms")
@@ -1633,6 +1653,10 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
     fusion_top3 = list(state.get("fusion_top3") or [])
     modality_conflict_flag = state.get("modality_conflict_flag")
     diagnosis_evidence = state.get("diagnosis_evidence")
+    image_reliable = state.get("image_reliable")
+    text_reliable = state.get("text_reliable")
+    reliability_issue_types = list(state.get("reliability_issue_types") or [])
+    supplement_mode = str(state.get("supplement_mode") or "none")
 
     image_diagnosis = state.get("image_diagnosis") or {}
     image_top1 = image_diagnosis.get("top1") or {}
@@ -1669,6 +1693,10 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
             fusion_top3 = list(state.get("fusion_top3") or [])
             modality_conflict_flag = state.get("modality_conflict_flag")
             diagnosis_evidence = state.get("diagnosis_evidence")
+            image_reliable = state.get("image_reliable")
+            text_reliable = state.get("text_reliable")
+            reliability_issue_types = list(state.get("reliability_issue_types") or [])
+            supplement_mode = str(state.get("supplement_mode") or "none")
             image_diagnosis = state.get("image_diagnosis") or {}
             image_top1 = image_diagnosis.get("top1") or {}
             top3 = image_diagnosis.get("top3") or []
@@ -1785,6 +1813,10 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
         "fusion_top3": fusion_top3,
         "modality_conflict_flag": modality_conflict_flag,
         "diagnosis_evidence": diagnosis_evidence,
+        "image_reliable": image_reliable,
+        "text_reliable": text_reliable,
+        "reliability_issue_types": reliability_issue_types,
+        "supplement_mode": supplement_mode,
         "manual_review_recommended": manual_review_recommended,
         "manual_review_required_before_execution": manual_review_required_before_execution,
         "expert_review_recommended": expert_review_recommended,
@@ -1856,6 +1888,10 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
         ),
         "modality_conflict_flag": modality_conflict_flag,
         "diagnosis_evidence": diagnosis_evidence,
+        "image_reliable": image_reliable,
+        "text_reliable": text_reliable,
+        "reliability_issue_types": reliability_issue_types,
+        "supplement_mode": supplement_mode,
         "manual_review_recommended": manual_review_recommended,
         "manual_review_required_before_execution": manual_review_required_before_execution,
         "expert_review_recommended": expert_review_recommended,

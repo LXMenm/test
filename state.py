@@ -56,6 +56,10 @@ class CropDiseaseState(TypedDict):
     fusion_top3: Optional[List[tuple[str, float]]]
     diagnosis_evidence: Optional[Dict[str, Any]]
     modality_conflict_flag: Optional[bool]
+    image_reliable: Optional[bool]
+    text_reliable: Optional[bool]
+    reliability_issue_types: Optional[List[str]]
+    supplement_mode: Optional[str]
     image_probs: Optional[Dict[str, float]]
     text_probs: Optional[Dict[str, float]]
     prior_probs: Optional[Dict[str, float]]
@@ -151,6 +155,10 @@ def create_initial_state(
         fusion_top3=None,
         diagnosis_evidence=None,
         modality_conflict_flag=None,
+        image_reliable=None,
+        text_reliable=None,
+        reliability_issue_types=None,
+        supplement_mode=None,
         image_probs=None,
         text_probs=None,
         prior_probs=None,

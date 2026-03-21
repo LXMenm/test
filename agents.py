@@ -4,7 +4,7 @@
 """
 from state import CropDiseaseState
 from llm_utils import call_llm, extract_json_from_response
-from diagnosis_model import get_diagnosis_engine
+from diagnosis_model import build_reliability_summary, get_diagnosis_engine
 from knowledge_base import get_kb_manager
 from config import DIAGNOSIS_CONFIDENCE_THRESHOLD, DIAGNOSIS_ALLOW_TORCH
 from confidence_policy import make_confidence_flags
@@ -535,6 +535,24 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
         and image_top1 != text_top1
     )
     modality_conflict_flag = bool(top1_conflict)
+    reliability_summary = build_reliability_summary(
+        image_reliable=image_reliable,
+        text_reliable=text_reliable,
+        modality_conflict_flag=modality_conflict_flag,
+    )
+    reliability_issue_types = list(
+        (fusion_meta.get("reliability_issue_types") if isinstance(fusion_meta, dict) else None)
+        or reliability_summary["reliability_issue_types"]
+    )
+    supplement_mode = str(
+        (fusion_meta.get("supplement_mode") if isinstance(fusion_meta, dict) else None)
+        or reliability_summary["supplement_mode"]
+    )
+    if isinstance(fusion_meta, dict):
+        fusion_meta["image_reliable"] = image_reliable
+        fusion_meta["text_reliable"] = text_reliable
+        fusion_meta["reliability_issue_types"] = reliability_issue_types
+        fusion_meta["supplement_mode"] = supplement_mode
 
     debug_payload.update(
         {
@@ -548,6 +566,10 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
             "fusion_case": fusion_case,
             "fuse_version": (fusion_meta.get("fuse_version") if isinstance(fusion_meta, dict) else None),
             "modality_conflict_flag": modality_conflict_flag,
+            "image_reliable": image_reliable,
+            "text_reliable": text_reliable,
+            "reliability_issue_types": reliability_issue_types,
+            "supplement_mode": supplement_mode,
             "weak_conflict_candidate": weak_conflict_candidate,
             "weak_conflict_flag": weak_conflict_flag,
             "final_confidence": float(final_confidence),
@@ -579,6 +601,10 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
             "weights": (fusion_meta.get("normalized_weights") if isinstance(fusion_meta, dict) else {}),
             "fusion_meta": fusion_meta,
             "modality_conflict_flag": modality_conflict_flag,
+            "image_reliable": image_reliable,
+            "text_reliable": text_reliable,
+            "reliability_issue_types": reliability_issue_types,
+            "supplement_mode": supplement_mode,
             "summary": f"融合诊断Top1: {final_disease}",
         }
 
@@ -688,6 +714,10 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
     state["diagnosis_evidence"] = diagnosis_evidence
     state["fusion_meta"] = fusion_meta if isinstance(fusion_meta, dict) else {}
     state["modality_conflict_flag"] = modality_conflict_flag
+    state["image_reliable"] = image_reliable
+    state["text_reliable"] = text_reliable
+    state["reliability_issue_types"] = reliability_issue_types
+    state["supplement_mode"] = supplement_mode
     state["weak_conflict_flag"] = weak_conflict_flag
     state["weak_conflict_candidate"] = weak_conflict_candidate
     state["debug_diagnosis"] = debug_payload
@@ -721,6 +751,10 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
             "text_top3": text_top3,
             "fusion_top3": fusion_top3,
             "modality_conflict_flag": modality_conflict_flag,
+            "image_reliable": image_reliable,
+            "text_reliable": text_reliable,
+            "reliability_issue_types": reliability_issue_types,
+            "supplement_mode": supplement_mode,
             "weak_conflict_flag": weak_conflict_flag,
             "weak_conflict_candidate": weak_conflict_candidate,
             "diagnosis_evidence": diagnosis_evidence,
