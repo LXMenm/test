@@ -243,6 +243,40 @@ class KBTreatmentORM(TimestampMixin, Base):
     meta_json = Column(JSON, nullable=True)
 
 
+class KBTreatmentActionORM(TimestampMixin, Base):
+    __tablename__ = "kb_treatment_actions"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+
+    disease_name = Column(String(128), nullable=False, index=True)
+    action_section = Column(String(64), nullable=False, index=True)
+    seq = Column(Integer, nullable=False)
+    action_text = Column(Text, nullable=False)
+    payload_json = Column(JSON, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("disease_name", "action_section", "seq", name="uq_kb_treatment_action_section_seq"),
+        Index("idx_kb_treatment_actions_disease_section", "disease_name", "action_section"),
+    )
+
+
+class KBTreatmentIngredientORM(TimestampMixin, Base):
+    __tablename__ = "kb_treatment_ingredients"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+
+    disease_name = Column(String(128), nullable=False, index=True)
+    seq = Column(Integer, nullable=False)
+    ingredient_name = Column(String(128), nullable=False, index=True)
+    ingredient_type = Column(String(64), nullable=True)
+    payload_json = Column(JSON, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("disease_name", "ingredient_name", "seq", name="uq_kb_treatment_ingredient_name_seq"),
+        Index("idx_kb_treatment_ingredients_disease_seq", "disease_name", "seq"),
+    )
+
+
 class KBRuleORM(TimestampMixin, Base):
     __tablename__ = "kb_rules"
 

@@ -13,6 +13,8 @@ from mysql_models import (
     KBSymptomAliasORM,
     KBSymptomCandidateDiseaseORM,
     KBSymptomMapORM,
+    KBTreatmentActionORM,
+    KBTreatmentIngredientORM,
     KBTreatmentORM,
 )
 
@@ -38,6 +40,111 @@ def _normalize_symptom_aliases(payload: dict[str, Any]) -> dict[str, str]:
         str(alias).strip(): str(canonical).strip()
         for alias, canonical in aliases.items()
         if str(alias).strip() and str(canonical).strip()
+    }
+
+
+def _normalize_treatment_actions(value: Any) -> dict[str, Any]:
+    actions = _as_dict(value)
+
+    def _to_text_list(items: Any) -> list[str]:
+        return [str(item).strip() for item in _as_list(items) if str(item).strip()]
+
+    treatment_plan = _as_dict(actions.get("treatment_plan"))
+    return {
+        "immediate_actions": _to_text_list(actions.get("immediate_actions")),
+        "treatment_plan": {
+            "FAMILY": _to_text_list(treatment_plan.get("FAMILY")),
+            "MID": _to_text_list(treatment_plan.get("MID")),
+            "ENTERPRISE": _to_text_list(treatment_plan.get("ENTERPRISE")),
+        },
+        "prevention_plan": _to_text_list(actions.get("prevention_plan")),
+        "resistance_management": _to_text_list(actions.get("resistance_management")),
+        "safety_notes": _to_text_list(actions.get("safety_notes")),
+        "follow_up": _to_text_list(actions.get("follow_up")),
+    }
+
+
+def _normalize_treatment_ingredients(value: Any) -> list[str]:
+    normalized: list[str] = []
+    for item in _as_list(value):
+        if isinstance(item, dict):
+            ingredient_name = str(item.get("ingredient_name") or item.get("name") or "").strip()
+        else:
+            ingredient_name = str(item).strip()
+        if ingredient_name and ingredient_name not in normalized:
+            normalized.append(ingredient_name)
+    return normalized
+
+
+def _load_treatments_from_main_rows(rows: list[KBTreatmentORM]) -> dict[str, Any]:
+    treatments: dict[str, Any] = {}
+    for row in rows:
+        entry = _as_dict(row.meta_json)
+        entry.setdefault("treatment", row.treatment or "")
+        entry.setdefault("prevention", row.prevention or "")
+        entry.setdefault("actions", _as_dict(row.actions_json))
+        entry.setdefault("ingredients", _as_list(row.ingredients_json))
+        treatments[row.disease_name] = entry
+    return {"treatments": treatments}
+
+
+def _replace_treatment_children(
+    *,
+    session,
+    treatments: dict[str, Any],
+) -> dict[str, int]:
+    session.execute(delete(KBTreatmentActionORM))
+    session.execute(delete(KBTreatmentIngredientORM))
+
+    action_count = 0
+    ingredient_count = 0
+    for disease_name, raw_entry in sorted(treatments.items()):
+        disease_key = str(disease_name).strip()
+        if not disease_key:
+            continue
+        entry = _as_dict(raw_entry)
+        actions = _normalize_treatment_actions(entry.get("actions"))
+        ingredients = _normalize_treatment_ingredients(entry.get("ingredients"))
+
+        action_sections = [
+            ("immediate_actions", actions.get("immediate_actions") or []),
+            ("prevention_plan", actions.get("prevention_plan") or []),
+            ("resistance_management", actions.get("resistance_management") or []),
+            ("safety_notes", actions.get("safety_notes") or []),
+            ("follow_up", actions.get("follow_up") or []),
+            ("treatment_plan.FAMILY", _as_dict(actions.get("treatment_plan")).get("FAMILY") or []),
+            ("treatment_plan.MID", _as_dict(actions.get("treatment_plan")).get("MID") or []),
+            ("treatment_plan.ENTERPRISE", _as_dict(actions.get("treatment_plan")).get("ENTERPRISE") or []),
+        ]
+        for action_section, values in action_sections:
+            for idx, action_text in enumerate(values, start=1):
+                session.add(
+                    KBTreatmentActionORM(
+                        disease_name=disease_key,
+                        action_section=action_section,
+                        seq=idx,
+                        action_text=action_text,
+                        payload_json=None,
+                    )
+                )
+                action_count += 1
+
+        for idx, ingredient_name in enumerate(ingredients, start=1):
+            session.add(
+                KBTreatmentIngredientORM(
+                    disease_name=disease_key,
+                    seq=idx,
+                    ingredient_name=ingredient_name,
+                    ingredient_type=None,
+                    payload_json=None,
+                )
+            )
+            ingredient_count += 1
+
+    return {
+        "disease_count": len([name for name in treatments.keys() if str(name).strip()]),
+        "action_count": action_count,
+        "ingredient_count": ingredient_count,
     }
 
 
@@ -195,15 +302,73 @@ def load_treatments_mysql() -> dict[str, Any]:
         rows = session.execute(
             select(KBTreatmentORM).order_by(KBTreatmentORM.disease_name.asc())
         ).scalars().all()
+        action_rows = session.execute(
+            select(KBTreatmentActionORM).order_by(
+                KBTreatmentActionORM.disease_name.asc(),
+                KBTreatmentActionORM.action_section.asc(),
+                KBTreatmentActionORM.seq.asc(),
+                KBTreatmentActionORM.id.asc(),
+            )
+        ).scalars().all()
+        ingredient_rows = session.execute(
+            select(KBTreatmentIngredientORM).order_by(
+                KBTreatmentIngredientORM.disease_name.asc(),
+                KBTreatmentIngredientORM.seq.asc(),
+                KBTreatmentIngredientORM.id.asc(),
+            )
+        ).scalars().all()
 
-    treatments: dict[str, Any] = {}
-    for row in rows:
-        entry = _as_dict(row.meta_json)
-        entry.setdefault("treatment", row.treatment or "")
-        entry.setdefault("prevention", row.prevention or "")
-        entry.setdefault("actions", _as_dict(row.actions_json))
-        entry.setdefault("ingredients", _as_list(row.ingredients_json))
-        treatments[row.disease_name] = entry
+    fallback_payload = _load_treatments_from_main_rows(rows)
+    if not action_rows and not ingredient_rows:
+        return fallback_payload
+
+    treatments = {
+        str(name): _as_dict(entry)
+        for name, entry in _as_dict(fallback_payload.get("treatments")).items()
+        if str(name).strip()
+    }
+
+    if action_rows:
+        rebuilt_actions: dict[str, dict[str, Any]] = {}
+        for row in action_rows:
+            disease_name = str(row.disease_name or "").strip()
+            if not disease_name:
+                continue
+            actions = rebuilt_actions.setdefault(
+                disease_name,
+                {
+                    "immediate_actions": [],
+                    "treatment_plan": {"FAMILY": [], "MID": [], "ENTERPRISE": []},
+                    "prevention_plan": [],
+                    "resistance_management": [],
+                    "safety_notes": [],
+                    "follow_up": [],
+                },
+            )
+            if row.action_section.startswith("treatment_plan."):
+                branch = row.action_section.split(".", 1)[1].strip().upper()
+                if branch in {"FAMILY", "MID", "ENTERPRISE"}:
+                    actions["treatment_plan"][branch].append(str(row.action_text or "").strip())
+            elif row.action_section in actions:
+                actions[row.action_section].append(str(row.action_text or "").strip())
+        for disease_name, actions in rebuilt_actions.items():
+            entry = treatments.setdefault(disease_name, {})
+            entry["actions"] = actions
+
+    if ingredient_rows:
+        rebuilt_ingredients: dict[str, list[str]] = {}
+        for row in ingredient_rows:
+            disease_name = str(row.disease_name or "").strip()
+            ingredient_name = str(row.ingredient_name or "").strip()
+            if not disease_name or not ingredient_name:
+                continue
+            rebuilt_ingredients.setdefault(disease_name, [])
+            if ingredient_name not in rebuilt_ingredients[disease_name]:
+                rebuilt_ingredients[disease_name].append(ingredient_name)
+        for disease_name, ingredients in rebuilt_ingredients.items():
+            entry = treatments.setdefault(disease_name, {})
+            entry["ingredients"] = ingredients
+
     return {"treatments": treatments}
 
 
@@ -211,6 +376,7 @@ def save_treatments_mysql(payload: dict[str, Any]) -> dict[str, Any]:
     treatments = _as_dict(payload.get("treatments"))
     with get_db_session() as session:
         try:
+            _replace_treatment_children(session=session, treatments=treatments)
             session.execute(delete(KBTreatmentORM))
             for disease_name in sorted(treatments.keys()):
                 entry = _as_dict(treatments.get(disease_name))
@@ -229,6 +395,18 @@ def save_treatments_mysql(payload: dict[str, Any]) -> dict[str, Any]:
             session.rollback()
             raise
     return load_treatments_mysql()
+
+
+def backfill_treatments_normalized_mysql(payload: dict[str, Any]) -> dict[str, int]:
+    treatments = _as_dict(payload.get("treatments"))
+    with get_db_session() as session:
+        try:
+            stats = _replace_treatment_children(session=session, treatments=treatments)
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
+    return stats
 
 
 def load_rules_mysql() -> dict[str, Any]:
