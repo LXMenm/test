@@ -18,6 +18,12 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
 import type { LucideIcon } from 'lucide-react';
+import {
+  calcPhaseDurationsByAgent,
+  parseTsMs,
+  shouldIncludeEvent,
+  sliceCurrentPhaseEvents,
+} from './agentWorkflowTiming';
 
 type AgentStatus = 'pending' | 'running' | 'completed' | 'error';
 type FixedAgentId = 'supervisor' | 'reception' | 'diagnosis' | 'kb_retrieval' | 'treatment' | 'verification' | 'final';
@@ -62,68 +68,6 @@ interface AgentPhaseDurations {
   phase1Ms: number;
   phase2Ms: number;
 }
-
-const isSecondPhaseBoundaryEvent = (event: NormalizedEvent): boolean => {
-  const node = String(event.nodeName || '').toLowerCase();
-  if (node === 'confirmflow' && event.status === 'running') return true;
-  const agent = String((event.data && (event.data['agent'] ?? event.data['agent_id'])) || '').toLowerCase();
-  return agent === 'confirm_input' || node === 'confirm_input';
-};
-
-const calcPhaseDurationsByAgent = (
-  events: NormalizedEvent[],
-  nowMs: number,
-  workflowDone: boolean,
-): Record<FixedAgentId, AgentPhaseDurations> => {
-  const sorted = [...events].sort((a, b) => {
-    const sa = typeof a.seq === 'number' ? a.seq : Number.MAX_SAFE_INTEGER;
-    const sb = typeof b.seq === 'number' ? b.seq : Number.MAX_SAFE_INTEGER;
-    if (sa !== sb) return sa - sb;
-    return (a.tsMs ?? Number.MAX_SAFE_INTEGER) - (b.tsMs ?? Number.MAX_SAFE_INTEGER);
-  });
-
-  let phaseBoundaryIndex = -1;
-  for (let i = 0; i < sorted.length; i += 1) {
-    if (isSecondPhaseBoundaryEvent(sorted[i])) {
-      phaseBoundaryIndex = i;
-      break;
-    }
-  }
-
-  const phase1 = phaseBoundaryIndex >= 0 ? sorted.slice(0, phaseBoundaryIndex) : sorted;
-  const phase2 = phaseBoundaryIndex >= 0 ? sorted.slice(phaseBoundaryIndex) : [];
-
-  const calcForPhase = (phaseEvents: NormalizedEvent[]): Record<FixedAgentId, number> => {
-    const totals = FIXED_AGENTS.reduce((acc, def) => {
-      acc[def.id] = 0;
-      return acc;
-    }, {} as Record<FixedAgentId, number>);
-
-    if (!phaseEvents.length) return totals;
-
-    for (let i = 0; i < phaseEvents.length - 1; i += 1) {
-      const current = phaseEvents[i];
-      const next = phaseEvents[i + 1];
-      if (typeof current.tsMs !== 'number' || typeof next.tsMs !== 'number') continue;
-      totals[current.agentId] += Math.max(0, next.tsMs - current.tsMs);
-    }
-
-    const last = phaseEvents[phaseEvents.length - 1];
-    if (!workflowDone && typeof last.tsMs === 'number') {
-      totals[last.agentId] += Math.max(0, nowMs - last.tsMs);
-    }
-
-    return totals;
-  };
-
-  const phase1Totals = calcForPhase(phase1);
-  const phase2Totals = calcForPhase(phase2);
-
-  return FIXED_AGENTS.reduce((acc, def) => {
-    acc[def.id] = { phase1Ms: phase1Totals[def.id], phase2Ms: phase2Totals[def.id] };
-    return acc;
-  }, {} as Record<FixedAgentId, AgentPhaseDurations>);
-};
 
 const calcOverallPhaseDuration = (phaseDurations: Record<FixedAgentId, AgentPhaseDurations>): { phase1Ms: number; phase2Ms: number; totalMs: number } => {
   let phase1Ms = 0;
@@ -193,12 +137,6 @@ const buildInitialState = (): Record<FixedAgentId, AgentRowState> => {
   }, {} as Record<FixedAgentId, AgentRowState>);
 };
 
-const parseTsMs = (ts?: string): number | undefined => {
-  if (!ts) return undefined;
-  const ms = Date.parse(ts);
-  return Number.isFinite(ms) ? ms : undefined;
-};
-
 const clamp = (v: number, min: number, max: number) => Math.max(min, Math.min(max, v));
 
 const softProgress = (elapsedMs: number) => clamp(Math.round((elapsedMs / 8000) * 90), 5, 90);
@@ -251,53 +189,6 @@ const mapToFixedAgent = (agentId: string | undefined, node: string | undefined):
   if (aid.includes('verification') || aid.includes('validator') || aid.includes('review') || aid.includes('compliance')) return 'verification';
   if (nodeLower.includes('parse') || nodeLower.includes('input') || nodeLower.includes('reception')) return 'reception';
   return 'supervisor';
-};
-
-const compareEvents = (a: RawTraceEvent, b: RawTraceEvent): number => {
-  const aHasSeq = typeof a.seq === 'number' && Number.isFinite(a.seq);
-  const bHasSeq = typeof b.seq === 'number' && Number.isFinite(b.seq);
-  if (aHasSeq && bHasSeq) return (a.seq as number) - (b.seq as number);
-
-  const aTs = parseTsMs(a.ts) ?? Number.MAX_SAFE_INTEGER;
-  const bTs = parseTsMs(b.ts) ?? Number.MAX_SAFE_INTEGER;
-  if (aTs !== bTs) return aTs - bTs;
-
-  if (aHasSeq && !bHasSeq) return -1;
-  if (!aHasSeq && bHasSeq) return 1;
-  return 0;
-};
-
-
-const shouldIncludeEvent = (event: RawTraceEvent, phaseStartMs?: number): boolean => {
-  if (!phaseStartMs || !Number.isFinite(phaseStartMs)) return true;
-  const tsMs = parseTsMs(event.ts);
-  // 若事件无时间戳，不做截断，避免误丢关键结束事件
-  if (typeof tsMs !== 'number') return true;
-  // 允许 2 分钟时钟偏差，避免前后端时钟不同步导致整段事件被过滤为 0
-  return tsMs >= (phaseStartMs - 120_000);
-};
-
-const sliceCurrentPhaseEvents = (events: RawTraceEvent[], phaseStartMs?: number): RawTraceEvent[] => {
-  const sorted = [...events].sort(compareEvents);
-  if (!phaseStartMs || !Number.isFinite(phaseStartMs)) return sorted;
-
-  // 优先按二次确认分段标记截取（与服务器时钟无关）
-  let startIndex = -1;
-  for (let i = sorted.length - 1; i >= 0; i -= 1) {
-    const e = sorted[i];
-    const node = String(e.node || '').toLowerCase();
-    const status = String(e.status || '').toLowerCase();
-    const agent = String(e.agent || e.agent_id || '').toLowerCase();
-    if ((node === 'confirmflow' && ['start', 'started', 'begin', 'running', '开始'].includes(status)) || agent === 'confirm_input') {
-      startIndex = i;
-      break;
-    }
-  }
-  if (startIndex >= 0) return sorted.slice(startIndex);
-
-  // 没有确认分段时回退到时间窗口过滤
-  const filtered = sorted.filter((raw) => shouldIncludeEvent(raw, phaseStartMs));
-  return filtered.length ? filtered : sorted;
 };
 
 const normalizeEvent = (raw: RawTraceEvent): NormalizedEvent => {
@@ -910,7 +801,7 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
         if (cancelled) return;
 
         let replayed = 0;
-        sorted.forEach((raw) => {
+        sorted.forEach((raw: RawTraceEvent) => {
           const normalized = normalizeEvent(raw as RawTraceEvent);
           if (applyNormalizedEvent(normalized)) replayed += 1;
         });
@@ -964,7 +855,7 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
 
 
   const phaseDurationsByAgent = useMemo(
-    () => calcPhaseDurationsByAgent(allEvents, nowMs, workflowDone),
+    () => calcPhaseDurationsByAgent(allEvents, nowMs, workflowDone) as Record<FixedAgentId, AgentPhaseDurations>,
     [allEvents, nowMs, workflowDone],
   );
 
