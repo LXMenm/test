@@ -19,8 +19,12 @@ from sqlalchemy import (
     UniqueConstraint,
 )
 from sqlalchemy.dialects.mysql import JSON
+from sqlalchemy.dialects.mysql import DATETIME as MYSQL_DATETIME
 
 from db import Base
+
+
+TRACE_EVENT_DATETIME = DateTime().with_variant(MYSQL_DATETIME(fsp=3), "mysql")
 
 
 class TimestampMixin:
@@ -205,8 +209,8 @@ class TraceEventORM(Base):
     message = Column(String(255), nullable=True)
     payload_json = Column(JSON, nullable=False)
 
-    ts = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    ts = Column(TRACE_EVENT_DATETIME, nullable=False, default=datetime.utcnow, index=True)
+    created_at = Column(TRACE_EVENT_DATETIME, default=datetime.utcnow, nullable=False)
 
     __table_args__ = (
         UniqueConstraint("trace_id", "seq", name="uq_trace_events_trace_seq"),
