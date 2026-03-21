@@ -3,6 +3,7 @@
 基于深度学习的番茄病害诊断模型
 参考论文：Transform and Deep Learning Algorithms for the Early Detection and Recognition of Tomato Leaf Disease
 """
+import sys
 import torch
 import torch.nn as nn
 import torchvision.models as models
@@ -20,6 +21,7 @@ from config import (
     DIAGNOSIS_CONFIDENCE_THRESHOLD,
     TEXT_DIAGNOSIS_BACKEND,
     TEXT_MODEL_DIR,
+    PROJECT_ROOT,
 )
 import os
 from knowledge_base import get_kb_manager
@@ -247,6 +249,8 @@ class DiseaseDiagnosisEngine:
             return
         try:
             import tensorflow as tf
+            from tensorflow.keras import backend as K
+            from tensorflow.keras.layers import Layer
         except ImportError as exc:
             raise ImportError("未安装 TensorFlow，无法加载 .h5/.keras 模型") from exc
 
