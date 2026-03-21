@@ -20,6 +20,7 @@ import {
   TOMATO_GROWTH_STAGE_OPTIONS,
 } from '@/lib/profileLabels';
 import { resolveModelOptions } from '@/lib/modelOptions';
+import { fetchTraceEvents } from '@/lib/traceClient';
 
 interface DiagnosisResult {
   image_url: string;
@@ -133,6 +134,7 @@ export function DiagnosePage() {
   const [selectedBaseId, setSelectedBaseId] = useState('');
   const [selectedProfile, setSelectedProfile] = useState<ProfileDetail | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const traceFetchAbortRef = useRef<AbortController | null>(null);
 
   const navigateToKbDisease = (disease: string) => {
     const name = disease.trim();
@@ -759,26 +761,52 @@ export function DiagnosePage() {
     }
   }, [confirmMode, candidates, confirmChoice]);
 
-  const refreshTrace = async () => {
+  const refreshTrace = async (source: string = 'DiagnosePage.traceEffect') => {
     if (!traceId) return;
-    
+
+    traceFetchAbortRef.current?.abort();
+    const controller = new AbortController();
+    traceFetchAbortRef.current = controller;
+
     try {
-      const resp = await fetch(`/api/trace-events?trace_id=${encodeURIComponent(traceId)}`);
+      const resp = await fetchTraceEvents(traceId, {
+        source,
+        signal: controller.signal,
+        debugState: {
+          updatesStopped: false,
+          waitingStable: false,
+          workflowDone: false,
+          hasInFlight: true,
+        },
+      });
       const data = await resp.json();
+      if (traceFetchAbortRef.current === controller) {
+        traceFetchAbortRef.current = null;
+      }
       if (Array.isArray(data?.events)) {
         setTraceEvents(normalizeTraceEvents(data.events));
       }
     } catch (error) {
+      if (traceFetchAbortRef.current === controller) {
+        traceFetchAbortRef.current = null;
+      }
+      if (error instanceof DOMException && error.name === 'AbortError') return;
       console.error('Failed to fetch trace events:', error);
     }
   };
 
   useEffect(() => {
     if (!traceId) {
+      traceFetchAbortRef.current?.abort();
+      traceFetchAbortRef.current = null;
       setTraceEvents([]);
       return;
     }
     refreshTrace();
+    return () => {
+      traceFetchAbortRef.current?.abort();
+      traceFetchAbortRef.current = null;
+    };
   }, [traceId]);
 
   return (
@@ -1273,7 +1301,7 @@ export function DiagnosePage() {
                     <Button
                       variant="outline"
                       size="sm"
-                      onClick={refreshTrace}
+                      onClick={() => { void refreshTrace('DiagnosePage.manualRefresh'); }}
                       className="border-white/20 text-white hover:bg-white/10"
                     >
                       <RefreshCw className="w-4 h-4" />
@@ -1288,7 +1316,6 @@ export function DiagnosePage() {
                 当前流程包含：接待解析 → 病害诊断 → 知识检索 → 方案生成 → 农业合规审查。
               </p>
               <AgentWorkflowPanel
-                key={`${traceId || 'idle'}-${workflowRefreshToken}`}
                 traceId={traceId || undefined}
                 confidencePct={result?.displayConfidencePct ?? undefined}
                 phaseStartMs={(phase2StartTime ?? phase1StartTime) ?? undefined}
