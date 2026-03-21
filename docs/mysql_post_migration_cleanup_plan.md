@@ -8,7 +8,8 @@
 - 本文档只做盘点与规划；
 - 本轮**不删除旧逻辑**；
 - 本轮**不做性能重构**；
-- 内容基于当前仓库的真实实现状态，而不是理想化架构。
+- 内容基于当前仓库的真实实现状态，而不是理想化架构；
+- 当前数据库设计应表述为：**工程兼容优先、平滑迁移优先的半规范化设计**。
 
 ---
 
@@ -42,6 +43,10 @@
 不建议删除：
 - `scripts/migrate_json_to_mysql.py`
 - `scripts/migrate_kb_json_to_mysql.py`
+- `scripts/migrate_profile_normalized.py`
+- `scripts/migrate_farm_bases_normalized.py`
+- `scripts/migrate_kb_symptom_map_normalized.py`
+- `scripts/migrate_kb_treatments_normalized.py`
 - `scripts/verify_kb_file_mysql_parity.py`
 
 原因：
@@ -55,7 +60,8 @@
 ## 3.1 Profile 层
 未来可逐步清理：
 - 部分仅为文件枚举服务的辅助方法；
-- 仅为 JSON 兼容保留的目录扫描逻辑。
+- 仅为 JSON 兼容保留的目录扫描逻辑；
+- 在 profile/base 半规范化完全稳定后，评估哪些旧 JSON 列仅保留作迁移兜底而不再作为主读来源。
 
 前提条件：
 1. `PROFILE_STORE_MODE=mysql` 连续稳定运行；
@@ -73,6 +79,10 @@
 2. 已确认不再需要从 JSONL 回放历史数据；
 3. 已具备数据库侧数据备份与恢复能力。
 
+说明：
+- 当前不建议继续拆 `diagnosis_events`；
+- 它保留宽表 + `payload_json` 是阶段性工程选择，应先优化查询与索引，而不是立即做进一步拆表。
+
 ### 3.3 Trace 层
 未来可逐步清理：
 - 文件 trace 的事件顺序恢复逻辑；
@@ -83,6 +93,10 @@
 1. trace mysql 路径在真实使用中稳定；
 2. SSE / trace replay 已验证无回归；
 3. 需要时可直接从数据库恢复链路。
+
+说明：
+- 当前不建议继续拆 `trace_events`；
+- trace 目前优先承担链路观测、回放和排障职责，宽表 + payload 更符合当前诉求。
 
 ### 3.4 KB 层
 未来可逐步清理：
@@ -201,7 +215,7 @@
 
 可做事项：
 - 评估是否下线部分旧文件逻辑；
-- 评估是否将某些 payload 结构进一步数据库化；
+- 评估是否继续减少某些 JSON 兼容字段；
 - 评估是否把迁移脚本从“常用工具”转为“归档工具”。
 
 ---
@@ -221,7 +235,8 @@
 ### 风险 3：过早做数据库深度规范化会增加不必要变更面
 说明：
 - 当前迁移目标是“平滑切换并可回滚”；
-- 大规模 schema 重构应放在回滚窗口结束后再评估。
+- 对 Event / Trace 的进一步拆表应在回滚窗口结束后再评估；
+- 当前阶段更适合先完成验证、回滚演练和局部 SQL 优化。
 
 ---
 

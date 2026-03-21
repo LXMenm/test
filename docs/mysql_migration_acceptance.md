@@ -1,151 +1,102 @@
 # 文件存储迁移到 MySQL 的迁移完成说明 / 验收记录
 
-## 1. 迁移背景与目标
+## 1. 文档目的
 
-本项目为基于 FastAPI + LangGraph 的番茄病害诊治系统。随着个性化档案、事件统计、trace 追踪、KB 管理能力逐步完善，原有 JSON / JSONL 文件存储在以下方面存在局限：
+本文档用于记录当前仓库从 JSON / JSONL 到 MySQL 的迁移完成状态、关键设计取舍、验收结果与当前遗留边界。
 
-- 多类数据分散在不同文件中，部署一致性与运维性较弱；
-- 事件与 trace 的查询、统计、回溯能力受限；
-- KB 在多来源读写场景下需要更稳定的持久化后端；
-- 默认部署形态希望统一到 MySQL，以便后续答辩展示、运维管理和功能扩展。
-
-本次迁移的核心目标不是重写业务，而是：
-1. 在尽量不改变主链路行为的前提下，引入 MySQL 持久化；
-2. 通过 `file / dual / mysql` 三模式 rollout 降低切换风险；
-3. 为 Profile / Event / Trace / KB 提供可迁移、可回滚、可验证的统一持久化方案；
-4. 将当前推荐默认部署方式固化为 MySQL。
+需要特别说明：
+- 本文档描述的是**当前真实实现状态**；
+- 当前数据库设计基调是：**工程兼容优先、平滑迁移优先的半规范化设计**；
+- 本文档不把当前实现包装为完全高范式数据库；
+- `diagnosis_events` / `trace_events` 保留宽表与 `payload_json`，这是阶段性有意设计，不视为缺陷。
 
 ---
 
-## 2. 迁移范围（Profile / Event / Trace / KB）
+## 2. 当前已完成的迁移范围
 
-### 2.1 Profile
-- 农户档案（FarmerProfile）
-- 基地信息（FarmBase）
-- 相关 base_id 映射
+## 2.1 Profile
+已完成迁移内容：
+- `FarmerProfileORM` 主档案；
+- `FarmBaseORM` 基地主表；
+- `FarmerProfileEquipmentORM` 设备子表；
+- `FarmerProfileBannedIngredientORM` 禁用成分子表；
+- `FarmBaseRiskTagORM` 基地风险标签子表；
+- `FarmBaseRiskItemORM` 基地风险项子表；
+- `repositories/profile_repo_mysql.py` 中对旧 JSON 兼容结构的聚合恢复。
 
-### 2.2 Event
-- 诊断事件主记录
-- 事件查询、聚合统计、地理点位、模型使用情况等接口依赖的数据
+当前特点：
+- Profile 组已进入“主表 + 子表 + 兼容 JSON 列”的半规范化状态；
+- `profile_store.py` 与 `app.py` 仍继续依赖兼容 payload，因此 repo 层负责恢复旧结构；
+- 旧 JSON 列尚未删除，以支持双写、回滚与兼容读取。
 
-### 2.3 Trace
-- 多智能体执行过程 trace 事件
-- trace 列表、按 trace_id 回放、SSE stream 依赖的数据
+## 2.2 Event
+已完成迁移内容：
+- `DiagnosisEventORM` 宽表持久化；
+- event 的写入、查询、过滤与部分聚合已接入 MySQL repo；
+- 事件宽表中保留关键结构化字段与 JSON 扩展字段并存。
 
-### 2.4 KB
-- `diseases.json`
-- `treatments.json`
-- `rules.json`
-- `symptom_map.json`
+当前特点：
+- `diagnosis_events` 继续保留宽表；
+- `payload_json` 继续保留全量兼容事件载荷；
+- 当前阶段**不继续推进 diagnosis_events 的进一步拆表**。
 
----
+## 2.3 Trace
+已完成迁移内容：
+- `TraceEventORM` 宽表持久化；
+- trace 读写与回放支持 MySQL；
+- `trace_id + seq` 顺序恢复与查询已接入 repo；
+- MySQL trace 时间列已采用毫秒精度处理。
 
-## 3. 已完成的代码改造
+当前特点：
+- `trace_events` 继续保留宽表与 `payload_json`；
+- 当前阶段**不继续推进 trace_events 的进一步拆表**；
+- trace 设计优先服务于链路回放、SSE 观测与调试，而非高度报表化分析。
 
-### 3.1 Profile / Event / Trace 三层
-已完成统一 store 入口和 MySQL 仓储：
-- Profile：支持 `file / dual / mysql`
-- Event：支持 `file / dual / mysql`
-- Trace：支持 `file / dual / mysql`
-
-实现效果：
-- `mysql`：读写均走 MySQL；
-- `dual`：保留旧文件读路径，同时把写入同步到 MySQL；
-- `file`：继续走旧文件逻辑，作为回滚兜底。
-
-### 3.2 KB 层
-已完成以下内容：
-- `knowledge_base/kb_store.py` 支持 `file / dual / mysql` 三模式；
-- 新增 `repositories/kb_repo_mysql.py`，提供与文件 payload 等价的 MySQL 读写；
-- 新增 `scripts/migrate_kb_json_to_mysql.py`；
-- 新增 `scripts/verify_kb_file_mysql_parity.py`；
-- 新增 `tests/test_stage13_kb_read_rollout.py`，验证 KB rollout 与 parity。
-
-### 3.3 默认部署形态
-当前默认运行形态已固化为：
-
-```env
-PROFILE_STORE_MODE=mysql
-EVENT_STORE_MODE=mysql
-TRACE_STORE_MODE=mysql
-KB_STORE_MODE=mysql
-```
-
-同时仍保留环境变量覆盖能力，因此可以按层切回 `dual` 或 `file`。
-
-### 3.4 启动日志与可观测性
-应用启动时会打印：
-
-```text
-[StorageResolved] DATABASE_URL=... PROFILE_STORE_MODE=... EVENT_STORE_MODE=... TRACE_STORE_MODE=... KB_STORE_MODE=...
-```
-
-用于确认当前实际运行形态。
+## 2.4 KB
+已完成迁移内容：
+- `KBDiseaseORM`
+- `KBTreatmentORM`
+- `KBRuleORM`
+- `KBSymptomMapORM`
+- `repositories/kb_repo_mysql.py` 对 4 类 KB payload 的 MySQL 读写；
+- treatment actions / ingredients 子表；
+- symptom_map aliases / candidate diseases 子表；
+- KB 迁移脚本与 parity 校验脚本。
 
 ---
 
-## 4. 切换顺序与 rollout 策略（file / dual / mysql）
+## 3. rollout 策略（file / dual / mysql）
 
-本次迁移遵循渐进式 rollout：
+当前四类 store 统一支持三种模式：
+- `PROFILE_STORE_MODE`
+- `EVENT_STORE_MODE`
+- `TRACE_STORE_MODE`
+- `KB_STORE_MODE`
 
-### 阶段 A：保留 file，补 MySQL 写入能力
-- 先建立 ORM、仓储层和迁移脚本；
-- 不改主业务接口；
-- 确保 MySQL 可承接现有 payload。
+## 3.1 file
+- 完全沿用旧 JSON / JSONL 文件读写；
+- 作为最保守兜底和最终回滚路径。
 
-### 阶段 B：切到 dual
-- 读仍以旧文件为主；
+## 3.2 dual
+- 保留旧文件读路径或兼容兜底；
 - 写入同步到 file + MySQL；
-- 用于收集线上一致性问题、减少切换风险。
+- 适合切换观察期和一致性排查。
 
-### 阶段 C：专项验证 mysql 读路径
-- 对 KB 做 file vs mysql parity 验证；
-- 核查 manager 层关键行为是否一致；
-- 对 Profile / Event / Trace 做读路径 rollout 测试。
+## 3.3 mysql
+- 读写以 MySQL 为主；
+- 但旧文件和迁移脚本仍保留，便于短期回滚。
 
-### 阶段 D：默认值切到 mysql
-- 将四类 store mode 默认值改为 `mysql`；
-- 保留环境变量覆盖与旧文件逻辑，确保短期可回滚。
-
-这种 rollout 方式的优点是：
-1. 允许分层验证；
-2. 避免一次性全量切换；
-3. 在发生异常时可快速回到 `dual` 或 `file`。
+## 3.4 当前结论
+当前 rollout 已完成到：
+- **默认值切到 mysql**；
+- **保留 dual / file 回滚能力**；
+- **保留迁移脚本与旧文件数据作为运维资产**。
 
 ---
 
-## 5. 验收项与验收结果
+## 4. 当前默认推荐运行方式
 
-## 5.1 配置验收
-- [x] `config.py` 默认值已切到 mysql；
-- [x] `.env.example` 已提供 MySQL 推荐默认配置；
-- [x] README / USAGE 已更新默认部署说明；
-- [x] 应用启动日志可显示四类存储模式。
-
-### 5.2 Profile / Event / Trace 验收
-- [x] 已存在面向 rollout 的测试，覆盖 `file / dual / mysql` 读路径行为；
-- [x] 导入 `app` 时不会因为默认 mysql 而在模块初始化阶段立即强连 KB；
-- [x] 相关测试通过，说明默认 mysql 不会破坏现有兼容性。
-
-### 5.3 KB 验收
-- [x] `kb_store.py` 已支持三模式；
-- [x] MySQL repo 已提供 4 类 payload 的等价读写；
-- [x] KB 迁移脚本存在；
-- [x] KB parity 校验脚本存在；
-- [x] `normalize_symptoms / get_candidate_diseases_from_symptoms / score_diseases_from_text / rule_diagnosis / get_treatment_plan` 已完成 file vs mysql 一致性验证；
-- [x] treatment 的 `actions / ingredients` 已在专项验证中覆盖。
-
-### 5.4 保守结论
-从当前仓库实现状态看：
-- 迁移工作已完成到“**默认 MySQL 部署 + 保留回滚能力**”阶段；
-- 适合继续作为工程实现留档；
-- 也适合整理进入毕业设计中的“系统工程化落地与数据迁移策略”章节。
-
----
-
-## 6. 当前推荐默认部署方式
-
-当前推荐默认部署方式如下：
+当前推荐默认部署配置为：
 
 ```env
 DATABASE_URL=mysql+pymysql://root:123456@127.0.0.1:3306/tomato_diagnosis?charset=utf8mb4
@@ -155,57 +106,108 @@ TRACE_STORE_MODE=mysql
 KB_STORE_MODE=mysql
 ```
 
-启动服务后，建议检查启动日志中是否出现：
+应用启动后会打印：
 
 ```text
-[StorageResolved] DATABASE_URL=... PROFILE_STORE_MODE=mysql EVENT_STORE_MODE=mysql TRACE_STORE_MODE=mysql KB_STORE_MODE=mysql
+[StorageResolved] DATABASE_URL=... PROFILE_STORE_MODE=... EVENT_STORE_MODE=... TRACE_STORE_MODE=... KB_STORE_MODE=...
 ```
 
-如果需要演示或排障，仍可临时覆盖：
-- `dual`：保留文件读/双写能力；
-- `file`：完全回退旧文件链路。
+这条日志用于确认：
+- 当前实际数据库连接；
+- 四类 store 的真实运行模式；
+- 环境变量覆盖是否生效。
 
 ---
 
-## 7. 回滚能力说明
+## 5. 关键设计取舍
 
-当前仍保留短期安全回滚能力，原因如下：
+## 5.1 当前不是完全规范化数据库
+当前设计更适合表述为：
+- **半规范化**；
+- **工程兼容优先**；
+- **面向平滑迁移与可回滚**。
 
-1. `file / dual / mysql` 三模式支持仍在；
-2. 旧 JSON / JSONL 文件逻辑未删除；
-3. Profile / Event / Trace / KB 都有统一 store 层作为切换入口；
-4. 已有迁移脚本与 KB parity 校验脚本可辅助重新同步与复核；
-5. 回滚主要通过环境变量切换完成，不需要代码回退。
+## 5.2 为什么保留 JSON / payload 字段
+### Profile / FarmBase
+- 用于兼容旧 JSON payload；
+- 用于部分字段仍未进一步拆分时的兜底；
+- 用于迁移脚本与兼容读取。
 
-推荐参考文档：
-- `docs/mysql_rollback_guide.md`
+### DiagnosisEventORM
+- 保留关键筛选列 + 多个 JSON 列 + `payload_json`；
+- 目的是兼顾审计、统计、历史兼容与字段演进；
+- 当前阶段不继续拆表。
 
-短期回滚建议：
-- 优先回滚到 `dual`；
-- 仅在 MySQL 读写都不可信时回滚到 `file`。
+### TraceEventORM
+- 保留核心 trace 字段 + `payload_json`；
+- 目的是支持 trace replay、SSE、链路排障与跨节点兼容；
+- 当前阶段不继续拆表。
+
+## 5.3 当前为什么不继续推进 diagnosis_events / trace_events 拆表
+原因包括：
+1. 结构变化频繁；
+2. payload 差异较大；
+3. 当前迁移目标是“先稳定切换、再观察运行”；
+4. 进一步拆表会显著扩大代码与迁移风险；
+5. 当前收益不如继续完善验证、回滚与观测能力明确。
 
 ---
 
-## 8. 遗留风险与后续优化方向
+## 6. 关键验证结果
 
-### 8.1 当前仍存在但不阻塞验收的风险
-1. 某些仓储层仍采用全量重写或内存聚合方式，后续可优化；
-2. 真实生产 MySQL 环境下的容量、索引与慢查询表现，仍需在更长时间窗口内观察；
-3. 回滚窗口结束后，是否清理旧文件逻辑，需要在确认稳定运行后再决策。
+## 6.1 配置与启动验收
+- [x] `config.py` 默认 store mode 已切到 `mysql`；
+- [x] 启动日志已能输出 `[StorageResolved] ...`；
+- [x] 仍可通过环境变量覆盖切回 `dual` / `file`。
 
-### 8.2 后续优化方向
-1. Event / Trace 统计与查询逐步转为更明确的数据库端聚合；
-2. KB repo 逐步从“全量覆盖式写入”演进到更精细的 upsert；
-3. 根据运行数据，决定是否下线部分旧文件回滚逻辑；
-4. 增加更完整的迁移后监控指标与异常告警。
+## 6.2 Profile / Event / Trace rollout 验收
+- [x] Profile / Event / Trace 均已具备 MySQL repo；
+- [x] 已存在对应 stage13 rollout 测试，覆盖 `file / dual / mysql` 读路径；
+- [x] `_resolve_profile_and_base()`、档案页读取、个性化上下文、诊断链路等关键路径已有回归测试支撑；
+- [x] 导入 `app` 时不会因为默认 mysql 而在模块初始化阶段立即强连 KB。
+
+## 6.3 Profile / FarmBase 半规范化验收
+- [x] equipment / banned ingredients 已有子表；
+- [x] farm base risk tags / risk items 已有子表；
+- [x] repo 已支持双写与兼容读取；
+- [x] 对应迁移脚本与 idempotent 测试已存在。
+
+## 6.4 Trace 毫秒精度验收
+- [x] trace MySQL repo 对 ISO 时间输出保留毫秒；
+- [x] trace MySQL 行记录 payload 保留毫秒级时间；
+- [x] MySQL trace 时间列已采用毫秒精度变体。
+
+## 6.5 confirm 轮 supervisor 计时修复验收
+- [x] 前端 trace timing helper 已做 confirm 轮切片；
+- [x] confirm 轮场景下不会把 supervisor 时间跨轮累加；
+- [x] 相关回归测试已覆盖该行为。
+
+## 6.6 KB parity 验收
+- [x] `scripts/verify_kb_file_mysql_parity.py` 已存在；
+- [x] payload parity 与 `KnowledgeBaseManager` parity 均有测试支撑；
+- [x] symptom_map / treatments 的规范化子表与迁移脚本已有专项测试。
 
 ---
 
-## 9. 留档结论
+## 7. 当前遗留但不阻塞上线的问题
 
-综合当前实现与测试状态，可以给出如下工程结论：
+以下内容属于真实存在但目前**不阻塞 mysql 默认上线**的边界：
 
-> 本项目已经完成从文件存储到 MySQL 持久化的核心迁移工作，并通过分阶段 rollout、迁移脚本、parity 校验和保守回滚设计，达到了“可部署、可验证、可回滚”的工程目标。
+1. 部分 repo 仍采用 delete + 全量重写策略，优先保证幂等与兼容；
+2. 旧 JSON / JSONL 文件仍需继续保留，用于 dual/file 与短期回滚；
+3. `diagnosis_events` / `trace_events` 仍是宽表设计，不继续拆表；
+4. 更深入的数据库端聚合与索引优化仍需结合真实运行画像推进；
+5. 是否最终下线 file/dual 逻辑，需要在稳定运行窗口结束后再决策。
 
-对开发者而言，这份记录可作为部署与运维依据；
-对导师或毕业设计整理而言，这份记录可作为“系统工程实现与数据迁移验收”的直接素材。
+---
+
+## 8. 当前留档结论
+
+结合当前仓库实现状态，可以给出如下结论：
+
+> 本项目已经完成 JSON / JSONL 到 MySQL 的主体迁移开发，并在 Profile、Event、Trace、KB 四类数据上形成了统一 store 入口、分阶段 rollout、半规范化 schema、专项迁移脚本、parity 校验与短期回滚机制。当前实现已达到“默认 MySQL 运行 + 保留回滚能力 + 文档可留档”的工程目标。
+
+该结论可用于：
+- 部署说明；
+- 项目留档；
+- 论文“系统工程实现 / 数据迁移验收”章节。
