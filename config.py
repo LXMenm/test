@@ -21,10 +21,28 @@ DATABASE_URL = os.getenv(
     "mysql+pymysql://root:123456@127.0.0.1:3306/tomato_diagnosis?charset=utf8mb4"
 )
 
-PROFILE_STORE_MODE = os.getenv("PROFILE_STORE_MODE", "file")
-EVENT_STORE_MODE = os.getenv("EVENT_STORE_MODE", "file")
-TRACE_STORE_MODE = os.getenv("TRACE_STORE_MODE", "file")
-KB_STORE_MODE = os.getenv("KB_STORE_MODE", "file")
+PROFILE_STORE_MODE = os.getenv("PROFILE_STORE_MODE", "mysql")
+EVENT_STORE_MODE = os.getenv("EVENT_STORE_MODE", "mysql")
+TRACE_STORE_MODE = os.getenv("TRACE_STORE_MODE", "mysql")
+KB_STORE_MODE = os.getenv("KB_STORE_MODE", "mysql")
+
+
+_STORAGE_CONFIG_LOGGED = False
+
+
+def log_resolved_storage_config() -> None:
+    global _STORAGE_CONFIG_LOGGED
+    if _STORAGE_CONFIG_LOGGED:
+        return
+    print(
+        "[StorageResolved] "
+        f"DATABASE_URL={DATABASE_URL} "
+        f"PROFILE_STORE_MODE={PROFILE_STORE_MODE} "
+        f"EVENT_STORE_MODE={EVENT_STORE_MODE} "
+        f"TRACE_STORE_MODE={TRACE_STORE_MODE} "
+        f"KB_STORE_MODE={KB_STORE_MODE}"
+    )
+    _STORAGE_CONFIG_LOGGED = True
 
 # 大模型API配置
 # 支持多种API：openai, qwen(通义千问), wenxin(文心一言)
@@ -156,4 +174,5 @@ def log_resolved_diagnosis_config() -> None:
     _DIAGNOSIS_CONFIG_LOGGED = True
 
 
+log_resolved_storage_config()
 log_resolved_diagnosis_config()

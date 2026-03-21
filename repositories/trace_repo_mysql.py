@@ -22,14 +22,14 @@ def _session_scope(session: Session | None = None) -> Iterator[Session]:
 
 
 def _utc_now() -> datetime:
-    return datetime.utcnow().replace(microsecond=0)
+    return datetime.utcnow()
 
 
 def _dt_to_iso(value: Any) -> Optional[str]:
     dt = _parse_dt(value)
     if dt is None:
         return None
-    return dt.replace(microsecond=0).isoformat() + "Z"
+    return dt.isoformat(timespec="milliseconds") + "Z"
 
 
 def _parse_dt(value: Any) -> Optional[datetime]:

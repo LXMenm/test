@@ -25,8 +25,13 @@ import re
 import json
 import os
 from pathlib import Path
-# 获取知识库管理器实例
-kb_manager = get_kb_manager()
+class _LazyKBManagerProxy:
+    def __getattr__(self, item: str):
+        return getattr(get_kb_manager(), item)
+
+
+# 获取知识库管理器实例（延迟初始化，避免模块导入时强制连接持久化后端）
+kb_manager = _LazyKBManagerProxy()
 
 GROWTH_STAGE_CANONICAL = {
     "苗期": "SEEDLING",
