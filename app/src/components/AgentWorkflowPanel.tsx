@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
+import { fetchTraceEvents } from '@/lib/traceClient';
 import type { LucideIcon } from 'lucide-react';
 import {
   calcPhaseDurationsByAgent,
@@ -541,6 +542,8 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
 
   const esRef = useRef<EventSource | null>(null);
   const tickerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const activeTraceFetchAbortRef = useRef<AbortController | null>(null);
+  const activeReplayTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastSeqRef = useRef(-1);
   const workflowDoneRef = useRef(false);
   const updatesStoppedRef = useRef(false);
@@ -572,18 +575,49 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
     }
   }, []);
 
+  const clearReplayTimer = useCallback(() => {
+    if (activeReplayTimerRef.current) {
+      clearTimeout(activeReplayTimerRef.current);
+      activeReplayTimerRef.current = null;
+    }
+  }, []);
+
+  const abortActiveTraceFetch = useCallback(() => {
+    if (activeTraceFetchAbortRef.current) {
+      activeTraceFetchAbortRef.current.abort();
+      activeTraceFetchAbortRef.current = null;
+    }
+  }, []);
+
   const clearExternal = useCallback(() => {
     closeStream();
     clearTicker();
-  }, [closeStream, clearTicker]);
+    clearReplayTimer();
+    abortActiveTraceFetch();
+  }, [abortActiveTraceFetch, closeStream, clearReplayTimer, clearTicker]);
 
-  const stopPolling = useCallback(() => {
+  const stopPolling = useCallback((markWaitingStable = false) => {
     updatesStoppedRef.current = true;
+    if (markWaitingStable) {
+      waitingStableRef.current = true;
+    }
     closeStream();
     clearTicker();
-  }, [closeStream, clearTicker]);
+    clearReplayTimer();
+    abortActiveTraceFetch();
+  }, [abortActiveTraceFetch, closeStream, clearReplayTimer, clearTicker]);
 
-  const maybeStartTicker = useCallback((snapshot: Record<FixedAgentId, AgentRowState>, done: boolean, paused: boolean = pausedByUserInput) => {
+  useEffect(() => {
+    console.debug('[AgentWorkflowPanel]', {
+      waitingStableRef: waitingStableRef.current,
+      updatesStoppedRef: updatesStoppedRef.current,
+      connectionState,
+      connectionHint,
+      traceId: traceId ?? null,
+    });
+  }, [connectionState, connectionHint, traceId, tracePausedStable, pausedByUserInput, workflowDone]);
+
+  const maybeStartTicker = useCallback((snapshot: Record<FixedAgentId, AgentRowState>, done: boolean, paused: boolean) => {
     const hasRunning = FIXED_AGENTS.some((agent) => snapshot[agent.id].status === 'running');
     const hasPhaseTimer = typeof phaseStartMs === 'number' && Number.isFinite(phaseStartMs);
     if (!done && !paused && (hasRunning || hasPhaseTimer)) {
@@ -593,7 +627,7 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
     } else {
       clearTicker();
     }
-  }, [phaseStartMs, clearTicker, pausedByUserInput]);
+  }, [phaseStartMs, clearTicker]);
 
   const completeSupervisorOnDone = useCallback((doneTs?: number) => {
     setRows((prev) => {
@@ -632,7 +666,7 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
       setConnectionHint(`已回放 ${replayedCountRef.current} 条事件，等待用户补充`);
       clearTicker();
       closeStream();
-      stopPolling();
+      stopPolling(true);
     } else if (event.status === 'running') {
       setPausedByUserInput(false);
       setTracePausedStable(false);
@@ -726,7 +760,7 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
     if (markDone) {
       workflowDoneRef.current = true;
       setWorkflowDone(true);
-      stopPolling();
+      stopPolling(false);
       completeSupervisorOnDone(finalTsRef.current);
     }
 
@@ -821,9 +855,28 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
     };
 
     const replayThenConnect = async () => {
+      if (cancelled || workflowDoneRef.current || updatesStoppedRef.current || waitingStableRef.current) return;
+
+      abortActiveTraceFetch();
+      const controller = new AbortController();
+      activeTraceFetchAbortRef.current = controller;
+
       try {
-        const response = await fetch(`/api/trace-events?trace_id=${encodeURIComponent(traceId)}`);
+        const response = await fetchTraceEvents(traceId, {
+          source: 'AgentWorkflowPanel.replay',
+          signal: controller.signal,
+          debugState: {
+            updatesStopped: updatesStoppedRef.current,
+            waitingStable: waitingStableRef.current,
+            workflowDone: workflowDoneRef.current,
+            hasInFlight: activeTraceFetchAbortRef.current !== null,
+          },
+        });
+        if (activeTraceFetchAbortRef.current === controller) {
+          activeTraceFetchAbortRef.current = null;
+        }
         if (!response.ok) {
+          if (cancelled || workflowDoneRef.current || updatesStoppedRef.current || waitingStableRef.current) return;
           setConnectionHint('历史回放失败，尝试直接连接实时流...');
           openStream();
           return;
@@ -832,11 +885,12 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
         const events = Array.isArray(payload?.events) ? payload.events : [];
         const sorted = sliceCurrentPhaseEvents(events as RawTraceEvent[], phaseStartMs);
 
-        if (cancelled) return;
+        if (cancelled || workflowDoneRef.current || updatesStoppedRef.current || waitingStableRef.current) return;
 
         let replayed = 0;
         let replayPausedByUserInput = false;
         sorted.forEach((raw: RawTraceEvent) => {
+          if (cancelled || workflowDoneRef.current || updatesStoppedRef.current || waitingStableRef.current) return;
           const normalized = normalizeEvent(raw as RawTraceEvent);
           if (isWaitingForUserInputEvent(normalized)) {
             replayPausedByUserInput = true;
@@ -871,8 +925,12 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
 
         setConnectionHint(`已回放 ${replayed} 条事件，正在连接实时流...`);
         openStream();
-      } catch {
+      } catch (error) {
+        if (activeTraceFetchAbortRef.current === controller) {
+          activeTraceFetchAbortRef.current = null;
+        }
         if (cancelled) return;
+        if (error instanceof DOMException && error.name === 'AbortError') return;
         setConnectionState('disconnected');
         setConnectionHint('历史回放异常，实时连接未建立');
       }
@@ -884,7 +942,7 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
       cancelled = true;
       clearExternal();
     };
-  }, [traceId, phaseStartMs, refreshToken, applyNormalizedEvent, clearExternal, closeStream]);
+  }, [traceId, phaseStartMs, refreshToken, abortActiveTraceFetch, applyNormalizedEvent, clearExternal, closeStream, stopPolling]);
 
   useEffect(() => {
     if (workflowDone) {

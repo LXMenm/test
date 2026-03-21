@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback, type ReactNode } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef, type ReactNode } from 'react';
 import { BarChart3, Calendar, RefreshCw, Image as ImageIcon, TrendingUp, AlertCircle, LineChart as LineChartIcon, Cpu, Settings2, ChevronDown, ChevronUp } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -9,6 +9,7 @@ import { ResponsiveContainer, LineChart, Line, CartesianGrid, XAxis, YAxis, Tool
 import { cn } from '@/lib/utils';
 import { getCultivationModeLabel, getEquipmentLabel, getFarmScaleLabel, getPesticideAccessLevelLabel, getRiskPreferenceLabel } from '@/lib/profileLabels';
 import { getModelLabel, resolveModelOptions } from '@/lib/modelOptions';
+import { fetchTraceEvents } from '@/lib/traceClient';
 
 interface DiseaseStat {
   disease: string;
@@ -635,6 +636,7 @@ export function DashboardPage() {
   const [kbDetail, setKbDetail] = useState<KbDetail | null>(null);
   const [traceSummary, setTraceSummary] = useState<TraceSummaryItem[]>([]);
   const [traceRawEvents, setTraceRawEvents] = useState<unknown[]>([]);
+  const traceFetchAbortRef = useRef<AbortController | null>(null);
   const [showRawTrace, setShowRawTrace] = useState(false);
   const [loading, setLoading] = useState(false);
   const [modulePrefs, setModulePrefs] = useState<ModulePrefs>(() => {
@@ -910,20 +912,46 @@ export function DashboardPage() {
 
   useEffect(() => {
     const traceId = selectedEvent?.traceId;
-    if (!traceId) { setTraceSummary([]); setTraceRawEvents([]); return; }
+    if (!traceId) {
+      traceFetchAbortRef.current?.abort();
+      traceFetchAbortRef.current = null;
+      setTraceSummary([]);
+      setTraceRawEvents([]);
+      return;
+    }
+    const controller = new AbortController();
+    traceFetchAbortRef.current?.abort();
+    traceFetchAbortRef.current = controller;
     const run = async () => {
       try {
-        const resp = await fetch(`/api/trace-events?trace_id=${encodeURIComponent(traceId)}`);
+        const resp = await fetchTraceEvents(traceId, {
+          source: 'DashboardPage.traceSummary',
+          signal: controller.signal,
+          debugState: { hasInFlight: true },
+        });
         const data = await resp.json();
+        if (traceFetchAbortRef.current === controller) {
+          traceFetchAbortRef.current = null;
+        }
         const rows = Array.isArray(data?.events) ? data.events : [];
         setTraceRawEvents(rows);
         setTraceSummary(buildTraceSummary(rows));
-      } catch {
+      } catch (error) {
+        if (traceFetchAbortRef.current === controller) {
+          traceFetchAbortRef.current = null;
+        }
+        if (error instanceof DOMException && error.name === 'AbortError') return;
         setTraceSummary([]);
         setTraceRawEvents([]);
       }
     };
     run();
+    return () => {
+      controller.abort();
+      if (traceFetchAbortRef.current === controller) {
+        traceFetchAbortRef.current = null;
+      }
+    };
   }, [selectedEvent?.traceId]);
 
   const traceNodeMap = useMemo(() => buildTraceNodeMap(traceRawEvents), [traceRawEvents]);
@@ -1147,7 +1175,7 @@ export function DashboardPage() {
             </select>
             <select value={selectedModel} onChange={(e) => setSelectedModel(e.target.value)} className="h-10 bg-[#114a38] border border-[#2e7d63] rounded-lg px-3 text-[#e8fff0] font-medium w-full leading-none">
               <option value="ALL" className="bg-[#0b241b] text-[#e8fff0]">模型：全部</option>
-              {modelOptions.map((item) => <option key={item.value} value={item.value} className="bg-[#0b241b] text-[#e8fff0]">{item.label}</option>)}
+              {modelOptions.map((item: { value: string; label: string }) => <option key={item.value} value={item.value} className="bg-[#0b241b] text-[#e8fff0]">{item.label}</option>)}
             </select>
           </div>
         </CardContent>
