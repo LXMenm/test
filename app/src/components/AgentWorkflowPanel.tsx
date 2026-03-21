@@ -525,6 +525,7 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [workflowDone, setWorkflowDone] = useState(false);
   const [pausedByUserInput, setPausedByUserInput] = useState(false);
+  const [tracePausedStable, setTracePausedStable] = useState(false);
   const [diagnosisConfidencePct, setDiagnosisConfidencePct] = useState<number | undefined>(undefined);
   const [allEvents, setAllEvents] = useState<NormalizedEvent[]>([]);
   const [showSystemNodes, setShowSystemNodes] = useState(false);
@@ -542,6 +543,8 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
   const tickerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const lastSeqRef = useRef(-1);
   const workflowDoneRef = useRef(false);
+  const updatesStoppedRef = useRef(false);
+  const waitingStableRef = useRef(false);
   const replayedCountRef = useRef(0);
   const finalTsRef = useRef<number | undefined>(undefined);
   const eventHistoryRef = useRef<Record<FixedAgentId, NormalizedEvent[]>>({
@@ -575,8 +578,10 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
   }, [closeStream, clearTicker]);
 
   const stopPolling = useCallback(() => {
-    // 保留明确入口，便于在流程结束时统一停止后续轮询/流更新
-  }, []);
+    updatesStoppedRef.current = true;
+    closeStream();
+    clearTicker();
+  }, [closeStream, clearTicker]);
 
   const maybeStartTicker = useCallback((snapshot: Record<FixedAgentId, AgentRowState>, done: boolean, paused: boolean = pausedByUserInput) => {
     const hasRunning = FIXED_AGENTS.some((agent) => snapshot[agent.id].status === 'running');
@@ -605,7 +610,7 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
   }, []);
 
   const applyNormalizedEvent = useCallback((event: NormalizedEvent): boolean => {
-    if (workflowDoneRef.current) return false;
+    if (workflowDoneRef.current || updatesStoppedRef.current) return false;
 
     const seq = event.seq;
     if (typeof seq === 'number' && Number.isFinite(seq) && seq <= lastSeqRef.current) {
@@ -617,12 +622,20 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
 
     const waitingForUserInput = isWaitingForUserInputEvent(event);
     if (waitingForUserInput) {
+      waitingStableRef.current = true;
+      updatesStoppedRef.current = true;
       allEventsRef.current = dedupBySeq([...allEventsRef.current, event]);
       setAllEvents(allEventsRef.current);
       setPausedByUserInput(true);
+      setTracePausedStable(true);
+      setConnectionState('disconnected');
+      setConnectionHint(`已回放 ${replayedCountRef.current} 条事件，等待用户补充`);
       clearTicker();
+      closeStream();
+      stopPolling();
     } else if (event.status === 'running') {
       setPausedByUserInput(false);
+      setTracePausedStable(false);
     }
 
     if (event.status === 'info') return false;
@@ -714,8 +727,6 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
       workflowDoneRef.current = true;
       setWorkflowDone(true);
       stopPolling();
-      closeStream();
-      clearTicker();
       completeSupervisorOnDone(finalTsRef.current);
     }
 
@@ -756,9 +767,12 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
       setReplayedCount(0);
       setWorkflowDone(false);
       setPausedByUserInput(false);
+      setTracePausedStable(false);
     });
     replayedCountRef.current = 0;
     workflowDoneRef.current = false;
+    updatesStoppedRef.current = false;
+    waitingStableRef.current = false;
     lastSeqRef.current = -1;
     finalTsRef.current = undefined;
     eventHistoryRef.current = {
@@ -774,13 +788,13 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
     queueMicrotask(() => setAllEvents([]));
 
     const openStream = () => {
-      if (cancelled || workflowDoneRef.current) return;
+      if (cancelled || workflowDoneRef.current || updatesStoppedRef.current || waitingStableRef.current) return;
 
       const es = new EventSource(`/api/traces/${encodeURIComponent(traceId)}/stream`);
       esRef.current = es;
 
       es.addEventListener('trace', (messageEvent) => {
-        if (cancelled || workflowDoneRef.current) return;
+        if (cancelled || workflowDoneRef.current || updatesStoppedRef.current) return;
         const raw = JSON.parse(messageEvent.data || '{}') as RawTraceEvent;
         if (!shouldIncludeEvent(raw, phaseStartMs)) return;
         const normalized = normalizeEvent(raw);
@@ -789,12 +803,17 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
           return;
         }
         applyNormalizedEvent(normalized);
+        if (waitingStableRef.current || updatesStoppedRef.current) {
+          setConnectionState('disconnected');
+          setConnectionHint(`已回放 ${replayedCountRef.current} 条事件，等待用户补充`);
+          return;
+        }
         setConnectionState('connected');
         setConnectionHint(`已回放 ${replayedCountRef.current} 条事件 + 实时连接中`);
       });
 
       es.onerror = () => {
-        if (cancelled || workflowDoneRef.current) return;
+        if (cancelled || workflowDoneRef.current || waitingStableRef.current || updatesStoppedRef.current) return;
         setConnectionState('disconnected');
         setConnectionHint(`实时连接断开（已回放 ${replayedCountRef.current} 条）`);
         closeStream();
@@ -844,6 +863,12 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
           return;
         }
 
+        if (waitingStableRef.current || replayPausedByUserInput || updatesStoppedRef.current) {
+          setConnectionState('disconnected');
+          setConnectionHint(`已回放 ${replayed} 条事件，等待用户补充`);
+          return;
+        }
+
         setConnectionHint(`已回放 ${replayed} 条事件，正在连接实时流...`);
         openStream();
       } catch {
@@ -870,11 +895,11 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
   }, [workflowDone, clearTicker, closeStream, completeSupervisorOnDone]);
 
   useEffect(() => {
-    if (workflowDone || pausedByUserInput) return;
+    if (workflowDone || pausedByUserInput || tracePausedStable) return;
     if (typeof phaseStartMs === 'number' && Number.isFinite(phaseStartMs) && !tickerRef.current) {
       tickerRef.current = setInterval(() => setNowMs(Date.now()), 100);
     }
-  }, [phaseStartMs, workflowDone, pausedByUserInput]);
+  }, [phaseStartMs, workflowDone, pausedByUserInput, tracePausedStable]);
 
 
   const phaseDurationsByAgent = useMemo(
