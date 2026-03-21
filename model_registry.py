@@ -35,6 +35,20 @@ _MODEL_REGISTRY: list[ModelConfig] = [
         enabled=True,
     ),
     ModelConfig(
+        model_id="tf_finetuned",
+        display_name="微调优化模型",
+        backend="tf",
+        model_path=_resolve_path("models/densenet121_tomato_disease_model_fine_tuned.h5"),
+        enabled=False,
+    ),
+    ModelConfig(
+        model_id="tf_paper_opt",
+        display_name="DenseNet优化模型",
+        backend="tf",
+        model_path=_resolve_path("models/densenet121_tomato_disease_model_fine_tuned_paper_opt.h5"),
+        enabled=False,
+    ),
+    ModelConfig(
         model_id="tf_light_v1",
         display_name="轻量模型V1",
         backend="tf",

@@ -3,6 +3,7 @@
 基于深度学习的番茄病害诊断模型
 参考论文：Transform and Deep Learning Algorithms for the Early Detection and Recognition of Tomato Leaf Disease
 """
+import sys
 import torch
 import torch.nn as nn
 import torchvision.models as models
@@ -20,6 +21,7 @@ from config import (
     DIAGNOSIS_CONFIDENCE_THRESHOLD,
     TEXT_DIAGNOSIS_BACKEND,
     TEXT_MODEL_DIR,
+    PROJECT_ROOT,
 )
 import os
 from knowledge_base import get_kb_manager
@@ -236,10 +238,44 @@ class DiseaseDiagnosisEngine:
             return
         try:
             import tensorflow as tf
+            from tensorflow.keras import backend as K
+            from tensorflow.keras.layers import Layer
         except ImportError as exc:
             raise ImportError("未安装 TensorFlow，无法加载 .h5/.keras 模型") from exc
 
-        self.tf_model = tf.keras.models.load_model(model_path)
+        custom_objects = {}
+        try:
+            sys.path.insert(0, str(PROJECT_ROOT / "tomato"))
+            from densenet121_paper_opt import (
+                CBAMBlock,
+                FocalLoss,
+                ChannelAttention,
+                SpatialAttention
+            )
+            custom_objects = {
+                "tomato>CBAMBlock": CBAMBlock,
+                "tomato>FocalLoss": FocalLoss,
+                "tomato>ChannelAttention": ChannelAttention,
+                "tomato>SpatialAttention": SpatialAttention,
+                "CBAMBlock": CBAMBlock,
+                "FocalLoss": FocalLoss,
+                "ChannelAttention": ChannelAttention,
+                "SpatialAttention": SpatialAttention,
+            }
+        except Exception as e:
+            print(f"[DiagnosisEngine] 加载自定义层失败，继续: {e}")
+
+        try:
+            self.tf_model = tf.keras.models.load_model(model_path, custom_objects=custom_objects)
+        except Exception:
+            print(f"[DiagnosisEngine] 尝试兼容性加载: model_path={model_path}")
+            self.tf_model = tf.keras.models.load_model(model_path, custom_objects=custom_objects, compile=False)
+            self.tf_model.compile(
+                optimizer="adam",
+                loss="categorical_crossentropy",
+                metrics=["accuracy"]
+            )
+        
         self.class_names = self._load_tf_class_names()
         self.label_map_cn = self._load_label_map_cn()
         output_dim = self.tf_model.output_shape[-1]
