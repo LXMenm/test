@@ -5,6 +5,15 @@ from diagnosis_model import DiseaseDiagnosisEngine
 from state import create_initial_state
 
 
+class _StubKBManager:
+    def normalize_symptoms(self, symptoms):
+        return list(symptoms or [])
+
+    def has_effective_text_evidence(self, normalized_symptoms, **kwargs):
+        _ = kwargs
+        return bool(normalized_symptoms)
+
+
 class _EngineTextOnly:
     def predict_text_proba(self, **kwargs):
         return {"黄化曲叶病毒病": 0.82, "花叶病毒病": 0.18}
@@ -149,6 +158,8 @@ class _EngineImageTextConflict:
 
 def _run_with_engine(monkeypatch, engine, *, symptoms=None, image_path=None):
     monkeypatch.setattr(agents_module, "get_diagnosis_engine", lambda **kwargs: engine)
+    monkeypatch.setattr(agents_module, "kb_manager", _StubKBManager())
+    monkeypatch.setattr(agents_module, "append_trace", lambda *args, **kwargs: None)
     state = create_initial_state("test")
     state["crop_type"] = "番茄"
     state["symptoms"] = symptoms or []
@@ -367,7 +378,7 @@ class _EngineRealFusionImageWeakTextStrong:
         return {"细菌性斑点病": 0.42, "早疫病": 0.35, "晚疫病": 0.23}
 
     def predict_text_proba(self, **kwargs):
-        return {"健康": 0.62, "细菌性斑点病": 0.18, "晚疫病": 0.20}
+        return {"细菌性斑点病": 0.82, "健康": 0.10, "晚疫病": 0.08}
 
     def build_prior_proba(self, **kwargs):
         return {}
@@ -438,3 +449,45 @@ def test_image_weak_text_weak_sets_need_confirm(monkeypatch):
     assert state["modality_conflict_flag"] is False
     assert state["personalization_flags"].get("need_confirm") is True
     assert state["final_confidence"] < 0.6
+
+
+class _EngineRealFusionWeakConflictLowConfidence:
+    def __init__(self):
+        self._fuser = DiseaseDiagnosisEngine.__new__(DiseaseDiagnosisEngine)
+
+    def predict_image_proba(self, _):
+        return {"细菌性斑点病": 0.58, "早疫病": 0.25, "晚疫病": 0.17}
+
+    def predict_text_proba(self, **kwargs):
+        return {"健康": 0.46, "细菌性斑点病": 0.30, "晚疫病": 0.24}
+
+    def build_prior_proba(self, **kwargs):
+        return {}
+
+    def fuse_multimodal_probs(self, image_probs, text_probs, prior_probs, image_confidence=0.0, text_confidence=0.0, text_evidence_active=None):
+        return DiseaseDiagnosisEngine.fuse_multimodal_probs(
+            self._fuser,
+            image_probs=image_probs,
+            text_probs=text_probs,
+            prior_probs=prior_probs,
+            image_confidence=image_confidence,
+            text_confidence=text_confidence,
+            text_evidence_active=text_evidence_active,
+        )
+
+    def build_diagnosis_evidence(self, **kwargs):
+        return {"modality_conflict_flag": kwargs["modality_conflict_flag"], "summary": "weak-conflict-low-confidence"}
+
+    def _get_disease_description(self, disease_type, symptoms):
+        return disease_type
+
+
+def test_image_weak_text_strong_with_weak_conflict_still_sets_need_confirm(monkeypatch):
+    state = _run_with_engine(monkeypatch, _EngineRealFusionWeakConflictLowConfidence(), symptoms=["叶片状态尚可"], image_path="exam.JPG")
+    assert state["fusion_meta"].get("fusion_case") == "image_weak_text_strong"
+    assert state["fusion_meta"].get("weak_conflict_candidate") is True
+    assert state["modality_conflict_flag"] is False
+    assert state["weak_conflict_candidate"] is True
+    assert state["weak_conflict_flag"] is True
+    assert state["personalization_flags"].get("need_confirm") is True
+    assert "weak_image_text_conflict" in (state["personalization_flags"].get("fallback_reason") or [])

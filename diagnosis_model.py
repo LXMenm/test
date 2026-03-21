@@ -44,12 +44,16 @@ def _get_disease_classes() -> list[str]:
     return list(_disease_classes_cache)
 
 
-FUSE_MULTIMODAL_VERSION = "fuse_v3_text_reliability_gate_20260319"
+FUSE_MULTIMODAL_VERSION = "fuse_v4_text_gate_with_weak_conflict_20260321"
 PREDICT_TEXT_PROBA_VERSION = "text_v3_bert_with_rule_fallback_20260316"
 IMAGE_RELIABLE_TOP1_THRESHOLD = 0.70
 IMAGE_RELIABLE_MARGIN_THRESHOLD = 0.15
-TEXT_RELIABLE_TOP1_THRESHOLD = 0.25
-TEXT_RELIABLE_MARGIN_THRESHOLD = 0.05
+TEXT_RELIABLE_TOP1_THRESHOLD = 0.45
+TEXT_RELIABLE_MARGIN_THRESHOLD = 0.10
+
+# 弱冲突：图文 top1 不一致，且至少一侧有中等强度，但尚未达到“双 reliable 强冲突”。
+WEAK_CONFLICT_MIN_IMAGE_TOP1 = 0.50
+WEAK_CONFLICT_MIN_TEXT_TOP1 = 0.40
 
 
 class DiagnosisModel(nn.Module):
@@ -624,6 +628,17 @@ class DiseaseDiagnosisEngine:
             and text_top1
             and image_top1 != text_top1
         )
+        weak_conflict_candidate = bool(
+            has_image
+            and has_text
+            and image_top1
+            and text_top1
+            and image_top1 != text_top1
+            and (
+                image_top1_conf >= WEAK_CONFLICT_MIN_IMAGE_TOP1
+                or text_top1_conf >= WEAK_CONFLICT_MIN_TEXT_TOP1
+            )
+        )
 
         base_weights = {"image": 0.0, "text": 0.0, "prior": 0.0}
         confidence_drop_reason = None
@@ -706,6 +721,7 @@ class DiseaseDiagnosisEngine:
                 "post_fusion_top3": [("健康", 1.0)],
                 "confidence_drop_reason": confidence_drop_reason,
                 "modality_conflict_flag": conflict,
+                "weak_conflict_candidate": weak_conflict_candidate,
             }
             return {"健康": 1.0}, meta
 
@@ -735,6 +751,7 @@ class DiseaseDiagnosisEngine:
             "post_fusion_top3": self._topk(fused, 3),
             "confidence_drop_reason": confidence_drop_reason,
             "modality_conflict_flag": conflict,
+            "weak_conflict_candidate": weak_conflict_candidate,
         }
         return fused, meta
 
