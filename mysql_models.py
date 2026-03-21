@@ -57,11 +57,41 @@ class FarmerProfileORM(TimestampMixin, Base):
     experience_level = Column(String(32), nullable=True)
     risk_preference = Column(String(32), nullable=True)
 
+    prefer_organic = Column(Boolean, nullable=False, default=False)
+    harvest_window_days = Column(Integer, nullable=True)
     constraints_json = Column(JSON, nullable=True)
     meta_json = Column(JSON, nullable=True)
 
     __table_args__ = (
         Index("idx_farmer_profiles_name", "name"),
+    )
+
+
+class FarmerProfileEquipmentORM(TimestampMixin, Base):
+    __tablename__ = "farmer_profile_equipment"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    farmer_id = Column(String(64), nullable=False, index=True)
+    equipment_code = Column(String(64), nullable=False)
+    seq = Column(Integer, nullable=False, default=1)
+
+    __table_args__ = (
+        UniqueConstraint("farmer_id", "seq", name="uq_farmer_profile_equipment_farmer_seq"),
+        Index("idx_farmer_profile_equipment_farmer", "farmer_id", "seq"),
+    )
+
+
+class FarmerProfileBannedIngredientORM(TimestampMixin, Base):
+    __tablename__ = "farmer_profile_banned_ingredients"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    farmer_id = Column(String(64), nullable=False, index=True)
+    ingredient_name = Column(String(128), nullable=False)
+    seq = Column(Integer, nullable=False, default=1)
+
+    __table_args__ = (
+        UniqueConstraint("farmer_id", "seq", name="uq_farmer_profile_banned_ingredients_farmer_seq"),
+        Index("idx_farmer_profile_banned_ingredients_farmer", "farmer_id", "seq"),
     )
 
 
