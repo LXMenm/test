@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  calcTracePhaseTiming,
   calcPhaseDurationsByAgent,
   isWaitingForUserInputEvent,
   parseTsMs,
@@ -110,4 +111,23 @@ test('calcPhaseDurationsByAgent pauses when workflow is waiting for user supplem
   assert.equal(isWaitingForUserInputEvent(waitingEvent), true);
   assert.equal(durations.supervisor.phase1Ms, 20000);
   assert.equal(durations.diagnosis.phase1Ms, 0);
+});
+
+test('calcTracePhaseTiming rebuilds phase1 and phase2 from a reused trace', () => {
+  const events = [
+    { seq: 1, agent: 'supervisor', ts: '2026-03-20T10:00:00.000Z' },
+    { seq: 2, agent: 'diagnosis', ts: '2026-03-20T10:00:02.000Z' },
+    { seq: 3, node: 'AwaitUserConfirmation', status: 'end', ts: '2026-03-20T10:00:05.000Z', payload: { status: 'waiting_for_supplement' } },
+    { seq: 4, agent: 'confirm_input', ts: '2026-03-20T10:07:00.000Z' },
+    { seq: 5, agent: 'diagnosis', ts: '2026-03-20T10:07:03.000Z' },
+    { seq: 6, node: 'Final', status: 'end', ts: '2026-03-20T10:07:08.000Z', payload: { status: 'completed' } },
+  ];
+
+  const timing = calcTracePhaseTiming(events, parseTsMs('2026-03-20T10:07:08.000Z'));
+
+  assert.equal(timing.hasTraceTiming, true);
+  assert.equal(timing.workflowDone, true);
+  assert.equal(timing.phase1Ms, 5000);
+  assert.equal(timing.phase2Ms, 8000);
+  assert.equal(timing.totalMs, 13000);
 });

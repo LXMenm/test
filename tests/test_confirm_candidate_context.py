@@ -352,6 +352,7 @@ def test_initial_low_confidence_enters_waiting_for_supplement(monkeypatch, tmp_p
             "final_disease": "疑似晚疫病",
             "final_confidence": 0.46,
             "final_source": "fusion",
+            "diagnosis_evidence": {"weights": {"image": 1.0, "text": 0.0, "prior": 0.0}},
             "diagnosis_model_meta": {
                 "model_id": "mock-model",
                 "model_display_name": "Mock Model",
@@ -359,7 +360,11 @@ def test_initial_low_confidence_enters_waiting_for_supplement(monkeypatch, tmp_p
                 "resolved_model_path": "/models/mock.bin",
                 "model_fallback_reason": [],
             },
-            "personalization_flags": {"need_confirm": True, "follow_up_questions": ["请补充病斑边缘形态"]},
+            "personalization_flags": {
+                "need_confirm": True,
+                "follow_up_questions": ["请补充病斑边缘形态"],
+                "fallback_reason": ["low_confidence", "image_text_conflict"],
+            },
             "image_confidence": 0.46,
             "fusion_top3": [("疑似晚疫病", 0.46), ("早疫病", 0.33), ("灰霉病", 0.21)],
         },
@@ -371,6 +376,9 @@ def test_initial_low_confidence_enters_waiting_for_supplement(monkeypatch, tmp_p
     assert body["status"] == "waiting_for_supplement"
     assert body["expert_review_status"] == "NONE"
     assert body["need_confirm"] is True
+    assert body["confirm_reasons"] == ["low_confidence", "image_text_conflict"]
+    assert body.get("fallback_reason") is None
+    assert body["fusion_mode"] == "gated_image_only"
 
 
 def test_confirm_top1_candidate_inherits_previous_context(monkeypatch, tmp_path):
@@ -420,6 +428,17 @@ def test_confirm_other_keeps_original_rediagnosis_branch(monkeypatch, tmp_path):
     assert body["final_disease"] == "补充诊断病害"
     assert body["final_confidence"] == pytest.approx(0.64)
     assert body["final_source"] == "fusion"
+    assert body["previous_trace_id"] == "trace-other"
+    assert body["confirm_round_parent_trace_id"] == "trace-other"
+
+    confirm_input_events = [
+        event for event in body["events"]
+        if event.get("agent") == "confirm_input"
+    ]
+    assert confirm_input_events
+    confirm_inputs = confirm_input_events[-1]["inputs"]
+    assert confirm_inputs["previous_trace_id"] == "trace-other"
+    assert confirm_inputs["confirm_round_parent_trace_id"] == "trace-other"
 
 
 def test_supplement_low_confidence_decline_expert_review_returns_completed_with_treatment(monkeypatch, tmp_path):
