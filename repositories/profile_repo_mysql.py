@@ -11,7 +11,12 @@ from typing import Any, Dict, Iterable, Optional
 from sqlalchemy import delete, select
 
 from db import get_db_session
-from mysql_models import FarmBaseORM, FarmerProfileORM
+from mysql_models import (
+    FarmBaseORM,
+    FarmerProfileBannedIngredientORM,
+    FarmerProfileEquipmentORM,
+    FarmerProfileORM,
+)
 
 
 def _datetime_to_iso(value: Any) -> Optional[str]:
@@ -50,6 +55,19 @@ def _safe_dict(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, dict) else {}
 
 
+def _safe_bool(value: Any) -> bool:
+    return bool(value)
+
+
+def _safe_int(value: Any) -> int | None:
+    if value in (None, ""):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _iter_base_payloads(value: Any) -> Iterable[dict[str, Any]]:
     if isinstance(value, dict):
         for base_id in sorted(value.keys()):
@@ -67,6 +85,61 @@ def _iter_base_payloads(value: Any) -> Iterable[dict[str, Any]]:
         normalized.sort(key=lambda item: str(item.get("base_id") or ""))
         for item in normalized:
             yield dict(item)
+
+
+def _extract_constraints(payload: dict[str, Any]) -> dict[str, Any]:
+    constraints = _safe_dict(payload.get("constraints"))
+    return {
+        "prefer_organic": _safe_bool(constraints.get("prefer_organic")),
+        "harvest_window_days": _safe_int(constraints.get("harvest_window_days")),
+        "banned_ingredients": [
+            str(item).strip()
+            for item in _safe_list(constraints.get("banned_ingredients"))
+            if str(item).strip()
+        ],
+    }
+
+
+def _build_constraints_payload(
+    profile_row: FarmerProfileORM,
+    ingredient_rows: Iterable[FarmerProfileBannedIngredientORM],
+) -> dict[str, Any]:
+    ingredient_values = [
+        str(row.ingredient_name).strip()
+        for row in sorted(ingredient_rows, key=lambda item: (item.seq or 0, item.id or 0))
+        if str(row.ingredient_name or "").strip()
+    ]
+    if ingredient_values:
+        return {
+            "prefer_organic": bool(profile_row.prefer_organic),
+            "harvest_window_days": profile_row.harvest_window_days,
+            "banned_ingredients": ingredient_values,
+        }
+
+    legacy = _safe_dict(profile_row.constraints_json)
+    return {
+        "prefer_organic": _safe_bool(legacy.get("prefer_organic")),
+        "harvest_window_days": _safe_int(legacy.get("harvest_window_days")),
+        "banned_ingredients": [
+            str(item).strip()
+            for item in _safe_list(legacy.get("banned_ingredients"))
+            if str(item).strip()
+        ],
+    }
+
+
+def _build_equipment_payload(
+    profile_row: FarmerProfileORM,
+    equipment_rows: Iterable[FarmerProfileEquipmentORM],
+) -> list[str]:
+    equipment_values = [
+        str(row.equipment_code).strip()
+        for row in sorted(equipment_rows, key=lambda item: (item.seq or 0, item.id or 0))
+        if str(row.equipment_code or "").strip()
+    ]
+    if equipment_values:
+        return equipment_values
+    return [str(item).strip() for item in _safe_list(profile_row.equipment_json) if str(item).strip()]
 
 
 def _base_row_to_dict(base_row: FarmBaseORM) -> dict[str, Any]:
@@ -99,6 +172,8 @@ def _base_row_to_dict(base_row: FarmBaseORM) -> dict[str, Any]:
 def _profile_row_to_dict(
     profile_row: FarmerProfileORM,
     base_rows: Iterable[FarmBaseORM],
+    equipment_rows: Iterable[FarmerProfileEquipmentORM],
+    ingredient_rows: Iterable[FarmerProfileBannedIngredientORM],
 ) -> dict[str, Any]:
     ordered_base_rows = sorted(base_rows, key=lambda item: item.base_id or "")
     bases = {
@@ -115,11 +190,11 @@ def _profile_row_to_dict(
         "confirm_when_low_confidence": profile_row.confirm_when_low_confidence,
         "farm_scale": profile_row.farm_scale,
         "pesticide_access_level": profile_row.pesticide_access_level,
-        "equipment": _safe_list(profile_row.equipment_json),
+        "equipment": _build_equipment_payload(profile_row, equipment_rows),
         "cultivation_mode": profile_row.cultivation_mode,
         "experience_level": profile_row.experience_level,
         "risk_preference": profile_row.risk_preference,
-        "constraints": _safe_dict(profile_row.constraints_json),
+        "constraints": _build_constraints_payload(profile_row, ingredient_rows),
         "bases": bases,
     }
 
@@ -135,7 +210,15 @@ def get_profile(farmer_id: str) -> Optional[dict[str, Any]]:
         base_rows = session.execute(
             select(FarmBaseORM).where(FarmBaseORM.farmer_id == farmer_id)
         ).scalars().all()
-        return _profile_row_to_dict(profile_row, base_rows)
+        equipment_rows = session.execute(
+            select(FarmerProfileEquipmentORM).where(FarmerProfileEquipmentORM.farmer_id == farmer_id)
+        ).scalars().all()
+        ingredient_rows = session.execute(
+            select(FarmerProfileBannedIngredientORM).where(
+                FarmerProfileBannedIngredientORM.farmer_id == farmer_id
+            )
+        ).scalars().all()
+        return _profile_row_to_dict(profile_row, base_rows, equipment_rows, ingredient_rows)
 
 
 def list_profile_ids() -> list[str]:
@@ -160,6 +243,12 @@ def save_profile_payload(payload: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("payload.farmer_id is required")
 
     bases_payload = list(_iter_base_payloads(payload.get("bases") or {}))
+    constraints_payload = _extract_constraints(payload)
+    equipment_payload = [
+        str(item).strip()
+        for item in _safe_list(payload.get("equipment"))
+        if str(item).strip()
+    ]
 
     with get_db_session() as session:
         try:
@@ -179,15 +268,45 @@ def save_profile_payload(payload: dict[str, Any]) -> dict[str, Any]:
             )
             profile_row.farm_scale = payload.get("farm_scale")
             profile_row.pesticide_access_level = payload.get("pesticide_access_level")
-            profile_row.equipment_json = _safe_list(payload.get("equipment"))
+            profile_row.equipment_json = equipment_payload
             profile_row.cultivation_mode = payload.get("cultivation_mode")
             profile_row.experience_level = payload.get("experience_level")
             profile_row.risk_preference = payload.get("risk_preference")
-            profile_row.constraints_json = _safe_dict(payload.get("constraints"))
+            profile_row.constraints_json = {
+                "prefer_organic": constraints_payload["prefer_organic"],
+                "harvest_window_days": constraints_payload["harvest_window_days"],
+                "banned_ingredients": list(constraints_payload["banned_ingredients"]),
+            }
+            profile_row.prefer_organic = constraints_payload["prefer_organic"]
+            profile_row.harvest_window_days = constraints_payload["harvest_window_days"]
 
+            session.execute(delete(FarmBaseORM).where(FarmBaseORM.farmer_id == farmer_id))
             session.execute(
-                delete(FarmBaseORM).where(FarmBaseORM.farmer_id == farmer_id)
+                delete(FarmerProfileEquipmentORM).where(FarmerProfileEquipmentORM.farmer_id == farmer_id)
             )
+            session.execute(
+                delete(FarmerProfileBannedIngredientORM).where(
+                    FarmerProfileBannedIngredientORM.farmer_id == farmer_id
+                )
+            )
+
+            for seq, equipment_code in enumerate(equipment_payload, start=1):
+                session.add(
+                    FarmerProfileEquipmentORM(
+                        farmer_id=farmer_id,
+                        equipment_code=equipment_code,
+                        seq=seq,
+                    )
+                )
+
+            for seq, ingredient_name in enumerate(constraints_payload["banned_ingredients"], start=1):
+                session.add(
+                    FarmerProfileBannedIngredientORM(
+                        farmer_id=farmer_id,
+                        ingredient_name=ingredient_name,
+                        seq=seq,
+                    )
+                )
 
             for base_payload in bases_payload:
                 base_id = str(base_payload.get("base_id") or "").strip()
@@ -226,11 +345,29 @@ def save_profile_payload(payload: dict[str, Any]) -> dict[str, Any]:
             base_rows = session.execute(
                 select(FarmBaseORM).where(FarmBaseORM.farmer_id == farmer_id)
             ).scalars().all()
+            equipment_rows = session.execute(
+                select(FarmerProfileEquipmentORM).where(FarmerProfileEquipmentORM.farmer_id == farmer_id)
+            ).scalars().all()
+            ingredient_rows = session.execute(
+                select(FarmerProfileBannedIngredientORM).where(
+                    FarmerProfileBannedIngredientORM.farmer_id == farmer_id
+                )
+            ).scalars().all()
             session.refresh(profile_row)
-            return _profile_row_to_dict(profile_row, base_rows)
+            return _profile_row_to_dict(profile_row, base_rows, equipment_rows, ingredient_rows)
         except Exception:
             session.rollback()
             raise
+
+
+def backfill_profile_normalized_mysql(payload: dict[str, Any]) -> dict[str, int]:
+    saved = save_profile_payload(payload)
+    constraints = _safe_dict(saved.get("constraints"))
+    return {
+        "equipment_count": len(_safe_list(saved.get("equipment"))),
+        "banned_ingredient_count": len(_safe_list(constraints.get("banned_ingredients"))),
+        "base_count": len(_safe_dict(saved.get("bases"))),
+    }
 
 
 def delete_profile(farmer_id: str) -> None:
@@ -238,6 +375,14 @@ def delete_profile(farmer_id: str) -> None:
         try:
             session.execute(
                 delete(FarmBaseORM).where(FarmBaseORM.farmer_id == farmer_id)
+            )
+            session.execute(
+                delete(FarmerProfileEquipmentORM).where(FarmerProfileEquipmentORM.farmer_id == farmer_id)
+            )
+            session.execute(
+                delete(FarmerProfileBannedIngredientORM).where(
+                    FarmerProfileBannedIngredientORM.farmer_id == farmer_id
+                )
             )
             session.execute(
                 delete(FarmerProfileORM).where(FarmerProfileORM.farmer_id == farmer_id)
