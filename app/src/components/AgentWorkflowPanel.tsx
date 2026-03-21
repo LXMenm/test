@@ -20,11 +20,10 @@ import { cn } from '@/lib/utils';
 import type { LucideIcon } from 'lucide-react';
 import {
   calcPhaseDurationsByAgent,
-  compareEvents,
   parseTsMs,
   shouldIncludeEvent,
   sliceCurrentPhaseEvents,
-} from './agentWorkflowTiming.js';
+} from './agentWorkflowTiming';
 
 type AgentStatus = 'pending' | 'running' | 'completed' | 'error';
 type FixedAgentId = 'supervisor' | 'reception' | 'diagnosis' | 'kb_retrieval' | 'treatment' | 'verification' | 'final';
@@ -802,7 +801,7 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
         if (cancelled) return;
 
         let replayed = 0;
-        sorted.forEach((raw) => {
+        sorted.forEach((raw: RawTraceEvent) => {
           const normalized = normalizeEvent(raw as RawTraceEvent);
           if (applyNormalizedEvent(normalized)) replayed += 1;
         });
