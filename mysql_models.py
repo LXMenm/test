@@ -272,3 +272,32 @@ class KBSymptomMapORM(TimestampMixin, Base):
     aliases_json = Column(JSON, nullable=True)
     disease_candidates_json = Column(JSON, nullable=True)
     meta_json = Column(JSON, nullable=True)
+
+
+class KBSymptomAliasORM(TimestampMixin, Base):
+    __tablename__ = "kb_symptom_aliases"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+
+    symptom_key = Column(String(128), nullable=False, index=True)
+    alias = Column(String(128), nullable=False, index=True)
+
+    __table_args__ = (
+        UniqueConstraint("symptom_key", "alias", name="uq_kb_symptom_aliases_symptom_alias"),
+        Index("idx_kb_symptom_aliases_symptom_alias", "symptom_key", "alias"),
+    )
+
+
+class KBSymptomCandidateDiseaseORM(TimestampMixin, Base):
+    __tablename__ = "kb_symptom_candidate_diseases"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+
+    symptom_key = Column(String(128), nullable=False, index=True)
+    disease_name = Column(String(128), nullable=False, index=True)
+    rank_no = Column(Integer, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("symptom_key", "disease_name", name="uq_kb_symptom_candidate_disease"),
+        Index("idx_kb_symptom_candidate_diseases_symptom_rank", "symptom_key", "rank_no"),
+    )

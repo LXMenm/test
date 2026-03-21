@@ -7,7 +7,14 @@ from typing import Any
 from sqlalchemy import delete, select
 
 from db import get_db_session
-from mysql_models import KBDiseaseORM, KBRuleORM, KBSymptomMapORM, KBTreatmentORM
+from mysql_models import (
+    KBDiseaseORM,
+    KBRuleORM,
+    KBSymptomAliasORM,
+    KBSymptomCandidateDiseaseORM,
+    KBSymptomMapORM,
+    KBTreatmentORM,
+)
 
 
 _PAYLOAD_KEY = "__payload__"
@@ -23,6 +30,126 @@ def _as_list(value: Any) -> list[Any]:
 
 def _clone_dict(value: dict[str, Any]) -> dict[str, Any]:
     return {str(k): v for k, v in value.items()}
+
+
+def _normalize_symptom_aliases(payload: dict[str, Any]) -> dict[str, str]:
+    aliases = _as_dict(payload.get("symptom_aliases"))
+    return {
+        str(alias).strip(): str(canonical).strip()
+        for alias, canonical in aliases.items()
+        if str(alias).strip() and str(canonical).strip()
+    }
+
+
+def _normalize_symptom_candidates(payload: dict[str, Any]) -> dict[str, list[str]]:
+    raw_candidates = _as_dict(payload.get("symptom_candidates") or payload.get("symptom_map"))
+    normalized: dict[str, list[str]] = {}
+    for canonical, diseases in raw_candidates.items():
+        canonical_key = str(canonical).strip()
+        if not canonical_key:
+            continue
+        values: list[str] = []
+        for disease in _as_list(diseases):
+            disease_name = str(disease).strip()
+            if disease_name and disease_name not in values:
+                values.append(disease_name)
+        normalized[canonical_key] = values
+    return normalized
+
+
+def _normalize_legacy_symptom_map(
+    payload: dict[str, Any],
+    symptom_candidates: dict[str, list[str]],
+) -> dict[str, list[str]]:
+    raw_map = _as_dict(payload.get("symptom_map") or symptom_candidates)
+    normalized: dict[str, list[str]] = {}
+    for canonical, diseases in raw_map.items():
+        canonical_key = str(canonical).strip()
+        if not canonical_key:
+            continue
+        values: list[str] = []
+        for disease in _as_list(diseases):
+            disease_name = str(disease).strip()
+            if disease_name and disease_name not in values:
+                values.append(disease_name)
+        normalized[canonical_key] = values
+    return normalized
+
+
+def _load_symptom_map_from_main_rows(rows: list[KBSymptomMapORM]) -> dict[str, Any]:
+    symptom_aliases: dict[str, str] = {}
+    symptom_candidates: dict[str, list[str]] = {}
+    symptom_map: dict[str, list[str]] = {}
+
+    for row in rows:
+        if row.symptom_key == _PAYLOAD_KEY:
+            payload = _as_dict(row.meta_json)
+            return {
+                "symptom_aliases": _clone_dict(_as_dict(payload.get("symptom_aliases"))),
+                "symptom_candidates": {
+                    str(k): _as_list(v) for k, v in _as_dict(payload.get("symptom_candidates")).items()
+                },
+                "symptom_map": {
+                    str(k): _as_list(v) for k, v in _as_dict(payload.get("symptom_map")).items()
+                },
+            }
+
+        canonical = str(row.canonical_symptom or row.symptom_key or "").strip()
+        if not canonical:
+            continue
+        for alias in _as_list(row.aliases_json):
+            alias_key = str(alias).strip()
+            if alias_key:
+                symptom_aliases[alias_key] = canonical
+        candidates = [str(item).strip() for item in _as_list(row.disease_candidates_json) if str(item).strip()]
+        symptom_candidates[canonical] = candidates
+        meta = _as_dict(row.meta_json)
+        raw_symptom_map = meta.get("symptom_map") if isinstance(meta.get("symptom_map"), list) else None
+        symptom_map[canonical] = [str(item).strip() for item in (raw_symptom_map if raw_symptom_map is not None else candidates) if str(item).strip()]
+
+    return {
+        "symptom_aliases": symptom_aliases,
+        "symptom_candidates": symptom_candidates,
+        "symptom_map": symptom_map,
+    }
+
+
+def _replace_symptom_map_children(
+    *,
+    session,
+    symptom_aliases: dict[str, str],
+    symptom_candidates: dict[str, list[str]],
+) -> dict[str, int]:
+    session.execute(delete(KBSymptomAliasORM))
+    session.execute(delete(KBSymptomCandidateDiseaseORM))
+
+    alias_count = 0
+    candidate_count = 0
+    for alias, canonical in sorted(symptom_aliases.items()):
+        session.add(
+            KBSymptomAliasORM(
+                symptom_key=canonical,
+                alias=alias,
+            )
+        )
+        alias_count += 1
+
+    for canonical, diseases in sorted(symptom_candidates.items()):
+        for idx, disease_name in enumerate(diseases, start=1):
+            session.add(
+                KBSymptomCandidateDiseaseORM(
+                    symptom_key=canonical,
+                    disease_name=disease_name,
+                    rank_no=idx,
+                )
+            )
+            candidate_count += 1
+
+    return {
+        "canonical_symptom_count": len(symptom_candidates),
+        "alias_count": alias_count,
+        "candidate_disease_count": candidate_count,
+    }
 
 
 def load_diseases_mysql() -> dict[str, Any]:
@@ -164,36 +291,54 @@ def load_symptom_map_mysql() -> dict[str, Any]:
         rows = session.execute(
             select(KBSymptomMapORM).order_by(KBSymptomMapORM.symptom_key.asc())
         ).scalars().all()
+        alias_rows = session.execute(
+            select(KBSymptomAliasORM).order_by(KBSymptomAliasORM.symptom_key.asc(), KBSymptomAliasORM.alias.asc())
+        ).scalars().all()
+        candidate_rows = session.execute(
+            select(KBSymptomCandidateDiseaseORM).order_by(
+                KBSymptomCandidateDiseaseORM.symptom_key.asc(),
+                KBSymptomCandidateDiseaseORM.rank_no.asc(),
+                KBSymptomCandidateDiseaseORM.id.asc(),
+            )
+        ).scalars().all()
 
-    symptom_aliases: dict[str, str] = {}
-    symptom_candidates: dict[str, list[str]] = {}
-    symptom_map: dict[str, list[str]] = {}
+    fallback_payload = _load_symptom_map_from_main_rows(rows)
+    if not alias_rows and not candidate_rows:
+        return fallback_payload
 
-    for row in rows:
-        if row.symptom_key == _PAYLOAD_KEY:
-            payload = _as_dict(row.meta_json)
-            return {
-                "symptom_aliases": _clone_dict(_as_dict(payload.get("symptom_aliases"))),
-                "symptom_candidates": {
-                    str(k): _as_list(v) for k, v in _as_dict(payload.get("symptom_candidates")).items()
-                },
-                "symptom_map": {
-                    str(k): _as_list(v) for k, v in _as_dict(payload.get("symptom_map")).items()
-                },
-            }
+    symptom_aliases = dict(fallback_payload.get("symptom_aliases") or {})
+    symptom_candidates = {
+        str(k): [str(item).strip() for item in (v or []) if str(item).strip()]
+        for k, v in (fallback_payload.get("symptom_candidates") or {}).items()
+        if str(k).strip()
+    }
+    symptom_map = {
+        str(k): [str(item).strip() for item in (v or []) if str(item).strip()]
+        for k, v in (fallback_payload.get("symptom_map") or {}).items()
+        if str(k).strip()
+    }
 
-        canonical = str(row.canonical_symptom or row.symptom_key or "").strip()
-        if not canonical:
-            continue
-        for alias in _as_list(row.aliases_json):
-            alias_key = str(alias).strip()
-            if alias_key:
+    if alias_rows:
+        symptom_aliases = {}
+        for row in alias_rows:
+            canonical = str(row.symptom_key or "").strip()
+            alias_key = str(row.alias or "").strip()
+            if canonical and alias_key:
                 symptom_aliases[alias_key] = canonical
-        candidates = [str(item).strip() for item in _as_list(row.disease_candidates_json) if str(item).strip()]
-        symptom_candidates[canonical] = candidates
-        meta = _as_dict(row.meta_json)
-        raw_symptom_map = meta.get("symptom_map") if isinstance(meta.get("symptom_map"), list) else None
-        symptom_map[canonical] = [str(item).strip() for item in (raw_symptom_map if raw_symptom_map is not None else candidates) if str(item).strip()]
+
+    if candidate_rows:
+        rebuilt_candidates: dict[str, list[str]] = {}
+        for row in candidate_rows:
+            canonical = str(row.symptom_key or "").strip()
+            disease_name = str(row.disease_name or "").strip()
+            if not canonical or not disease_name:
+                continue
+            rebuilt_candidates.setdefault(canonical, [])
+            if disease_name not in rebuilt_candidates[canonical]:
+                rebuilt_candidates[canonical].append(disease_name)
+        for canonical, diseases in rebuilt_candidates.items():
+            symptom_candidates[canonical] = diseases
+            symptom_map.setdefault(canonical, list(diseases))
 
     return {
         "symptom_aliases": symptom_aliases,
@@ -203,9 +348,9 @@ def load_symptom_map_mysql() -> dict[str, Any]:
 
 
 def save_symptom_map_mysql(payload: dict[str, Any]) -> dict[str, Any]:
-    symptom_aliases = _as_dict(payload.get("symptom_aliases"))
-    symptom_candidates = _as_dict(payload.get("symptom_candidates") or payload.get("symptom_map"))
-    legacy_symptom_map = _as_dict(payload.get("symptom_map") or symptom_candidates)
+    symptom_aliases = _normalize_symptom_aliases(payload)
+    symptom_candidates = _normalize_symptom_candidates(payload)
+    legacy_symptom_map = _normalize_legacy_symptom_map(payload, symptom_candidates)
 
     canonical_keys = set(symptom_candidates.keys()) | set(legacy_symptom_map.keys())
     canonical_keys |= {str(value).strip() for value in symptom_aliases.values() if str(value).strip()}
@@ -219,6 +364,11 @@ def save_symptom_map_mysql(payload: dict[str, Any]) -> dict[str, Any]:
 
     with get_db_session() as session:
         try:
+            _replace_symptom_map_children(
+                session=session,
+                symptom_aliases=symptom_aliases,
+                symptom_candidates=symptom_candidates,
+            )
             session.execute(delete(KBSymptomMapORM))
             session.add(
                 KBSymptomMapORM(
@@ -250,3 +400,21 @@ def save_symptom_map_mysql(payload: dict[str, Any]) -> dict[str, Any]:
             session.rollback()
             raise
     return load_symptom_map_mysql()
+
+
+def backfill_symptom_map_normalized_mysql(payload: dict[str, Any]) -> dict[str, int]:
+    symptom_aliases = _normalize_symptom_aliases(payload)
+    symptom_candidates = _normalize_symptom_candidates(payload)
+
+    with get_db_session() as session:
+        try:
+            stats = _replace_symptom_map_children(
+                session=session,
+                symptom_aliases=symptom_aliases,
+                symptom_candidates=symptom_candidates,
+            )
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
+    return stats
