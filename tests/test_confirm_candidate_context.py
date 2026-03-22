@@ -428,6 +428,8 @@ def test_confirm_other_keeps_original_rediagnosis_branch(monkeypatch, tmp_path):
     assert body["final_disease"] == "补充诊断病害"
     assert body["final_confidence"] == pytest.approx(0.64)
     assert body["final_source"] == "fusion"
+    assert body["status"] == "completed"
+    assert body["expert_review_recommended"] is False
     assert body["previous_trace_id"] == "trace-other"
     assert body["confirm_round_parent_trace_id"] == "trace-other"
 
@@ -439,6 +441,39 @@ def test_confirm_other_keeps_original_rediagnosis_branch(monkeypatch, tmp_path):
     confirm_inputs = confirm_input_events[-1]["inputs"]
     assert confirm_inputs["previous_trace_id"] == "trace-other"
     assert confirm_inputs["confirm_round_parent_trace_id"] == "trace-other"
+
+
+def test_supplement_low_confidence_requires_expert_decision_without_additional_supplement(monkeypatch, tmp_path):
+    _setup_event_dirs(monkeypatch, tmp_path)
+    upload_dir = _seed_upload(tmp_path, "supplement-expert-decision.jpg")
+    monkeypatch.setattr(app_module, "UPLOAD_DIR", upload_dir)
+    _seed_previous_case("trace-expert-decision", "supplement-expert-decision.jpg")
+    _install_recommend_expert_review_agents(monkeypatch)
+
+    client = TestClient(app_module.app)
+    response = client.post(
+        "/api/diagnose-confirm",
+        json={
+            "trace_id": "trace-expert-decision",
+            "previous_trace_id": "trace-expert-decision",
+            "image_id": "supplement-expert-decision.jpg",
+            "crop_type": "番茄",
+            "symptoms": ["病斑扩大"],
+            "choice": "other",
+        },
+    )
+    response.raise_for_status()
+    body = response.json()
+
+    assert body["status"] == "waiting_for_expert_decision"
+    assert body["expert_review_recommended"] is True
+    assert body["expert_review_selected"] is False
+    assert body["expert_review_status"] == "NONE"
+    assert body["need_confirm"] is False
+    assert body["expert_review_actions"] == ["use_current_result", "request_expert_review"]
+    assert body["treatment_available"] is False
+    assert body.get("treatment") is not None
+    assert (body.get("treatment") or {}).get("plan") in (None, "")
 
 
 def test_supplement_low_confidence_decline_expert_review_returns_completed_with_treatment(monkeypatch, tmp_path):
@@ -468,6 +503,7 @@ def test_supplement_low_confidence_decline_expert_review_returns_completed_with_
     assert body["expert_review_recommended"] is True
     assert body["expert_review_selected"] is False
     assert body["expert_review_status"] == "DECLINED"
+    assert body["expert_review_actions"] == ["use_current_result", "request_expert_review"]
     assert body["treatment_available"] is True
     assert (body.get("treatment") or {}).get("plan")
 
@@ -499,5 +535,6 @@ def test_supplement_low_confidence_accept_expert_review_returns_pending(monkeypa
     assert body["expert_review_recommended"] is True
     assert body["expert_review_selected"] is True
     assert body["expert_review_status"] == "PENDING"
+    assert body["expert_review_actions"] == ["use_current_result", "request_expert_review"]
     assert body["treatment_available"] is False
     assert body.get("treatment") is None
