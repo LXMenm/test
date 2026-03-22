@@ -4,8 +4,8 @@ export interface ModelOption {
 }
 
 const MODEL_OPTIONS: ModelOption[] = [
-  { value: 'tf_default', label: '默认高精度模型（tf）' },
-  { value: 'tf_light_v1', label: '轻量模型V1（tf）' },
+  { value: 'tf_default', label: '默认轻量上线模型（tf）' },
+  { value: 'tf_paper_opt', label: '高精度备选模型（tf）' },
   { value: 'torch_debug', label: 'Torch对比模型（torch）' },
 ];
 
