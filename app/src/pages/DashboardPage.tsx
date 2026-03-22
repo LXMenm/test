@@ -476,22 +476,6 @@ function resolvePersonalizationInfo(event: DiagnosisEvent, nodeMap?: TraceNodeMa
     canonicalMeta?.equipment,
     traceMeta?.equipment,
   );
-  const riskTags = pickTextList(
-    raw.risk_tags,
-    meta?.risk_tags,
-    canonicalMeta?.risk_tags,
-    traceMeta?.risk_tags,
-    event.riskTags,
-  );
-  const riskSummary = pickText(
-    raw.risk_summary,
-    meta?.risk_summary,
-    traceOutputs?.risk_summary,
-    runtimeSnapshot?.risk_summary,
-    canonicalMeta?.risk_summary,
-    traceMeta?.risk_summary,
-    event.riskSummary,
-  );
   const preferOrganic = pickBoolean(
     raw.prefer_organic,
     meta?.prefer_organic,
@@ -542,8 +526,6 @@ function resolvePersonalizationInfo(event: DiagnosisEvent, nodeMap?: TraceNodeMa
     { label: '有机偏好', value: preferOrganic === null ? '未设置' : (preferOrganic ? '是' : '否') },
     { label: '采收窗口', value: harvestWindow === null ? '未设置' : `${harvestWindow}天` },
     { label: '当前判定档位', value: getSelectedBranchLabel(selectedBranch) },
-    { label: '农业风险标签', value: riskTags.length > 0 ? riskTags.join('、') : '暂无' },
-    { label: '风险摘要', value: riskSummary || '暂无' },
     { label: '生育期', value: getGrowthStageLabel(growthStage) },
     { label: '环境摘要', value: environment || '暂无' },
   ];
@@ -1293,18 +1275,6 @@ export function DashboardPage() {
     }));
   }, [filteredEvents]);
 
-  const selectedRiskSummary = useMemo(() => {
-    if (!selectedEvent) return { tags: [] as string[], reasons: [] as string[] };
-    const riskItems = personalizationTabData.riskItems.length > 0 ? personalizationTabData.riskItems : selectedEvent.riskItems;
-    const tags = riskItems.length > 0
-      ? riskItems.map((item) => item.label || item.code).filter(Boolean)
-      : selectedEvent.riskTags;
-    const reasons = riskItems.length > 0
-      ? riskItems.map((item) => item.reason).filter(Boolean)
-      : [];
-    return { tags, reasons };
-  }, [personalizationTabData.riskItems, selectedEvent]);
-
   const kbSummary = useMemo(() => {
     const kbOutputs = getNodeOutputs(getLatestNode(traceNodeMap, 'kb_retrieval'));
     const kbDoc = toRecord(kbOutputs.kb_disease) ?? {};
@@ -1711,39 +1681,41 @@ export function DashboardPage() {
                     <div
                       key={event.id}
                       onClick={() => setSelectedEvent(event)}
-                      className={cn('p-3 rounded-xl cursor-pointer transition-all duration-300 border', selectedEvent?.id === event.id ? 'bg-[#203b31] border-[#84b89d]' : 'bg-white/5 hover:bg-white/10 border-transparent')}
+                      className={cn('p-3 rounded-xl cursor-pointer transition-all duration-300 border flex gap-3', selectedEvent?.id === event.id ? 'bg-[#203b31] border-[#84b89d]' : 'bg-white/5 hover:bg-white/10 border-transparent')}
                     >
-                      <div className="mb-3 rounded-lg overflow-hidden border border-white/10 bg-black/20">
+                      <div className="flex-shrink-0 rounded-lg overflow-hidden border border-white/10 bg-black/20">
                         <img
                           src={event.imageUrl || IMAGE_PLACEHOLDER_DATA_URI}
                           alt={`${event.disease} 缩略图`}
-                          className="h-28 w-full object-cover"
+                          className="w-20 h-20 object-cover"
                           loading="lazy"
                           onError={(evt) => {
                             evt.currentTarget.src = IMAGE_PLACEHOLDER_DATA_URI;
                           }}
                         />
                       </div>
-                      <div className="flex items-center justify-between gap-2">
-                        <p className="text-white/60 text-xs">{safeDisplayTime(event.ts)}</p>
-                        <Badge variant="outline" className="text-[10px] border-[#c8f7c5]/40 text-[#c8f7c5]">
-                          {event.confidencePct !== null ? `${event.confidencePct.toFixed(2)}%` : '—'}
-                        </Badge>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={(evt) => {
-                          evt.stopPropagation();
-                          navigateToKbDisease(event.disease);
-                        }}
-                        className="text-white font-medium mt-1 hover:text-[#c8f7c5] text-left"
-                      >
-                        {event.disease}
-                      </button>
-                      <div className="mt-2 flex flex-wrap gap-1">
-                        {event.personalizationApplied && <Badge className="text-[10px] bg-[#c8f7c5] text-black">个性化</Badge>}
-                        {event.filtered && <Badge className="text-[10px] bg-yellow-400 text-black">已过滤</Badge>}
-                        {event.confirmRound && <Badge className="text-[10px] bg-blue-400 text-black">确认轮</Badge>}
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center justify-between gap-2">
+                          <p className="text-white/60 text-xs">{safeDisplayTime(event.ts)}</p>
+                          <Badge variant="outline" className="text-[10px] border-[#c8f7c5]/40 text-[#c8f7c5] flex-shrink-0">
+                            {event.confidencePct !== null ? `${event.confidencePct.toFixed(2)}%` : '—'}
+                          </Badge>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={(evt) => {
+                            evt.stopPropagation();
+                            navigateToKbDisease(event.disease);
+                          }}
+                          className="text-white font-medium mt-1 hover:text-[#c8f7c5] text-left truncate block"
+                        >
+                          {event.disease}
+                        </button>
+                        <div className="mt-2 flex flex-wrap gap-1">
+                          {event.personalizationApplied && <Badge className="text-[10px] bg-[#c8f7c5] text-black">个性化</Badge>}
+                          {event.filtered && <Badge className="text-[10px] bg-yellow-400 text-black">已过滤</Badge>}
+                          {event.confirmRound && <Badge className="text-[10px] bg-blue-400 text-black">确认轮</Badge>}
+                        </div>
                       </div>
                     </div>
                   ))}
@@ -1839,50 +1811,6 @@ export function DashboardPage() {
                       ))}
                     </div>
                     <div className="bg-white/5 rounded-lg p-3 space-y-2">
-                      <div className="text-white/60 text-xs">影响分档的主要因素</div>
-                      {personalizationTabData.reasons.length > 0 ? (
-                        <div className="space-y-2">
-                          {personalizationTabData.reasons.map((reason, idx) => (
-                            <div key={`personal-reason-${idx}`} className="rounded-lg border border-[#c8f7c5]/20 bg-black/20 px-3 py-2 text-white/90 leading-6">
-                              {idx + 1}. {reason}
-                            </div>
-                          ))}
-                        </div>
-                      ) : (
-                        <div className="text-white/40 text-xs">暂无个性化原因</div>
-                      )}
-                    </div>
-                    <div className="bg-white/5 rounded-lg p-3 space-y-2">
-                      <div className="text-white/60 text-xs">过滤 / 约束结果</div>
-                      <div className="grid grid-cols-1 gap-2">
-                        <div className="rounded-lg bg-black/20 px-3 py-2">
-                          <div className="text-white/50 text-xs">是否触发过滤</div>
-                          <div className="mt-1 text-white">{personalizationTabData.filtered ? '是' : '否'}</div>
-                        </div>
-                        {!personalizationTabData.filtered
-                        && personalizationTabData.filteredActions.length === 0
-                        && personalizationTabData.filteredReasons.length === 0
-                        && personalizationTabData.filteredComponents.length === 0 ? (
-                          <div className="rounded-lg bg-black/20 px-3 py-2 text-white/70">未触发过滤</div>
-                          ) : (
-                            <>
-                              <div className="rounded-lg bg-black/20 px-3 py-2">
-                                <div className="text-white/50 text-xs">过滤动作</div>
-                                <div className="mt-1 text-white">{personalizationTabData.filteredActions.length > 0 ? personalizationTabData.filteredActions.join('、') : '无'}</div>
-                              </div>
-                              <div className="rounded-lg bg-black/20 px-3 py-2">
-                                <div className="text-white/50 text-xs">过滤原因</div>
-                                <div className="mt-1 text-white">{personalizationTabData.filteredReasons.length > 0 ? personalizationTabData.filteredReasons.join('、') : '无'}</div>
-                              </div>
-                              <div className="rounded-lg bg-black/20 px-3 py-2">
-                                <div className="text-white/50 text-xs">被过滤组件</div>
-                                <div className="mt-1 text-white">{personalizationTabData.filteredComponents.length > 0 ? personalizationTabData.filteredComponents.join('、') : '无'}</div>
-                              </div>
-                            </>
-                          )}
-                      </div>
-                    </div>
-                    <div className="bg-white/5 rounded-lg p-3 space-y-2">
                       <div className="text-white/60 text-xs">追问 / 档案缺失</div>
                       {personalizationTabData.followUpQuestions.length === 0 && personalizationTabData.missingProfileFields.length === 0 ? (
                         <div className="rounded-lg bg-black/20 px-3 py-2 text-white/70">无后续追问 / 档案完整</div>
@@ -1910,32 +1838,6 @@ export function DashboardPage() {
                           </div>
                         </div>
                       )}
-                    </div>
-                    <div className="bg-white/5 rounded-lg p-2 space-y-2">
-                      <div className="text-white/60 text-xs">农业风险标签（解释层）</div>
-                      <div className="flex flex-wrap gap-1">
-                        {selectedRiskSummary.tags.length > 0 ? selectedRiskSummary.tags.map((tag) => (
-                          <Badge key={tag} className="bg-[#c8f7c5]/20 text-[#c8f7c5] border border-[#c8f7c5]/40">{tag}</Badge>
-                        )) : <span className="text-white/40 text-xs">暂无风险标签</span>}
-                      </div>
-                      {personalizationTabData.riskItems.length > 0 ? (
-                        <div className="space-y-2">
-                          {personalizationTabData.riskItems.map((item, idx) => (
-                            <div key={`${item.code || item.label}-${idx}`} className="rounded-lg bg-black/20 px-3 py-2 text-xs">
-                              <div className="text-[#c8f7c5]">{item.label || item.code || '风险项'}</div>
-                              <div className="text-white/70 mt-1">
-                                {[item.level, item.source].filter(Boolean).join(' · ') || '未标注等级'}
-                              </div>
-                              <div className="text-white/85 mt-1">{item.reason || '暂无原因说明'}</div>
-                            </div>
-                          ))}
-                        </div>
-                      ) : null}
-                      {selectedRiskSummary.reasons.length > 0 ? (
-                        <ul className="list-disc pl-5 text-white/80 text-xs space-y-1">
-                          {selectedRiskSummary.reasons.slice(0, 3).map((reason, idx) => <li key={`risk-reason-${idx}`}>{reason}</li>)}
-                        </ul>
-                      ) : null}
                     </div>
                   </TabsContent>
                   <TabsContent value="trace" className="space-y-2 mt-0">
