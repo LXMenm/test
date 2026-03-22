@@ -416,6 +416,16 @@ def _normalize_reason_codes(value: Any) -> list[str]:
     ]
 
 
+def _is_non_empty_value(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, (list, tuple, set, dict)):
+        return len(value) > 0
+    return True
+
+
 def _build_response_meta(
     *,
     flags: dict[str, Any],
@@ -485,14 +495,17 @@ def serialize_final_response(payload: dict[str, Any]) -> dict[str, Any]:
     data = dict(payload or {})
     meta = dict(data.get("meta") or {})
 
-    # canonical 统一进 meta，root 不再重复
+    # canonical 统一进 meta，root 保持兼容性非空回填
     for key in META_ONLY_CANONICAL_KEYS:
-        if key in data and key not in meta:
+        if _is_non_empty_value(data.get(key)) and not _is_non_empty_value(meta.get(key)):
             meta[key] = data[key]
-        data.pop(key, None)
 
     if meta:
         data["meta"] = _normalize_meta_payload(meta)
+        normalized_meta = dict(data["meta"] or {})
+        for key in META_ONLY_CANONICAL_KEYS:
+            if not _is_non_empty_value(data.get(key)) and _is_non_empty_value(normalized_meta.get(key)):
+                data[key] = normalized_meta.get(key)
 
     for key in LIST_FIELDS_ALWAYS:
         data[key] = _as_clean_list(data.get(key))
@@ -516,6 +529,45 @@ def serialize_final_response(payload: dict[str, Any]) -> dict[str, Any]:
     if "confirm_message" in data and data["confirm_message"] is not None:
         data["confirm_message"] = sanitize_user_text(data["confirm_message"])
 
+    return data
+
+
+def _compact_trace_steps(trace_id: str | None) -> list[dict[str, Any]]:
+    normalized_trace_id = str(trace_id or "").strip()
+    if not normalized_trace_id:
+        return []
+
+    steps: list[dict[str, Any]] = []
+    try:
+        events = list_trace_events(normalized_trace_id)
+    except Exception:
+        return []
+
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        payload = _safe_record(event.get("payload"))
+        steps.append(
+            {
+                "seq": event.get("seq"),
+                "node": event.get("node") or event.get("agent") or payload.get("agent_id"),
+                "agent_id": event.get("agent_id") or payload.get("agent_id"),
+                "status": event.get("status"),
+                "message": event.get("message"),
+                "ts": event.get("ts"),
+            }
+        )
+    return steps
+
+
+def _serialize_event_dto(payload: dict[str, Any], *, inject_trace_steps: bool = False) -> dict[str, Any]:
+    data = serialize_final_response(payload)
+    if inject_trace_steps:
+        trace_steps = _compact_trace_steps(data.get("trace_id"))
+        if trace_steps:
+            data["trace_steps"] = trace_steps
+            if not isinstance(data.get("trace_events"), list) or not data.get("trace_events"):
+                data["trace_events"] = trace_steps
     return data
 
 
@@ -2428,8 +2480,10 @@ def get_events(start: str | None = None, end: str | None = None, limit: int = 50
     if start or end:
         if (start and not validate_date_str(start)) or (end and not validate_date_str(end)):
             raise HTTPException(status_code=400, detail="日期格式应为 YYYY-MM-DD")
-        return {"events": list_events_range(start, end, limit)}
-    return {"events": list_events(limit)}
+        events = list_events_range(start, end, limit)
+        return {"events": [_serialize_event_dto(event, inject_trace_steps=True) for event in events]}
+    events = list_events(limit)
+    return {"events": [_serialize_event_dto(event, inject_trace_steps=True) for event in events]}
 
 
 

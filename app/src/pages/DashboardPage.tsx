@@ -172,6 +172,16 @@ const IMAGE_PLACEHOLDER_DATA_URI = `data:image/svg+xml;utf8,${encodeURIComponent
   </svg>`,
 )}`;
 
+const FALLBACK_REASON_LABELS: Record<string, string> = {
+  has_image: '存在图像输入',
+  symptoms_missing: '症状信息不足',
+  low_confidence: '置信度较低',
+  low_margin: '置信度差距较小',
+  post_diagnosis: '诊断完成后续流程',
+  need_confirm_but_continue: '需确认但继续生成方案',
+  retry_with_more_symptoms: '补充症状后复诊',
+};
+
 function formatDate(date: Date): string {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, '0');
@@ -285,6 +295,42 @@ function sourceLabel(value: string): string {
   if (normalized === 'rule') return '规则';
   if (normalized === 'fallback') return '回退';
   return normalized;
+}
+
+function mapFallbackReason(value: unknown): string {
+  const raw = readableText(value, '').trim();
+  if (!raw) return '';
+  return FALLBACK_REASON_LABELS[raw] ?? raw;
+}
+
+function formatFallbackReasons(values: unknown): string {
+  if (!Array.isArray(values)) return '未触发';
+  const items = values.map((item) => mapFallbackReason(item)).filter(Boolean);
+  return items.length > 0 ? items.join('、') : '未触发';
+}
+
+function getLlmStatusLabel(event: DiagnosisEvent, traceRows?: unknown[]): string {
+  const rows = Array.isArray(traceRows) ? traceRows : [];
+  const treatmentNode = getLatestNode(buildTraceNodeMap(rows), 'treatment');
+  const treatmentOutputs = getNodeOutputs(treatmentNode);
+  const raw = event.raw;
+  const meta = toRecord(raw.meta);
+  const treatment = toRecord(raw.treatment);
+  const llmFailed = event.llmFailed
+    || treatmentOutputs.llm_failed === true
+    || treatment?.llm_failed === true
+    || meta?.llm_failed === true;
+  const llmFailedReason = readableText(
+    raw.llm_failed_reason ?? treatmentOutputs.llm_failed_reason ?? treatment?.llm_failed_reason ?? meta?.llm_failed_reason,
+    '',
+  );
+
+  if (llmFailed) {
+    return llmFailedReason ? `失败，已降级：${llmFailedReason}` : '失败，已降级';
+  }
+  if (event.workflowDegraded) return '未失败，当前为降级方案';
+  if (Object.keys(treatmentOutputs).length > 0 || treatment) return '成功';
+  return '未记录';
 }
 
 type TraceNodeMap = Record<string, Record<string, unknown>[]>;
@@ -984,6 +1030,25 @@ export function DashboardPage() {
     return { plan, prevention };
   }, [selectedEvent]);
 
+  const caseFallbackSummary = useMemo(() => {
+    if (!selectedEvent) return { source: '未触发', reasons: '未触发', llmStatus: '未记录' };
+    const raw = selectedEvent.raw;
+    const meta = toRecord(raw.meta);
+    const reasons = Array.isArray(raw.confirm_reasons) && raw.confirm_reasons.length > 0
+      ? raw.confirm_reasons
+      : (Array.isArray(raw.fallback_reason) && raw.fallback_reason.length > 0
+        ? raw.fallback_reason
+        : (Array.isArray(meta?.confirm_reasons) && meta.confirm_reasons.length > 0
+          ? meta.confirm_reasons
+          : (Array.isArray(meta?.fallback_reason) ? meta.fallback_reason : [])));
+
+    return {
+      source: readableText(raw.final_source, selectedEvent.finalSource),
+      reasons: formatFallbackReasons(reasons),
+      llmStatus: getLlmStatusLabel(selectedEvent, traceRawEvents),
+    };
+  }, [selectedEvent, traceRawEvents]);
+
   const riskDistribution = useMemo(() => {
     const counts = new Map<string, number>();
     filteredEvents.forEach((event) => {
@@ -1541,6 +1606,12 @@ export function DashboardPage() {
                           <div className="whitespace-pre-wrap">{caseTreatmentSummary.prevention}</div>
                         </div>
                       )}
+                    </div>
+                    <div className="bg-white/5 rounded-lg p-3 text-sm text-white/80 space-y-2">
+                      <p className="text-white/60 text-xs">回退 / LLM 状态</p>
+                      <div>结果来源：{caseFallbackSummary.source}</div>
+                      <div>回退原因：{caseFallbackSummary.reasons}</div>
+                      <div>LLM 状态：{caseFallbackSummary.llmStatus}</div>
                     </div>
                   </TabsContent>
                   <TabsContent value="personal" className="space-y-2 mt-0 text-sm text-white/80">
