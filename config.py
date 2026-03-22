@@ -73,7 +73,7 @@ if DIAGNOSIS_BACKEND not in {"tf", "torch", "auto"}:
     )
     DIAGNOSIS_BACKEND = "tf"
 PROJECT_ROOT = Path(__file__).resolve().parent
-DEFAULT_TF_MODEL_PATH = PROJECT_ROOT / "models" / "densenet121_tomato_disease_model_fine_tuned.h5"
+DEFAULT_TF_MODEL_PATH = PROJECT_ROOT / "models" / "mobilenetv3_light_v1.keras"
 _ENV_DIAGNOSIS_MODEL_PATH = os.getenv("DIAGNOSIS_MODEL_PATH")
 
 
@@ -101,7 +101,7 @@ def _resolve_diagnosis_model_path() -> str:
             return str(env_path)
         print(
             "[ConfigResolved] "
-            "默认TF模型不存在，请先运行 tomato/train_densenet121.py 生成模型。"
+            "默认TF模型不存在，请先训练并生成 models/mobilenetv3_light_v1.keras。"
         )
         return str(DEFAULT_TF_MODEL_PATH)
 
@@ -133,7 +133,7 @@ def _resolve_diagnosis_model_path() -> str:
         return str(env_path)
     print(
         "[ConfigResolved] "
-        "默认TF模型不存在，请先运行 tomato/train_densenet121.py 生成模型。"
+        "默认TF模型不存在，请先训练并生成 models/mobilenetv3_light_v1.keras。"
     )
     return str(DEFAULT_TF_MODEL_PATH)
 
@@ -161,7 +161,7 @@ def log_resolved_diagnosis_config() -> None:
     if not os.path.exists(DIAGNOSIS_MODEL_PATH):
         print(
             "[ConfigResolved] "
-            "模型文件不存在，请先运行 tomato/train_densenet121.py 生成模型。"
+            f"模型文件不存在，请先生成默认模型: {DIAGNOSIS_MODEL_PATH}"
         )
     print(
         "[ConfigResolved] "
