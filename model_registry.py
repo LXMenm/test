@@ -52,7 +52,7 @@ _MODEL_REGISTRY: list[ModelConfig] = [
         model_id="tf_light_v1",
         display_name="轻量模型V1",
         backend="tf",
-        model_path=_resolve_path("models/densenet121_tomato_disease_model_light_v1.h5"),
+        model_path=_resolve_path("models/mobilenetv3_light_v1.keras"),
         enabled=True,
     ),
     ModelConfig(

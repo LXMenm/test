@@ -24,13 +24,25 @@
 
 ## 默认输出位置
 
-训练脚本默认直接输出到系统当前 `tf_light_v1` 的模型槽位：
+训练脚本现在会默认输出三类产物：
 
 ```text
-models/densenet121_tomato_disease_model_light_v1.h5
+models/mobilenetv3_light_v1.keras
+models/mobilenetv3_light_v1.weights.h5
+models/mobilenetv3_light_v1_artifacts.json
 ```
 
-虽然文件名里沿用了历史命名中的 `densenet121`，但其中实际保存的是新的 MobileNetV3 轻量模型。这样做的目的是 **不改现有 model_registry，就能直接接入系统轻量模型选项**。
+其中：
+
+- `.keras`：作为 `tf_light_v1` 的主注册模型文件
+- `.weights.h5`：用于按代码重建结构后再加载权重
+- `artifacts.json`：记录 `alpha`、`dropout`、`image_size`、类别数等关键信息
+
+如需兼容旧流程，还可以额外导出 legacy h5：
+
+```bash
+python -m tomato.train_mobilenetv3_light_v1 --export_legacy_h5
+```
 
 ## 推荐训练命令
 
@@ -59,12 +71,14 @@ python -m tomato.infer_mobilenetv3_light_v1 --dir tomato/val/Tomato_healthy --to
 
 ## 和现有系统的关系
 
-- 新模型默认保存到 `tf_light_v1` 现有槽位路径。
-- 后端模型选择仍可继续使用 `tf_default` 与 `tf_light_v1` 做 A/B 对比。
-- 类别文件和中文标签映射仍复用 `tomato/` 下同一套文件。
+- `model_registry.py` 中的 `tf_light_v1` 会指向 `models/mobilenetv3_light_v1.keras`
+- 后端模型选择仍可继续使用 `tf_default` 与 `tf_light_v1` 做 A/B 对比
+- 类别文件和中文标签映射仍复用 `tomato/` 下同一套文件
+- 推理时如果 `.keras` 不存在，还可以退回 `.weights.h5 + artifacts.json` 方式重建模型
 
 ## 建议的验证顺序
 
-1. 先训练轻量模型。
-2. 用 `tools/eval_models.py` 对比 `tf_default` 和 `tf_light_v1`。
-3. 如果轻量模型在速度、体积和精度上达到预期，再将前端默认模型切到 `tf_light_v1`。
+1. 重新训练轻量模型
+2. 用 `tools/eval_models.py` 对比 `tf_default` 和 `tf_light_v1`
+3. 用 `python -m tomato.infer_mobilenetv3_light_v1` 抽查单图/批量预测
+4. 如果轻量模型在速度、体积和精度上达到预期，再将前端默认模型切到 `tf_light_v1`

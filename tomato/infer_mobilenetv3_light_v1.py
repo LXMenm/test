@@ -17,10 +17,12 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from tomato.mobilenetv3_light_v1 import get_custom_objects
+from tomato.mobilenetv3_light_v1 import build_mobilenetv3_light_v1, get_custom_objects
 
 BASE_DIR = Path(__file__).resolve().parent
-DEFAULT_MODEL_PATH = REPO_ROOT / "models" / "densenet121_tomato_disease_model_light_v1.h5"
+DEFAULT_MODEL_PATH = REPO_ROOT / "models" / "mobilenetv3_light_v1.keras"
+DEFAULT_WEIGHTS_PATH = REPO_ROOT / "models" / "mobilenetv3_light_v1.weights.h5"
+ARTIFACTS_PATH = REPO_ROOT / "models" / "mobilenetv3_light_v1_artifacts.json"
 CLASS_NAMES_PATH = BASE_DIR / "tomato_disease_classes.txt"
 LABEL_MAP_CN_PATH = BASE_DIR / "label_map_cn.json"
 IMAGE_SIZE = 224
@@ -31,6 +33,7 @@ def parse_args():
     parser.add_argument("--image", type=str, default=None, help="单张图片路径")
     parser.add_argument("--dir", type=str, default=None, help="批量预测目录")
     parser.add_argument("--model_path", type=str, default=str(DEFAULT_MODEL_PATH))
+    parser.add_argument("--weights_path", type=str, default=str(DEFAULT_WEIGHTS_PATH))
     parser.add_argument("--topk", type=int, default=3)
     return parser.parse_args()
 
@@ -47,13 +50,46 @@ def load_label_map() -> dict[str, str]:
     return json.loads(LABEL_MAP_CN_PATH.read_text(encoding="utf-8"))
 
 
-def load_trained_model(model_path: str):
-    model_file = Path(model_path)
-    if not model_file.exists():
-        raise FileNotFoundError(f"模型文件不存在: {model_file}")
-    model = tf.keras.models.load_model(str(model_file), custom_objects=get_custom_objects(), compile=False)
-    print(f"已加载模型: {model_file}")
+def _load_artifacts() -> dict[str, object]:
+    if not ARTIFACTS_PATH.exists():
+        return {}
+    try:
+        return json.loads(ARTIFACTS_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _build_model_from_artifacts(class_names: list[str], weights_path: str):
+    artifacts = _load_artifacts()
+    alpha = float(artifacts.get("alpha", 0.75))
+    dropout = float(artifacts.get("dropout", 0.25))
+    image_size = int(artifacts.get("image_size", IMAGE_SIZE))
+    wrapper = build_mobilenetv3_light_v1(
+        num_classes=max(len(class_names), int(artifacts.get("num_classes", len(class_names) or 10))),
+        image_size=image_size,
+        alpha=alpha,
+        dropout=dropout,
+        backbone_trainable=False,
+    )
+    model = wrapper.model
+    model.load_weights(weights_path)
     return model
+
+
+def load_trained_model(model_path: str, class_names: list[str], weights_path: str):
+    model_file = Path(model_path)
+    if model_file.exists():
+        model = tf.keras.models.load_model(str(model_file), custom_objects=get_custom_objects(), compile=False)
+        print(f"已加载模型: {model_file}")
+        return model
+
+    weights_file = Path(weights_path)
+    if weights_file.exists():
+        model = _build_model_from_artifacts(class_names, str(weights_file))
+        print(f"已通过权重重建模型: {weights_file}")
+        return model
+
+    raise FileNotFoundError(f"模型文件不存在: {model_file}; 权重文件不存在: {weights_file}")
 
 
 def preprocess_image(image_path: str):
@@ -105,9 +141,9 @@ def batch_predict(model, image_dir: str, class_names: list[str], label_map: dict
 
 def main():
     args = parse_args()
-    model = load_trained_model(args.model_path)
     class_names = load_class_names()
     label_map = load_label_map()
+    model = load_trained_model(args.model_path, class_names, args.weights_path)
 
     if args.image:
         predictions = predict_image(model, args.image, class_names, label_map, topk=args.topk)
