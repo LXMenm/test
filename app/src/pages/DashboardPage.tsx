@@ -192,6 +192,16 @@ function formatDate(date: Date): string {
   return `${year}-${month}-${day}`;
 }
 
+function normalizeEventDay(value: unknown): string {
+  if (typeof value !== 'string') return '';
+  const trimmed = value.trim();
+  if (!trimmed) return '';
+  const directMatch = trimmed.match(/\d{4}-\d{2}-\d{2}/);
+  if (directMatch) return directMatch[0];
+  const parsed = Date.parse(trimmed);
+  return Number.isFinite(parsed) ? formatDate(new Date(parsed)) : '';
+}
+
 function getDefaultDateRange(days: number = 7): { start: string; end: string } {
   const end = new Date();
   const start = new Date();
@@ -684,7 +694,7 @@ function normalizeEvent(eventLike: unknown, index: number): DiagnosisEvent {
     ts: typeof event.ts === 'string'
       ? event.ts
       : (typeof event.timestamp === 'string' ? event.timestamp : new Date().toISOString()),
-    disease: readableText(event.final_disease ?? imageResult?.disease, '未识别病害'),
+    disease: readableText(event.final_disease ?? imageResult?.disease ?? event.disease ?? event.disease_name, '未识别病害'),
     traceId: typeof event.trace_id === 'string' ? event.trace_id : '',
     imageUrl: resolvedImageUrl,
     modelId,
@@ -1020,15 +1030,17 @@ export function DashboardPage() {
     const eventBreakdown = new Map<string, Record<string, number>>();
     const diseaseTotals = new Map<string, number>();
     filteredEvents.forEach((event) => {
-      const ts = Date.parse(event.ts);
-      if (!Number.isFinite(ts)) return;
-      const day = formatDate(new Date(ts));
+      const day = normalizeEventDay(event.ts);
+      const diseaseName = readableText(event.disease, '未识别病害');
+      diseaseTotals.set(diseaseName, (diseaseTotals.get(diseaseName) ?? 0) + 1);
+      if (!day) return;
       const current = eventBreakdown.get(day) ?? {};
-      current[event.disease] = (current[event.disease] ?? 0) + 1;
+      current[diseaseName] = (current[diseaseName] ?? 0) + 1;
       eventBreakdown.set(day, current);
-      diseaseTotals.set(event.disease, (diseaseTotals.get(event.disease) ?? 0) + 1);
     });
-    const topDiseases = Array.from(diseaseTotals.entries())
+    const topDiseases = (diseaseTotals.size > 0
+      ? Array.from(diseaseTotals.entries())
+      : stats.map(({ disease, count }) => [disease, count] as const))
       .sort((a, b) => b[1] - a[1])
       .slice(0, 6)
       .map(([disease]) => disease);
@@ -1045,7 +1057,7 @@ export function DashboardPage() {
       return payload;
     });
     return { data, topDiseases };
-  }, [filteredEvents, timeseries]);
+  }, [filteredEvents, stats, timeseries]);
 
   useEffect(() => {
     localStorage.setItem('dashboard:module-prefs', JSON.stringify(modulePrefs));
