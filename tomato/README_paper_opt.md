@@ -1,6 +1,11 @@
 # DenseNet121 论文融合优化版说明
 
-这套脚本是在现有 `tomato/train_densenet121.py` 和 `tomato/infer_densenet121.py` 之外新增的一条优化训练链路，目标是尽量不破坏你当前项目结构，同时把论文里最值得落地的改动接进去。
+这套脚本是在现有 `tomato/train_densenet121.py` 和 `tomato/infer_densenet121.py` 之外新增的一条高精度训练链路，当前在项目中的定位已经明确为：
+
+- 默认上线模型：`tf_default` → 默认轻量上线模型
+- 高精度备选模型：`tf_paper_opt` → DenseNet 论文融合优化版
+
+也就是说，这套 DenseNet 优化版现在不再作为系统默认模型，而是作为**高精度备选模型**保留，适合复核、对照和高精度场景。
 
 ## 这次新增了什么
 
@@ -31,13 +36,6 @@ python -m tomato.train_densenet121_paper_opt \
   --focal_gamma 1.0
 ```
 
-如果你想直接覆盖系统默认模型路径：
-
-```bash
-python -m tomato.train_densenet121_paper_opt \
-  --overwrite_default
-```
-
 ## 推荐推理命令
 
 单图：
@@ -52,14 +50,15 @@ python -m tomato.infer_densenet121_paper_opt --image path/to/image.jpg --topk 3
 python -m tomato.infer_densenet121_paper_opt --dir tomato/val/Tomato_healthy --topk 3
 ```
 
-## 和现有脚本的关系
+## 和现有系统的关系
 
-- 原脚本保留，方便你回退。
-- 新脚本单独命名为 `*_paper_opt.py`，不会直接覆盖你当前训练流程。
-- 当你确认优化模型效果更好后，可以再把输出模型覆盖到系统默认路径。
+- 原始 DenseNet 训练脚本保留，方便你回退。
+- `tf_paper_opt` 当前在系统中作为 **高精度备选模型** 暴露。
+- 当你需要更高平均置信度或做结果复核时，可以手动切换到该模型。
+- 日常默认上线与主流程诊断则走轻量模型 `tf_default`。
 
-## 现阶段我为什么没有直接替换原有系统加载逻辑
+## 建议的使用方式
 
-因为仓库当前诊断主流程已经在使用现有 `diagnosis_model.py` 和默认模型路径，为了避免一次性改太多导致诊断主链路不可用，这次先把“优化版训练/推理链路”独立出来，方便你先做 A/B 对比。
-
-如果你验证新模型效果更好，再把默认模型路径切到新产物即可.
+1. 日常默认诊断：使用 `tf_default`
+2. 高精度复核或 A/B 对照：使用 `tf_paper_opt`
+3. 如需继续优化 DenseNet 方向，再基于这条链路迭代

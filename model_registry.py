@@ -4,7 +4,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
-from config import DEFAULT_TF_MODEL_PATH, PROJECT_ROOT
+from config import (
+    DEFAULT_TF_MODEL_ID,
+    DEFAULT_TF_MODEL_LABEL,
+    DEFAULT_TF_MODEL_PATH,
+    PROJECT_ROOT,
+    TF_HIGH_ACCURACY_MODEL_ID,
+    TF_HIGH_ACCURACY_MODEL_LABEL,
+    TF_HIGH_ACCURACY_MODEL_PATH,
+)
 
 
 @dataclass(frozen=True)
@@ -16,7 +24,7 @@ class ModelConfig:
     enabled: bool = True
 
 
-DEFAULT_MODEL_ID = "tf_default"
+DEFAULT_MODEL_ID = DEFAULT_TF_MODEL_ID
 
 
 def _resolve_path(path: str) -> str:
@@ -28,24 +36,24 @@ def _resolve_path(path: str) -> str:
 
 _MODEL_REGISTRY: list[ModelConfig] = [
     ModelConfig(
-        model_id="tf_default",
-        display_name="默认轻量上线模型",
+        model_id=DEFAULT_TF_MODEL_ID,
+        display_name=DEFAULT_TF_MODEL_LABEL,
         backend="tf",
         model_path=str(DEFAULT_TF_MODEL_PATH),
         enabled=True,
     ),
     ModelConfig(
-        model_id="tf_paper_opt",
-        display_name="高精度备选模型",
+        model_id=TF_HIGH_ACCURACY_MODEL_ID,
+        display_name=TF_HIGH_ACCURACY_MODEL_LABEL,
         backend="tf",
-        model_path=_resolve_path("models/densenet121_tomato_disease_model_fine_tuned_paper_opt.h5"),
+        model_path=str(TF_HIGH_ACCURACY_MODEL_PATH),
         enabled=True,
     ),
     ModelConfig(
         model_id="tf_light_v1",
-        display_name="轻量模型V1（别名）",
+        display_name="轻量模型V1（兼容别名）",
         backend="tf",
-        model_path=_resolve_path("models/mobilenetv3_light_v1.keras"),
+        model_path=str(DEFAULT_TF_MODEL_PATH),
         enabled=False,
     ),
     ModelConfig(
