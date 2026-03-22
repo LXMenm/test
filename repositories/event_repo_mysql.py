@@ -75,6 +75,23 @@ def _as_list(value: Any) -> list[Any]:
     return list(value) if isinstance(value, list) else []
 
 
+def _is_non_empty(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, (list, tuple, set, dict)):
+        return len(value) > 0
+    return True
+
+
+def _set_non_empty(payload: dict[str, Any], key: str, value: Any) -> None:
+    if _is_non_empty(payload.get(key)):
+        return
+    if _is_non_empty(value):
+        payload[key] = value
+
+
 def _dt_to_iso(value: Any) -> Optional[str]:
     if value is None:
         return None
@@ -184,39 +201,47 @@ def _row_to_event_payload(row: DiagnosisEventORM) -> dict[str, Any]:
     if not payload:
         payload = {}
 
-    payload.setdefault("event_id", row.event_id)
-    payload.setdefault("trace_id", row.trace_id)
-    payload.setdefault("ts", _dt_to_iso(row.ts))
-    payload.setdefault("farmer_id", row.farmer_id)
-    payload.setdefault("base_id", row.base_id)
-    payload.setdefault("crop_type", row.crop_type)
-    payload.setdefault("growth_stage", row.growth_stage)
-    payload.setdefault("final_disease", row.final_disease)
-    payload.setdefault("final_confidence", row.final_confidence)
-    payload.setdefault("final_source", row.final_source)
-    payload.setdefault("model_id", row.model_id)
-    payload.setdefault("model_display_name", row.model_display_name)
-    payload.setdefault("status", row.status)
-    payload.setdefault("need_confirm", row.need_confirm)
-    payload.setdefault("personalization_applied", row.personalization_applied)
-    payload.setdefault("filtered", row.filtered)
-    payload.setdefault("workflow_degraded", row.workflow_degraded)
-    payload.setdefault("elapsed_ms", row.elapsed_ms)
-    payload.setdefault("lat", row.lat)
-    payload.setdefault("lon", row.lon)
-    payload.setdefault("symptoms", _as_list(row.symptoms_json))
-    payload.setdefault("image_result", _as_dict(row.image_result_json))
-    payload.setdefault("rule_result", _as_dict(row.rule_result_json))
-    payload.setdefault("treatment", row.treatment_json)
-    payload.setdefault("verification_result", row.verification_result_json)
-    payload.setdefault("verification_issues", _as_list(row.verification_issues_json))
-    payload.setdefault("risk_tags", _as_list(row.risk_tags_json))
-    payload.setdefault("risk_items", _as_list(row.risk_items_json))
-    payload.setdefault("text_top3", _as_list(row.text_top3_json))
-    payload.setdefault("fusion_top3", _as_list(row.fusion_top3_json))
-    payload.setdefault("diagnosis_evidence", row.diagnosis_evidence_json)
-    if row.meta_json and not isinstance(payload.get("meta"), dict):
-        payload["meta"] = row.meta_json
+    payload_meta = _as_dict(payload.get("meta"))
+    row_meta = _as_dict(row.meta_json)
+    merged_meta = dict(payload_meta)
+    for meta_key, meta_value in row_meta.items():
+        if not _is_non_empty(merged_meta.get(meta_key)) and _is_non_empty(meta_value):
+            merged_meta[meta_key] = meta_value
+    if merged_meta:
+        payload["meta"] = merged_meta
+
+    _set_non_empty(payload, "event_id", row.event_id)
+    _set_non_empty(payload, "trace_id", row.trace_id)
+    _set_non_empty(payload, "ts", _dt_to_iso(row.ts))
+    _set_non_empty(payload, "farmer_id", row.farmer_id)
+    _set_non_empty(payload, "base_id", row.base_id)
+    _set_non_empty(payload, "crop_type", row.crop_type)
+    _set_non_empty(payload, "growth_stage", row.growth_stage)
+    _set_non_empty(payload, "final_disease", row.final_disease)
+    _set_non_empty(payload, "final_confidence", row.final_confidence)
+    _set_non_empty(payload, "final_source", row.final_source)
+    _set_non_empty(payload, "model_id", row.model_id)
+    _set_non_empty(payload, "model_display_name", row.model_display_name)
+    _set_non_empty(payload, "status", row.status)
+    _set_non_empty(payload, "need_confirm", row.need_confirm)
+    _set_non_empty(payload, "personalization_applied", row.personalization_applied)
+    _set_non_empty(payload, "filtered", row.filtered)
+    _set_non_empty(payload, "workflow_degraded", row.workflow_degraded)
+    _set_non_empty(payload, "elapsed_ms", row.elapsed_ms)
+    _set_non_empty(payload, "lat", row.lat)
+    _set_non_empty(payload, "lon", row.lon)
+    _set_non_empty(payload, "symptoms", _as_list(row.symptoms_json))
+    _set_non_empty(payload, "image_result", _as_dict(row.image_result_json))
+    _set_non_empty(payload, "fallback_reason", _as_list(row.fallback_reason_json))
+    _set_non_empty(payload, "rule_result", _as_dict(row.rule_result_json))
+    _set_non_empty(payload, "treatment", row.treatment_json)
+    _set_non_empty(payload, "verification_result", row.verification_result_json)
+    _set_non_empty(payload, "verification_issues", _as_list(row.verification_issues_json))
+    _set_non_empty(payload, "risk_tags", _as_list(row.risk_tags_json))
+    _set_non_empty(payload, "risk_items", _as_list(row.risk_items_json))
+    _set_non_empty(payload, "text_top3", _as_list(row.text_top3_json))
+    _set_non_empty(payload, "fusion_top3", _as_list(row.fusion_top3_json))
+    _set_non_empty(payload, "diagnosis_evidence", row.diagnosis_evidence_json)
     return payload
 
 

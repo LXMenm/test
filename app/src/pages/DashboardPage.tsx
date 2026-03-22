@@ -7,7 +7,7 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { ResponsiveContainer, LineChart, Line, CartesianGrid, XAxis, YAxis, Tooltip, BarChart, Bar } from 'recharts';
 import { cn } from '@/lib/utils';
-import { getCultivationModeLabel, getEquipmentLabel, getFarmScaleLabel, getPesticideAccessLevelLabel, getRiskPreferenceLabel } from '@/lib/profileLabels';
+import { getCultivationModeLabel, getEquipmentLabel, getFarmScaleLabel, getGrowthStageLabel, getPesticideAccessLevelLabel, getRiskPreferenceLabel } from '@/lib/profileLabels';
 import { getModelLabel, resolveModelOptions } from '@/lib/modelOptions';
 import { fetchTraceEvents } from '@/lib/traceClient';
 
@@ -31,6 +31,7 @@ interface DiagnosisEvent {
   needConfirm: boolean;
   personalizationApplied: boolean;
   filtered: boolean;
+  filteredActions: string[];
   filteredReasons: string[];
   filteredComponents: string[];
   followUpQuestions: string[];
@@ -49,9 +50,11 @@ interface DiagnosisEvent {
   riskPreference: string;
   preferOrganic: boolean | null;
   harvestWindowDays: number | null;
+  growthStage: string;
+  environment: string;
   personalizationReasons: string[];
   riskTags: string[];
-  riskItems: Array<{ code: string; label: string; reason: string; level?: string }>;
+  riskItems: Array<{ code: string; label: string; reason: string; level?: string; source?: string }>;
   riskSummary: string;
   riskUpdatedAt: string;
   elapsedMs: number | null;
@@ -172,6 +175,16 @@ const IMAGE_PLACEHOLDER_DATA_URI = `data:image/svg+xml;utf8,${encodeURIComponent
   </svg>`,
 )}`;
 
+const FALLBACK_REASON_LABELS: Record<string, string> = {
+  has_image: '存在图像输入',
+  symptoms_missing: '症状信息不足',
+  low_confidence: '置信度较低',
+  low_margin: '置信度差距较小',
+  post_diagnosis: '诊断完成后续流程',
+  need_confirm_but_continue: '需确认但继续生成方案',
+  retry_with_more_symptoms: '补充症状后复诊',
+};
+
 function formatDate(date: Date): string {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, '0');
@@ -287,7 +300,51 @@ function sourceLabel(value: string): string {
   return normalized;
 }
 
+function mapFallbackReason(value: unknown): string {
+  const raw = readableText(value, '').trim();
+  if (!raw) return '';
+  return FALLBACK_REASON_LABELS[raw] ?? raw;
+}
+
+function formatFallbackReasons(values: unknown): string {
+  if (!Array.isArray(values)) return '未触发';
+  const items = values.map((item) => mapFallbackReason(item)).filter(Boolean);
+  return items.length > 0 ? items.join('、') : '未触发';
+}
+
+function getLlmStatusLabel(event: DiagnosisEvent, traceRows?: unknown[]): string {
+  const rows = Array.isArray(traceRows) ? traceRows : [];
+  const treatmentNode = getLatestNode(buildTraceNodeMap(rows), 'treatment');
+  const treatmentOutputs = getNodeOutputs(treatmentNode);
+  const raw = event.raw;
+  const meta = toRecord(raw.meta);
+  const treatment = toRecord(raw.treatment);
+  const llmFailed = event.llmFailed
+    || treatmentOutputs.llm_failed === true
+    || treatment?.llm_failed === true
+    || meta?.llm_failed === true;
+  const llmFailedReason = readableText(
+    raw.llm_failed_reason ?? treatmentOutputs.llm_failed_reason ?? treatment?.llm_failed_reason ?? meta?.llm_failed_reason,
+    '',
+  );
+
+  if (llmFailed) {
+    return llmFailedReason ? `失败，已降级：${llmFailedReason}` : '失败，已降级';
+  }
+  if (event.workflowDegraded) return '未失败，当前为降级方案';
+  if (Object.keys(treatmentOutputs).length > 0 || treatment) return '成功';
+  return '未记录';
+}
+
 type TraceNodeMap = Record<string, Record<string, unknown>[]>;
+
+interface PersonalizationTraceFallback {
+  payload?: Record<string, unknown>;
+  meta?: Record<string, unknown>;
+  canonicalMeta?: Record<string, unknown>;
+  outputs?: Record<string, unknown>;
+  runtimeSnapshot?: Record<string, unknown>;
+}
 
 function toPercent(value: unknown): string {
   const num = Number(value);
@@ -335,44 +392,160 @@ function getNodeOutputs(node?: Record<string, unknown>): Record<string, unknown>
   return toRecord(node?.outputs) ?? {};
 }
 
+function getPersonalizationTraceFallback(nodeMap?: TraceNodeMap): PersonalizationTraceFallback {
+  const node = getLatestNode(nodeMap ?? {}, 'personalization');
+  const payload = toRecord(node?.payload);
+  return {
+    payload,
+    meta: toRecord(payload?.meta),
+    canonicalMeta: toRecord(payload?.canonical_meta),
+    outputs: toRecord(payload?.outputs) ?? getNodeOutputs(node),
+    runtimeSnapshot: toRecord(payload?.runtime_snapshot),
+  };
+}
+
+function textListFromValue(value: unknown): string[] {
+  return Array.isArray(value) ? value.map((item) => readableText(item, '')).filter(Boolean) : [];
+}
+
+function pickTextList(...values: unknown[]): string[] {
+  for (const value of values) {
+    const normalized = textListFromValue(value);
+    if (normalized.length > 0) return normalized;
+  }
+  return [];
+}
+
+function pickBoolean(...values: unknown[]): boolean | null {
+  for (const value of values) {
+    if (typeof value === 'boolean') return value;
+  }
+  return null;
+}
+
+function pickNumber(...values: unknown[]): number | null {
+  for (const value of values) {
+    const normalized = Number(value);
+    if (Number.isFinite(normalized)) return normalized;
+  }
+  return null;
+}
+
+function pickText(...values: unknown[]): string {
+  for (const value of values) {
+    const normalized = readableText(value, '').trim();
+    if (normalized) return normalized;
+  }
+  return '';
+}
+
+function normalizeRiskItems(value: unknown): Array<{ code: string; label: string; reason: string; level?: string; source?: string }> {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => {
+    const obj = toRecord(item) ?? {};
+    return {
+      code: readableText(obj.code, ''),
+      label: readableText(obj.label, readableText(obj.code, '风险')),
+      reason: readableText(obj.reason, ''),
+      level: readableText(obj.level, ''),
+      source: readableText(obj.source, ''),
+    };
+  }).filter((item) => Boolean(item.code || item.label || item.reason || item.level || item.source));
+}
+
 function resolvePersonalizationInfo(event: DiagnosisEvent, nodeMap?: TraceNodeMap): Array<{ label: string; value: string }> {
-  const pNode = getLatestNode(nodeMap ?? {}, 'personalization');
-  const payload = toRecord(pNode?.payload);
-  const meta = toRecord(payload?.meta);
-  const pOutputs = toRecord(payload?.outputs);
-  const treatmentNode = getLatestNode(nodeMap ?? {}, 'treatment');
-  const treatmentOutputs = getNodeOutputs(treatmentNode);
-  const selectedBranch = String(
-    pOutputs?.selected_branch
-    ?? meta?.selected_branch
-    ?? treatmentOutputs?.selected_branch
-    ?? event.selectedBranchRaw
-    ?? ''
+  const raw = event.raw;
+  const meta = toRecord(raw.meta);
+  const traceFallback = getPersonalizationTraceFallback(nodeMap);
+  const traceMeta = traceFallback.meta;
+  const canonicalMeta = traceFallback.canonicalMeta;
+  const traceOutputs = traceFallback.outputs;
+  const runtimeSnapshot = traceFallback.runtimeSnapshot;
+  const selectedBranch = pickText(
+    raw.selected_branch,
+    meta?.selected_branch,
+    traceOutputs?.selected_branch,
+    runtimeSnapshot?.selected_branch,
+    canonicalMeta?.selected_branch,
+    traceMeta?.selected_branch,
+    event.selectedBranchRaw,
+  );
+  const equipment = pickTextList(
+    raw.equipment,
+    meta?.equipment,
+    canonicalMeta?.equipment,
+    traceMeta?.equipment,
+  );
+  const riskTags = pickTextList(
+    raw.risk_tags,
+    meta?.risk_tags,
+    canonicalMeta?.risk_tags,
+    traceMeta?.risk_tags,
+    event.riskTags,
+  );
+  const riskSummary = pickText(
+    raw.risk_summary,
+    meta?.risk_summary,
+    traceOutputs?.risk_summary,
+    runtimeSnapshot?.risk_summary,
+    canonicalMeta?.risk_summary,
+    traceMeta?.risk_summary,
+    event.riskSummary,
+  );
+  const preferOrganic = pickBoolean(
+    raw.prefer_organic,
+    meta?.prefer_organic,
+    meta?.constraints && toRecord(meta.constraints)?.prefer_organic,
+    canonicalMeta?.prefer_organic,
+    traceMeta?.prefer_organic,
+    event.preferOrganic,
+  );
+  const harvestWindow = pickNumber(
+    raw.harvest_window_days,
+    meta?.harvest_window_days,
+    meta?.constraints && toRecord(meta.constraints)?.harvest_window_days,
+    canonicalMeta?.harvest_window_days,
+    traceMeta?.harvest_window_days,
+    event.harvestWindowDays,
+  );
+  const growthStage = pickText(
+    raw.growth_stage,
+    meta?.growth_stage,
+    canonicalMeta?.growth_stage,
+    traceMeta?.growth_stage,
+    event.growthStage,
+  );
+  const environment = pickText(
+    raw.environment,
+    meta?.environment,
+    canonicalMeta?.environment,
+    traceMeta?.environment,
+    event.environment,
+  );
+  const personalizationApplied = pickBoolean(
+    raw.personalization_applied,
+    meta?.personalization_applied,
+    traceOutputs?.personalization_applied,
+    runtimeSnapshot?.personalization_applied,
+    event.personalizationApplied,
   );
 
-  const equipment = Array.isArray(meta?.equipment)
-    ? meta!.equipment.map((item) => readableText(item, '')).filter(Boolean)
-    : event.equipment;
-
-  const preferOrganic = typeof meta?.prefer_organic === 'boolean'
-    ? meta.prefer_organic
-    : event.preferOrganic;
-  const harvestWindow = Number.isFinite(Number(meta?.harvest_window_days))
-    ? Number(meta?.harvest_window_days)
-    : event.harvestWindowDays;
-
   return [
-    { label: '农户ID / 姓名', value: `${readableText(meta?.farmer_id, event.farmerId)}${event.farmerName !== '未设置' ? ` / ${event.farmerName}` : ''}` },
-    { label: '基地ID / 基地名称', value: `${readableText(meta?.base_id, event.baseId)}${event.baseName !== '未设置' ? ` / ${event.baseName}` : ''}` },
-    { label: '种植规模', value: getFarmScaleLabel(readableText(meta?.farm_scale, event.farmScale)) },
-    { label: '购药能力', value: getPesticideAccessLevelLabel(readableText(meta?.pesticide_access_level, event.pesticideAccessLevel)) },
+    { label: '农户ID / 姓名', value: `${pickText(raw.farmer_id, meta?.farmer_id, canonicalMeta?.farmer_id, traceMeta?.farmer_id, event.farmerId)}${event.farmerName !== '未设置' ? ` / ${event.farmerName}` : ''}` },
+    { label: '基地ID / 基地名称', value: `${pickText(raw.base_id, meta?.base_id, canonicalMeta?.base_id, traceMeta?.base_id, event.baseId)}${event.baseName !== '未设置' ? ` / ${event.baseName}` : ''}` },
+    { label: '种植规模', value: getFarmScaleLabel(pickText(raw.farm_scale, meta?.farm_scale, canonicalMeta?.farm_scale, traceMeta?.farm_scale, event.farmScale)) },
+    { label: '购药能力', value: getPesticideAccessLevelLabel(pickText(raw.pesticide_access_level, meta?.pesticide_access_level, canonicalMeta?.pesticide_access_level, traceMeta?.pesticide_access_level, event.pesticideAccessLevel)) },
     { label: '设备', value: equipment.length > 0 ? equipment.map((item) => getEquipmentLabel(item)).join('、') : '未设置' },
-    { label: '栽培模式', value: getCultivationModeLabel(readableText(meta?.cultivation_mode, event.cultivationMode)) },
-    { label: '风险偏好', value: getRiskPreferenceLabel(readableText(meta?.risk_preference, event.riskPreference)) },
+    { label: '栽培模式', value: getCultivationModeLabel(pickText(raw.cultivation_mode, meta?.cultivation_mode, canonicalMeta?.cultivation_mode, traceMeta?.cultivation_mode, event.cultivationMode)) },
+    { label: '风险偏好', value: getRiskPreferenceLabel(pickText(raw.risk_preference, meta?.risk_preference, canonicalMeta?.risk_preference, traceMeta?.risk_preference, event.riskPreference)) },
+    { label: '个性化已应用', value: personalizationApplied === null ? '未设置' : toYesNo(personalizationApplied) },
     { label: '有机偏好', value: preferOrganic === null ? '未设置' : (preferOrganic ? '是' : '否') },
     { label: '采收窗口', value: harvestWindow === null ? '未设置' : `${harvestWindow}天` },
     { label: '当前判定档位', value: getSelectedBranchLabel(selectedBranch) },
-    { label: '农业风险标签', value: event.riskTags.length > 0 ? event.riskTags.join('、') : '暂无' },
+    { label: '农业风险标签', value: riskTags.length > 0 ? riskTags.join('、') : '暂无' },
+    { label: '风险摘要', value: riskSummary || '暂无' },
+    { label: '生育期', value: getGrowthStageLabel(growthStage) },
+    { label: '环境摘要', value: environment || '暂无' },
   ];
 }
 
@@ -540,6 +713,9 @@ function normalizeEvent(eventLike: unknown, index: number): DiagnosisEvent {
     needConfirm: event.need_confirm === true,
     personalizationApplied: event.personalization_applied === true || meta?.personalization_applied === true,
     filtered: event.filtered === true || meta?.filtered === true,
+    filteredActions: Array.isArray(event.filtered_actions)
+      ? event.filtered_actions.map((item) => readableText(item, '')).filter(Boolean)
+      : (Array.isArray(meta?.filtered_actions) ? meta.filtered_actions.map((item) => readableText(item, '')).filter(Boolean) : []),
     filteredReasons: Array.isArray(event.filtered_reasons)
       ? event.filtered_reasons.map((item) => readableText(item, '')).filter(Boolean)
       : (Array.isArray(meta?.filtered_reasons) ? meta.filtered_reasons.map((item) => readableText(item, '')).filter(Boolean) : []),
@@ -561,38 +737,30 @@ function normalizeEvent(eventLike: unknown, index: number): DiagnosisEvent {
     baseName: readableText(meta?.base_name, '未设置'),
     farmScale: readableText(meta?.farm_scale, ''),
     pesticideAccessLevel: readableText(meta?.pesticide_access_level, ''),
-    equipment: Array.isArray(meta?.equipment) ? meta.equipment.map((item) => readableText(item, '')).filter(Boolean) : [],
+    equipment: Array.isArray(event.equipment)
+      ? event.equipment.map((item) => readableText(item, '')).filter(Boolean)
+      : (Array.isArray(meta?.equipment) ? meta.equipment.map((item) => readableText(item, '')).filter(Boolean) : []),
     cultivationMode: readableText(meta?.cultivation_mode, ''),
     riskPreference: readableText(meta?.risk_preference, ''),
-    preferOrganic: typeof constraints?.prefer_organic === 'boolean' ? constraints.prefer_organic : null,
-    harvestWindowDays: Number.isFinite(Number(constraints?.harvest_window_days)) ? Number(constraints?.harvest_window_days) : null,
+    preferOrganic: typeof event.prefer_organic === 'boolean'
+      ? event.prefer_organic
+      : (typeof meta?.prefer_organic === 'boolean'
+        ? meta.prefer_organic
+        : (typeof constraints?.prefer_organic === 'boolean' ? constraints.prefer_organic : null)),
+    harvestWindowDays: Number.isFinite(Number(event.harvest_window_days))
+      ? Number(event.harvest_window_days)
+      : (Number.isFinite(Number(meta?.harvest_window_days))
+        ? Number(meta?.harvest_window_days)
+        : (Number.isFinite(Number(constraints?.harvest_window_days)) ? Number(constraints?.harvest_window_days) : null)),
+    growthStage: readableText(event.growth_stage ?? meta?.growth_stage, ''),
+    environment: readableText(event.environment ?? meta?.environment, ''),
     personalizationReasons: Array.isArray(event.personalization_reasons)
       ? event.personalization_reasons.map((item) => readableText(item, '')).filter(Boolean)
-      : [],
+      : (Array.isArray(meta?.personalization_reasons) ? meta.personalization_reasons.map((item) => readableText(item, '')).filter(Boolean) : []),
     riskTags: Array.isArray(event.risk_tags)
       ? event.risk_tags.map((item) => readableText(item, '')).filter(Boolean)
       : (Array.isArray(meta?.risk_tags) ? meta.risk_tags.map((item) => readableText(item, '')).filter(Boolean) : []),
-    riskItems: Array.isArray(event.risk_items)
-      ? event.risk_items.map((item) => {
-        const obj = toRecord(item) ?? {};
-        return {
-          code: readableText(obj.code, ''),
-          label: readableText(obj.label, readableText(obj.code, '风险')),
-          reason: readableText(obj.reason, ''),
-          level: readableText(obj.level, ''),
-        };
-      }).filter((item) => Boolean(item.code || item.label || item.reason))
-      : (Array.isArray(meta?.risk_items)
-        ? meta.risk_items.map((item) => {
-          const obj = toRecord(item) ?? {};
-          return {
-            code: readableText(obj.code, ''),
-            label: readableText(obj.label, readableText(obj.code, '风险')),
-            reason: readableText(obj.reason, ''),
-            level: readableText(obj.level, ''),
-          };
-        }).filter((item) => Boolean(item.code || item.label || item.reason))
-        : []),
+    riskItems: normalizeRiskItems(event.risk_items ?? meta?.risk_items),
     riskSummary: readableText(event.risk_summary ?? meta?.risk_summary, ''),
     riskUpdatedAt: readableText(event.risk_updated_at ?? meta?.risk_updated_at, ''),
     elapsedMs: Number.isFinite(Number(event.elapsed_ms ?? meta?.elapsed_ms)) ? Number(event.elapsed_ms ?? meta?.elapsed_ms) : null,
@@ -866,9 +1034,9 @@ export function DashboardPage() {
     llmFailedRate: summary.llmFailedRate,
   }), [summary.avgResponseMs, summary.llmFailedRate]);
 
-  const diseaseTrendData = useMemo(() => {
-    const topDiseases = stats.slice(0, 6).map((item) => item.disease);
+  const diseaseTrend = useMemo(() => {
     const eventBreakdown = new Map<string, Record<string, number>>();
+    const diseaseTotals = new Map<string, number>();
     filteredEvents.forEach((event) => {
       const ts = Date.parse(event.ts);
       if (!Number.isFinite(ts)) return;
@@ -876,14 +1044,26 @@ export function DashboardPage() {
       const current = eventBreakdown.get(day) ?? {};
       current[event.disease] = (current[event.disease] ?? 0) + 1;
       eventBreakdown.set(day, current);
+      diseaseTotals.set(event.disease, (diseaseTotals.get(event.disease) ?? 0) + 1);
     });
-    return timeseries.map((row) => {
+    const topDiseases = Array.from(diseaseTotals.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 6)
+      .map(([disease]) => disease);
+    const dateRows = timeseries.length > 0
+      ? timeseries
+      : Array.from(eventBreakdown.keys()).sort().map((date) => ({
+        date,
+        count: Object.values(eventBreakdown.get(date) ?? {}).reduce((sum, value) => sum + value, 0),
+      }));
+    const data = dateRows.map((row) => {
       const breakdown = eventBreakdown.get(row.date) ?? {};
       const payload: Record<string, number | string> = { date: row.date, total: row.count };
       topDiseases.forEach((disease) => { payload[disease] = breakdown[disease] ?? 0; });
       return payload;
     });
-  }, [filteredEvents, stats, timeseries]);
+    return { data, topDiseases };
+  }, [filteredEvents, timeseries]);
 
   useEffect(() => {
     localStorage.setItem('dashboard:module-prefs', JSON.stringify(modulePrefs));
@@ -959,6 +1139,97 @@ export function DashboardPage() {
     selectedEvent ? resolvePersonalizationInfo(selectedEvent, traceNodeMap) : []
   ), [selectedEvent, traceNodeMap]);
 
+  const personalizationTabData = useMemo(() => {
+    if (!selectedEvent) {
+      return {
+        reasons: [] as string[],
+        filtered: false,
+        filteredActions: [] as string[],
+        filteredReasons: [] as string[],
+        filteredComponents: [] as string[],
+        followUpQuestions: [] as string[],
+        missingProfileFields: [] as string[],
+        riskItems: [] as DiagnosisEvent['riskItems'],
+      };
+    }
+
+    const raw = selectedEvent.raw;
+    const meta = toRecord(raw.meta);
+    const traceFallback = getPersonalizationTraceFallback(traceNodeMap);
+    const traceOutputs = traceFallback.outputs;
+    const runtimeSnapshot = traceFallback.runtimeSnapshot;
+    const canonicalMeta = traceFallback.canonicalMeta;
+    const traceMeta = traceFallback.meta;
+
+    const reasons = pickTextList(
+      raw.personalization_reasons,
+      meta?.personalization_reasons,
+      traceOutputs?.personalization_reasons,
+      runtimeSnapshot?.personalization_reasons,
+      selectedEvent.personalizationReasons,
+    );
+    const filteredActions = pickTextList(
+      raw.filtered_actions,
+      meta?.filtered_actions,
+      traceOutputs?.filtered_actions,
+      runtimeSnapshot?.filtered_actions,
+      selectedEvent.filteredActions,
+    );
+    const filteredReasons = pickTextList(
+      raw.filtered_reasons,
+      meta?.filtered_reasons,
+      traceOutputs?.filtered_reasons,
+      runtimeSnapshot?.filtered_reasons,
+      selectedEvent.filteredReasons,
+    );
+    const filteredComponents = pickTextList(
+      raw.filtered_components,
+      meta?.filtered_components,
+      traceOutputs?.filtered_components,
+      runtimeSnapshot?.filtered_components,
+      selectedEvent.filteredComponents,
+    );
+    const followUpQuestions = pickTextList(
+      raw.follow_up_questions,
+      meta?.follow_up_questions,
+      traceOutputs?.follow_up_questions,
+      runtimeSnapshot?.follow_up_questions,
+      selectedEvent.followUpQuestions,
+    );
+    const missingProfileFields = pickTextList(
+      raw.missing_profile_fields,
+      meta?.missing_profile_fields,
+      traceOutputs?.missing_profile_fields,
+      runtimeSnapshot?.missing_profile_fields,
+      selectedEvent.missingProfileFields,
+    );
+    const filtered = pickBoolean(
+      raw.filtered,
+      meta?.filtered,
+      traceOutputs?.filtered,
+      runtimeSnapshot?.filtered,
+      selectedEvent.filtered,
+    ) === true;
+    const riskItems = normalizeRiskItems(
+      raw.risk_items
+      ?? meta?.risk_items
+      ?? canonicalMeta?.risk_items
+      ?? traceMeta?.risk_items
+      ?? selectedEvent.riskItems
+    );
+
+    return {
+      reasons,
+      filtered,
+      filteredActions,
+      filteredReasons,
+      filteredComponents,
+      followUpQuestions,
+      missingProfileFields,
+      riskItems,
+    };
+  }, [selectedEvent, traceNodeMap]);
+
   const caseDiagnosis = useMemo(() => {
     const diagnosisOutputs = getNodeOutputs(getLatestNode(traceNodeMap, 'diagnosis'));
     const disease = toText(diagnosisOutputs.final_disease) || selectedEvent?.disease || '—';
@@ -983,6 +1254,25 @@ export function DashboardPage() {
     const prevention = sanitizeTraceText(treatmentObj?.prevention ?? selectedEvent.raw.prevention_advice);
     return { plan, prevention };
   }, [selectedEvent]);
+
+  const caseFallbackSummary = useMemo(() => {
+    if (!selectedEvent) return { source: '未触发', reasons: '未触发', llmStatus: '未记录' };
+    const raw = selectedEvent.raw;
+    const meta = toRecord(raw.meta);
+    const reasons = Array.isArray(raw.confirm_reasons) && raw.confirm_reasons.length > 0
+      ? raw.confirm_reasons
+      : (Array.isArray(raw.fallback_reason) && raw.fallback_reason.length > 0
+        ? raw.fallback_reason
+        : (Array.isArray(meta?.confirm_reasons) && meta.confirm_reasons.length > 0
+          ? meta.confirm_reasons
+          : (Array.isArray(meta?.fallback_reason) ? meta.fallback_reason : [])));
+
+    return {
+      source: readableText(raw.final_source, selectedEvent.finalSource),
+      reasons: formatFallbackReasons(reasons),
+      llmStatus: getLlmStatusLabel(selectedEvent, traceRawEvents),
+    };
+  }, [selectedEvent, traceRawEvents]);
 
   const riskDistribution = useMemo(() => {
     const counts = new Map<string, number>();
@@ -1017,14 +1307,15 @@ export function DashboardPage() {
 
   const selectedRiskSummary = useMemo(() => {
     if (!selectedEvent) return { tags: [] as string[], reasons: [] as string[] };
-    const tags = selectedEvent.riskItems.length > 0
-      ? selectedEvent.riskItems.map((item) => item.label || item.code).filter(Boolean)
+    const riskItems = personalizationTabData.riskItems.length > 0 ? personalizationTabData.riskItems : selectedEvent.riskItems;
+    const tags = riskItems.length > 0
+      ? riskItems.map((item) => item.label || item.code).filter(Boolean)
       : selectedEvent.riskTags;
-    const reasons = selectedEvent.riskItems.length > 0
-      ? selectedEvent.riskItems.map((item) => item.reason).filter(Boolean)
+    const reasons = riskItems.length > 0
+      ? riskItems.map((item) => item.reason).filter(Boolean)
       : [];
     return { tags, reasons };
-  }, [selectedEvent]);
+  }, [personalizationTabData.riskItems, selectedEvent]);
 
   const kbSummary = useMemo(() => {
     const kbOutputs = getNodeOutputs(getLatestNode(traceNodeMap, 'kb_retrieval'));
@@ -1225,22 +1516,26 @@ export function DashboardPage() {
               </div>
               <div className="h-72">
                 <p className="text-white/70 text-sm mb-2">病害趋势（按日堆叠）</p>
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={diseaseTrendData} margin={{ left: 8, right: 8, top: 10, bottom: 0 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(193,227,207,0.18)" />
-                    <XAxis dataKey="date" stroke="rgba(229,243,236,0.72)" tick={{ fontSize: 12 }} />
-                    <YAxis stroke="rgba(229,243,236,0.72)" allowDecimals={false} tick={{ fontSize: 12 }} />
-                    <Tooltip contentStyle={{ background: '#10231c', border: '1px solid rgba(146,194,168,0.5)', color: '#e8fff0' }} />
-                    {stats.slice(0, 6).map((item, index) => (
-                      <Bar
-                        key={item.disease}
-                        dataKey={item.disease}
-                        stackId="disease"
-                        fill={[chartPalette.greenSoft, chartPalette.greenDark, chartPalette.yellowSoft, chartPalette.cyanSoft, chartPalette.coralSoft, chartPalette.purpleSoft][index % 6]}
-                      />
-                    ))}
-                  </BarChart>
-                </ResponsiveContainer>
+                {diseaseTrend.topDiseases.length > 0 ? (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={diseaseTrend.data} margin={{ left: 8, right: 8, top: 10, bottom: 0 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="rgba(193,227,207,0.18)" />
+                      <XAxis dataKey="date" stroke="rgba(229,243,236,0.72)" tick={{ fontSize: 12 }} />
+                      <YAxis stroke="rgba(229,243,236,0.72)" allowDecimals={false} tick={{ fontSize: 12 }} />
+                      <Tooltip contentStyle={{ background: '#10231c', border: '1px solid rgba(146,194,168,0.5)', color: '#e8fff0' }} />
+                      {diseaseTrend.topDiseases.map((disease, index) => (
+                        <Bar
+                          key={disease}
+                          dataKey={disease}
+                          stackId="disease"
+                          fill={[chartPalette.greenSoft, chartPalette.greenDark, chartPalette.yellowSoft, chartPalette.cyanSoft, chartPalette.coralSoft, chartPalette.purpleSoft][index % 6]}
+                        />
+                      ))}
+                    </BarChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <div className="h-full flex items-center justify-center text-white/40 text-sm">暂无病害趋势数据</div>
+                )}
               </div>
             </CardContent>
           )}
@@ -1542,9 +1837,15 @@ export function DashboardPage() {
                         </div>
                       )}
                     </div>
+                    <div className="bg-white/5 rounded-lg p-3 text-sm text-white/80 space-y-2">
+                      <p className="text-white/60 text-xs">回退 / LLM 状态</p>
+                      <div>结果来源：{caseFallbackSummary.source}</div>
+                      <div>回退原因：{caseFallbackSummary.reasons}</div>
+                      <div>LLM 状态：{caseFallbackSummary.llmStatus}</div>
+                    </div>
                   </TabsContent>
                   <TabsContent value="personal" className="space-y-2 mt-0 text-sm text-white/80">
-                    <div className="bg-[#1a3329] border border-[#2e7d63]/40 rounded-lg px-3 py-2 text-[#c8f7c5] text-xs">影响分档的主要因素</div>
+                    <div className="bg-[#1a3329] border border-[#2e7d63]/40 rounded-lg px-3 py-2 text-[#c8f7c5] text-xs">基础画像信息</div>
                     <div className="grid grid-cols-1 gap-2">
                       {personalInfoRows.map((item) => (
                         <div key={item.label} className="bg-white/5 rounded-lg p-2">
@@ -1553,6 +1854,79 @@ export function DashboardPage() {
                         </div>
                       ))}
                     </div>
+                    <div className="bg-white/5 rounded-lg p-3 space-y-2">
+                      <div className="text-white/60 text-xs">影响分档的主要因素</div>
+                      {personalizationTabData.reasons.length > 0 ? (
+                        <div className="space-y-2">
+                          {personalizationTabData.reasons.map((reason, idx) => (
+                            <div key={`personal-reason-${idx}`} className="rounded-lg border border-[#c8f7c5]/20 bg-black/20 px-3 py-2 text-white/90 leading-6">
+                              {idx + 1}. {reason}
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="text-white/40 text-xs">暂无个性化原因</div>
+                      )}
+                    </div>
+                    <div className="bg-white/5 rounded-lg p-3 space-y-2">
+                      <div className="text-white/60 text-xs">过滤 / 约束结果</div>
+                      <div className="grid grid-cols-1 gap-2">
+                        <div className="rounded-lg bg-black/20 px-3 py-2">
+                          <div className="text-white/50 text-xs">是否触发过滤</div>
+                          <div className="mt-1 text-white">{personalizationTabData.filtered ? '是' : '否'}</div>
+                        </div>
+                        {!personalizationTabData.filtered
+                        && personalizationTabData.filteredActions.length === 0
+                        && personalizationTabData.filteredReasons.length === 0
+                        && personalizationTabData.filteredComponents.length === 0 ? (
+                          <div className="rounded-lg bg-black/20 px-3 py-2 text-white/70">未触发过滤</div>
+                          ) : (
+                            <>
+                              <div className="rounded-lg bg-black/20 px-3 py-2">
+                                <div className="text-white/50 text-xs">过滤动作</div>
+                                <div className="mt-1 text-white">{personalizationTabData.filteredActions.length > 0 ? personalizationTabData.filteredActions.join('、') : '无'}</div>
+                              </div>
+                              <div className="rounded-lg bg-black/20 px-3 py-2">
+                                <div className="text-white/50 text-xs">过滤原因</div>
+                                <div className="mt-1 text-white">{personalizationTabData.filteredReasons.length > 0 ? personalizationTabData.filteredReasons.join('、') : '无'}</div>
+                              </div>
+                              <div className="rounded-lg bg-black/20 px-3 py-2">
+                                <div className="text-white/50 text-xs">被过滤组件</div>
+                                <div className="mt-1 text-white">{personalizationTabData.filteredComponents.length > 0 ? personalizationTabData.filteredComponents.join('、') : '无'}</div>
+                              </div>
+                            </>
+                          )}
+                      </div>
+                    </div>
+                    <div className="bg-white/5 rounded-lg p-3 space-y-2">
+                      <div className="text-white/60 text-xs">追问 / 档案缺失</div>
+                      {personalizationTabData.followUpQuestions.length === 0 && personalizationTabData.missingProfileFields.length === 0 ? (
+                        <div className="rounded-lg bg-black/20 px-3 py-2 text-white/70">无后续追问 / 档案完整</div>
+                      ) : (
+                        <div className="grid grid-cols-1 gap-2">
+                          <div className="rounded-lg bg-black/20 px-3 py-2">
+                            <div className="text-white/50 text-xs">追问问题</div>
+                            <div className="mt-1 text-white">
+                              {personalizationTabData.followUpQuestions.length > 0 ? (
+                                <ul className="list-disc pl-5 space-y-1">
+                                  {personalizationTabData.followUpQuestions.map((question, idx) => <li key={`follow-up-${idx}`}>{question}</li>)}
+                                </ul>
+                              ) : '无'}
+                            </div>
+                          </div>
+                          <div className="rounded-lg bg-black/20 px-3 py-2">
+                            <div className="text-white/50 text-xs">缺失档案字段</div>
+                            <div className="mt-1 text-white">
+                              {personalizationTabData.missingProfileFields.length > 0 ? (
+                                <ul className="list-disc pl-5 space-y-1">
+                                  {personalizationTabData.missingProfileFields.map((field) => <li key={field}>{field}</li>)}
+                                </ul>
+                              ) : '无'}
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
                     <div className="bg-white/5 rounded-lg p-2 space-y-2">
                       <div className="text-white/60 text-xs">农业风险标签（解释层）</div>
                       <div className="flex flex-wrap gap-1">
@@ -1560,6 +1934,19 @@ export function DashboardPage() {
                           <Badge key={tag} className="bg-[#c8f7c5]/20 text-[#c8f7c5] border border-[#c8f7c5]/40">{tag}</Badge>
                         )) : <span className="text-white/40 text-xs">暂无风险标签</span>}
                       </div>
+                      {personalizationTabData.riskItems.length > 0 ? (
+                        <div className="space-y-2">
+                          {personalizationTabData.riskItems.map((item, idx) => (
+                            <div key={`${item.code || item.label}-${idx}`} className="rounded-lg bg-black/20 px-3 py-2 text-xs">
+                              <div className="text-[#c8f7c5]">{item.label || item.code || '风险项'}</div>
+                              <div className="text-white/70 mt-1">
+                                {[item.level, item.source].filter(Boolean).join(' · ') || '未标注等级'}
+                              </div>
+                              <div className="text-white/85 mt-1">{item.reason || '暂无原因说明'}</div>
+                            </div>
+                          ))}
+                        </div>
+                      ) : null}
                       {selectedRiskSummary.reasons.length > 0 ? (
                         <ul className="list-disc pl-5 text-white/80 text-xs space-y-1">
                           {selectedRiskSummary.reasons.slice(0, 3).map((reason, idx) => <li key={`risk-reason-${idx}`}>{reason}</li>)}

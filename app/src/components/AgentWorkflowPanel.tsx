@@ -21,6 +21,9 @@ import { fetchTraceEvents } from '@/lib/traceClient';
 import type { LucideIcon } from 'lucide-react';
 import {
   calcPhaseDurationsByAgent,
+  calcOverallPhaseDuration,
+  formatDurationMs,
+  isReplayTerminalWaitingEvent,
   isWaitingForUserInputEvent,
   parseTsMs,
   shouldIncludeEvent,
@@ -70,16 +73,6 @@ interface AgentPhaseDurations {
   phase1Ms: number;
   phase2Ms: number;
 }
-
-const calcOverallPhaseDuration = (phaseDurations: Record<FixedAgentId, AgentPhaseDurations>): { phase1Ms: number; phase2Ms: number; totalMs: number } => {
-  let phase1Ms = 0;
-  let phase2Ms = 0;
-  FIXED_AGENTS.forEach((def) => {
-    phase1Ms += phaseDurations[def.id]?.phase1Ms ?? 0;
-    phase2Ms += phaseDurations[def.id]?.phase2Ms ?? 0;
-  });
-  return { phase1Ms, phase2Ms, totalMs: phase1Ms + phase2Ms };
-};
 
 interface AgentRowDef {
   id: FixedAgentId;
@@ -142,20 +135,6 @@ const buildInitialState = (): Record<FixedAgentId, AgentRowState> => {
 const clamp = (v: number, min: number, max: number) => Math.max(min, Math.min(max, v));
 
 const softProgress = (elapsedMs: number) => clamp(Math.round((elapsedMs / 8000) * 90), 5, 90);
-
-const formatDuration = (ms: number): string => {
-  if (!Number.isFinite(ms) || ms <= 0) return '0.000s';
-  if (ms < 1000) return `${(ms / 1000).toFixed(3)}s`;
-
-  const seconds = ms / 1000;
-  if (seconds >= 60) {
-    const minutes = Math.floor(seconds / 60);
-    const remainSeconds = seconds - minutes * 60;
-    return `${minutes}m${remainSeconds.toFixed(1)}s`;
-  }
-
-  return `${seconds.toFixed(2)}s`;
-};
 
 const shortText = (value: unknown, max = 80): string => {
   const raw = String(value ?? '').trim();
@@ -643,7 +622,7 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
     });
   }, []);
 
-  const applyNormalizedEvent = useCallback((event: NormalizedEvent): boolean => {
+  const applyNormalizedEvent = useCallback((event: NormalizedEvent, options?: { preserveReplayFlow?: boolean }): boolean => {
     if (workflowDoneRef.current || updatesStoppedRef.current) return false;
 
     const seq = event.seq;
@@ -655,7 +634,7 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
     }
 
     const waitingForUserInput = isWaitingForUserInputEvent(event);
-    if (waitingForUserInput) {
+    if (waitingForUserInput && !options?.preserveReplayFlow) {
       waitingStableRef.current = true;
       updatesStoppedRef.current = true;
       allEventsRef.current = dedupBySeq([...allEventsRef.current, event]);
@@ -667,6 +646,9 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
       clearTicker();
       closeStream();
       stopPolling(true);
+    } else if (waitingForUserInput) {
+      allEventsRef.current = dedupBySeq([...allEventsRef.current, event]);
+      setAllEvents(allEventsRef.current);
     } else if (event.status === 'running') {
       setPausedByUserInput(false);
       setTracePausedStable(false);
@@ -889,16 +871,17 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
 
         let replayed = 0;
         let replayPausedByUserInput = false;
-        sorted.forEach((raw: RawTraceEvent) => {
+        sorted.forEach((raw: RawTraceEvent, index: number) => {
           if (cancelled || workflowDoneRef.current || updatesStoppedRef.current || waitingStableRef.current) return;
           const normalized = normalizeEvent(raw as RawTraceEvent);
-          if (isWaitingForUserInputEvent(normalized)) {
+          const terminalWaitingEvent = isReplayTerminalWaitingEvent(sorted as RawTraceEvent[], index);
+          if (terminalWaitingEvent) {
             replayPausedByUserInput = true;
           }
           if (normalized.status === 'running') {
             replayPausedByUserInput = false;
           }
-          if (applyNormalizedEvent(normalized)) replayed += 1;
+          if (applyNormalizedEvent(normalized, { preserveReplayFlow: !terminalWaitingEvent })) replayed += 1;
         });
         setPausedByUserInput(replayPausedByUserInput);
 
@@ -995,9 +978,9 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
         ...def,
         ...row,
         progress,
-        duration: formatDuration((phaseDurationsByAgent[def.id]?.phase1Ms ?? 0) + (phaseDurationsByAgent[def.id]?.phase2Ms ?? 0)),
-        phase1Duration: formatDuration(phaseDurationsByAgent[def.id]?.phase1Ms ?? 0),
-        phase2Duration: formatDuration(phaseDurationsByAgent[def.id]?.phase2Ms ?? 0),
+        duration: formatDurationMs((phaseDurationsByAgent[def.id]?.phase1Ms ?? 0) + (phaseDurationsByAgent[def.id]?.phase2Ms ?? 0)),
+        phase1Duration: formatDurationMs(phaseDurationsByAgent[def.id]?.phase1Ms ?? 0),
+        phase2Duration: formatDurationMs(phaseDurationsByAgent[def.id]?.phase2Ms ?? 0),
       };
     });
   }, [rows, nowMs, workflowDone, phaseDurationsByAgent]);
@@ -1218,7 +1201,7 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
           <div className="h-full bg-[#4ade80] transition-all duration-500 progress-shine" style={{ width: `${totalProgress}%` }} />
         </div>
         <p className="text-xs text-white/50 mt-2">
-          总耗时：{formatDuration(overallDuration.totalMs)}（一诊 {formatDuration(overallDuration.phase1Ms)} + 二诊 {formatDuration(overallDuration.phase2Ms)}） {workflowDone ? '· 已结束' : ''}
+          总耗时：{formatDurationMs(overallDuration.totalMs)}（一诊 {formatDurationMs(overallDuration.phase1Ms)} + 二诊 {formatDurationMs(overallDuration.phase2Ms)}） {workflowDone ? '· 已结束' : ''}
         </p>
       </div>
     </div>
