@@ -29,21 +29,21 @@ def _resolve_path(path: str) -> str:
 _MODEL_REGISTRY: list[ModelConfig] = [
     ModelConfig(
         model_id="tf_default",
-        display_name="默认轻量上线模型",
+        display_name="默认模型",
         backend="tf",
         model_path=str(DEFAULT_TF_MODEL_PATH),
         enabled=True,
     ),
     ModelConfig(
         model_id="tf_paper_opt",
-        display_name="高精度备选模型",
+        display_name="高精度模型",
         backend="tf",
         model_path=_resolve_path("models/densenet121_tomato_disease_model_fine_tuned_paper_opt.h5"),
         enabled=True,
     ),
     ModelConfig(
         model_id="tf_light_v1",
-        display_name="轻量模型V1（别名）",
+        display_name="轻量模型",
         backend="tf",
         model_path=_resolve_path("models/mobilenetv3_light_v1.keras"),
         enabled=False,
