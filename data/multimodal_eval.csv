@@ -1,0 +1,110 @@
+image_path,label,text,symptoms,growth_stage,environment,facility,province,sample_type
+tomato/train/Tomato___healthy/84cbb98b-5c2f-4367-8d78-52be491e66bd___GH_HL Leaf 336.JPG,健康,叶子挺绿的，看着没啥毛病,"",VEGETATIVE,通风良好,露地,山东,consistent
+tomato/train/Tomato___healthy/84d5645b-619e-4882-a1d5-3a3abec47da3___RS_HL 0568.JPG,健康,整株长势正常，叶片也没有斑点,"",FLOWERING,天气稳定,温室,河北,consistent
+tomato/train/Tomato___healthy/84eb25b9-4855-4fde-9a2c-28c2de1bfb22___RS_HL 9680.JPG,健康,叶子颜色均匀，没有卷叶也没有发黄,"",VEGETATIVE,湿度适中,阳台,广东,consistent
+tomato/train/Tomato___healthy/84eb25b9-4855-4fde-9a2c-28c2de1bfb22___RS_HL 9680.JPG,健康,番茄苗长得挺精神，暂时看不出病害,"",SEEDLING,管理正常,温室,辽宁,consistent
+tomato/train/Tomato___healthy/085cbe78-1d5c-45eb-877f-f409526032d5___GH_HL Leaf 469.JPG,健康,叶面干净，没有霉层也没有虫点,"",FRUIT_SET,天气稳定,露地,陕西,consistent
+tomato/train/Tomato___healthy/087e3b12-a80b-435f-8973-a3b07888f8b4___RS_HL 9847.JPG,健康,果期叶片看着正常，没有发现异常病斑,"",FRUIT_SET,通风良好,露地,河南,consistent
+tomato/train/Tomato___healthy/87f08e15-5b2d-4d01-b83b-fd958eba02d4___GH_HL Leaf 434.2.JPG,健康,看着还行，就是叶子挺正常的,"",VEGETATIVE,晴朗,阳台,福建,weak_consistent
+tomato/train/Tomato___healthy/89d1eade-c42d-410d-a9c3-d37ad7bb60c6___RS_HL 9679.JPG,健康,目前没看到明显问题，叶片状态还不错,"",FLOWERING,干爽,温室,山西,weak_consistent
+tomato/train/Tomato___healthy/92d04528-2709-4cc0-8e98-bdfe2ef97143___RS_HL 9808.JPG,健康,感觉有点发黄但不明显，整体还算正常,发黄,VEGETATIVE,天气稳定,露地,安徽,conflict
+tomato/train/Tomato___healthy/93c9da62-19ca-4e90-b355-0dc71ff5cc4b___RS_HL 9752.JPG,健康,叶子边上像有点小斑，不过看不太出来,斑点,SEEDLING,湿度适中,阳台,广西,conflict
+
+tomato/train/Tomato___Early_blight/5a50d734-271b-43f8-991f-b6e6f264b686___RS_Erly.B 6488.JPG,早疫病,叶片上有褐色斑点，里面一圈一圈的,褐斑 轮纹,FRUIT_SET,高湿,露地,河南,consistent
+tomato/train/Tomato___Early_blight/5b86ab6a-3823-4886-85fd-02190898563c___RS_Erly.B 8452.JPG,早疫病,老叶先长斑，斑里能看见轮纹,褐斑 轮纹,VEGETATIVE,闷热潮湿,温室,湖北,consistent
+tomato/train/Tomato___Early_blight/5b86ab6a-3823-4886-85fd-02190898563c___RS_Erly.B 8452.JPG,早疫病,叶面有褐色圆斑，像年轮一样,褐斑 圆斑 轮纹,FLOWERING,高湿,露地,安徽,consistent
+tomato/train/Tomato___Early_blight/5bd6338a-0f10-457b-a7bd-69f2ee7c6504___RS_Erly.B 9534.JPG,早疫病,叶子上有斑块，边上有点发黄，中间有轮纹,褐斑 轮纹 发黄,FRUIT_SET,湿热,温室,江苏,consistent
+tomato/train/Tomato___Early_blight/6a6f1594-62fa-487a-a51f-38b86e7483cf___RS_Erly.B 6360.JPG,早疫病,下部叶片先发病，褐色病斑越来越明显,褐斑,VEGETATIVE,高湿,露地,重庆,consistent
+tomato/train/Tomato___Early_blight/6c124f22-619b-44fc-a3d1-231286d4bfda___RS_Erly.B 6403.JPG,早疫病,病斑一圈圈扩开，老叶有点枯黄,轮纹 发黄,FRUIT_SET,阴雨后潮湿,露地,湖南,consistent
+tomato/train/Tomato___Early_blight/6b52f204-547d-47aa-926c-b9508a5e6cbc___RS_Erly.B 7434.JPG,早疫病,叶子上长了褐色斑，看着像一块一块的,褐斑,VEGETATIVE,高湿,露地,四川,weak_consistent
+tomato/train/Tomato___Early_blight/7b32caa4-0d67-4b84-a1bf-cf9dffd7ffe5___RS_Erly.B 6405.JPG,早疫病,叶片病斑挺明显，像有层层圈纹,轮纹,FLOWERING,闷热,温室,河北,weak_consistent
+tomato/train/Tomato___Early_blight/7c691a49-8a56-49d2-856f-6c20c34e257b___RS_Erly.B 9586.JPG,早疫病,叶子像被水泡过一样发暗还扩得很快,水渍 暗斑,FRUIT_SET,连阴雨,露地,云南,conflict
+tomato/train/Tomato___Early_blight/5bd6338a-0f10-457b-a7bd-69f2ee7c6504___RS_Erly.B 9534.JPG,早疫病,嫩叶发黄卷起来，长得也不太好,发黄 卷曲 生长缓慢,SEEDLING,高温,温室,广东,conflict
+
+tomato/train/Tomato___Late_blight/989d984b-eaef-4ae1-a850-c2ae65961bdf___GHLB2 Leaf 9026.JPG,晚疫病,叶片出现水渍状暗斑，扩得特别快,水渍 暗斑,FRUIT_SET,连阴雨,露地,云南,consistent
+tomato/train/Tomato___Late_blight/998dafd6-dac5-41f7-84d9-f96c9593dda3___RS_Late.B 7075.JPG,晚疫病,病斑湿湿的，颜色发暗，几天就蔓开了,水渍 扩展,FRUIT_SET,高湿,露地,贵州,consistent
+tomato/train/Tomato___Late_blight/1329e768-8331-4853-8d35-c03f5586c645___GHLB2 Leaf 8867.JPG,晚疫病,叶子像泡过水一样发黑发暗,水渍 暗斑,VEGETATIVE,雾多潮湿,露地,四川,consistent
+tomato/train/Tomato___Late_blight/1510bf70-ab9e-43df-b5d9-9b5e4352e66b___GHLB2 Leaf 118.JPG,晚疫病,病斑像湿腐一样，面积扩大很快,暗斑 腐烂,FRUIT_SET,低温高湿,温室,甘肃,consistent
+tomato/train/Tomato___Late_blight/998dafd6-dac5-41f7-84d9-f96c9593dda3___RS_Late.B 7075.JPG,晚疫病,果附近的叶片先有水渍斑，后面发黑腐烂,水渍 发黑 腐烂,FRUIT_SET,持续阴雨,露地,重庆,consistent
+tomato/train/Tomato___Late_blight/998dafd6-dac5-41f7-84d9-f96c9593dda3___RS_Late.B 7075.JPG,晚疫病,叶片病斑又暗又湿，看着很快就坏掉了,水渍 腐烂,FRUIT_SET,高湿,露地,湖北,consistent
+tomato/train/Tomato___Late_blight/2353e9af-9267-4262-840e-1eb109fff56c___RS_Late.B 5135.JPG,晚疫病,叶子上是暗色斑块，扩展挺快的,暗斑 扩展,FLOWERING,潮湿,露地,云南,weak_consistent
+tomato/train/Tomato___Late_blight/2260ae60-08dc-4e6e-abd7-c9aed84163ea___RS_Late.B 5032.JPG,晚疫病,病斑有点像被水浸过，蔓延得快,水渍 扩展,FRUIT_SET,阴雨,温室,贵州,weak_consistent
+tomato/train/Tomato___Late_blight/4392c0b5-bd98-4419-a99a-68d0f41f00b9___GHLB2 Leaf 8680.JPG,晚疫病,叶面有褐斑，里面像有轮纹,褐斑 轮纹,FRUIT_SET,高湿,露地,河南,conflict
+tomato/train/Tomato___Late_blight/4648b0c8-1c09-4cb9-b0dc-67515432d802___GHLB2ES Leaf 69.3.JPG,晚疫病,新叶发黄卷曲，整棵苗也不高,发黄 卷曲 矮化,SEEDLING,高温,温室,海南,conflict
+
+tomato/train/Tomato___Tomato_Yellow_Leaf_Curl_Virus/d0a48fe1-d49b-4931-8d3f-ae2a6b28733f___UF.GRC_YLCV_Lab 02807.JPG,黄化曲叶病毒病,新叶发黄还往上卷，苗子长不高,发黄 卷曲 矮化,SEEDLING,高温,温室,广东,consistent
+tomato/train/Tomato___Tomato_Yellow_Leaf_Curl_Virus/d1adc05c-68b7-4650-b492-50989a6a9360___UF.GRC_YLCV_Lab 03376.JPG,黄化曲叶病毒病,叶片卷起来了，颜色也发黄，植株偏矮,发黄 卷曲 矮化,VEGETATIVE,虫媒高发,温室,海南,consistent
+tomato/train/Tomato___Tomato_Yellow_Leaf_Curl_Virus/d01c276a-a70d-4981-930e-d78292219f61___UF.GRC_YLCV_Lab 02057.JPG,黄化曲叶病毒病,顶端嫩叶卷曲发黄，整株长势差,卷曲 发黄 生长缓慢,SEEDLING,高温干燥,阳台,广东,consistent
+tomato/train/Tomato___Tomato_Yellow_Leaf_Curl_Virus/d1fe02e8-964d-40a3-bf50-a423288da668___YLCV_NREC 2518.JPG,黄化曲叶病毒病,叶子变小发黄，还有点皱缩,发黄 卷曲,VEGETATIVE,白粉虱偏多,温室,广西,consistent
+tomato/train/Tomato___Tomato_Yellow_Leaf_Curl_Virus/d2f97cbb-36ef-4232-99a0-096be08ff320___YLCV_GCREC 1961.JPG,黄化曲叶病毒病,新叶又黄又卷，感觉植株被压住了,发黄 卷曲 生长缓慢,FLOWERING,高温,温室,福建,consistent
+tomato/train/Tomato___Tomato_Yellow_Leaf_Curl_Virus/d4a9073b-a103-45a3-b534-096f650f00b4___UF.GRC_YLCV_Lab 09411.JPG,黄化曲叶病毒病,叶片卷得厉害，还发黄，长得明显慢,卷曲 发黄 生长缓慢,VEGETATIVE,虫媒偏多,露地,广西,consistent
+tomato/train/Tomato___Tomato_Yellow_Leaf_Curl_Virus/d2f97cbb-36ef-4232-99a0-096be08ff320___YLCV_GCREC 1961.JPG,黄化曲叶病毒病,叶子卷起来了，颜色也不太对,卷曲 发黄,VEGETATIVE,高温,温室,广东,weak_consistent
+tomato/train/Tomato___Tomato_Yellow_Leaf_Curl_Virus/d4e0e72e-ae8b-4079-9e62-5cd583a9caeb___YLCV_NREC 2060.JPG,黄化曲叶病毒病,顶端叶片又小又卷，长势不好,卷曲 生长缓慢,SEEDLING,闷热,阳台,海南,weak_consistent
+tomato/train/Tomato___Tomato_Yellow_Leaf_Curl_Virus/d4f7158a-92eb-48f6-a5c1-b9217f0063b5___YLCV_NREC 2306.JPG,黄化曲叶病毒病,叶子花花绿绿的，还有点变形,花叶 斑驳 畸形,VEGETATIVE,温暖,露地,广西,conflict
+tomato/train/Tomato___Tomato_Yellow_Leaf_Curl_Virus/d5cf00b6-a02b-4d2e-83f2-7663815a79c2___UF.GRC_YLCV_Lab 02343.JPG,黄化曲叶病毒病,叶片上有很多小黑点，边上发黄,斑点 黄晕,VEGETATIVE,潮湿,温室,江苏,conflict
+
+tomato/train/Tomato___Leaf_Mold/5af43679-cda7-4cdc-8d9f-e962e22e68c5___Crnl_L.Mold 8654.JPG,叶霉病,叶面发黄，翻过来背面像长霉了,黄斑 霉斑,FRUIT_SET,高湿,温室,山东,consistent
+tomato/train/Tomato___Leaf_Mold/5c8c542d-0f80-46c8-92f9-65e6d6554c37___Crnl_L.Mold 8628.JPG,叶霉病,叶背有灰绿色霉层，正面是黄斑,霉斑 黄斑,FRUIT_SET,高湿,温室,山东,consistent
+tomato/train/Tomato___Leaf_Mold/5d9bfd9d-330d-4be1-8369-d4ff27bd4473___Crnl_L.Mold 6852.JPG,叶霉病,叶片背后有霉层，正面黄黄的,霉斑 黄斑,FLOWERING,通风差,温室,河北,consistent
+tomato/train/Tomato___Leaf_Mold/5d11b6ba-115c-46a3-9d23-b9984f822b61___Crnl_L.Mold 6678.JPG,叶霉病,棚里湿气大的时候，叶背先发霉,霉斑,VEGETATIVE,高湿,温室,吉林,consistent
+tomato/train/Tomato___Leaf_Mold/5fc8babb-214b-459a-9440-898cedeb4944___Crnl_L.Mold 8667.JPG,叶霉病,叶片正面有黄斑，背面对应位置有霉层,黄斑 霉斑,FRUIT_SET,结露严重,温室,辽宁,consistent
+tomato/train/Tomato___Leaf_Mold/6b56547b-6d59-40ef-852a-b3cf29f779b4___Crnl_L.Mold 8902.JPG,叶霉病,下部叶片背面有绒状霉层，叶面慢慢发黄,霉斑 发黄,FRUIT_SET,高湿,温室,山东,consistent
+tomato/train/Tomato___Leaf_Mold/6bc4a7d2-eaf3-41d4-8129-3165658288d4___Crnl_L.Mold 8766.JPG,叶霉病,叶背好像有点发霉，叶面也有黄点,霉斑 黄斑,FLOWERING,高湿,温室,河北,weak_consistent
+tomato/train/Tomato___Leaf_Mold/6e2b61bf-f35d-4e8a-a64c-c3cfed5db42e___Crnl_L.Mold 9008.JPG,叶霉病,叶子背后不太干净，像有霉，前面发黄,霉斑 发黄,VEGETATIVE,闷湿,温室,吉林,weak_consistent
+tomato/train/Tomato___Leaf_Mold/6e5d3e12-17ad-4c87-bb29-26b13a797560___Crnl_L.Mold 9075.JPG,叶霉病,叶背有小虫点，叶片发灰发黄,虫点 发黄 失绿,VEGETATIVE,干热,温室,新疆,conflict
+tomato/train/Tomato___Leaf_Mold/6e41b201-9283-4da4-b7b1-1f2b37716142___Crnl_L.Mold 6955.JPG,叶霉病,叶片上很多小黑点，边上有黄晕,斑点 黄晕,FLOWERING,潮湿,温室,浙江,conflict
+
+tomato/train/Tomato___Bacterial_spot/39585b95-2167-4dac-9993-f75aac8d38bc___GCREC_Bact.Sp 3538.JPG,细菌性斑点病,叶片很多小黑点，边上还有黄边,斑点 黄晕,VEGETATIVE,潮湿,温室,江苏,consistent
+tomato/train/Tomato___Bacterial_spot/46638af1-9027-42c5-a5c0-03d6b684f975___UF.GRC_BS_Lab Leaf 0217.JPG,细菌性斑点病,叶面有针尖大小的小黑斑，周围发黄,斑点 黄晕,VEGETATIVE,潮湿,温室,浙江,consistent
+tomato/train/Tomato___Bacterial_spot/55339b80-574d-4379-bc85-35558fcc0bea___UF.GRC_BS_Lab Leaf 0554.JPG,细菌性斑点病,叶片散着很多小黑点，边上黄黄的,斑点 发黄 黄晕,FLOWERING,高湿,露地,江苏,consistent
+tomato/train/Tomato___Bacterial_spot/56625acf-1d7d-4505-be30-49076b8bc2cf___GCREC_Bact.Sp 3673.JPG,细菌性斑点病,果附近的叶片长了很多小褐斑，边缘发黄,斑点 黄晕,FRUIT_SET,雨后潮湿,温室,上海,consistent
+tomato/train/Tomato___Bacterial_spot/66348a1f-6ca3-43c3-9883-ccf79c8dec89___GCREC_Bact.Sp 3640.JPG,细菌性斑点病,叶面有很多细小黑褐斑，还在慢慢扩开,斑点 扩展,VEGETATIVE,潮湿闷热,露地,安徽,consistent
+tomato/train/Tomato___Bacterial_spot/75348d38-1c41-4798-89c9-b99660d937ef___GCREC_Bact.Sp 5602.JPG,细菌性斑点病,叶片上黑色小斑很多，看着还有黄边,斑点 黄晕,VEGETATIVE,高湿,温室,江苏,consistent
+tomato/train/Tomato___Bacterial_spot/77240aeb-e455-4062-907c-43be7bac78b9___GCREC_Bact.Sp 5964.JPG,细菌性斑点病,叶片很多小黑点，旁边发黄,小黑点 发黄,FLOWERING,高湿,温室,江苏,weak_consistent
+tomato/train/Tomato___Bacterial_spot/083959e5-833b-4c10-9215-0b0aca81c8ca___UF.GRC_BS_Lab Leaf 0297.JPG,细菌性斑点病,叶子上全是小斑点，边上有点黄圈,斑点 黄晕,VEGETATIVE,潮湿,露地,浙江,weak_consistent
+tomato/train/Tomato___Bacterial_spot/90550e5f-503e-454c-a312-06f864ff0dbb___GCREC_Bact.Sp 3352.JPG,细菌性斑点病,叶子卷曲发黄，整株长得慢,卷曲 发黄 生长缓慢,SEEDLING,高温,温室,广东,conflict
+tomato/train/Tomato___Bacterial_spot/94096d9a-28b6-48b8-a7c4-8b4fa2885561___UF.GRC_BS_Lab Leaf 0213.JPG,细菌性斑点病,叶片花花绿绿的，还有点变形,花叶 斑驳 畸形,VEGETATIVE,温暖,露地,广西,conflict
+
+tomato/train/Tomato___Septoria_leaf_spot/0806cabf-f026-43bd-a508-0e8e5a185341___Matt.S_CG 1266.JPG,叶斑病,叶子上有灰白色小圆斑，后面中间干了还破洞,圆斑 灰白 穿孔,FLOWERING,潮湿,露地,四川,consistent
+tomato/train/Tomato___Septoria_leaf_spot/862cb2b6-6635-4157-9ef6-c2b2fe0a9861___Keller.St_CG 1882.JPG,叶斑病,叶片先长小圆斑，后面越来越多，还有穿孔,圆斑 穿孔,VEGETATIVE,潮湿,露地,重庆,consistent
+tomato/train/Tomato___Septoria_leaf_spot/906be65e-a9f5-4ea9-bb47-4706aa2bf180___Matt.S_CG 7526.JPG,叶斑病,叶面有许多灰白小斑点，边缘颜色深一点,圆斑 灰白 斑点,FRUIT_SET,雨后高湿,露地,湖北,consistent
+tomato/train/Tomato___Septoria_leaf_spot/944d1a18-653e-4f97-9ecb-ed8de360de7a___Matt.S_CG 0663.JPG,叶斑病,小圆斑慢慢增多，有些地方中间穿了,圆斑 穿孔,VEGETATIVE,潮湿,温室,河南,consistent
+tomato/train/Tomato___Septoria_leaf_spot/971cd71b-c5da-48dc-8c7b-91280e231301___Keller.St_CG 1823.JPG,叶斑病,叶面密密的小灰白圆斑，后面叶子发黄,圆斑 灰白 发黄,FRUIT_SET,湿热,露地,湖南,consistent
+tomato/train/Tomato___Septoria_leaf_spot/1512a5b8-2c65-4abb-8003-ee207d10ac5a___Matt.S_CG 2803.JPG,叶斑病,叶子先出小白斑，后面像纸一样干掉,圆斑 灰白,FLOWERING,潮湿,露地,四川,consistent
+tomato/train/Tomato___Septoria_leaf_spot/1585bf58-6209-411e-92e5-84d55162dec8___Matt.S_CG 7594.JPG,叶斑病,叶子上很多小圆点，后面有些地方破了,圆斑 穿孔,VEGETATIVE,潮湿,露地,重庆,weak_consistent
+tomato/train/Tomato___Septoria_leaf_spot/1747b1ad-eb6e-457b-a979-cead92fc123e___Matt.S_CG 7591.JPG,叶斑病,叶面有灰白小点，后面慢慢变多,圆斑 灰白,FRUIT_SET,潮湿,温室,湖北,weak_consistent
+tomato/train/Tomato___Septoria_leaf_spot/2139cc43-0f52-4782-9966-059e4538b624___JR_Sept.L.S 2653.JPG,叶斑病,叶片有很多小黑点，边上还有黄边,斑点 黄晕,VEGETATIVE,高湿,温室,江苏,conflict
+tomato/train/Tomato___Septoria_leaf_spot/002533c1-722b-44e5-9d2e-91f7747b2543___Keller.St_CG 1831.JPG,叶斑病,病斑像靶子一样一圈一圈的,靶斑 轮纹,FLOWERING,湿热,露地,广东,conflict
+
+tomato/train/Tomato___Spider_mites Two-spotted_spider_mite/317f11f9-657f-43f7-943e-efb03cc62b40___Com.G_SpM_FL 1608.JPG,蜘蛛螨,叶子背面有很多小虫点，叶片发黄失绿,虫点 发黄 失绿,VEGETATIVE,干热,温室,新疆,consistent
+tomato/train/Tomato___Spider_mites Two-spotted_spider_mite/324bf28d-7005-4845-9931-012f2a972b37___Com.G_SpM_FL 1506.JPG,蜘蛛螨,叶背能看到细小虫点，叶子颜色发灰发黄,虫点 发黄,VEGETATIVE,高温干燥,阳台,宁夏,consistent
+tomato/train/Tomato___Spider_mites Two-spotted_spider_mite/326a53b6-1d92-475a-9a30-4fc70754eacf___Com.G_SpM_FL 8883.JPG,蜘蛛螨,叶片颜色变淡，背面有密集小点状虫害,失绿 虫点,FRUIT_SET,干燥闷热,温室,甘肃,consistent
+tomato/train/Tomato___Spider_mites Two-spotted_spider_mite/329e5281-32c7-486b-86bc-1333ace123d0___Com.G_SpM_FL 1327.JPG,蜘蛛螨,叶背虫点很多，叶片慢慢失绿还干枯,虫点 失绿 枯黄,VEGETATIVE,干热,露地,新疆,consistent
+tomato/train/Tomato___Spider_mites Two-spotted_spider_mite/446f6ec1-1cca-4f62-b5a2-3590ad1b6958___Com.G_SpM_FL 1507.JPG,蜘蛛螨,叶子发黄发灰，背面像有很多细小活动点,发黄 虫点,SEEDLING,高温干燥,温室,内蒙古,consistent
+tomato/train/Tomato___Spider_mites Two-spotted_spider_mite/487fcd80-d74a-4e29-8959-7c02de6c5846___Com.G_SpM_FL 1240.JPG,蜘蛛螨,叶背像被小虫吸过一样，叶面发黄,虫点 发黄,VEGETATIVE,高温干燥,阳台,新疆,consistent
+tomato/train/Tomato___Spider_mites Two-spotted_spider_mite/639ad6fc-8e42-4a84-ac80-a40d9661bbae___Com.G_SpM_FL 8466.JPG,蜘蛛螨,叶背有虫点，叶片发灰发黄,虫点 发黄,VEGETATIVE,干热,温室,宁夏,weak_consistent
+tomato/train/Tomato___Spider_mites Two-spotted_spider_mite/695e2809-20ee-462e-ad6f-2ee6f8704c2a___Com.G_SpM_FL 8531.JPG,蜘蛛螨,叶子背面不太正常，很多小点，颜色也淡了,虫点 失绿,FRUIT_SET,干燥,温室,甘肃,weak_consistent
+tomato/train/Tomato___Spider_mites Two-spotted_spider_mite/706d4ada-aabd-482f-87c1-5112720d86a4___Com.G_SpM_FL 8448.JPG,蜘蛛螨,叶子正面有黄斑，背后像发霉了,黄斑 霉斑,FRUIT_SET,高湿,温室,山东,conflict
+tomato/train/Tomato___Spider_mites Two-spotted_spider_mite/737e3c49-a2d9-46f4-8c40-bcc5bc7343d2___Com.G_SpM_FL 1767.JPG,蜘蛛螨,叶片花叶斑驳还有点变形,花叶 斑驳 畸形,VEGETATIVE,温暖,露地,广西,conflict
+
+tomato/train/Tomato___Target_Spot/38f15749-918a-472e-b9c4-646543ad08aa___Com.G_TgS_FL 0827.JPG,靶斑病,叶片病斑像靶子一样，一圈一圈很清楚,靶斑 轮纹,FRUIT_SET,高湿,温室,福建,consistent
+tomato/train/Tomato___Target_Spot/54ee234a-85b3-4275-a4a8-8d0d81f70f31___Com.G_TgS_FL 7960.JPG,靶斑病,叶面圆形病斑很像靶心，边界清楚,靶斑 圆斑,FRUIT_SET,高湿,温室,广西,consistent
+tomato/train/Tomato___Target_Spot/55e75e4d-656d-4843-968d-db7e209378c8___Com.G_TgS_FL 8392.JPG,靶斑病,病斑中间深四周浅，像靶纹一样,靶斑 轮纹 褐斑,FLOWERING,湿热,露地,广东,consistent
+tomato/train/Tomato___Target_Spot/58a5c7b3-241c-4bb5-b059-825a8da439b8___Com.G_TgS_FL 8264.JPG,靶斑病,叶片上有圆形病斑，一层层往外扩,靶斑 圆斑,FRUIT_SET,高湿,温室,福建,consistent
+tomato/train/Tomato___Target_Spot/59caebd8-c258-45a4-b8b8-bb81c74bd31a___Com.G_TgS_FL 0845.JPG,靶斑病,褐色病斑中央像靶心，纹路很明显,靶斑 褐斑 轮纹,VEGETATIVE,闷热潮湿,温室,广东,consistent
+tomato/train/Tomato___Target_Spot/63e1a2ad-a44f-4c4d-b123-417920259975___Com.G_TgS_FL 1035.JPG,靶斑病,病斑边缘整齐，中间一圈一圈的很明显,靶斑 轮纹,FRUIT_SET,高湿,露地,广西,consistent
+tomato/train/Tomato___Target_Spot/78e5cdd7-6d20-4666-8483-6a101e0d3fc4___Com.G_TgS_FL 8266.JPG,靶斑病,叶子上的病斑像小靶子，边界挺清楚,靶斑 圆斑,FRUIT_SET,高湿,温室,福建,weak_consistent
+tomato/train/Tomato___Target_Spot/84df451c-1844-4379-ab86-bc61f6b0a343___Com.G_TgS_FL 8128.JPG,靶斑病,病斑有明显圈纹，看着像靶心,靶斑 轮纹,FLOWERING,湿热,露地,广东,weak_consistent
+tomato/train/Tomato___Target_Spot/87bd85f0-649b-4f89-8f86-35d15460520f___Com.G_TgS_FL 7933.JPG,靶斑病,叶面很多灰白小圆斑，后面容易破洞,圆斑 穿孔,FLOWERING,潮湿,露地,四川,conflict
+tomato/train/Tomato___Target_Spot/91d62856-1ead-4c8a-9257-220883b2e508___Com.G_TgS_FL 9789.JPG,靶斑病,叶片像被水泡过一样发暗发湿,水渍 暗斑,FRUIT_SET,连阴雨,露地,云南,conflict
+
+tomato/train/Tomato___Tomato_mosaic_virus/3b990211-ec63-4cb4-a502-ca99b4764dfb___PSU_CG 2126.JPG,花叶病毒病,叶片颜色一块深一块浅，像花叶一样,花叶 斑驳,VEGETATIVE,温暖,露地,广西,consistent
+tomato/train/Tomato___Tomato_mosaic_virus/3ecbb7b8-ad66-4944-886e-de2ae2c2c35e___PSU_CG 2095.JPG,花叶病毒病,叶面深浅绿不均匀，还有点变形,花叶 斑驳 畸形,FLOWERING,温暖,温室,海南,consistent
+tomato/train/Tomato___Tomato_mosaic_virus/4ab5b752-6622-42f2-8743-fa9c9b03e137___PSU_CG 2120.JPG,花叶病毒病,叶子花花绿绿的，看着还有点皱,花叶 斑驳 畸形,VEGETATIVE,温暖,阳台,福建,consistent
+tomato/train/Tomato___Tomato_mosaic_virus/5ab64087-b61c-48b9-9db7-5c6ce3eeefcd___PSU_CG 2299.JPG,花叶病毒病,新叶有花纹一样的斑驳，还慢慢变形,花叶 斑驳 畸形,VEGETATIVE,虫媒活跃,露地,广东,consistent
+tomato/train/Tomato___Tomato_mosaic_virus/5c49d086-dc47-480e-b5b1-0b69bacb66bf___PSU_CG 2241.JPG,花叶病毒病,叶片斑驳不均，整株长势也受影响,花叶 斑驳 生长缓慢,SEEDLING,温暖,阳台,广西,consistent
+tomato/train/Tomato___Tomato_mosaic_virus/5c049070-cf7f-4508-8e61-c5efb64bca3c___PSU_CG 2326.JPG,花叶病毒病,叶子颜色不均匀，一块深一块浅，还有点怪,花叶 斑驳 畸形,VEGETATIVE,温暖,温室,福建,consistent
+tomato/train/Tomato___Tomato_mosaic_virus/5ecb9930-250d-4fac-9547-e3b5142eec46___PSU_CG 2164.JPG,花叶病毒病,叶子像花叶一样花花的，还有点变形,花叶 斑驳 畸形,VEGETATIVE,温暖,露地,广西,weak_consistent
+tomato/train/Tomato___Tomato_mosaic_virus/5f6523e1-d5f2-44d9-a4a3-ae4a72a8a6cd___PSU_CG 2237.JPG,花叶病毒病,叶片颜色不匀，花斑挺明显,花叶 斑驳,FLOWERING,温暖,温室,海南,weak_consistent
+tomato/train/Tomato___Tomato_mosaic_virus/5f45109b-365d-47f2-9921-07e576ac9a93___PSU_CG 2314.JPG,花叶病毒病,新叶发黄还卷起来了，整株长势差,发黄 卷曲 生长缓慢,SEEDLING,高温,温室,广东,conflict
+tomato/train/Tomato___Tomato_mosaic_virus/6b5eed43-832e-4cca-97eb-534b65635d14___PSU_CG 2050.JPG,花叶病毒病,叶片有很多小黑点，边上有黄边,斑点 黄晕,VEGETATIVE,潮湿,温室,江苏,conflict
