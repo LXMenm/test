@@ -49,15 +49,33 @@ def _iter_images(data_dir: Path, limit: int) -> list[tuple[str, Path]]:
     return samples
 
 
-def _resolve_light_model_alpha() -> float:
+def _resolve_light_model_alphas() -> list[float]:
+    candidates: list[float] = []
     history_path = PROJECT_ROOT / "tomato" / "mobilenetv3_light_v1_history.json"
-    if not history_path.exists():
-        return 0.75
+    if history_path.exists():
+        try:
+            payload = json.loads(history_path.read_text(encoding="utf-8"))
+            alpha = float(payload.get("alpha", 0.75))
+            if alpha not in candidates:
+                candidates.append(alpha)
+        except Exception:
+            pass
+    for alpha in [0.75, 1.0, 0.5]:
+        if alpha not in candidates:
+            candidates.append(alpha)
+    return candidates
+
+
+def _load_weights_with_name_matching(model, model_path: str) -> str:
     try:
-        payload = json.loads(history_path.read_text(encoding="utf-8"))
-        return float(payload.get("alpha", 0.75))
-    except Exception:
-        return 0.75
+        model.load_weights(model_path, by_name=True, skip_mismatch=False)
+        return "by_name"
+    except Exception as exc:
+        try:
+            model.load_weights(model_path, by_name=True, skip_mismatch=True)
+            return f"by_name_skip_mismatch({exc})"
+        except Exception as exc2:
+            raise RuntimeError(f"by_name_error={exc}; skip_mismatch_error={exc2}") from exc2
 
 
 def _load_manual_tf_model(model_path: str, class_names: list[str]):
@@ -66,15 +84,21 @@ def _load_manual_tf_model(model_path: str, class_names: list[str]):
     if "light_v1" in lower_name or "mobilenet" in lower_name:
         from tomato.mobilenetv3_light_v1 import build_mobilenetv3_light_v1
 
-        wrapper = build_mobilenetv3_light_v1(
-            num_classes=len(class_names),
-            image_size=224,
-            alpha=_resolve_light_model_alpha(),
-            backbone_trainable=False,
-        )
-        model = wrapper.model
-        model.load_weights(model_path)
-        return model, "manual_tf_loader_light_v1"
+        errors: list[str] = []
+        for alpha in _resolve_light_model_alphas():
+            try:
+                wrapper = build_mobilenetv3_light_v1(
+                    num_classes=len(class_names),
+                    image_size=224,
+                    alpha=alpha,
+                    backbone_trainable=False,
+                )
+                model = wrapper.model
+                weight_mode = _load_weights_with_name_matching(model, model_path)
+                return model, f"manual_tf_loader_light_v1(alpha={alpha},{weight_mode})"
+            except Exception as exc:
+                errors.append(f"alpha={alpha}: {exc}")
+        raise RuntimeError("; ".join(errors))
 
     if "paper_opt" in lower_name or "cbam" in lower_name:
         from tomato.densenet121_paper_opt import build_paper_optimized_densenet121
@@ -85,8 +109,8 @@ def _load_manual_tf_model(model_path: str, class_names: list[str]):
             backbone_trainable=False,
         )
         model = wrapper.model
-        model.load_weights(model_path)
-        return model, "manual_tf_loader_paper_opt"
+        weight_mode = _load_weights_with_name_matching(model, model_path)
+        return model, f"manual_tf_loader_paper_opt({weight_mode})"
 
     raise RuntimeError(f"没有可用的手工TF加载器: {model_path}")
 
