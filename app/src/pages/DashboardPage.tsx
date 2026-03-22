@@ -1016,9 +1016,9 @@ export function DashboardPage() {
     llmFailedRate: summary.llmFailedRate,
   }), [summary.avgResponseMs, summary.llmFailedRate]);
 
-  const diseaseTrendData = useMemo(() => {
-    const topDiseases = stats.slice(0, 6).map((item) => item.disease);
+  const diseaseTrend = useMemo(() => {
     const eventBreakdown = new Map<string, Record<string, number>>();
+    const diseaseTotals = new Map<string, number>();
     filteredEvents.forEach((event) => {
       const ts = Date.parse(event.ts);
       if (!Number.isFinite(ts)) return;
@@ -1026,14 +1026,26 @@ export function DashboardPage() {
       const current = eventBreakdown.get(day) ?? {};
       current[event.disease] = (current[event.disease] ?? 0) + 1;
       eventBreakdown.set(day, current);
+      diseaseTotals.set(event.disease, (diseaseTotals.get(event.disease) ?? 0) + 1);
     });
-    return timeseries.map((row) => {
+    const topDiseases = Array.from(diseaseTotals.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 6)
+      .map(([disease]) => disease);
+    const dateRows = timeseries.length > 0
+      ? timeseries
+      : Array.from(eventBreakdown.keys()).sort().map((date) => ({
+        date,
+        count: Object.values(eventBreakdown.get(date) ?? {}).reduce((sum, value) => sum + value, 0),
+      }));
+    const data = dateRows.map((row) => {
       const breakdown = eventBreakdown.get(row.date) ?? {};
       const payload: Record<string, number | string> = { date: row.date, total: row.count };
       topDiseases.forEach((disease) => { payload[disease] = breakdown[disease] ?? 0; });
       return payload;
     });
-  }, [filteredEvents, stats, timeseries]);
+    return { data, topDiseases };
+  }, [filteredEvents, timeseries]);
 
   useEffect(() => {
     localStorage.setItem('dashboard:module-prefs', JSON.stringify(modulePrefs));
@@ -1474,22 +1486,26 @@ export function DashboardPage() {
               </div>
               <div className="h-72">
                 <p className="text-white/70 text-sm mb-2">病害趋势（按日堆叠）</p>
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={diseaseTrendData} margin={{ left: 8, right: 8, top: 10, bottom: 0 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(193,227,207,0.18)" />
-                    <XAxis dataKey="date" stroke="rgba(229,243,236,0.72)" tick={{ fontSize: 12 }} />
-                    <YAxis stroke="rgba(229,243,236,0.72)" allowDecimals={false} tick={{ fontSize: 12 }} />
-                    <Tooltip contentStyle={{ background: '#10231c', border: '1px solid rgba(146,194,168,0.5)', color: '#e8fff0' }} />
-                    {stats.slice(0, 6).map((item, index) => (
-                      <Bar
-                        key={item.disease}
-                        dataKey={item.disease}
-                        stackId="disease"
-                        fill={[chartPalette.greenSoft, chartPalette.greenDark, chartPalette.yellowSoft, chartPalette.cyanSoft, chartPalette.coralSoft, chartPalette.purpleSoft][index % 6]}
-                      />
-                    ))}
-                  </BarChart>
-                </ResponsiveContainer>
+                {diseaseTrend.topDiseases.length > 0 ? (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={diseaseTrend.data} margin={{ left: 8, right: 8, top: 10, bottom: 0 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="rgba(193,227,207,0.18)" />
+                      <XAxis dataKey="date" stroke="rgba(229,243,236,0.72)" tick={{ fontSize: 12 }} />
+                      <YAxis stroke="rgba(229,243,236,0.72)" allowDecimals={false} tick={{ fontSize: 12 }} />
+                      <Tooltip contentStyle={{ background: '#10231c', border: '1px solid rgba(146,194,168,0.5)', color: '#e8fff0' }} />
+                      {diseaseTrend.topDiseases.map((disease, index) => (
+                        <Bar
+                          key={disease}
+                          dataKey={disease}
+                          stackId="disease"
+                          fill={[chartPalette.greenSoft, chartPalette.greenDark, chartPalette.yellowSoft, chartPalette.cyanSoft, chartPalette.coralSoft, chartPalette.purpleSoft][index % 6]}
+                        />
+                      ))}
+                    </BarChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <div className="h-full flex items-center justify-center text-white/40 text-sm">暂无病害趋势数据</div>
+                )}
               </div>
             </CardContent>
           )}
