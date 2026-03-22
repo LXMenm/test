@@ -188,6 +188,7 @@ class DiagnoseResponse(BaseModel):
     expert_review_recommended: bool = False
     expert_review_selected: bool = False
     expert_review_status: str = "NONE"
+    expert_review_actions: list[str] = []
     confirm_message: str | None = None
     treatment_skipped_due_need_confirm: bool = False
     treatment_available: bool = False
@@ -1466,6 +1467,7 @@ async def diagnose_image(
         "expert_review_recommended": expert_review_recommended,
         "expert_review_selected": expert_review_selected,
         "expert_review_status": expert_review_status,
+        "expert_review_actions": [],
         "graph_treatment_generated": graph_treatment_generated,
         "fallback_treatment_used": fallback_treatment_used,
     }
@@ -1554,6 +1556,7 @@ async def diagnose_image(
         "expert_review_recommended": expert_review_recommended,
         "expert_review_selected": expert_review_selected,
         "expert_review_status": expert_review_status,
+        "expert_review_actions": [],
         "confirm_message": None,
         "treatment_skipped_due_need_confirm": need_confirm_waiting,
         "treatment_available": treatment_available,
@@ -1772,6 +1775,7 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
     expert_review_recommended = False
     expert_review_selected = False
     expert_review_status = "NONE"
+    expert_review_actions: list[str] = []
     if terminal_action == "await_user_confirmation":
         manual_review_recommended = False
         need_confirm = True
@@ -1779,6 +1783,7 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
     elif terminal_action == "manual_review":
         expert_review_recommended = True
         manual_review_recommended = True
+        expert_review_actions = ["use_current_result", "request_expert_review"]
         need_confirm = False
         if expert_review_decision == "decline":
             state = _ensure_follow_up_plan(state)
@@ -1809,7 +1814,7 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
         else:
             expert_review_selected = False
             expert_review_status = "NONE"
-            confirm_status = "waiting_for_supplement"
+            confirm_status = "waiting_for_expert_decision"
             manual_review_required_before_execution = False
     else:
         if choice and choice != "other":
@@ -1826,7 +1831,7 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
         state["verification_risk_level"] = None
         state["verification_issues"] = []
         state["verification_summary"] = None
-    elif confirm_status == "waiting_for_supplement" and terminal_action == "manual_review":
+    elif confirm_status in {"waiting_for_supplement", "waiting_for_expert_decision"} and terminal_action == "manual_review":
         state["treatment_plan"] = None
         state["prevention_advice"] = None
         state["verification_result"] = None
@@ -1849,7 +1854,7 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
     confirm_message = None
     if confirm_status == "pending_expert_review":
         confirm_message = "已进入待专家复核状态，后续将由专家确认病害并补充最终方案。"
-    elif confirm_status == "waiting_for_supplement" and expert_review_recommended:
+    elif confirm_status == "waiting_for_expert_decision" and expert_review_recommended:
         confirm_message = "多次补充后仍存在不确定性。你可以使用当前结果结束，或转入待专家复核状态。"
     elif confirm_status == "waiting_for_supplement":
         confirm_message = "置信度较低，建议补充症状、确认候选病害或重新拍摄。"
@@ -1924,6 +1929,7 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
         "expert_review_recommended": expert_review_recommended,
         "expert_review_selected": expert_review_selected,
         "expert_review_status": expert_review_status,
+        "expert_review_actions": expert_review_actions,
         "status": confirm_status,
         "treatment_available": bool(state.get("treatment_plan")) and confirm_status != "pending_expert_review",
         "verification_available": (state.get("verification_result") is not None) and confirm_status != "pending_expert_review",
@@ -2001,6 +2007,7 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
         "expert_review_recommended": expert_review_recommended,
         "expert_review_selected": expert_review_selected,
         "expert_review_status": expert_review_status,
+        "expert_review_actions": expert_review_actions,
         "status": confirm_status,
         "confirm_message": confirm_message,
         "treatment": None if confirm_status == "pending_expert_review" else {
@@ -2039,7 +2046,7 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
         "verification_available": (state.get("verification_result") is not None) and confirm_status != "pending_expert_review",
         "graph_treatment_generated": bool(state.get("treatment_plan")),
         "fallback_treatment_used": bool(previous_case_event.get("fallback_treatment_used")) if isinstance(previous_case_event, dict) else False,
-        "treatment_skipped_due_need_confirm": bool(confirm_status == "waiting_for_supplement"),
+        "treatment_skipped_due_need_confirm": bool(confirm_status in {"waiting_for_supplement", "waiting_for_expert_decision"}),
         "confirm_round_parent_trace_id": trace_id,
         "meta": response_meta,
         "events": events,
