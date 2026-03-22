@@ -1,17 +1,16 @@
 """
 配置文件
-管理API密钥和模型配置
+管理 API 密钥、存储后端和诊断模型默认配置。
 """
 import os
 from pathlib import Path
-from typing import Optional
 
 # 尝试加载.env文件
 try:
     from dotenv import load_dotenv
     load_dotenv()
 except ImportError:
-    # 如果python-dotenv未安装，跳过.env文件加载
+    # 如果 python-dotenv 未安装，跳过 .env 文件加载
     # 环境变量仍可通过系统环境变量设置
     pass
 
@@ -44,27 +43,23 @@ def log_resolved_storage_config() -> None:
     )
     _STORAGE_CONFIG_LOGGED = True
 
-# 大模型API配置
-# 支持多种API：openai, qwen(通义千问), wenxin(文心一言)
-LLM_PROVIDER = os.getenv("LLM_PROVIDER", "openai")  # 默认使用openai
+# 大模型 API 配置
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "openai")
 
-# OpenAI配置
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-3.5-turbo")
 
-# 通义千问配置（阿里云）
 QWEN_API_KEY = os.getenv("QWEN_API_KEY", "")
 QWEN_BASE_URL = os.getenv("QWEN_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
 QWEN_MODEL = os.getenv("QWEN_MODEL", "qwen-turbo")
 
-# 文心一言配置（百度）
 WENXIN_API_KEY = os.getenv("WENXIN_API_KEY", "")
 WENXIN_SECRET_KEY = os.getenv("WENXIN_SECRET_KEY", "")
 WENXIN_MODEL = os.getenv("WENXIN_MODEL", "ernie-bot-turbo")
 
 # 诊断模型配置
-DIAGNOSIS_MODEL_TYPE = os.getenv("DIAGNOSIS_MODEL_TYPE", "densenet121")  # densenet121, resnet50, vit
+# DIAGNOSIS_MODEL_TYPE 主要在 Torch 后备链路中使用；TF 默认链路以 DEFAULT_TF_MODEL_PATH 为准。
 DIAGNOSIS_BACKEND = os.getenv("DIAGNOSIS_BACKEND", "tf").lower()
 if DIAGNOSIS_BACKEND not in {"tf", "torch", "auto"}:
     print(
@@ -72,8 +67,18 @@ if DIAGNOSIS_BACKEND not in {"tf", "torch", "auto"}:
         f"DIAGNOSIS_BACKEND={DIAGNOSIS_BACKEND} 不合法，回退到 tf。"
     )
     DIAGNOSIS_BACKEND = "tf"
+
+DIAGNOSIS_MODEL_TYPE = os.getenv("DIAGNOSIS_MODEL_TYPE", "densenet121")
 PROJECT_ROOT = Path(__file__).resolve().parent
+
+DEFAULT_TF_MODEL_ID = "tf_default"
+DEFAULT_TF_MODEL_LABEL = "默认轻量上线模型"
+DEFAULT_TF_MODEL_PROFILE = "MobileNetV3LightV1"
 DEFAULT_TF_MODEL_PATH = PROJECT_ROOT / "models" / "mobilenetv3_light_v1.keras"
+TF_HIGH_ACCURACY_MODEL_ID = "tf_paper_opt"
+TF_HIGH_ACCURACY_MODEL_LABEL = "高精度备选模型"
+TF_HIGH_ACCURACY_MODEL_PATH = PROJECT_ROOT / "models" / "densenet121_tomato_disease_model_fine_tuned_paper_opt.h5"
+
 _ENV_DIAGNOSIS_MODEL_PATH = os.getenv("DIAGNOSIS_MODEL_PATH")
 
 
@@ -89,19 +94,19 @@ def _resolve_diagnosis_model_path() -> str:
         if env_exists and not env_is_tf:
             print(
                 "[ConfigResolved] "
-                f"DIAGNOSIS_MODEL_PATH={_ENV_DIAGNOSIS_MODEL_PATH} 不是TF模型，回退默认TF模型。"
+                f"DIAGNOSIS_MODEL_PATH={_ENV_DIAGNOSIS_MODEL_PATH} 不是 TF 模型，回退默认 TF 模型。"
             )
         if default_exists:
             return str(DEFAULT_TF_MODEL_PATH)
         if env_path:
             print(
                 "[ConfigResolved] "
-                f"DIAGNOSIS_MODEL_PATH={_ENV_DIAGNOSIS_MODEL_PATH} 不存在，且默认TF模型缺失。"
+                f"DIAGNOSIS_MODEL_PATH={_ENV_DIAGNOSIS_MODEL_PATH} 不存在，且默认 TF 模型缺失。"
             )
             return str(env_path)
         print(
             "[ConfigResolved] "
-            "默认TF模型不存在，请先训练并生成 models/mobilenetv3_light_v1.keras。"
+            "默认 TF 模型不存在，请先训练并生成 models/mobilenetv3_light_v1.keras。"
         )
         return str(DEFAULT_TF_MODEL_PATH)
 
@@ -126,14 +131,14 @@ def _resolve_diagnosis_model_path() -> str:
     if env_path and not env_exists:
         print(
             "[ConfigResolved] "
-            f"DIAGNOSIS_MODEL_PATH={_ENV_DIAGNOSIS_MODEL_PATH} 不存在，且默认TF模型缺失。"
+            f"DIAGNOSIS_MODEL_PATH={_ENV_DIAGNOSIS_MODEL_PATH} 不存在，且默认 TF 模型缺失。"
         )
         return str(env_path)
     if env_path:
         return str(env_path)
     print(
         "[ConfigResolved] "
-        "默认TF模型不存在，请先训练并生成 models/mobilenetv3_light_v1.keras。"
+        "默认 TF 模型不存在，请先训练并生成 models/mobilenetv3_light_v1.keras。"
     )
     return str(DEFAULT_TF_MODEL_PATH)
 
@@ -146,8 +151,6 @@ TEXT_MODEL_DIR = os.getenv("TEXT_MODEL_DIR", str(PROJECT_ROOT / "models" / "text
 
 USE_GPU = os.getenv("USE_GPU", "false").lower() == "true"
 DIAGNOSIS_ALLOW_TORCH = os.getenv("DIAGNOSIS_ALLOW_TORCH", "0")
-
-# 诊断置信度阈值
 DIAGNOSIS_CONFIDENCE_THRESHOLD = float(os.getenv("DIAGNOSIS_CONFIDENCE_THRESHOLD", "0.6"))
 
 
@@ -163,14 +166,29 @@ def log_resolved_diagnosis_config() -> None:
             "[ConfigResolved] "
             f"模型文件不存在，请先生成默认模型: {DIAGNOSIS_MODEL_PATH}"
         )
-    print(
-        "[ConfigResolved] "
-        f"DIAGNOSIS_MODEL_PATH={DIAGNOSIS_MODEL_PATH} "
-        f"DIAGNOSIS_MODEL_TYPE={DIAGNOSIS_MODEL_TYPE} "
-        f"DIAGNOSIS_BACKEND={DIAGNOSIS_BACKEND} "
-        f"USE_GPU={USE_GPU} "
-        f"DIAGNOSIS_ALLOW_TORCH={DIAGNOSIS_ALLOW_TORCH}"
-    )
+
+    if DIAGNOSIS_BACKEND == "tf":
+        print(
+            "[ConfigResolved] "
+            f"DEFAULT_MODEL_ID={DEFAULT_TF_MODEL_ID} "
+            f"DEFAULT_MODEL_LABEL={DEFAULT_TF_MODEL_LABEL} "
+            f"DEFAULT_MODEL_PROFILE={DEFAULT_TF_MODEL_PROFILE} "
+            f"BACKUP_MODEL_ID={TF_HIGH_ACCURACY_MODEL_ID} "
+            f"BACKUP_MODEL_LABEL={TF_HIGH_ACCURACY_MODEL_LABEL} "
+            f"DIAGNOSIS_MODEL_PATH={DIAGNOSIS_MODEL_PATH} "
+            f"DIAGNOSIS_BACKEND={DIAGNOSIS_BACKEND} "
+            f"USE_GPU={USE_GPU} "
+            f"DIAGNOSIS_ALLOW_TORCH={DIAGNOSIS_ALLOW_TORCH}"
+        )
+    else:
+        print(
+            "[ConfigResolved] "
+            f"DIAGNOSIS_MODEL_PATH={DIAGNOSIS_MODEL_PATH} "
+            f"DIAGNOSIS_MODEL_TYPE={DIAGNOSIS_MODEL_TYPE} "
+            f"DIAGNOSIS_BACKEND={DIAGNOSIS_BACKEND} "
+            f"USE_GPU={USE_GPU} "
+            f"DIAGNOSIS_ALLOW_TORCH={DIAGNOSIS_ALLOW_TORCH}"
+        )
     _DIAGNOSIS_CONFIG_LOGGED = True
 
 
