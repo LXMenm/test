@@ -3,6 +3,7 @@
 基于深度学习的番茄病害诊断模型
 参考论文：Transform and Deep Learning Algorithms for the Early Detection and Recognition of Tomato Leaf Disease
 """
+import sys
 import torch
 import torch.nn as nn
 import torchvision.models as models
@@ -20,6 +21,7 @@ from config import (
     DIAGNOSIS_CONFIDENCE_THRESHOLD,
     TEXT_DIAGNOSIS_BACKEND,
     TEXT_MODEL_DIR,
+    PROJECT_ROOT,
 )
 import os
 from knowledge_base import get_kb_manager
@@ -42,6 +44,36 @@ def _get_disease_classes() -> list[str]:
     if _disease_classes_cache is None:
         _disease_classes_cache = list(_get_kb_manager().get_disease_classes())
     return list(_disease_classes_cache)
+
+
+def _load_tf_custom_objects(model_path: str) -> Dict[str, object]:
+    """根据模型路径按需加载 Keras custom_objects，保证评估与推理兼容。"""
+    custom_objects: Dict[str, object] = {}
+    normalized = os.path.abspath(model_path)
+    lower_name = os.path.basename(normalized).lower()
+
+    candidates: list[tuple[str, str]] = []
+    if "paper_opt" in lower_name or "cbam" in lower_name:
+        candidates.append(("tomato.densenet121_paper_opt", "get_custom_objects"))
+    if "light_v1" in lower_name or "mobilenet" in lower_name:
+        candidates.append(("tomato.mobilenetv3_light_v1", "get_custom_objects"))
+
+    # 默认兜底：两种新增 TF 模型都尝试注册，避免因文件命名历史遗留导致识别失败。
+    if not candidates:
+        candidates = [
+            ("tomato.densenet121_paper_opt", "get_custom_objects"),
+            ("tomato.mobilenetv3_light_v1", "get_custom_objects"),
+        ]
+
+    for module_name, func_name in candidates:
+        try:
+            module = __import__(module_name, fromlist=[func_name])
+            getter = getattr(module, func_name, None)
+            if getter:
+                custom_objects.update(getter() or {})
+        except Exception:
+            continue
+    return custom_objects
 
 
 FUSE_MULTIMODAL_VERSION = "fuse_v4_text_gate_with_weak_conflict_20260321"
@@ -139,16 +171,6 @@ class ViTModel(DiagnosisModel):
 
 
 def create_model(model_type: str = DIAGNOSIS_MODEL_TYPE, num_classes: int | None = None) -> DiagnosisModel:
-    """
-    创建诊断模型
-
-    Args:
-        model_type: 模型类型 (densenet121, resnet50, vit)
-        num_classes: 分类数量
-
-    Returns:
-        模型实例
-    """
     if model_type == "densenet121":
         return DenseNet121Model(num_classes)
     elif model_type == "resnet50":
@@ -202,20 +224,14 @@ class DiseaseDiagnosisEngine:
                 self.model_path = model_path
                 self._load_tf_model(model_path)
             else:
-                print(
-                    "[DiagnosisEngine] backend=none "
-                    "message=TF模型不存在"
-                )
+                print("[DiagnosisEngine] backend=none message=TF模型不存在")
             return
 
         if backend == "torch":
             if allow_torch:
                 self._load_torch_model(model_type, model_path)
             else:
-                print(
-                    "[DiagnosisEngine] backend=none "
-                    "message=Torch未启用"
-                )
+                print("[DiagnosisEngine] backend=none message=Torch未启用")
             return
 
         if tf_candidate:
@@ -225,10 +241,7 @@ class DiseaseDiagnosisEngine:
         elif allow_torch:
             self._load_torch_model(model_type, model_path)
         else:
-            print(
-                "[DiagnosisEngine] backend=none "
-                "message=TF模型不存在且Torch未启用"
-            )
+            print("[DiagnosisEngine] backend=none message=TF模型不存在且Torch未启用")
 
     def _load_tf_model(self, model_path: str) -> None:
         if not os.path.exists(model_path):
@@ -236,10 +249,23 @@ class DiseaseDiagnosisEngine:
             return
         try:
             import tensorflow as tf
+            from tensorflow.keras import backend as K
+            from tensorflow.keras.layers import Layer
         except ImportError as exc:
             raise ImportError("未安装 TensorFlow，无法加载 .h5/.keras 模型") from exc
 
-        self.tf_model = tf.keras.models.load_model(model_path)
+        custom_objects = _load_tf_custom_objects(model_path)
+        try:
+            self.tf_model = tf.keras.models.load_model(
+                model_path,
+                custom_objects=custom_objects or None,
+                compile=False,
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                f"加载TF模型失败: {model_path}; custom_objects={sorted((custom_objects or {}).keys())}; error={exc}"
+            ) from exc
+
         self.class_names = self._load_tf_class_names()
         self.label_map_cn = self._load_label_map_cn()
         output_dim = self.tf_model.output_shape[-1]
@@ -254,8 +280,6 @@ class DiseaseDiagnosisEngine:
 
     def _load_torch_model(self, model_type: str, model_path: Optional[str]) -> None:
         self.model = create_model(model_type)
-
-        # 加载预训练模型（如果存在）
         if model_path and os.path.exists(model_path):
             try:
                 self.model.load_state_dict(torch.load(model_path, map_location=self.device))
@@ -272,7 +296,6 @@ class DiseaseDiagnosisEngine:
             print(f"[DiagnosisEngine] backend=torch model_path={model_path}")
             self._torch_load_announced_paths.add(normalized_path)
 
-        # 图像预处理
         self.transform = transforms.Compose([
             transforms.Resize((224, 224)),
             transforms.ToTensor(),
@@ -287,9 +310,7 @@ class DiseaseDiagnosisEngine:
             with open(classes_path, "r", encoding="utf-8") as f:
                 return [line.strip() for line in f if line.strip()]
         if os.path.isdir(train_dir):
-            return sorted(
-                [name for name in os.listdir(train_dir) if os.path.isdir(os.path.join(train_dir, name))]
-            )
+            return sorted([name for name in os.listdir(train_dir) if os.path.isdir(os.path.join(train_dir, name))])
         return []
 
     def _load_label_map_cn(self) -> Dict[str, str]:
@@ -308,15 +329,6 @@ class DiseaseDiagnosisEngine:
         return self.label_map_cn.get(label, label)
     
     def diagnose_from_image(self, image_path: str) -> Tuple[str, float, Dict[str, float]]:
-        """
-        从图像诊断病害
-
-        Args:
-            image_path: 图像路径
-
-        Returns:
-            (病害类型, 置信度, 所有类别的概率分布)
-        """
         if self.tf_backend:
             if not self.tf_model:
                 return "模型未部署", 0.0, {}
@@ -336,10 +348,7 @@ class DiseaseDiagnosisEngine:
                 confidence_score = float(probs[predicted_idx])
                 raw_label = self.class_names[predicted_idx]
                 disease_type = self._map_label_cn(raw_label)
-                probs_dict = {
-                    self._map_label_cn(label): float(prob)
-                    for label, prob in zip(self.class_names, probs)
-                }
+                probs_dict = {self._map_label_cn(label): float(prob) for label, prob in zip(self.class_names, probs)}
                 if confidence_score < DIAGNOSIS_CONFIDENCE_THRESHOLD:
                     disease_type = "疑似病害（置信度不足）"
                 return disease_type, confidence_score, probs_dict
@@ -352,90 +361,39 @@ class DiseaseDiagnosisEngine:
         try:
             image = Image.open(image_path).convert('RGB')
             image_tensor = self.transform(image).unsqueeze(0).to(self.device)
-            
             with torch.no_grad():
                 outputs = self.model(image_tensor)
                 probabilities = torch.softmax(outputs, dim=1)
                 confidence, predicted = torch.max(probabilities, 1)
-                
-                # 获取所有类别的概率
                 disease_classes = _get_disease_classes()
-                probs_dict = {
-                    disease_classes[i]: probabilities[0][i].item()
-                    for i in range(len(disease_classes))
-                }
-                
+                probs_dict = {disease_classes[i]: probabilities[0][i].item() for i in range(len(disease_classes))}
                 disease_type = disease_classes[predicted.item()]
                 confidence_score = confidence.item()
-                
                 return disease_type, confidence_score, probs_dict
         except Exception as e:
             print(f"图像诊断失败: {e}")
             return "未知病害", 0.0, {}
-    
-    def diagnose_from_symptoms(
-        self,
-        crop_type: str,
-        symptoms: List[str],
-        growth_stage: Optional[str] = None
-    ) -> Tuple[str, float, str]:
-        """
-        基于症状进行诊断（规则+模型结合）
 
-        Args:
-            crop_type: 作物类型
-            symptoms: 症状列表
-            growth_stage: 生长阶段
-
-        Returns:
-            (病害类型, 置信度, 病害描述)
-        """
-        # 如果作物不是番茄，使用规则匹配
+    def diagnose_from_symptoms(self, crop_type: str, symptoms: List[str], growth_stage: Optional[str] = None) -> Tuple[str, float, str]:
         if crop_type != "番茄":
             return "非番茄作物", 0.0, "本系统仅支持番茄病害诊断"
-        
-        # 使用知识库管理器进行规则诊断
         diagnosis_result = _get_kb_manager().rule_diagnosis(crop_type, symptoms)
-        
-        # 获取病害描述
         description = self._get_disease_description(diagnosis_result["disease_type"], symptoms)
-        
-        return (
-            diagnosis_result["disease_type"],
-            diagnosis_result["confidence"],
-            description
-        )
-    
+        return (diagnosis_result["disease_type"], diagnosis_result["confidence"], description)
+
     def _rule_based_diagnosis(self, crop_type: str, symptoms: List[str]) -> Tuple[str, float, str]:
-        """
-        基于规则的诊断（仅用于番茄作物）
-        """
         if crop_type != "番茄":
             return "非番茄作物", 0.0, "本系统仅支持番茄病害诊断"
-        
-        # 使用知识库管理器进行规则诊断
         diagnosis_result = _get_kb_manager().rule_diagnosis(crop_type, symptoms)
-        
-        # 获取病害描述
         description = self._get_disease_description(diagnosis_result["disease_type"], symptoms)
-        
-        return (
-            diagnosis_result["disease_type"],
-            diagnosis_result["confidence"],
-            description
-        )
-    
+        return (diagnosis_result["disease_type"], diagnosis_result["confidence"], description)
+
     def _get_disease_description(self, disease_type: str, symptoms: List[str]) -> str:
-        """
-        获取病害描述
-        """
-        # 使用知识库管理器获取病害描述
         base_description = _get_kb_manager().get_disease_description(disease_type)
         symptom_text = "、".join(symptoms)
         return f"{base_description} 当前观察到的症状包括：{symptom_text}。"
 
     def predict_image_proba(self, image_path: str) -> Dict[str, float]:
-        """返回 canonical 中文病害 key 的图像概率分布。"""
         _, _, probs = self.diagnose_from_image(image_path)
         canonical_probs: Dict[str, float] = {}
         for label, prob in (probs or {}).items():
@@ -467,125 +425,43 @@ class DiseaseDiagnosisEngine:
             self._text_classifier_available = False
             return None
 
-    def predict_text_proba_rule_based(
-        self,
-        raw_text: Optional[str] = None,
-        symptoms: Optional[List[str]] = None,
-        growth_stage: Optional[str] = None,
-        environment: Optional[str] = None,
-        facility: Optional[str] = None,
-        province: Optional[str] = None,
-    ) -> Dict[str, float]:
-        """KB 规则版文本概率诊断（fallback）。"""
+    def predict_text_proba_rule_based(self, raw_text: Optional[str] = None, symptoms: Optional[List[str]] = None, growth_stage: Optional[str] = None, environment: Optional[str] = None, facility: Optional[str] = None, province: Optional[str] = None) -> Dict[str, float]:
         normalized_symptoms = _get_kb_manager().normalize_symptoms(symptoms or [])
         if not _get_kb_manager().has_effective_text_evidence(normalized_symptoms):
             return {}
-        return _get_kb_manager().score_diseases_from_text(
-            crop_type="番茄",
-            symptoms=normalized_symptoms,
-            growth_stage=growth_stage,
-            environment=environment,
-            facility=facility,
-            province=province,
-        )
+        return _get_kb_manager().score_diseases_from_text(crop_type="番茄", symptoms=normalized_symptoms, growth_stage=growth_stage, environment=environment, facility=facility, province=province)
 
-    def predict_text_proba_bert(
-        self,
-        raw_text: Optional[str] = None,
-        symptoms: Optional[List[str]] = None,
-        growth_stage: Optional[str] = None,
-        environment: Optional[str] = None,
-        facility: Optional[str] = None,
-        province: Optional[str] = None,
-    ) -> Dict[str, float]:
+    def predict_text_proba_bert(self, raw_text: Optional[str] = None, symptoms: Optional[List[str]] = None, growth_stage: Optional[str] = None, environment: Optional[str] = None, facility: Optional[str] = None, province: Optional[str] = None) -> Dict[str, float]:
         normalized_symptoms = _get_kb_manager().normalize_symptoms(symptoms or [])
         classifier = self._load_text_classifier()
         if not classifier:
             return {}
-
-        probs = classifier.predict_probs(
-            raw_text=raw_text,
-            symptoms=normalized_symptoms,
-            growth_stage=growth_stage,
-            environment=environment,
-            facility=facility,
-            province=province,
-        )
+        probs = classifier.predict_probs(raw_text=raw_text, symptoms=normalized_symptoms, growth_stage=growth_stage, environment=environment, facility=facility, province=province)
         disease_classes = _get_disease_classes()
         filtered = {k: float(v) for k, v in (probs or {}).items() if k in disease_classes}
-        # 输出格式与融合层兼容：只保留 canonical disease 且归一化
         return self._normalized(filtered)
 
-    def predict_text_proba(
-        self,
-        raw_text: Optional[str] = None,
-        symptoms: Optional[List[str]] = None,
-        growth_stage: Optional[str] = None,
-        environment: Optional[str] = None,
-        facility: Optional[str] = None,
-        province: Optional[str] = None,
-    ) -> Dict[str, float]:
-        """优先 BERT 文本分类器，失败时回退 KB 规则。"""
+    def predict_text_proba(self, raw_text: Optional[str] = None, symptoms: Optional[List[str]] = None, growth_stage: Optional[str] = None, environment: Optional[str] = None, facility: Optional[str] = None, province: Optional[str] = None) -> Dict[str, float]:
         normalized_symptoms = _get_kb_manager().normalize_symptoms(symptoms or [])
         text_evidence_active = bool(normalized_symptoms)
         if not text_evidence_active:
             return {}
-
         backend = (TEXT_DIAGNOSIS_BACKEND or "auto").lower()
-
         if backend == "rule":
-            return self.predict_text_proba_rule_based(
-                raw_text=raw_text,
-                symptoms=normalized_symptoms,
-                growth_stage=growth_stage,
-                environment=environment,
-                facility=facility,
-                province=province,
-            )
-
+            return self.predict_text_proba_rule_based(raw_text=raw_text, symptoms=normalized_symptoms, growth_stage=growth_stage, environment=environment, facility=facility, province=province)
         if backend == "bert":
-            return self.predict_text_proba_bert(
-                raw_text=raw_text,
-                symptoms=normalized_symptoms,
-                growth_stage=growth_stage,
-                environment=environment,
-                facility=facility,
-                province=province,
-            )
-
+            return self.predict_text_proba_bert(raw_text=raw_text, symptoms=normalized_symptoms, growth_stage=growth_stage, environment=environment, facility=facility, province=province)
         if backend != "auto":
             backend = "auto"
-
         try:
-            bert_probs = self.predict_text_proba_bert(
-                raw_text=raw_text,
-                symptoms=normalized_symptoms,
-                growth_stage=growth_stage,
-                environment=environment,
-                facility=facility,
-                province=province,
-            )
+            bert_probs = self.predict_text_proba_bert(raw_text=raw_text, symptoms=normalized_symptoms, growth_stage=growth_stage, environment=environment, facility=facility, province=province)
             if bert_probs:
                 return bert_probs
         except Exception:
             pass
+        return self.predict_text_proba_rule_based(raw_text=raw_text, symptoms=normalized_symptoms, growth_stage=growth_stage, environment=environment, facility=facility, province=province)
 
-        return self.predict_text_proba_rule_based(
-            raw_text=raw_text,
-            symptoms=normalized_symptoms,
-            growth_stage=growth_stage,
-            environment=environment,
-            facility=facility,
-            province=province,
-        )
-
-    def build_prior_proba(
-        self,
-        growth_stage: Optional[str] = None,
-        facility: Optional[str] = None,
-        province: Optional[str] = None,
-    ) -> Dict[str, float]:
-        """轻量先验：仅做小幅偏置，避免过强主导。"""
+    def build_prior_proba(self, growth_stage: Optional[str] = None, facility: Optional[str] = None, province: Optional[str] = None) -> Dict[str, float]:
         priors: Dict[str, float] = {}
         facility_text = str(facility or "").lower()
         if any(x in facility_text for x in ["温室", "大棚", "greenhouse", "棚"]):
@@ -611,76 +487,33 @@ class DiseaseDiagnosisEngine:
     def _topk(dist: Dict[str, float], k: int = 3) -> List[Tuple[str, float]]:
         return sorted([(k0, float(v0)) for k0, v0 in (dist or {}).items()], key=lambda x: x[1], reverse=True)[:k]
 
-    def fuse_multimodal_probs(
-        self,
-        image_probs: Dict[str, float],
-        text_probs: Dict[str, float],
-        prior_probs: Dict[str, float],
-        image_confidence: float = 0.0,
-        text_confidence: float = 0.0,
-        text_evidence_active: Optional[bool] = None,
-    ) -> Tuple[Dict[str, float], Dict[str, object]]:
-        """图像/文本/先验融合（动态权重，避免缺失模态稀释主模态）。"""
+    def fuse_multimodal_probs(self, image_probs: Dict[str, float], text_probs: Dict[str, float], prior_probs: Dict[str, float], image_confidence: float = 0.0, text_confidence: float = 0.0, text_evidence_active: Optional[bool] = None) -> Tuple[Dict[str, float], Dict[str, object]]:
         image_probs = self._normalized(image_probs)
         text_probs = self._normalized(text_probs)
         prior_probs = self._normalized(prior_probs)
-
         has_image = bool(image_probs)
         has_text = bool(text_evidence_active) if text_evidence_active is not None else bool(text_probs)
         has_prior = bool(prior_probs)
-
         image_top3 = self._topk(image_probs, 3)
         text_top3 = self._topk(text_probs, 3)
         prior_top3 = self._topk(prior_probs, 3)
         image_top1_conf = float(image_top3[0][1]) if image_top3 else 0.0
         image_top2_conf = float(image_top3[1][1]) if len(image_top3) > 1 else 0.0
         image_margin = image_top1_conf - image_top2_conf
-        reliable_image = bool(
-            image_top3
-            and image_top1_conf >= IMAGE_RELIABLE_TOP1_THRESHOLD
-            and image_margin >= IMAGE_RELIABLE_MARGIN_THRESHOLD
-        )
+        reliable_image = bool(image_top3 and image_top1_conf >= IMAGE_RELIABLE_TOP1_THRESHOLD and image_margin >= IMAGE_RELIABLE_MARGIN_THRESHOLD)
         text_top1_conf = float(text_top3[0][1]) if text_top3 else 0.0
         text_top2_conf = float(text_top3[1][1]) if len(text_top3) > 1 else 0.0
         text_margin = text_top1_conf - text_top2_conf
-        reliable_text = bool(
-            text_top3
-            and text_top1_conf >= TEXT_RELIABLE_TOP1_THRESHOLD
-            and text_margin >= TEXT_RELIABLE_MARGIN_THRESHOLD
-        )
+        reliable_text = bool(text_top3 and text_top1_conf >= TEXT_RELIABLE_TOP1_THRESHOLD and text_margin >= TEXT_RELIABLE_MARGIN_THRESHOLD)
         text_probs_for_fusion = text_probs if reliable_text else {}
         image_top1 = image_top3[0][0] if image_top3 else None
         text_top1 = text_top3[0][0] if text_top3 else None
-        conflict = bool(
-            has_image
-            and has_text
-            and reliable_image
-            and reliable_text
-            and image_top1
-            and text_top1
-            and image_top1 != text_top1
-        )
-        weak_conflict_candidate = bool(
-            has_image
-            and has_text
-            and image_top1
-            and text_top1
-            and image_top1 != text_top1
-            and (
-                image_top1_conf >= WEAK_CONFLICT_MIN_IMAGE_TOP1
-                or text_top1_conf >= WEAK_CONFLICT_MIN_TEXT_TOP1
-            )
-        )
-        reliability_summary = build_reliability_summary(
-            image_reliable=reliable_image,
-            text_reliable=reliable_text,
-            modality_conflict_flag=conflict,
-        )
-
+        conflict = bool(has_image and has_text and reliable_image and reliable_text and image_top1 and text_top1 and image_top1 != text_top1)
+        weak_conflict_candidate = bool(has_image and has_text and image_top1 and text_top1 and image_top1 != text_top1 and (image_top1_conf >= WEAK_CONFLICT_MIN_IMAGE_TOP1 or text_top1_conf >= WEAK_CONFLICT_MIN_TEXT_TOP1))
+        reliability_summary = build_reliability_summary(image_reliable=reliable_image, text_reliable=reliable_text, modality_conflict_flag=conflict)
         base_weights = {"image": 0.0, "text": 0.0, "prior": 0.0}
         confidence_drop_reason = None
         fusion_case = "none"
-
         if has_image and has_text:
             if reliable_image and reliable_text and conflict:
                 fusion_case = "conflict"
@@ -707,181 +540,68 @@ class DiseaseDiagnosisEngine:
         else:
             fusion_case = "prior_only"
             base_weights = {"image": 0.0, "text": 0.0, "prior": 1.0 if has_prior else 0.0}
-
         if not reliable_text and fusion_case != "both_weak":
             text_probs_for_fusion = {}
         if fusion_case == "both_weak":
             text_probs_for_fusion = text_probs
-
-        # 无文本证据时，避免 text 权重被误激活。
         if not has_text:
             base_weights["text"] = 0.0
-        # 无图像证据时，避免 image 权重被误激活。
         if not has_image:
             base_weights["image"] = 0.0
-
         if confidence_drop_reason and not conflict:
             confidence_drop_reason = None
-
-        # 仅对存在模态做权重重分配，缺失模态不参与。
-        active = {
-            "image": has_image,
-            "text": has_text and bool(text_probs_for_fusion),
-            "prior": has_prior and base_weights.get("prior", 0.0) > 0,
-        }
+        active = {"image": has_image, "text": has_text and bool(text_probs_for_fusion), "prior": has_prior and base_weights.get("prior", 0.0) > 0}
         active_sum = sum(base_weights[k] for k, on in active.items() if on)
         if active_sum <= 0:
             normalized_weights = {"image": 0.0, "text": 0.0, "prior": 0.0}
         else:
-            normalized_weights = {
-                k: (base_weights[k] / active_sum if active.get(k) else 0.0)
-                for k in ["image", "text", "prior"]
-            }
-
+            normalized_weights = {k: (base_weights[k] / active_sum if active.get(k) else 0.0) for k in ["image", "text", "prior"]}
         keys = set(image_probs) | set(text_probs) | set(prior_probs)
         if not keys:
-            meta = {
-                "fuse_version": FUSE_MULTIMODAL_VERSION,
-                "has_image": has_image,
-                "has_text": has_text,
-                "has_prior": has_prior,
-                **reliability_summary,
-                "image_top1_conf": image_top1_conf,
-                "text_top1_conf": text_top1_conf,
-                "image_margin": image_margin,
-                "text_margin": text_margin,
-                "fusion_case": fusion_case,
-                "normalized_weights": normalized_weights,
-                "pre_fusion_top1": {"image": image_top3[:1], "text": text_top3[:1], "prior": prior_top3[:1]},
-                "pre_fusion_top3": {"image": image_top3, "text": text_top3, "prior": prior_top3},
-                "post_fusion_top3": [("健康", 1.0)],
-                "confidence_drop_reason": confidence_drop_reason,
-                "modality_conflict_flag": conflict,
-                "weak_conflict_candidate": weak_conflict_candidate,
-            }
+            meta = {"fuse_version": FUSE_MULTIMODAL_VERSION, "has_image": has_image, "has_text": has_text, "has_prior": has_prior, **reliability_summary, "image_top1_conf": image_top1_conf, "text_top1_conf": text_top1_conf, "image_margin": image_margin, "text_margin": text_margin, "fusion_case": fusion_case, "normalized_weights": normalized_weights, "pre_fusion_top1": {"image": image_top3[:1], "text": text_top3[:1], "prior": prior_top3[:1]}, "pre_fusion_top3": {"image": image_top3, "text": text_top3, "prior": prior_top3}, "post_fusion_top3": [("健康", 1.0)], "confidence_drop_reason": confidence_drop_reason, "modality_conflict_flag": conflict, "weak_conflict_candidate": weak_conflict_candidate}
             return {"健康": 1.0}, meta
-
         fused = {}
         for key in keys:
-            fused[key] = (
-                normalized_weights["image"] * image_probs.get(key, 0.0)
-                + normalized_weights["text"] * text_probs_for_fusion.get(key, 0.0)
-                + normalized_weights["prior"] * prior_probs.get(key, 0.0)
-            )
+            fused[key] = normalized_weights["image"] * image_probs.get(key, 0.0) + normalized_weights["text"] * text_probs_for_fusion.get(key, 0.0) + normalized_weights["prior"] * prior_probs.get(key, 0.0)
         fused = self._normalized(fused)
-        meta = {
-            "fuse_version": FUSE_MULTIMODAL_VERSION,
-            "has_image": has_image,
-            "has_text": has_text,
-            "has_prior": has_prior,
-            **reliability_summary,
-            "image_top1_conf": image_top1_conf,
-            "text_top1_conf": text_top1_conf,
-            "image_margin": image_margin,
-            "text_margin": text_margin,
-            "fusion_case": fusion_case,
-            "normalized_weights": normalized_weights,
-            "pre_fusion_top1": {"image": image_top3[:1], "text": text_top3[:1], "prior": prior_top3[:1]},
-            "pre_fusion_top3": {"image": image_top3, "text": text_top3, "prior": prior_top3},
-            "post_fusion_top3": self._topk(fused, 3),
-            "confidence_drop_reason": confidence_drop_reason,
-            "modality_conflict_flag": conflict,
-            "weak_conflict_candidate": weak_conflict_candidate,
-        }
+        meta = {"fuse_version": FUSE_MULTIMODAL_VERSION, "has_image": has_image, "has_text": has_text, "has_prior": has_prior, **reliability_summary, "image_top1_conf": image_top1_conf, "text_top1_conf": text_top1_conf, "image_margin": image_margin, "text_margin": text_margin, "fusion_case": fusion_case, "normalized_weights": normalized_weights, "pre_fusion_top1": {"image": image_top3[:1], "text": text_top3[:1], "prior": prior_top3[:1]}, "pre_fusion_top3": {"image": image_top3, "text": text_top3, "prior": prior_top3}, "post_fusion_top3": self._topk(fused, 3), "confidence_drop_reason": confidence_drop_reason, "modality_conflict_flag": conflict, "weak_conflict_candidate": weak_conflict_candidate}
         return fused, meta
 
-    def build_diagnosis_evidence(
-        self,
-        normalized_symptoms: List[str],
-        raw_symptoms: List[str],
-        image_probs: Dict[str, float],
-        text_probs: Dict[str, float],
-        prior_probs: Dict[str, float],
-        fusion_probs: Dict[str, float],
-        fusion_meta: Dict[str, object],
-        modality_conflict_flag: bool,
-        final_disease: str,
-        final_confidence: float,
-        final_source: str,
-    ) -> Dict[str, object]:
+    def build_diagnosis_evidence(self, normalized_symptoms: List[str], raw_symptoms: List[str], image_probs: Dict[str, float], text_probs: Dict[str, float], prior_probs: Dict[str, float], fusion_probs: Dict[str, float], fusion_meta: Dict[str, object], modality_conflict_flag: bool, final_disease: str, final_confidence: float, final_source: str) -> Dict[str, object]:
         image_top3 = self._topk(image_probs, 3)
         text_top3 = self._topk(text_probs, 3)
         prior_top3 = self._topk(prior_probs, 3)
         fusion_top3 = self._topk(fusion_probs, 3)
         concise_summary = f"融合诊断Top1: {final_disease} ({final_confidence:.2f})" if fusion_top3 else "无可用证据"
-        detailed_reason = (
-            f"图像top1={image_top3[0][0]}({image_top3[0][1]:.2f})；" if image_top3 else "图像分支缺失；"
-        )
-        detailed_reason += (
-            f"文本top1={text_top3[0][0]}({text_top3[0][1]:.2f})；" if text_top3 else "文本分支缺失；"
-        )
+        detailed_reason = (f"图像top1={image_top3[0][0]}({image_top3[0][1]:.2f})；" if image_top3 else "图像分支缺失；")
+        detailed_reason += (f"文本top1={text_top3[0][0]}({text_top3[0][1]:.2f})；" if text_top3 else "文本分支缺失；")
         if prior_top3:
             detailed_reason += f"先验top1={prior_top3[0][0]}({prior_top3[0][1]:.2f})；"
         detailed_reason += f"融合后={final_disease}({final_confidence:.2f})。"
         if modality_conflict_flag:
             detailed_reason += "图文top1冲突，已采用保守融合权重。"
-
-        return {
-            "normalized_symptoms": normalized_symptoms,
-            "raw_symptoms": raw_symptoms,
-            "image_top3": image_top3,
-            "text_top3": text_top3,
-            "prior_top3": prior_top3,
-            "fusion_top3": fusion_top3,
-            "weights": fusion_meta.get("normalized_weights") if isinstance(fusion_meta, dict) else {},
-            "fusion_meta": fusion_meta,
-            "modality_conflict_flag": modality_conflict_flag,
-            "image_reliable": bool(fusion_meta.get("image_reliable")) if isinstance(fusion_meta, dict) else False,
-            "text_reliable": bool(fusion_meta.get("text_reliable")) if isinstance(fusion_meta, dict) else False,
-            "reliability_issue_types": list(fusion_meta.get("reliability_issue_types") or []) if isinstance(fusion_meta, dict) else [],
-            "supplement_mode": str(fusion_meta.get("supplement_mode") or "none") if isinstance(fusion_meta, dict) else "none",
-            "final_disease": final_disease,
-            "final_confidence": final_confidence,
-            "final_source": final_source,
-            "concise_summary": concise_summary,
-            "detailed_reason": detailed_reason,
-            "summary": concise_summary,
-        }
+        return {"normalized_symptoms": normalized_symptoms, "raw_symptoms": raw_symptoms, "image_top3": image_top3, "text_top3": text_top3, "prior_top3": prior_top3, "fusion_top3": fusion_top3, "weights": fusion_meta.get("normalized_weights") if isinstance(fusion_meta, dict) else {}, "fusion_meta": fusion_meta, "modality_conflict_flag": modality_conflict_flag, "image_reliable": bool(fusion_meta.get("image_reliable")) if isinstance(fusion_meta, dict) else False, "text_reliable": bool(fusion_meta.get("text_reliable")) if isinstance(fusion_meta, dict) else False, "reliability_issue_types": list(fusion_meta.get("reliability_issue_types") or []) if isinstance(fusion_meta, dict) else [], "supplement_mode": str(fusion_meta.get("supplement_mode") or "none") if isinstance(fusion_meta, dict) else "none", "final_disease": final_disease, "final_confidence": final_confidence, "final_source": final_source, "concise_summary": concise_summary, "detailed_reason": detailed_reason, "summary": concise_summary}
 
 
-# 全局诊断引擎实例
 _diagnosis_engine: Optional[DiseaseDiagnosisEngine] = None
 _diagnosis_engine_model_path: Optional[str] = None
 _diagnosis_engine_backend: Optional[str] = None
 _diagnosis_engine_allow_torch: Optional[bool] = None
 
 
-def get_diagnosis_engine(
-    model_path: Optional[str] = None,
-    backend: Optional[str] = None,
-    allow_torch: Optional[bool] = None,
-) -> DiseaseDiagnosisEngine:
-    """获取诊断引擎单例"""
+def get_diagnosis_engine(model_path: Optional[str] = None, backend: Optional[str] = None, allow_torch: Optional[bool] = None) -> DiseaseDiagnosisEngine:
     global _diagnosis_engine, _diagnosis_engine_model_path, _diagnosis_engine_backend
     global _diagnosis_engine_allow_torch
     resolved_model_path = model_path or DIAGNOSIS_MODEL_PATH
     resolved_backend = backend or DIAGNOSIS_BACKEND
     resolved_allow_torch = allow_torch
     if _diagnosis_engine is None:
-        _diagnosis_engine = DiseaseDiagnosisEngine(
-            model_path=resolved_model_path,
-            backend=resolved_backend,
-            allow_torch=allow_torch,
-        )
+        _diagnosis_engine = DiseaseDiagnosisEngine(model_path=resolved_model_path, backend=resolved_backend, allow_torch=allow_torch)
         _diagnosis_engine_model_path = resolved_model_path
         _diagnosis_engine_backend = resolved_backend
         _diagnosis_engine_allow_torch = resolved_allow_torch
-    elif (
-        _diagnosis_engine_model_path != resolved_model_path
-        or _diagnosis_engine_backend != resolved_backend
-        or _diagnosis_engine_allow_torch != resolved_allow_torch
-    ):
-        # 配置路径变更时才重建，避免重复加载
-        _diagnosis_engine = DiseaseDiagnosisEngine(
-            model_path=resolved_model_path,
-            backend=resolved_backend,
-            allow_torch=allow_torch,
-        )
+    elif (_diagnosis_engine_model_path != resolved_model_path or _diagnosis_engine_backend != resolved_backend or _diagnosis_engine_allow_torch != resolved_allow_torch):
+        _diagnosis_engine = DiseaseDiagnosisEngine(model_path=resolved_model_path, backend=resolved_backend, allow_torch=allow_torch)
         _diagnosis_engine_model_path = resolved_model_path
         _diagnosis_engine_backend = resolved_backend
         _diagnosis_engine_allow_torch = resolved_allow_torch
