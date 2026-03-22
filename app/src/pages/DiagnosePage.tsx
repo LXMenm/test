@@ -131,6 +131,7 @@ export function DiagnosePage() {
   const [confirmSymptoms, setConfirmSymptoms] = useState('');
   const [resubmitFile, setResubmitFile] = useState<File | null>(null);
   const [resubmitPreview, setResubmitPreview] = useState('');
+  const [resubmitSubmitting, setResubmitSubmitting] = useState(false);
   const [confirmSubmitting, setConfirmSubmitting] = useState(false);
   const [showRawTrace, setShowRawTrace] = useState(false);
   const [workflowCollapsed, setWorkflowCollapsed] = useState(false);
@@ -590,7 +591,8 @@ export function DiagnosePage() {
       const fd = new FormData();
       fd.append('file', file);
       fd.append('crop_type', cropType || '番茄');
-      if (symptoms.trim()) fd.append('symptoms', symptoms.trim());
+      const symptomsForDiagnose = symptoms.trim() || confirmSymptoms.trim();
+      if (symptomsForDiagnose) fd.append('symptoms', symptomsForDiagnose);
       if (growthStage.trim()) fd.append('growth_stage', growthStage.trim());
       if (modelId) fd.append('model_id', modelId);
       fd.append('farmer_id', selectedFarmerId);
@@ -653,6 +655,90 @@ export function DiagnosePage() {
       console.error('Diagnosis failed:', error);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleResubmitWithNewImage = async () => {
+    if (!resubmitFile || !selectedFarmerId) return;
+    setResubmitSubmitting(true);
+    setConfirmMode(false);
+    setConfirmChoice('other');
+    setConfirmSymptoms('');
+    setTraceEvents([]);
+    const now = Date.now();
+    setPhase1StartTime(now);
+    setPhase2StartTime(null);
+    setPhase1FrozenMs(null);
+    setWorkflowRefreshToken((prev) => prev + 1);
+    try {
+      const fd = new FormData();
+      fd.append('file', resubmitFile);
+      fd.append('crop_type', cropType || '番茄');
+      const symptomsForDiagnose = symptoms.trim() || confirmSymptoms.trim();
+      if (symptomsForDiagnose) fd.append('symptoms', symptomsForDiagnose);
+      if (growthStage.trim()) fd.append('growth_stage', growthStage.trim());
+      if (modelId) fd.append('model_id', modelId);
+      fd.append('farmer_id', selectedFarmerId);
+      if (selectedBaseId) fd.append('base_id', selectedBaseId);
+
+      const resp = await fetch('/api/diagnose-image', {
+        method: 'POST',
+        body: fd,
+      });
+      const raw = await resp.text();
+      let data: unknown = null;
+      try {
+        data = raw ? JSON.parse(raw) : null;
+      } catch {
+        data = null;
+      }
+      if (!resp.ok) {
+        const detail = data && typeof data === 'object' && 'detail' in data
+          ? String((data as { detail?: unknown }).detail ?? '')
+          : '';
+        throw new Error(detail || raw || `重新诊断失败: ${resp.status}`);
+      }
+      if (!data || typeof data !== 'object') {
+        throw new Error('重新诊断接口返回格式非法');
+      }
+
+      const payload = data as Record<string, unknown>;
+      if (payload.trace_id) {
+        setTraceId(String(payload.trace_id));
+      } else {
+        setTraceId('');
+      }
+      if (payload.image_id) {
+        setImageId(String(payload.image_id));
+      } else {
+        setImageId('');
+      }
+      if (Array.isArray(payload.events)) {
+        setTraceEvents(normalizeTraceEvents(payload.events));
+      } else {
+        setTraceEvents([]);
+      }
+      setWorkflowRefreshToken((prev) => prev + 1);
+
+      const normalizedResult = buildResultFromPayload(payload);
+      setResult(normalizedResult);
+      setLatestPayload(payload);
+
+      const candidates = parseTop3Candidates(payload, normalizedResult);
+      const needsConfirm = payload.status === 'waiting_for_supplement' && payload.expert_review_recommended !== true && (
+        typeof payload.need_confirm === 'boolean'
+          ? payload.need_confirm
+          : deriveNeedConfirm(payload, candidates, normalizedResult.displayConfidencePct)
+      );
+      setConfirmMode(needsConfirm);
+      setConfirmChoice(needsConfirm && candidates[0]?.disease ? candidates[0].disease : 'other');
+      setConfirmSymptoms('');
+      setResubmitFile(null);
+      setResubmitPreview('');
+    } catch (error) {
+      console.error('Resubmit diagnose failed:', error);
+    } finally {
+      setResubmitSubmitting(false);
     }
   };
 
@@ -883,10 +969,6 @@ export function DiagnosePage() {
   }
   const displayedTiming = traceTiming.hasTraceTiming ? traceTiming : fallbackTiming;
   const timingSourceLabel = traceTiming.hasTraceTiming ? 'trace events' : (displayedTiming ? '本地提交兜底' : null);
-  const handleResubmitImage = () => {
-    console.log('[TODO] resubmit image and diagnose again', { fileName: resubmitFile?.name, size: resubmitFile?.size });
-  };
-
   return (
     <div className="space-y-6 animate-fadeIn">
       {/* Header */}
@@ -1306,12 +1388,12 @@ export function DiagnosePage() {
                         )}
                         {usesImageSupplement && (
                           <Button
-                            onClick={handleResubmitImage}
-                            disabled={!resubmitFile}
+                            onClick={handleResubmitWithNewImage}
+                            disabled={!resubmitFile || !selectedFarmerId || resubmitSubmitting || loading}
                             variant="outline"
                             className="border-[#c8f7c5]/60 text-[#c8f7c5] hover:bg-[#c8f7c5]/10"
                           >
-                            重新上传图片并重新诊断
+                            {resubmitSubmitting ? '重新诊断中...' : '重新上传图片并重新诊断'}
                           </Button>
                         )}
                       </div>
