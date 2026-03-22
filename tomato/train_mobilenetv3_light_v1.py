@@ -18,7 +18,11 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from tomato.densenet121_paper_opt import DEFAULT_LABEL_MAP_CN, compute_class_alpha
-from tomato.mobilenetv3_light_v1 import compile_light_model, build_mobilenetv3_light_v1
+from tomato.mobilenetv3_light_v1 import (
+    build_mobilenetv3_light_v1,
+    compile_light_model,
+    get_custom_objects,
+)
 
 BASE_DIR = Path(__file__).resolve().parent
 TRAIN_DIR = BASE_DIR / "train"
@@ -28,8 +32,11 @@ CLASS_NAMES_PATH = BASE_DIR / "tomato_disease_classes.txt"
 CLASS_INDICES_PATH = BASE_DIR / "tomato_disease_class_indices.json"
 LABEL_MAP_CN_PATH = BASE_DIR / "label_map_cn.json"
 HISTORY_PATH = BASE_DIR / "mobilenetv3_light_v1_history.json"
-DEFAULT_OUTPUT = MODEL_DIR / "densenet121_tomato_disease_model_light_v1.h5"
-BEST_OUTPUT = MODEL_DIR / "densenet121_tomato_disease_model_light_v1_best.h5"
+DEFAULT_OUTPUT = MODEL_DIR / "mobilenetv3_light_v1.keras"
+DEFAULT_WEIGHTS_OUTPUT = MODEL_DIR / "mobilenetv3_light_v1.weights.h5"
+DEFAULT_LEGACY_H5_OUTPUT = MODEL_DIR / "densenet121_tomato_disease_model_light_v1.h5"
+BEST_OUTPUT = MODEL_DIR / "mobilenetv3_light_v1_best.keras"
+ARTIFACTS_PATH = MODEL_DIR / "mobilenetv3_light_v1_artifacts.json"
 
 
 def parse_args():
@@ -45,6 +52,10 @@ def parse_args():
     parser.add_argument("--loss", choices=["focal", "ce"], default="focal")
     parser.add_argument("--focal_gamma", type=float, default=1.5)
     parser.add_argument("--output_path", type=str, default=str(DEFAULT_OUTPUT))
+    parser.add_argument("--weights_output_path", type=str, default=str(DEFAULT_WEIGHTS_OUTPUT))
+    parser.add_argument("--artifacts_path", type=str, default=str(ARTIFACTS_PATH))
+    parser.add_argument("--export_legacy_h5", action="store_true")
+    parser.add_argument("--legacy_h5_path", type=str, default=str(DEFAULT_LEGACY_H5_OUTPUT))
     return parser.parse_args()
 
 
@@ -95,6 +106,16 @@ def history_to_dict(history_list: list[tf.keras.callbacks.History]) -> dict[str,
     return merged
 
 
+def load_best_model(best_path: Path):
+    if not best_path.exists():
+        return None
+    return tf.keras.models.load_model(
+        str(best_path),
+        custom_objects=get_custom_objects(),
+        compile=False,
+    )
+
+
 def main():
     args = parse_args()
     if not TRAIN_DIR.is_dir():
@@ -118,7 +139,14 @@ def main():
     model = wrapper.model
 
     output_path = Path(args.output_path)
+    weights_output_path = Path(args.weights_output_path)
+    artifacts_path = Path(args.artifacts_path)
+    legacy_h5_path = Path(args.legacy_h5_path)
+
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    weights_output_path.parent.mkdir(parents=True, exist_ok=True)
+    artifacts_path.parent.mkdir(parents=True, exist_ok=True)
+
     callbacks = [
         EarlyStopping(monitor="val_accuracy", patience=6, restore_best_weights=True, mode="max"),
         ReduceLROnPlateau(monitor="val_loss", factor=0.3, patience=3, verbose=1, min_lr=1e-7),
@@ -163,22 +191,54 @@ def main():
     )
     histories.append(history_ft)
 
+    best_model = load_best_model(BEST_OUTPUT)
+    if best_model is not None:
+        model = best_model
+
     model.save(str(output_path), include_optimizer=False)
+    model.save_weights(str(weights_output_path))
     print(f"轻量模型已保存到: {output_path}")
+    print(f"轻量模型权重已保存到: {weights_output_path}")
+
+    legacy_output_written = None
+    if args.export_legacy_h5:
+        model.save(str(legacy_h5_path), include_optimizer=False)
+        legacy_output_written = str(legacy_h5_path)
+        print(f"已额外导出 legacy h5: {legacy_h5_path}")
 
     metrics = dict(zip(model.metrics_names, [float(v) for v in model.evaluate(val_generator, verbose=1)]))
-    payload = {
+    history_payload = {
         "class_indices": class_indices,
         "class_counts": class_counts,
         "alpha": args.alpha,
+        "dropout": args.dropout,
+        "image_size": args.image_size,
         "loss": args.loss,
         "focal_gamma": args.focal_gamma,
         "metrics": metrics,
         "output_path": str(output_path),
+        "weights_output_path": str(weights_output_path),
+        "legacy_h5_path": legacy_output_written,
         "history": history_to_dict(histories),
     }
-    HISTORY_PATH.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    HISTORY_PATH.write_text(json.dumps(history_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    artifacts_payload = {
+        "model_type": "mobilenetv3_light_v1",
+        "registry_model_path": str(output_path),
+        "weights_path": str(weights_output_path),
+        "legacy_h5_path": legacy_output_written,
+        "alpha": args.alpha,
+        "dropout": args.dropout,
+        "image_size": args.image_size,
+        "num_classes": len(class_indices),
+        "class_names_path": str(CLASS_NAMES_PATH),
+        "label_map_path": str(LABEL_MAP_CN_PATH),
+    }
+    artifacts_path.write_text(json.dumps(artifacts_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
     print(f"训练历史已保存到: {HISTORY_PATH}")
+    print(f"轻量模型产物说明已保存到: {artifacts_path}")
 
 
 if __name__ == "__main__":
