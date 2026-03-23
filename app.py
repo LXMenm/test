@@ -164,7 +164,9 @@ class _LazyKBProxy:
 
 
 kb = _LazyKBProxy()
-UPLOAD_DIR = Path(".cache/uploads")
+IMAGE_UPLOAD_DIR = os.getenv("IMAGE_UPLOAD_DIR", "data/uploads")
+IMAGE_UPLOAD_TTL_HOURS = int(os.getenv("IMAGE_UPLOAD_TTL_HOURS", "0") or "0")
+UPLOAD_DIR = Path(IMAGE_UPLOAD_DIR)
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 FRONTEND_DIR = Path("app/dist")
@@ -731,9 +733,13 @@ def emit_final_event_once(
     return True
 
 
-def cleanup_old_uploads(max_age_hours: int = 24) -> None:
+def cleanup_old_uploads(max_age_hours: int | None = None) -> None:
+    resolved_max_age_hours = IMAGE_UPLOAD_TTL_HOURS if max_age_hours is None else max_age_hours
+    if resolved_max_age_hours <= 0:
+        return
+
     now_ts = __import__("time").time()
-    max_age_seconds = max_age_hours * 3600
+    max_age_seconds = resolved_max_age_hours * 3600
     for path in UPLOAD_DIR.glob("*"):
         if not path.is_file():
             continue
