@@ -33,6 +33,13 @@ function getKbDiseaseFromPath(pathname: string): string {
   }
 }
 
+function normalizeLegacyAdminPath(pathname: string): string {
+  if (pathname === '/admin/global-dashboard') return '/dashboard';
+  if (pathname === '/admin/profiles-management') return '/profiles';
+  if (pathname === '/admin/kb-management') return '/kb';
+  return pathname;
+}
+
 interface ErrorBoundaryProps {
   children: ReactNode;
 }
@@ -99,8 +106,16 @@ function App() {
   }, [allowedPages, authUser, currentPage]);
 
   useEffect(() => {
+    const normalized = normalizeLegacyAdminPath(window.location.pathname);
+    if (normalized !== window.location.pathname) {
+      window.history.replaceState(null, '', normalized);
+    }
     const handlePopState = () => {
-      const nextPage = pathToPage(window.location.pathname);
+      const normalizedPath = normalizeLegacyAdminPath(window.location.pathname);
+      if (normalizedPath !== window.location.pathname) {
+        window.history.replaceState(null, '', normalizedPath);
+      }
+      const nextPage = pathToPage(normalizedPath);
       if (authUser && !allowedPages.includes(nextPage)) {
         const fallback = getDefaultPage(authUser.role);
         setCurrentPage(fallback);
@@ -108,7 +123,7 @@ function App() {
       } else {
         setCurrentPage(nextPage);
       }
-      setKbDiseaseName(getKbDiseaseFromPath(window.location.pathname));
+      setKbDiseaseName(getKbDiseaseFromPath(normalizedPath));
     };
 
     window.addEventListener('popstate', handlePopState);
@@ -149,18 +164,13 @@ function App() {
       case 'profiles':
         return <ProfilesPage />;
       case 'kb':
-      case 'kb_admin':
         return <KBPage focusDiseaseName={kbDiseaseName} />;
       case 'expert_review':
         return <ExpertReviewPage />;
       case 'system_config':
-        return <AdminPage defaultTab="system-config" />;
+        return <AdminPage pageType="system" />;
       case 'review_management':
-        return <AdminPage defaultTab="review-management" />;
-      case 'global_dashboard':
-        return <SimpleRolePage title="全局看板" description="ADMIN 可见。用于展示全局统计维度入口。" />;
-      case 'profiles_admin':
-        return <SimpleRolePage title="全量农户档案管理" description="ADMIN 可见。当前复用档案接口并通过角色控制数据范围。" />;
+        return <AdminPage pageType="review" />;
       default:
         return <DiagnosePage />;
     }
