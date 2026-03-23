@@ -26,6 +26,7 @@ from config import (
 import os
 from knowledge_base import get_kb_manager
 from text_model.infer_text_classifier import BertTextClassifier
+from runtime_settings import get_admin_flag
 
 
 _kb_manager = None
@@ -446,7 +447,8 @@ class DiseaseDiagnosisEngine:
         text_evidence_active = bool(normalized_symptoms)
         if not text_evidence_active:
             return {}
-        backend = (TEXT_DIAGNOSIS_BACKEND or "auto").lower()
+        runtime_text_backend = str(get_admin_flag("model_fusion.text_backend", TEXT_DIAGNOSIS_BACKEND) or TEXT_DIAGNOSIS_BACKEND)
+        backend = runtime_text_backend.lower()
         if backend == "rule":
             return self.predict_text_proba_rule_based(raw_text=raw_text, symptoms=normalized_symptoms, growth_stage=growth_stage, environment=environment, facility=facility, province=province)
         if backend == "bert":
@@ -500,16 +502,19 @@ class DiseaseDiagnosisEngine:
         image_top1_conf = float(image_top3[0][1]) if image_top3 else 0.0
         image_top2_conf = float(image_top3[1][1]) if len(image_top3) > 1 else 0.0
         image_margin = image_top1_conf - image_top2_conf
-        reliable_image = bool(image_top3 and image_top1_conf >= IMAGE_RELIABLE_TOP1_THRESHOLD and image_margin >= IMAGE_RELIABLE_MARGIN_THRESHOLD)
+        image_reliable_threshold = float(get_admin_flag("model_fusion.image_reliable_threshold", IMAGE_RELIABLE_TOP1_THRESHOLD) or IMAGE_RELIABLE_TOP1_THRESHOLD)
+        reliable_image = bool(image_top3 and image_top1_conf >= image_reliable_threshold and image_margin >= IMAGE_RELIABLE_MARGIN_THRESHOLD)
         text_top1_conf = float(text_top3[0][1]) if text_top3 else 0.0
         text_top2_conf = float(text_top3[1][1]) if len(text_top3) > 1 else 0.0
         text_margin = text_top1_conf - text_top2_conf
-        reliable_text = bool(text_top3 and text_top1_conf >= TEXT_RELIABLE_TOP1_THRESHOLD and text_margin >= TEXT_RELIABLE_MARGIN_THRESHOLD)
+        text_reliable_threshold = float(get_admin_flag("model_fusion.text_reliable_threshold", TEXT_RELIABLE_TOP1_THRESHOLD) or TEXT_RELIABLE_TOP1_THRESHOLD)
+        reliable_text = bool(text_top3 and text_top1_conf >= text_reliable_threshold and text_margin >= TEXT_RELIABLE_MARGIN_THRESHOLD)
         text_probs_for_fusion = text_probs if reliable_text else {}
         image_top1 = image_top3[0][0] if image_top3 else None
         text_top1 = text_top3[0][0] if text_top3 else None
         conflict = bool(has_image and has_text and reliable_image and reliable_text and image_top1 and text_top1 and image_top1 != text_top1)
-        weak_conflict_candidate = bool(has_image and has_text and image_top1 and text_top1 and image_top1 != text_top1 and (image_top1_conf >= WEAK_CONFLICT_MIN_IMAGE_TOP1 or text_top1_conf >= WEAK_CONFLICT_MIN_TEXT_TOP1))
+        conflict_margin = float(get_admin_flag("model_fusion.conflict_margin", WEAK_CONFLICT_MIN_TEXT_TOP1) or WEAK_CONFLICT_MIN_TEXT_TOP1)
+        weak_conflict_candidate = bool(has_image and has_text and image_top1 and text_top1 and image_top1 != text_top1 and (image_top1_conf >= WEAK_CONFLICT_MIN_IMAGE_TOP1 or text_top1_conf >= conflict_margin))
         reliability_summary = build_reliability_summary(image_reliable=reliable_image, text_reliable=reliable_text, modality_conflict_flag=conflict)
         base_weights = {"image": 0.0, "text": 0.0, "prior": 0.0}
         confidence_drop_reason = None

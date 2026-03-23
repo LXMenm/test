@@ -8,6 +8,7 @@ import { KBPage } from './pages/KBPage';
 import { LoginPage } from './pages/LoginPage';
 import { SimpleRolePage } from './pages/SimpleRolePage';
 import { ExpertReviewPage } from './pages/ExpertReviewPage';
+import { AdminPage } from './pages/AdminPage';
 import {
   clearAuthUser,
   getAllowedPages,
@@ -153,9 +154,9 @@ function App() {
       case 'expert_review':
         return <ExpertReviewPage />;
       case 'system_config':
-        return <SimpleRolePage title="系统配置页" description="ADMIN 可见。用于演示系统级配置入口。" />;
+        return <AdminPage defaultTab="system-config" />;
       case 'review_management':
-        return <SimpleRolePage title="复核管理页" description="ADMIN 可见。用于演示复核任务分配与状态管理入口。" />;
+        return <AdminPage defaultTab="review-management" />;
       case 'global_dashboard':
         return <SimpleRolePage title="全局看板" description="ADMIN 可见。用于展示全局统计维度入口。" />;
       case 'profiles_admin':
