@@ -109,6 +109,7 @@ interface KbDetail {
 interface ProfileListItem {
   id: string;
   name?: string;
+  role_type?: 'FARMER' | 'EXPERT' | 'ADMIN';
 }
 
 interface KbDiseaseListItem {
@@ -1049,7 +1050,7 @@ export function DashboardPage() {
   }, [selectedFarmerId]);
 
   const weatherRiskTip = useMemo(() => {
-    if (!weatherCard) return '请先选择农户与基地，或补充基地经纬度后刷新天气。';
+    if (!weatherCard) return '请先选择档案与基地，或补充基地经纬度后刷新天气。';
     const summaryText = weatherCard.weatherSummary;
     if (typeof weatherCard.humidity === 'number' && weatherCard.humidity >= 80) {
       return '当前湿度较高，叶部病害风险需关注。';
@@ -1068,6 +1069,8 @@ export function DashboardPage() {
     }
     return '请结合田间实际情况持续关注环境波动风险。';
   }, [weatherCard]);
+  const isAdminGlobalView = canViewAllFarmers && selectedFarmerId === 'ALL';
+  const hasActiveProfile = !isAdminGlobalView && selectedFarmerId !== 'ALL';
 
   const refreshWeather = useCallback(async (farmerId: string, baseId: string) => {
     if (!farmerId || farmerId === 'ALL' || !baseId || baseId === 'ALL') return;
@@ -1602,7 +1605,7 @@ export function DashboardPage() {
                   void refreshWeather(weatherCard.farmerId, weatherCard.baseId);
                 }
               }}
-              disabled={!weatherCard?.baseId || weatherLoading}
+              disabled={isAdminGlobalView || !weatherCard?.baseId || weatherLoading}
             >
               <RefreshCw className={cn('w-4 h-4 mr-1', weatherLoading && 'animate-spin')} />
               刷新天气
@@ -1610,27 +1613,35 @@ export function DashboardPage() {
           </div>
         </CardHeader>
         <CardContent className="grid md:grid-cols-5 gap-3 text-sm">
-          <div className="rounded-xl border border-white/10 bg-white/5 p-3 md:col-span-2">
-            <p className="text-white/60 text-xs">当前天气摘要</p>
-            <p className="text-white mt-1">{weatherCard?.weatherSummary || '暂无天气数据'}</p>
-            <p className="text-white/50 text-xs mt-2">基地：{weatherCard?.baseName || '未选择'}</p>
-          </div>
-          <div className="rounded-xl border border-white/10 bg-white/5 p-3">
-            <p className="text-white/60 text-xs">温度</p>
-            <p className="text-[#c8f7c5] text-lg font-semibold">{typeof weatherCard?.temperature === 'number' ? `${weatherCard.temperature.toFixed(1)}℃` : '—'}</p>
-          </div>
-          <div className="rounded-xl border border-white/10 bg-white/5 p-3">
-            <p className="text-white/60 text-xs">湿度</p>
-            <p className="text-[#c8f7c5] text-lg font-semibold">{typeof weatherCard?.humidity === 'number' ? `${weatherCard.humidity.toFixed(0)}%` : '—'}</p>
-          </div>
-          <div className="rounded-xl border border-white/10 bg-white/5 p-3">
-            <p className="text-white/60 text-xs">风速</p>
-            <p className="text-[#c8f7c5] text-lg font-semibold">{typeof weatherCard?.windSpeed === 'number' ? `${weatherCard.windSpeed.toFixed(1)} m/s` : '—'}</p>
-          </div>
-          <div className="rounded-xl border border-[#c8f7c5]/25 bg-[#1a3228] p-3 md:col-span-5">
-            <p className="text-white/60 text-xs">最近天气更新时间：{safeDisplayTime(weatherCard?.lastUpdatedAt || '')}</p>
-            <p className="text-[#c8f7c5] mt-1">天气风险提示：{weatherRiskTip}</p>
-          </div>
+          {!hasActiveProfile ? (
+            <div className="rounded-xl border border-[#c8f7c5]/25 bg-[#1a3228] p-4 md:col-span-5 text-[#c8f7c5]">
+              当前为全平台视角，请先选择档案以查看对应天气
+            </div>
+          ) : (
+            <>
+              <div className="rounded-xl border border-white/10 bg-white/5 p-3 md:col-span-2">
+                <p className="text-white/60 text-xs">当前天气摘要</p>
+                <p className="text-white mt-1">{weatherCard?.weatherSummary || '暂无天气数据'}</p>
+                <p className="text-white/50 text-xs mt-2">基地：{weatherCard?.baseName || '未选择'}</p>
+              </div>
+              <div className="rounded-xl border border-white/10 bg-white/5 p-3">
+                <p className="text-white/60 text-xs">温度</p>
+                <p className="text-[#c8f7c5] text-lg font-semibold">{typeof weatherCard?.temperature === 'number' ? `${weatherCard.temperature.toFixed(1)}℃` : '—'}</p>
+              </div>
+              <div className="rounded-xl border border-white/10 bg-white/5 p-3">
+                <p className="text-white/60 text-xs">湿度</p>
+                <p className="text-[#c8f7c5] text-lg font-semibold">{typeof weatherCard?.humidity === 'number' ? `${weatherCard.humidity.toFixed(0)}%` : '—'}</p>
+              </div>
+              <div className="rounded-xl border border-white/10 bg-white/5 p-3">
+                <p className="text-white/60 text-xs">风速</p>
+                <p className="text-[#c8f7c5] text-lg font-semibold">{typeof weatherCard?.windSpeed === 'number' ? `${weatherCard.windSpeed.toFixed(1)} m/s` : '—'}</p>
+              </div>
+              <div className="rounded-xl border border-[#c8f7c5]/25 bg-[#1a3228] p-3 md:col-span-5">
+                <p className="text-white/60 text-xs">最近天气更新时间：{safeDisplayTime(weatherCard?.lastUpdatedAt || '')}</p>
+                <p className="text-[#c8f7c5] mt-1">天气风险提示：{weatherRiskTip}</p>
+              </div>
+            </>
+          )}
         </CardContent>
       </Card>
 

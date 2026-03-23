@@ -11,6 +11,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, Di
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Separator } from '@/components/ui/separator';
 import { cn } from '@/lib/utils';
+import { loadAuthUser, type UserRole } from '@/auth';
 import {
   getCultivationModeLabel,
   getEquipmentLabel,
@@ -62,6 +63,9 @@ interface FarmerBase {
 interface FarmerProfile {
   farmer_id: string;
   name: string;
+  display_name: string;
+  role_type: 'FARMER' | 'EXPERT' | 'ADMIN';
+  owner_user_id: string;
   active_base_id: string;
   confirm_when_low_confidence: boolean;
   schema_version: string;
@@ -86,6 +90,12 @@ const EQUIPMENT_OPTIONS = ['HAND_SPRAYER', 'BACKPACK_SPRAYER', 'MIST_BLOWER', 'D
 const CULTIVATION_MODE_OPTIONS = ['SOIL', 'HYDROPONIC', 'SUBSTRATE'] as const;
 const EXPERIENCE_OPTIONS = ['NOVICE', 'INTERMEDIATE', 'EXPERT'] as const;
 const RISK_OPTIONS = ['CONSERVATIVE', 'BALANCED', 'AGGRESSIVE'] as const;
+const PROFILE_ROLE_OPTIONS = ['FARMER', 'EXPERT', 'ADMIN'] as const;
+const PROFILE_ROLE_LABELS: Record<FarmerProfile['role_type'], string> = {
+  FARMER: '农户',
+  EXPERT: '专家',
+  ADMIN: '管理员',
+};
 
 
 const RISK_LABEL_MAP: Record<string, string> = {
@@ -255,6 +265,9 @@ const normalizeProfile = (raw: unknown): FarmerProfile => {
   const profile: FarmerProfile = {
     farmer_id: toSafeString(rawObj.farmer_id),
     name: toSafeString(rawObj.name),
+    display_name: toSafeString(rawObj.display_name || rawObj.name || rawObj.farmer_id),
+    role_type: (PROFILE_ROLE_OPTIONS.includes(toSafeString(rawObj.role_type) as never) ? toSafeString(rawObj.role_type) : 'FARMER') as FarmerProfile['role_type'],
+    owner_user_id: toSafeString(rawObj.owner_user_id || rawObj.farmer_id),
     active_base_id: toSafeString(rawObj.active_base_id),
     confirm_when_low_confidence: Boolean(rawObj.confirm_when_low_confidence),
     schema_version: toSafeString(rawObj.schema_version, '1.2'),
@@ -300,6 +313,9 @@ const normalizeProfileList = (raw: unknown): FarmerProfile[] => {
       return {
         farmer_id: farmerId,
         name: displayName || farmerId,
+        display_name: displayName || farmerId,
+        role_type: 'FARMER',
+        owner_user_id: farmerId,
         active_base_id: '',
         confirm_when_low_confidence: true,
         schema_version: '1.1',
@@ -322,16 +338,21 @@ const normalizeProfileList = (raw: unknown): FarmerProfile[] => {
 };
 
 export function ProfilesPage() {
+  const authUser = loadAuthUser();
+  const currentRole: UserRole = authUser?.role || 'USER';
+  const canManageAllProfiles = currentRole === 'ADMIN';
   const [profiles, setProfiles] = useState<FarmerProfile[]>([]);
   const [selectedProfile, setSelectedProfile] = useState<FarmerProfile | null>(null);
   const [loading, setLoading] = useState(false);
   const [showAddDialog, setShowAddDialog] = useState(false);
   const [newProfileName, setNewProfileName] = useState('');
+  const [newProfileRoleType, setNewProfileRoleType] = useState<FarmerProfile['role_type']>('FARMER');
   const [editedProfile, setEditedProfile] = useState<FarmerProfile | null>(null);
   const [newIngredient, setNewIngredient] = useState('');
   const [showAddBaseDialog, setShowAddBaseDialog] = useState(false);
   const [newBaseId, setNewBaseId] = useState('');
   const [allBaseIds, setAllBaseIds] = useState<Set<string>>(new Set());
+  const [adminRoleFilter, setAdminRoleFilter] = useState<'ALL' | FarmerProfile['role_type']>('ALL');
 
   // 获取所有基地ID，用于检查全局重复
   const fetchAllBaseIds = async () => {
@@ -381,11 +402,18 @@ export function ProfilesPage() {
     setLoading(true);
     setErrorMessage('');
     try {
-      const resp = await fetch('/api/profiles');
+      const query = canManageAllProfiles && adminRoleFilter !== 'ALL'
+        ? `?role_type=${encodeURIComponent(adminRoleFilter)}`
+        : '';
+      const resp = await fetch(`/api/profiles${query}`);
       const data = await parseJsonOrThrow(resp);
-      setProfiles(normalizeProfileList(data?.profiles));
+      const nextProfiles = normalizeProfileList(data?.profiles);
+      setProfiles(nextProfiles);
+      if (!canManageAllProfiles && nextProfiles[0]?.farmer_id) {
+        void fetchProfileDetail(nextProfiles[0].farmer_id);
+      }
     } catch (error) {
-      const msg = error instanceof Error ? error.message : '加载农户列表失败';
+      const msg = error instanceof Error ? error.message : '加载档案列表失败';
       setErrorMessage(msg);
       console.error('Failed to fetch profiles:', error);
       setProfiles([]);
@@ -455,6 +483,8 @@ export function ProfilesPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           ...editedProfile,
+          display_name: editedProfile.display_name || editedProfile.name || editedProfile.farmer_id,
+          owner_user_id: editedProfile.owner_user_id || editedProfile.farmer_id,
           bases: basesMap,
           constraints: {
             ...editedProfile.constraints,
@@ -475,30 +505,14 @@ export function ProfilesPage() {
   const [showErrorDialog, setShowErrorDialog] = useState(false);
   const [errorDialogMessage, setErrorDialogMessage] = useState('');
 
-  const createProfile = async () => {
-    if (!newProfileName.trim()) return;
-
+  const createProfileWithPayload = async (payload: Record<string, unknown>) => {
     setErrorMessage('');
     setErrorDialogMessage('');
     try {
       const resp = await fetch('/api/profiles', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: newProfileName,
-          confirm_when_low_confidence: true,
-          constraints: {
-            prefer_organic: false,
-            harvest_window_days: 30,
-            banned_ingredients: []
-          },
-          farm_scale: 'SMALL',
-          pesticide_access_level: 'LIMITED',
-          equipment: [],
-          cultivation_mode: 'SOIL',
-          experience_level: 'INTERMEDIATE',
-          risk_preference: 'BALANCED',
-        })
+        body: JSON.stringify(payload)
       });
 
       const data = await parseJsonOrThrow(resp);
@@ -511,16 +525,39 @@ export function ProfilesPage() {
         fetchProfileDetail(createdId);
         setShowAddDialog(false);
         setNewProfileName('');
+        setNewProfileRoleType('FARMER');
       } else {
         setErrorDialogMessage('创建成功但未返回有效 farmer_id，无法自动打开详情');
         setShowErrorDialog(true);
       }
     } catch (error) {
-      const msg = error instanceof Error ? error.message : '创建农户失败';
+      const msg = error instanceof Error ? error.message : '创建档案失败';
       setErrorDialogMessage(msg);
       setShowErrorDialog(true);
       console.error('Failed to create profile:', error);
     }
+  };
+
+  const createProfile = async () => {
+    if (!newProfileName.trim()) return;
+    await createProfileWithPayload({
+      name: newProfileName,
+      display_name: newProfileName,
+      role_type: newProfileRoleType,
+      owner_user_id: authUser?.userId || '',
+      confirm_when_low_confidence: true,
+      constraints: {
+        prefer_organic: false,
+        harvest_window_days: 30,
+        banned_ingredients: []
+      },
+      farm_scale: 'SMALL',
+      pesticide_access_level: 'LIMITED',
+      equipment: [],
+      cultivation_mode: 'SOIL',
+      experience_level: 'INTERMEDIATE',
+      risk_preference: 'BALANCED',
+    });
   };
 
   const deleteProfile = async () => {
@@ -741,8 +778,34 @@ export function ProfilesPage() {
   };
 
   useEffect(() => {
-    fetchProfiles();
-  }, []);
+    void fetchProfiles();
+  }, [adminRoleFilter, canManageAllProfiles]);
+
+  useEffect(() => {
+    if (canManageAllProfiles) return;
+    if (loading) return;
+    if (profiles.length > 0) return;
+    if (!authUser?.userId) return;
+    void createProfileWithPayload({
+      farmer_id: authUser.userId,
+      owner_user_id: authUser.userId,
+      role_type: currentRole === 'EXPERT' ? 'EXPERT' : 'FARMER',
+      name: authUser.displayName || authUser.userId,
+      display_name: authUser.displayName || authUser.userId,
+      confirm_when_low_confidence: true,
+      constraints: {
+        prefer_organic: false,
+        harvest_window_days: 30,
+        banned_ingredients: [],
+      },
+      farm_scale: 'SMALL',
+      pesticide_access_level: 'LIMITED',
+      equipment: [],
+      cultivation_mode: 'SOIL',
+      experience_level: 'INTERMEDIATE',
+      risk_preference: 'BALANCED',
+    });
+  }, [authUser?.displayName, authUser?.userId, canManageAllProfiles, currentRole, loading, profiles.length]);
 
   return (
     <div className="space-y-6 animate-fadeIn">
@@ -750,17 +813,19 @@ export function ProfilesPage() {
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
           <h1 className="text-3xl font-bold text-white">
-            农户<span className="text-[#c8f7c5]">档案管理</span>
+            <span className="text-[#c8f7c5]">档案管理</span>
           </h1>
-          <p className="text-white/60 mt-1">管理农户信息、治疗约束与基地数据</p>
+          <p className="text-white/60 mt-1">管理农户/专家/管理员档案、治疗约束与基地数据</p>
         </div>
-        <Button
-          onClick={() => setShowAddDialog(true)}
-          className="bg-[#c8f7c5] text-black hover:bg-[#b8e7b5]"
-        >
-          <Plus className="w-4 h-4 mr-2" />
-          新增农户
-        </Button>
+        {canManageAllProfiles && (
+          <Button
+            onClick={() => setShowAddDialog(true)}
+            className="bg-[#c8f7c5] text-black hover:bg-[#b8e7b5]"
+          >
+            <Plus className="w-4 h-4 mr-2" />
+            新增档案
+          </Button>
+        )}
       </div>
 
       {errorMessage && (
@@ -791,13 +856,13 @@ export function ProfilesPage() {
         </DialogContent>
       </Dialog>
 
-      <div className="grid lg:grid-cols-4 gap-6">
-        {/* Profile List */}
-        <Card className="glass-card lg:col-span-1">
+      <div className={cn('grid gap-6', canManageAllProfiles ? 'lg:grid-cols-4' : 'lg:grid-cols-1')}>
+        {/* Profile List (ADMIN only) */}
+        {canManageAllProfiles && <Card className="glass-card lg:col-span-1">
           <CardHeader className="flex flex-row items-center justify-between">
             <CardTitle className="text-white flex items-center gap-2">
               <Users className="w-5 h-5 text-[#c8f7c5]" />
-              农户列表
+              档案列表
             </CardTitle>
             <Button
               variant="ghost"
@@ -810,6 +875,19 @@ export function ProfilesPage() {
             </Button>
           </CardHeader>
           <CardContent>
+            <div className="mb-3">
+              <Select value={adminRoleFilter} onValueChange={(v) => setAdminRoleFilter(v as typeof adminRoleFilter)}>
+                <SelectTrigger className="bg-white/5 border-white/20 text-white">
+                  <SelectValue placeholder="角色筛选" />
+                </SelectTrigger>
+                <SelectContent className="bg-[#111] text-white border-white/20">
+                  <SelectItem value="ALL">全部</SelectItem>
+                  <SelectItem value="FARMER">农户</SelectItem>
+                  <SelectItem value="EXPERT">专家</SelectItem>
+                  <SelectItem value="ADMIN">管理员</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
             <div className="space-y-2">
               {(Array.isArray(profiles) ? profiles : []).map((profile) => (
                 <div
@@ -829,8 +907,8 @@ export function ProfilesPage() {
                       </span>
                     </div>
                     <div>
-                      <p className="text-white font-medium">{profile.name || profile.farmer_id || '未命名农户'}</p>
-                      <p className="text-white/40 text-xs">{profile.farmer_id}</p>
+                      <p className="text-white font-medium">{profile.display_name || profile.name || profile.farmer_id || '未命名档案'}</p>
+                      <p className="text-white/40 text-xs">{profile.farmer_id} · {PROFILE_ROLE_LABELS[profile.role_type]}</p>
                     </div>
                   </div>
                 </div>
@@ -838,19 +916,19 @@ export function ProfilesPage() {
               {profiles.length === 0 && (
                 <div className="text-center py-8 text-white/40">
                   <Users className="w-10 h-10 mx-auto mb-2 opacity-50" />
-                  <p className="text-sm">暂无农户档案</p>
+                  <p className="text-sm">暂无档案</p>
                 </div>
               )}
             </div>
           </CardContent>
-        </Card>
+        </Card>}
 
         {/* Profile Detail */}
-        <Card className="glass-card lg:col-span-3">
+        <Card className={cn('glass-card', canManageAllProfiles ? 'lg:col-span-3' : 'lg:col-span-1')}>
           <CardHeader className="flex flex-row items-center justify-between">
             <div className="space-y-1">
               <CardTitle className="text-white">
-                {selectedProfile ? `当前农户: ${selectedProfile.farmer_id}` : '请选择农户'}
+                {selectedProfile ? `当前档案: ${selectedProfile.farmer_id}` : (canManageAllProfiles ? '请选择档案' : '我的档案')}
               </CardTitle>
               {selectedProfile && selectedProfile.updated_at && (
                 <p className="text-white/60 text-xs">
@@ -877,14 +955,16 @@ export function ProfilesPage() {
                   <Save className="w-4 h-4 mr-1" />
                   保存
                 </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={deleteProfile}
-                  className="border-red-500/50 text-red-400 hover:bg-red-500/10"
-                >
-                  <Trash2 className="w-4 h-4" />
-                </Button>
+                {canManageAllProfiles && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={deleteProfile}
+                    className="border-red-500/50 text-red-400 hover:bg-red-500/10"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </Button>
+                )}
               </div>
             )}
           </CardHeader>
@@ -895,11 +975,11 @@ export function ProfilesPage() {
                 <div>
                   <h3 className="text-[#c8f7c5] font-medium mb-4 flex items-center gap-2">
                     <Users className="w-4 h-4" />
-                    农户基本信息
+                    档案基本信息
                   </h3>
                   <div className="grid sm:grid-cols-2 gap-4">
                     <div className="space-y-2">
-                      <Label className="text-white/60">农户ID</Label>
+                      <Label className="text-white/60">档案ID</Label>
                       <Input
                         value={editedProfile.farmer_id}
                         disabled
@@ -907,12 +987,27 @@ export function ProfilesPage() {
                       />
                     </div>
                     <div className="space-y-2">
-                      <Label className="text-white/60">农户姓名</Label>
+                      <Label className="text-white/60">显示名称</Label>
                       <Input
-                        value={editedProfile.name}
-                        onChange={(e) => setEditedProfile({ ...editedProfile, name: e.target.value })}
+                        value={editedProfile.display_name}
+                        onChange={(e) => setEditedProfile({ ...editedProfile, display_name: e.target.value, name: e.target.value })}
                         className="bg-white/5 border-white/20 text-white focus:border-[#c8f7c5]"
                       />
+                    </div>
+                    <div className="space-y-2">
+                      <Label className="text-white/60">角色类型</Label>
+                      {canManageAllProfiles ? (
+                        <Select value={editedProfile.role_type} onValueChange={(v) => setEditedProfile({ ...editedProfile, role_type: v as FarmerProfile['role_type'] })}>
+                          <SelectTrigger className="bg-white/5 border-white/20 text-white"><SelectValue /></SelectTrigger>
+                          <SelectContent className="bg-[#1a1a1a] border-white/20">
+                            <SelectItem value="FARMER">农户</SelectItem>
+                            <SelectItem value="EXPERT">专家</SelectItem>
+                            <SelectItem value="ADMIN">管理员</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      ) : (
+                        <Input value={PROFILE_ROLE_LABELS[editedProfile.role_type]} disabled className="bg-white/5 border-white/20 text-white/60" />
+                      )}
                     </div>
                     <div className="space-y-2">
                       <Label className="text-white/60">当前基地</Label>
@@ -1309,7 +1404,7 @@ export function ProfilesPage() {
             ) : (
               <div className="text-center py-16 text-white/40">
                 <Sprout className="w-16 h-16 mx-auto mb-4 opacity-50" />
-                <p>从左侧列表选择农户查看详情</p>
+                <p>{canManageAllProfiles ? '从左侧列表选择档案查看详情' : '未找到可编辑档案'}</p>
               </div>
             )}
           </CardContent>
@@ -1320,17 +1415,28 @@ export function ProfilesPage() {
       <Dialog open={showAddDialog} onOpenChange={setShowAddDialog}>
         <DialogContent className="bg-[#1a1a1a] border-white/20 text-white max-w-md max-h-[85vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>新增农户档案</DialogTitle>
+            <DialogTitle>新增档案</DialogTitle>
           </DialogHeader>
           <div className="space-y-4 py-4">
             <div className="space-y-2">
-              <Label>农户姓名 <span className="text-red-400">*</span></Label>
+              <Label>显示名称 <span className="text-red-400">*</span></Label>
               <Input
-                placeholder="请输入农户姓名"
+                placeholder="请输入档案名称"
                 value={newProfileName}
                 onChange={(e) => setNewProfileName(e.target.value)}
                 className="bg-white/5 border-white/20 text-white focus:border-[#c8f7c5]"
               />
+            </div>
+            <div className="space-y-2">
+              <Label>角色类型</Label>
+              <Select value={newProfileRoleType} onValueChange={(v) => setNewProfileRoleType(v as FarmerProfile['role_type'])}>
+                <SelectTrigger className="bg-white/5 border-white/20 text-white"><SelectValue /></SelectTrigger>
+                <SelectContent className="bg-[#111] text-white border-white/20">
+                  <SelectItem value="FARMER">农户</SelectItem>
+                  <SelectItem value="EXPERT">专家</SelectItem>
+                  <SelectItem value="ADMIN">管理员</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
           </div>
           <DialogFooter>
