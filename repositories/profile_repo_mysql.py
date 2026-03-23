@@ -178,6 +178,7 @@ def _base_row_to_dict(
     risk_tag_rows: Iterable[FarmBaseRiskTagORM] | None = None,
     risk_item_rows: Iterable[FarmBaseRiskItemORM] | None = None,
 ) -> dict[str, Any]:
+    extra_json = _safe_dict(base_row.extra_json)
     normalized_risk_tags = [
         str(row.risk_tag).strip()
         for row in sorted(risk_tag_rows or [], key=lambda item: (item.risk_tag or "", item.id or 0))
@@ -202,6 +203,9 @@ def _base_row_to_dict(
         "growth_stage": base_row.growth_stage,
         "sowing_date": base_row.sowing_date,
         "weather_snapshot": base_row.weather_snapshot,
+        "last_weather_refresh_at": _datetime_to_iso(extra_json.get("last_weather_refresh_at")),
+        "weather_temperature_2m": extra_json.get("weather_temperature_2m"),
+        "weather_wind_speed_10m": extra_json.get("weather_wind_speed_10m"),
         "relative_humidity_2m": base_row.relative_humidity_2m,
         "precipitation": base_row.precipitation,
         "rain_risk": base_row.rain_risk,
@@ -435,6 +439,12 @@ def save_profile_payload(payload: dict[str, Any]) -> dict[str, Any]:
                     continue
                 normalized_risk_tags = _normalize_risk_tags(base_payload.get("risk_tags"))
                 normalized_risk_items = _normalize_risk_items(base_payload.get("risk_items"))
+                extra_json = _safe_dict(base_payload.get("extra_json"))
+                extra_json["last_weather_refresh_at"] = _datetime_to_iso(
+                    _parse_datetime(base_payload.get("last_weather_refresh_at"))
+                )
+                extra_json["weather_temperature_2m"] = base_payload.get("weather_temperature_2m")
+                extra_json["weather_wind_speed_10m"] = base_payload.get("weather_wind_speed_10m")
                 session.add(
                     FarmBaseORM(
                         farmer_id=farmer_id,
@@ -460,7 +470,7 @@ def save_profile_payload(payload: dict[str, Any]) -> dict[str, Any]:
                         risk_items_json=normalized_risk_items,
                         risk_updated_at=_parse_datetime(base_payload.get("risk_updated_at")),
                         notes=base_payload.get("notes"),
-                        extra_json=_safe_dict(base_payload.get("extra_json")),
+                        extra_json=extra_json,
                     )
                 )
                 _replace_base_risk_children(
