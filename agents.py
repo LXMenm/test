@@ -7,6 +7,7 @@ from llm_utils import call_llm, extract_json_from_response
 from diagnosis_model import build_reliability_summary, get_diagnosis_engine
 from knowledge_base import get_kb_manager
 from config import DIAGNOSIS_CONFIDENCE_THRESHOLD, DIAGNOSIS_ALLOW_TORCH
+from runtime_settings import get_admin_flag
 from confidence_policy import make_confidence_flags
 from personalization.profile_models import FarmerProfile, BaseProfile, TreatmentConstraint
 from personalization.profile_rules import apply_personalization_to_treatment, normalize_filter_outputs
@@ -336,6 +337,14 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
     image_path = state.get("image_path")
     flags = state.get("personalization_flags", {}) or {}
     flags["need_confirm"] = False
+    runtime_enable_personalization = bool(get_admin_flag("workflow.enable_personalization_agent", True))
+    if not runtime_enable_personalization:
+        flags = {}
+        state["personalization_context"] = None
+        state["personalization_reasons"] = []
+
+    enable_image_model = bool(get_admin_flag("model_fusion.enable_image_model", True))
+    enable_text_model = bool(get_admin_flag("model_fusion.enable_text_model", True))
     policy = state.get("personalization_policy") or {}
     hard_constraints = (policy.get("hard_constraints") or {}) if isinstance(policy, dict) else {}
     personalization_context = state.get("personalization_context")
@@ -380,7 +389,7 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
     image_confidence = 0.0
 
     # 图像分支
-    if image_path:
+    if enable_image_model and image_path:
         try:
             if hasattr(diagnosis_engine, "predict_image_proba"):
                 image_probs = diagnosis_engine.predict_image_proba(image_path)
@@ -407,9 +416,12 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
         except Exception as e:
             print(f"[番茄病害诊断智能体] 图像分支失败: {e}")
             image_probs = {}
+    elif not enable_image_model:
+        image_probs = {}
+        image_confidence = 0.0
 
     # 文本分支（KB 驱动）
-    text_evidence_active = kb_manager.has_effective_text_evidence(
+    text_evidence_active = enable_text_model and kb_manager.has_effective_text_evidence(
         normalized_symptoms,
         growth_stage=crop_growth_stage,
         environment=environment,
@@ -630,7 +642,8 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
         if "both_modalities_weak" not in flags["fallback_reason"]:
             flags["fallback_reason"].append("both_modalities_weak")
     elif fusion_case in {"image_strong_text_weak", "image_weak_text_strong", "consistent", "image_only", "text_only"}:
-        should_clear_confirm = final_confidence >= DIAGNOSIS_CONFIDENCE_THRESHOLD
+        need_confirm_threshold = float(get_admin_flag("model_fusion.need_confirm_threshold", DIAGNOSIS_CONFIDENCE_THRESHOLD) or DIAGNOSIS_CONFIDENCE_THRESHOLD)
+        should_clear_confirm = final_confidence >= need_confirm_threshold
         if should_clear_confirm:
             flags["need_confirm"] = False
             reasons = [r for r in list(flags.get("fallback_reason") or []) if r != "low_margin"]
@@ -668,7 +681,8 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
         and final_confidence >= 0.5
         and not weak_conflict_flag
     )
-    if flags.get("confirm_when_low_confidence") and final_confidence < DIAGNOSIS_CONFIDENCE_THRESHOLD and not should_skip_low_conf_confirm:
+    need_confirm_threshold = float(get_admin_flag("model_fusion.need_confirm_threshold", DIAGNOSIS_CONFIDENCE_THRESHOLD) or DIAGNOSIS_CONFIDENCE_THRESHOLD)
+    if flags.get("confirm_when_low_confidence") and final_confidence < need_confirm_threshold and not should_skip_low_conf_confirm:
         follow_ups = [
             "请补充叶片正反面近照。",
             "病斑颜色、边缘、是否有霉层或水渍状？",
@@ -1664,24 +1678,37 @@ def _deterministic_supervisor_decision(state: CropDiseaseState, flags: dict, mis
 
     if flags.get("need_confirm"):
         confirm_round_index = int(state.get("confirm_round_index") or 0)
-        if confirm_round_index >= 1:
+        confirm_round_limit = int(get_admin_flag("workflow.confirm_round_limit", 1) or 1)
+        if confirm_round_index >= confirm_round_limit:
             return "manual_review", True, "番茄病害监督智能体：补充诊断后仍不确定，建议结束当前图并由用户决定是否转入专家复核", ["need_confirm_manual_review"]
         return "await_user_confirmation", True, "番茄病害监督智能体：需用户进入补充诊断，当前轮结束并返回追问问题", ["need_confirm_wait_user"]
 
     if not state.get("kb_snapshot"):
         return "kb_retrieval", False, "番茄病害监督智能体：缺少知识快照，进入知识检索智能体", ["missing_kb_snapshot"]
 
+    enable_treatment_generation = bool(get_admin_flag("llm.enable_treatment_generation", True))
+    enable_validator_agent = bool(get_admin_flag("workflow.enable_validator_agent", True))
+    enable_constraint_validation = bool(get_admin_flag("llm.enable_constraint_validation", True))
+
     treatment_plan = str(state.get("treatment_plan") or "").strip()
     prevention_advice = str(state.get("prevention_advice") or "").strip()
     if not treatment_plan or not prevention_advice:
-        return "treatment", False, "番茄病害监督智能体：缺少治疗/预防方案，进入治疗方案智能体", ["missing_treatment_or_prevention"]
+        if enable_treatment_generation:
+            return "treatment", False, "番茄病害监督智能体：缺少治疗/预防方案，进入治疗方案智能体", ["missing_treatment_or_prevention"]
+        return "end", True, "番茄病害监督智能体：管理员已关闭治疗生成，跳过治疗阶段", ["treatment_generation_disabled"]
 
+    should_run_verification = enable_validator_agent and enable_constraint_validation
     if state.get("verification_result") is None:
-        return "verification", False, "番茄病害监督智能体：治疗方案已生成，进入农业合规审查", ["missing_verification"]
+        if should_run_verification:
+            return "verification", False, "番茄病害监督智能体：治疗方案已生成，进入农业合规审查", ["missing_verification"]
+        return "end", True, "番茄病害监督智能体：管理员已关闭合规审查，流程结束", ["verification_disabled"]
 
     if state.get("verification_passed") is False:
+        if not should_run_verification:
+            return "end", True, "番茄病害监督智能体：合规审查关闭，忽略未通过结果", ["verification_disabled_skip_fail"]
         rewrite_count = int(state.get("rewrite_count") or 0)
-        if rewrite_count >= 1:
+        rewrite_limit = int(get_admin_flag("workflow.validator_rewrite_limit", 1) or 1)
+        if rewrite_count >= rewrite_limit:
             return "end", True, "番茄病害监督智能体：审查未通过且达到重写上限，建议后续转入专家复核", ["verification_failed_max_retry"]
 
         state["rewrite_count"] = rewrite_count + 1

@@ -49,6 +49,9 @@ interface FarmerBase {
   sowing_date: string;
   estimated_harvest_window_days: number | null;
   weather_snapshot?: string;
+  last_weather_refresh_at?: string;
+  weather_temperature_2m?: number | null;
+  weather_wind_speed_10m?: number | null;
   risk_tags?: string[];
   risk_reasons?: string[];
   risk_items?: RiskItem[];
@@ -177,6 +180,13 @@ const toSafeNumber = (value: unknown, fallback = 0): number => {
   return fallback;
 };
 
+const formatDisplayTime = (value?: string): string => {
+  if (!value) return '—';
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return parsed.toLocaleString();
+};
+
 const normalizeBase = (baseId: string, base: unknown): FarmerBase => {
   const baseObj = base && typeof base === 'object' ? base as Record<string, unknown> : {};
   const latitude = typeof baseObj.latitude === 'number' ? baseObj.latitude : null;
@@ -196,6 +206,9 @@ const normalizeBase = (baseId: string, base: unknown): FarmerBase => {
     sowing_date: toSafeString(baseObj.sowing_date),
     estimated_harvest_window_days: estimateHarvestWindowDays(toSafeString(baseObj.sowing_date)),
     weather_snapshot: toSafeString(baseObj.weather_snapshot),
+    last_weather_refresh_at: toSafeString(baseObj.last_weather_refresh_at),
+    weather_temperature_2m: typeof baseObj.weather_temperature_2m === 'number' ? baseObj.weather_temperature_2m : null,
+    weather_wind_speed_10m: typeof baseObj.weather_wind_speed_10m === 'number' ? baseObj.weather_wind_speed_10m : null,
     risk_tags: Array.isArray(baseObj.risk_tags) ? baseObj.risk_tags.map((item: unknown) => toSafeString(item)).filter(Boolean) : [],
     risk_reasons: Array.isArray(baseObj.risk_reasons) ? baseObj.risk_reasons.map((item: unknown) => toSafeString(item)).filter(Boolean) : [],
     risk_items: Array.isArray(baseObj.risk_items)
@@ -422,6 +435,9 @@ export function ProfilesPage() {
       growth_stage: normalizeGrowthStage(base.growth_stage),
       sowing_date: base.sowing_date || null,
       weather_snapshot: base.weather_snapshot,
+      last_weather_refresh_at: base.last_weather_refresh_at || null,
+      weather_temperature_2m: typeof base.weather_temperature_2m === 'number' ? base.weather_temperature_2m : null,
+      weather_wind_speed_10m: typeof base.weather_wind_speed_10m === 'number' ? base.weather_wind_speed_10m : null,
       risk_tags: base.risk_tags || [],
       risk_reasons: base.risk_reasons || [],
       risk_items: base.risk_items || [],
@@ -597,6 +613,9 @@ export function ProfilesPage() {
         sowing_date: '',
         estimated_harvest_window_days: null,
         weather_snapshot: '',
+        last_weather_refresh_at: '',
+        weather_temperature_2m: null,
+        weather_wind_speed_10m: null,
         notes: ''
       }]
     });
@@ -707,6 +726,9 @@ export function ProfilesPage() {
               ...base,
               weather_snapshot: hasSummary ? summary : base.weather_snapshot,
               environment: enrichedEnvironment,
+              last_weather_refresh_at: new Date().toISOString(),
+              weather_temperature_2m: typeof weatherData.temperature_2m === 'number' ? weatherData.temperature_2m : base.weather_temperature_2m,
+              weather_wind_speed_10m: typeof weatherData.wind_speed_10m === 'number' ? weatherData.wind_speed_10m : base.weather_wind_speed_10m,
             };
           });
         } else {
@@ -1153,6 +1175,7 @@ export function ProfilesPage() {
                                 获取天气
                               </Button>
                             </div>
+                            <p className="text-xs text-white/60 mt-2">最近天气更新时间：{formatDisplayTime(base.last_weather_refresh_at)}</p>
                           </div>
                           <div className="space-y-1">
                             <Label className="text-white/60 text-xs">省份</Label>

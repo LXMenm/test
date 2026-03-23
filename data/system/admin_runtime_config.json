@@ -1,0 +1,22 @@
+{
+  "workflow": {
+    "confirm_round_limit": 1,
+    "validator_rewrite_limit": 1,
+    "enable_validator_agent": true,
+    "enable_personalization_agent": true
+  },
+  "model_fusion": {
+    "enable_image_model": true,
+    "enable_text_model": true,
+    "text_backend": "auto",
+    "image_reliable_threshold": 0.7,
+    "text_reliable_threshold": 0.45,
+    "conflict_margin": 0.1,
+    "need_confirm_threshold": 0.6
+  },
+  "llm": {
+    "enable_llm": true,
+    "enable_treatment_generation": true,
+    "enable_constraint_validation": true
+  }
+}
