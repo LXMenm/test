@@ -83,6 +83,7 @@ export function ExpertReviewPage() {
       const data = await resp.json();
       if (!resp.ok) throw new Error(String(data?.detail || '加载待复核列表失败'));
       const nextItems = Array.isArray(data?.items) ? data.items as PendingCaseItem[] : [];
+      nextItems.sort((a, b) => new Date(b.submitted_at || 0).getTime() - new Date(a.submitted_at || 0).getTime());
       setItems(nextItems);
     } catch (error) {
       console.error(error);
@@ -140,6 +141,12 @@ export function ExpertReviewPage() {
   }, []);
 
   const recentPending = useMemo(() => items.slice(0, 5), [items]);
+  const getReviewTag = (item: PendingCaseItem) => {
+    if (item.expert_review_status === 'COMPLETED' || item.status === 'completed') {
+      return <Badge className="bg-emerald-400 text-black">已复核</Badge>;
+    }
+    return <Badge className="bg-orange-400 text-black">待复核</Badge>;
+  };
 
   return (
     <div className="space-y-6">
@@ -183,7 +190,7 @@ export function ExpertReviewPage() {
           ) : (
             <div className="space-y-3">
               {items.map((item) => (
-                <div key={item.trace_id} className="rounded-xl border border-white/10 bg-white/5 p-3 grid md:grid-cols-6 gap-2 text-sm text-white/85">
+                <div key={item.trace_id} className="rounded-xl border border-white/10 bg-white/5 hover:bg-white/[0.07] p-3 grid md:grid-cols-6 gap-2 text-sm text-white/85">
                   <div>
                     <p className="text-white/50 text-xs">trace_id</p>
                     <p>{item.trace_id.slice(0, 16)}...</p>
@@ -202,7 +209,10 @@ export function ExpertReviewPage() {
                   </div>
                   <div>
                     <p className="text-white/50 text-xs">当前状态</p>
-                    <p>{item.status || '-'} / {item.expert_review_status || '-'}</p>
+                    <div className="flex items-center gap-2">
+                      {getReviewTag(item)}
+                      <span className="text-xs text-white/70">{item.status || '-'} / {item.expert_review_status || '-'}</span>
+                    </div>
                   </div>
                   <div className="flex items-end justify-end">
                     <Button size="sm" variant="outline" className="border-[#c8f7c5]/60 text-[#c8f7c5]" onClick={() => { void loadDetail(item.trace_id); }}>
@@ -217,15 +227,18 @@ export function ExpertReviewPage() {
       </Card>
 
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto bg-[#101010] border-white/20 text-white">
+        <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto bg-[#0f1614] border-[#86b89d]/30 text-white">
           <DialogHeader>
-            <DialogTitle>专家复核详情</DialogTitle>
+            <DialogTitle className="flex items-center gap-2">
+              专家复核详情
+              {detail ? getReviewTag(detail) : null}
+            </DialogTitle>
           </DialogHeader>
           {!detail || detailLoading ? (
             <div className="text-sm text-white/70">加载中...</div>
           ) : (
             <div className="space-y-4 text-sm">
-              <section className="rounded-xl border border-white/10 p-3 space-y-2">
+              <section className="rounded-xl border border-[#86b89d]/20 bg-[#13221c] p-3 space-y-2">
                 <h3 className="text-[#c8f7c5] font-semibold">A. 用户输入</h3>
                 {detail.image_url ? <img src={detail.image_url} alt="病例图片" className="max-h-56 rounded-lg object-contain bg-black/30" /> : null}
                 <p>症状文本：{detail.symptoms_text || '-'}</p>
@@ -234,7 +247,7 @@ export function ExpertReviewPage() {
                 <p>档案摘要：规模 {detail.profile_summary?.farm_scale || '-'}，购药能力 {detail.profile_summary?.pesticide_access_level || '-'}，设备 {(detail.profile_summary?.equipment || []).join('、') || '-'}</p>
               </section>
 
-              <section className="rounded-xl border border-white/10 p-3 space-y-2">
+              <section className="rounded-xl border border-[#86b89d]/20 bg-[#13221c] p-3 space-y-2">
                 <h3 className="text-[#c8f7c5] font-semibold">B. 模型输出</h3>
                 <p>image top3：{(detail.model_outputs?.image_top3 || []).map((it) => `${it[0]}(${formatProb(it[1])})`).join('；') || '-'}</p>
                 <p>text top3：{(detail.model_outputs?.text_top3 || []).map((it) => `${it[0]}(${formatProb(it[1])})`).join('；') || '-'}</p>
@@ -243,7 +256,7 @@ export function ExpertReviewPage() {
                 <p>modality_conflict_flag：{detail.model_outputs?.modality_conflict_flag ? '是' : '否'}</p>
               </section>
 
-              <section className="rounded-xl border border-white/10 p-3 space-y-3">
+              <section className="rounded-xl border border-[#86b89d]/20 bg-[#13221c] p-3 space-y-3">
                 <h3 className="text-[#c8f7c5] font-semibold">C. 专家填写</h3>
                 <div>
                   <Label>最终确认病害</Label>
