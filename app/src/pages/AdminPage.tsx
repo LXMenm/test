@@ -29,6 +29,29 @@ interface AdminConfig {
   };
 }
 
+interface LlmRuntimeSnapshot {
+  model: {
+    provider: string;
+    provider_display_name: string;
+    model_id: string;
+    model_display_name: string;
+  };
+  template: {
+    name: string;
+    purpose: string;
+    scenes: string;
+  };
+  constraint_validation: {
+    mode: string;
+    items: Array<{
+      key: string;
+      label: string;
+      enabled: boolean;
+      description: string;
+    }>;
+  };
+}
+
 interface ReviewItem {
   trace_id: string;
   farmer_id?: string;
@@ -81,6 +104,31 @@ const DEFAULT_CONFIG: AdminConfig = {
   },
 };
 
+const DEFAULT_LLM_RUNTIME_SNAPSHOT: LlmRuntimeSnapshot = {
+  model: {
+    provider: 'openai',
+    provider_display_name: 'OpenAI',
+    model_id: 'unknown',
+    model_display_name: 'OpenAI · unknown',
+  },
+  template: {
+    name: 'llm_dynamic_generation',
+    purpose: '生成可执行、可审计的番茄病害治疗建议，并结合个性化档案约束。',
+    scenes: '家庭/中等规模/企业分档 + 专家复核后可再生成',
+  },
+  constraint_validation: {
+    mode: 'runtime_default_summary',
+    items: [
+      { key: 'banned_ingredients', label: '禁用成分', enabled: true, description: '校验并剔除禁用成分建议' },
+      { key: 'harvest_window', label: '采收窗口', enabled: true, description: '采收临近时补充窗口与时机提醒' },
+      { key: 'safety_interval', label: '安全间隔', enabled: true, description: '提示施药后采收安全间隔' },
+      { key: 'equipment_capability', label: '设备能力', enabled: true, description: '结合设备条件约束执行流程' },
+      { key: 'organic_preference', label: '有机偏好', enabled: true, description: '偏好低残留/有机友好方案' },
+      { key: 'risk_preference', label: '风险偏好', enabled: true, description: '按风险偏好控制建议激进程度' },
+    ],
+  },
+};
+
 const REVIEW_STATUS_OPTIONS = [
   { value: 'pending', label: '待分配' },
   { value: 'assigned', label: '已分配' },
@@ -96,6 +144,7 @@ function formatTime(value?: string): string {
 
 export function AdminPage({ pageType }: { pageType: 'system' | 'review' }) {
   const [config, setConfig] = useState<AdminConfig>(DEFAULT_CONFIG);
+  const [llmRuntimeSnapshot, setLlmRuntimeSnapshot] = useState<LlmRuntimeSnapshot>(DEFAULT_LLM_RUNTIME_SNAPSHOT);
   const [configLoading, setConfigLoading] = useState(false);
   const [configSaving, setConfigSaving] = useState(false);
   const [configTip, setConfigTip] = useState<string>('');
@@ -119,6 +168,7 @@ export function AdminPage({ pageType }: { pageType: 'system' | 'review' }) {
       const data = await resp.json();
       if (!resp.ok) throw new Error(String(data?.detail || '加载配置失败'));
       const raw = (data?.config || DEFAULT_CONFIG) as Record<string, unknown>;
+      const snapshot = (data?.llm_runtime_snapshot || DEFAULT_LLM_RUNTIME_SNAPSHOT) as LlmRuntimeSnapshot;
       setConfig({
         workflow: {
           confirm_round_limit: Number((raw.workflow as Record<string, unknown>)?.confirm_round_limit ?? DEFAULT_CONFIG.workflow.confirm_round_limit),
@@ -139,9 +189,11 @@ export function AdminPage({ pageType }: { pageType: 'system' | 'review' }) {
           enable_constraint_validation: Boolean((raw.llm as Record<string, unknown>)?.enable_constraint_validation),
         },
       });
+      setLlmRuntimeSnapshot(snapshot);
     } catch (error) {
       console.error(error);
       setConfigTip('加载配置失败，请稍后重试。');
+      setLlmRuntimeSnapshot(DEFAULT_LLM_RUNTIME_SNAPSHOT);
     } finally {
       setConfigLoading(false);
     }
@@ -366,6 +418,51 @@ export function AdminPage({ pageType }: { pageType: 'system' | 'review' }) {
             <div className="flex items-center justify-between rounded-lg border border-white/10 p-3"><Label>启用大语言模型</Label><Switch checked={config.llm.enable_llm} onCheckedChange={(v) => setConfig((prev) => ({ ...prev, llm: { ...prev.llm, enable_llm: v } }))} /></div>
             <div className="flex items-center justify-between rounded-lg border border-white/10 p-3"><Label>启用治疗建议生成</Label><Switch checked={config.llm.enable_treatment_generation} onCheckedChange={(v) => setConfig((prev) => ({ ...prev, llm: { ...prev.llm, enable_treatment_generation: v } }))} /></div>
             <div className="flex items-center justify-between rounded-lg border border-white/10 p-3"><Label>启用约束校验</Label><Switch checked={config.llm.enable_constraint_validation} onCheckedChange={(v) => setConfig((prev) => ({ ...prev, llm: { ...prev.llm, enable_constraint_validation: v } }))} /></div>
+
+            <div className="md:col-span-3 grid md:grid-cols-3 gap-4 rounded-lg border border-white/10 p-3 bg-white/5">
+              <h4 className="md:col-span-3 text-sm font-semibold text-white/90">当前大模型信息</h4>
+              <div>
+                <Label>当前大模型提供方</Label>
+                <Input value={llmRuntimeSnapshot.model.provider_display_name} readOnly className="bg-white/5 border-white/20 text-white/90" />
+              </div>
+              <div>
+                <Label>当前模型名称 / model_id</Label>
+                <Input value={llmRuntimeSnapshot.model.model_id} readOnly className="bg-white/5 border-white/20 text-white/90" />
+              </div>
+              <div>
+                <Label>当前模型显示名称</Label>
+                <Input value={llmRuntimeSnapshot.model.model_display_name} readOnly className="bg-white/5 border-white/20 text-white/90" />
+              </div>
+            </div>
+
+            <div className="md:col-span-3 grid md:grid-cols-3 gap-4 rounded-lg border border-white/10 p-3 bg-white/5">
+              <h4 className="md:col-span-3 text-sm font-semibold text-white/90">当前治疗建议模板信息</h4>
+              <div>
+                <Label>当前治疗建议模板</Label>
+                <Input value={llmRuntimeSnapshot.template.name} readOnly className="bg-white/5 border-white/20 text-white/90" />
+              </div>
+              <div className="md:col-span-2">
+                <Label>模板适用场景</Label>
+                <Input value={llmRuntimeSnapshot.template.scenes} readOnly className="bg-white/5 border-white/20 text-white/90" />
+              </div>
+              <div className="md:col-span-3 rounded-lg border border-white/10 p-3 text-xs text-white/70">
+                <p className="text-white/90 mb-1">模板用途说明</p>
+                <p>{llmRuntimeSnapshot.template.purpose}</p>
+              </div>
+            </div>
+
+            <div className="md:col-span-3 rounded-lg border border-white/10 p-3 bg-white/5 space-y-2">
+              <h4 className="text-sm font-semibold text-white/90">当前约束校验内容摘要</h4>
+              <p className="text-xs text-white/60">以下为当前系统默认启用的约束摘要（结合运行时配置展示）。</p>
+              <div className="grid md:grid-cols-2 gap-2">
+                {llmRuntimeSnapshot.constraint_validation.items.map((item) => (
+                  <div key={item.key} className="rounded-lg border border-white/10 px-3 py-2 text-xs text-white/80">
+                    <p className="text-white">{item.label} · {item.enabled ? '已启用' : '未启用'}</p>
+                    <p className="text-white/60 mt-1">{item.description}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
           </section>
         </CardContent>
       </Card>

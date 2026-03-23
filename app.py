@@ -61,7 +61,7 @@ from trace_store import list_trace_events, subscribe as subscribe_trace, unsubsc
 from model_registry import list_models, resolve_model
 from workflow import build_graph
 from trace_catalog import AGENTS_CATALOG, NODE_TO_AGENT
-from runtime_settings import load_admin_runtime_config, save_admin_runtime_config
+from runtime_settings import get_admin_llm_runtime_snapshot, load_admin_runtime_config, save_admin_runtime_config
 from db import engine as db_engine, get_db_session
 from mysql_models import UserAccountORM
 
@@ -2877,7 +2877,8 @@ def submit_expert_review(trace_id: str, request: Request, payload: dict = Body(.
 def get_admin_system_config(request: Request) -> dict[str, Any]:
     actor = _get_request_actor(request)
     _require_admin(actor)
-    return {"config": load_admin_runtime_config()}
+    config = load_admin_runtime_config()
+    return {"config": config, "llm_runtime_snapshot": get_admin_llm_runtime_snapshot(config)}
 
 
 @app.put("/api/admin/system-config")

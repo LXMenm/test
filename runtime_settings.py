@@ -5,6 +5,8 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
+from config import LLM_PROVIDER, OPENAI_MODEL, QWEN_MODEL, WENXIN_MODEL
+
 RUNTIME_CONFIG_PATH = Path("data/system/admin_runtime_config.json")
 
 DEFAULT_ADMIN_CONFIG: dict[str, Any] = {
@@ -131,3 +133,50 @@ def get_admin_flag(path: str, default: Any = None) -> Any:
             return default
         cursor = cursor[key]
     return cursor
+
+
+def get_admin_llm_runtime_snapshot(config: dict[str, Any] | None = None) -> dict[str, Any]:
+    current_config = config if isinstance(config, dict) else load_admin_runtime_config()
+    llm_config = current_config.get("llm") if isinstance(current_config.get("llm"), dict) else {}
+
+    provider = str(LLM_PROVIDER or "openai").strip().lower() or "openai"
+    provider_meta = {
+        "openai": {"label": "OpenAI", "model_id": OPENAI_MODEL},
+        "qwen": {"label": "通义千问", "model_id": QWEN_MODEL},
+        "wenxin": {"label": "文心一言", "model_id": WENXIN_MODEL},
+    }
+    selected_provider_meta = provider_meta.get(provider, {"label": provider.upper(), "model_id": "unknown"})
+    model_id = str(selected_provider_meta.get("model_id") or "unknown")
+    model_display_name = f'{selected_provider_meta["label"]} · {model_id}'
+
+    template_mode = "llm_dynamic_generation" if bool(llm_config.get("enable_treatment_generation", True)) else "kb_fallback_only"
+    template_scene = "家庭/中等规模/企业分档 + 专家复核后可再生成"
+    if template_mode == "kb_fallback_only":
+        template_scene = "仅知识库后备方案（可用于禁用生成或失败降级）"
+
+    constraint_summary_items = [
+        {"key": "banned_ingredients", "label": "禁用成分", "enabled": True, "description": "校验并剔除禁用成分建议"},
+        {"key": "harvest_window", "label": "采收窗口", "enabled": True, "description": "采收临近时补充窗口与时机提醒"},
+        {"key": "safety_interval", "label": "安全间隔", "enabled": True, "description": "提示施药后采收安全间隔"},
+        {"key": "equipment_capability", "label": "设备能力", "enabled": True, "description": "结合设备条件约束执行流程"},
+        {"key": "organic_preference", "label": "有机偏好", "enabled": True, "description": "偏好低残留/有机友好方案"},
+        {"key": "risk_preference", "label": "风险偏好", "enabled": True, "description": "按风险偏好控制建议激进程度"},
+    ]
+
+    return {
+        "model": {
+            "provider": provider,
+            "provider_display_name": selected_provider_meta["label"],
+            "model_id": model_id,
+            "model_display_name": model_display_name,
+        },
+        "template": {
+            "name": template_mode,
+            "purpose": "生成可执行、可审计的番茄病害治疗建议，并结合个性化档案约束。",
+            "scenes": template_scene,
+        },
+        "constraint_validation": {
+            "mode": "runtime_default_summary",
+            "items": constraint_summary_items,
+        },
+    }
