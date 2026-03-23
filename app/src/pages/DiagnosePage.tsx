@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef } from 'react';
 import type { ChangeEvent, JSX } from 'react';
-import { Upload, Send, RefreshCw, AlertCircle, CheckCircle, Loader2, Image as ImageIcon, ChevronDown, ChevronUp } from 'lucide-react';
+import { Upload, Send, RefreshCw, AlertCircle, CheckCircle, Loader2, Image as ImageIcon, ChevronDown, ChevronUp, Bell } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -22,6 +22,7 @@ import {
 import { resolveModelOptions } from '@/lib/modelOptions';
 import { fetchTraceEvents } from '@/lib/traceClient';
 import { calcTracePhaseTiming, formatDurationMs } from '@/components/agentWorkflowTiming';
+import { loadAuthUser } from '@/auth';
 
 interface DiagnosisResult {
   image_url: string;
@@ -65,6 +66,9 @@ interface DiagnosisResult {
   expert_review_recommended?: boolean;
   expert_review_selected?: boolean;
   expert_review_status?: string;
+  expert_review_result?: string;
+  expert_review_notes?: string;
+  expert_reviewed_at?: string;
   expert_review_actions?: string[];
   treatment_available?: boolean;
   confirm_reasons?: string[];
@@ -112,6 +116,11 @@ interface TraceEvent {
 }
 
 type Top3Candidate = { disease: string; probPct: number };
+type PendingExpertItem = {
+  trace_id: string;
+  farmer_name?: string;
+  farmer_id?: string;
+};
 
 export function DiagnosePage() {
   const modelOptions = resolveModelOptions();
@@ -145,8 +154,13 @@ export function DiagnosePage() {
   const [selectedFarmerId, setSelectedFarmerId] = useState('');
   const [selectedBaseId, setSelectedBaseId] = useState('');
   const [selectedProfile, setSelectedProfile] = useState<ProfileDetail | null>(null);
+  const [expertPendingCount, setExpertPendingCount] = useState(0);
+  const [expertPendingItems, setExpertPendingItems] = useState<PendingExpertItem[]>([]);
+  const [showExpertInbox, setShowExpertInbox] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const traceFetchAbortRef = useRef<AbortController | null>(null);
+  const authUser = loadAuthUser();
+  const canViewExpertInbox = authUser?.role === 'EXPERT' || authUser?.role === 'ADMIN';
 
   const navigateToKbDisease = (disease: string) => {
     const name = disease.trim();
@@ -444,6 +458,9 @@ export function DiagnosePage() {
       expert_review_recommended: payload.expert_review_recommended === true,
       expert_review_selected: payload.expert_review_selected === true,
       expert_review_status: typeof payload.expert_review_status === 'string' ? payload.expert_review_status : undefined,
+      expert_review_result: typeof payload.expert_review_result === 'string' ? payload.expert_review_result : undefined,
+      expert_review_notes: typeof payload.expert_review_notes === 'string' ? payload.expert_review_notes : undefined,
+      expert_reviewed_at: typeof payload.expert_reviewed_at === 'string' ? payload.expert_reviewed_at : undefined,
       expert_review_actions: Array.isArray(payload.expert_review_actions) ? payload.expert_review_actions.map((item) => String(item)) : [],
       treatment_available: payload.treatment_available === true,
       confirm_reasons: getConfirmReasons(payload),
@@ -519,6 +536,21 @@ export function DiagnosePage() {
     }
   };
 
+  const fetchExpertPending = async () => {
+    if (!canViewExpertInbox) return;
+    try {
+      const resp = await fetch('/api/expert-reviews/pending?limit=5');
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(String(data?.detail || '加载专家复核提醒失败'));
+      setExpertPendingCount(typeof data?.count === 'number' ? data.count : 0);
+      setExpertPendingItems(Array.isArray(data?.items) ? data.items as PendingExpertItem[] : []);
+    } catch (error) {
+      console.error('Failed to fetch expert pending reviews:', error);
+      setExpertPendingCount(0);
+      setExpertPendingItems([]);
+    }
+  };
+
   const fetchProfileDetail = async (farmerId: string) => {
     if (!farmerId) {
       setSelectedProfile(null);
@@ -547,6 +579,11 @@ export function DiagnosePage() {
   useEffect(() => {
     fetchProfiles();
   }, []);
+
+  useEffect(() => {
+    if (!canViewExpertInbox) return;
+    void fetchExpertPending();
+  }, [canViewExpertInbox]);
 
   useEffect(() => {
     fetchProfileDetail(selectedFarmerId);
@@ -867,6 +904,7 @@ export function DiagnosePage() {
   const shouldShowSupplementSection = result?.status === 'waiting_for_supplement' && supplementMode !== 'none';
   const expertReviewRecommended = result?.expert_review_recommended === true;
   const expertReviewPending = result?.status === 'pending_expert_review' || result?.expert_review_status === 'PENDING';
+  const expertReviewCompleted = result?.expert_review_status === 'COMPLETED';
   const shouldShowExpertReviewDecision = result?.status === 'waiting_for_expert_decision' && expertReviewRecommended && !expertReviewPending;
   const primaryRiskLabels = (() => {
     if (!result) return [] as string[];
@@ -973,6 +1011,39 @@ export function DiagnosePage() {
   const timingSourceLabel = traceTiming.hasTraceTiming ? 'trace events' : (displayedTiming ? '本地提交兜底' : null);
   return (
     <div className="space-y-6 animate-fadeIn">
+      {canViewExpertInbox && (
+        <div className="flex justify-end">
+          <div className="relative">
+            <Button
+              type="button"
+              variant="outline"
+              className="border-[#c8f7c5]/60 text-[#c8f7c5] hover:bg-[#c8f7c5]/10"
+              onClick={() => setShowExpertInbox((prev) => !prev)}
+            >
+              <Bell className="w-4 h-4 mr-1" />
+              待复核 {expertPendingCount}
+            </Button>
+            {showExpertInbox && (
+              <div className="absolute right-0 z-20 mt-2 w-80 rounded-xl border border-white/20 bg-[#101010] p-3 shadow-xl">
+                <div className="mb-2 flex items-center justify-between text-xs text-white/70">
+                  <span>最近待复核病例</span>
+                  <button type="button" className="text-[#c8f7c5]" onClick={() => { void fetchExpertPending(); }}>刷新</button>
+                </div>
+                <div className="space-y-1 text-sm">
+                  {expertPendingItems.length === 0 ? (
+                    <p className="text-white/60">暂无待复核</p>
+                  ) : expertPendingItems.map((item) => (
+                    <div key={item.trace_id} className="rounded-lg border border-white/10 px-2 py-1 text-white/85">
+                      <p className="font-mono text-xs">{item.trace_id.slice(0, 14)}...</p>
+                      <p className="text-xs">{item.farmer_name || item.farmer_id || '未知用户'}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
       {/* Header */}
       <div className="text-center mb-8">
         <h1 className="text-4xl font-bold text-white mb-3">
@@ -1432,6 +1503,17 @@ export function DiagnosePage() {
                       <p>{result?.confirm_message || '当前病例已进入待专家复核状态，后续将由专家确认病害并补充最终方案。'}</p>
                     </div>
                   ) : null}
+
+                  <div className="bg-white/5 border border-white/10 rounded-xl p-4 text-sm text-white/85 space-y-2">
+                    <h4 className="font-medium text-[#c8f7c5]">病例复核详情</h4>
+                    <p>expert_review_status：{result.expert_review_status || 'NONE'}</p>
+                    <p>expert_review_selected：{result.expert_review_selected ? 'true' : 'false'}</p>
+                    <p>expert_review_result：{result.expert_review_result || '-'}</p>
+                    <p>expert_review_notes：{result.expert_review_notes || '-'}</p>
+                    {expertReviewCompleted && (
+                      <p className="text-emerald-300">专家已确认（{result.expert_reviewed_at || '-' }）</p>
+                    )}
+                  </div>
 
                   <Separator className="bg-white/10" />
 
