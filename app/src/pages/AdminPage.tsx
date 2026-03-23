@@ -221,6 +221,7 @@ export function AdminPage({ pageType }: { pageType: 'system' | 'review' }) {
 
   const assignExpert = async () => {
     if (!selected?.trace_id || !assignExpertId.trim()) return;
+    if (statusFilter !== 'pending' || selected.review_task_status !== 'UNASSIGNED') return;
     setUpdatingReview(true);
     setReviewTip('');
     try {
@@ -281,6 +282,14 @@ export function AdminPage({ pageType }: { pageType: 'system' | 'review' }) {
   const configSummary = useMemo(() => {
     return `补充诊断轮次上限 ${config.workflow.confirm_round_limit} · 最大重写次数 ${config.workflow.validator_rewrite_limit} · 文本后端 ${config.model_fusion.text_backend}`;
   }, [config]);
+
+  const canAssignTask = statusFilter === 'pending' && selected?.review_task_status === 'UNASSIGNED';
+  const showAssignControls = Boolean(selected) && canAssignTask;
+  const assignedExpertReadonly = useMemo(() => {
+    if (!selected?.assigned_expert_id) return '-';
+    const option = expertOptions.find((item) => item.user_id === selected.assigned_expert_id);
+    return option?.display_name ? `${option.user_id} · ${option.display_name}` : selected.assigned_expert_id;
+  }, [expertOptions, selected?.assigned_expert_id]);
 
   if (pageType === 'system') {
     return (
@@ -405,21 +414,25 @@ export function AdminPage({ pageType }: { pageType: 'system' | 'review' }) {
               <p><span className="text-white/50">复核备注：</span>{selected.expert_review_notes || '-'}</p>
               <p><span className="text-white/50">最终置信度：</span>{typeof selected.model_outputs?.final_confidence === 'number' ? `${(selected.model_outputs.final_confidence * 100).toFixed(2)}%` : '-'}</p>
 
-              <div>
-                <Label>分配专家账号</Label>
-                <Select value={assignExpertId} onValueChange={setAssignExpertId}>
-                  <SelectTrigger className="bg-white/5 border-white/20 text-white">
-                    <SelectValue placeholder="请选择专家账号" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {expertOptions.map((item) => (
-                      <SelectItem key={item.user_id} value={item.user_id}>
-                        {item.user_id}{item.display_name ? ` · ${item.display_name}` : ''}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
+              {showAssignControls ? (
+                <div>
+                  <Label>分配专家账号</Label>
+                  <Select value={assignExpertId} onValueChange={setAssignExpertId}>
+                    <SelectTrigger className="bg-white/5 border-white/20 text-white">
+                      <SelectValue placeholder="请选择专家账号" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {expertOptions.map((item) => (
+                        <SelectItem key={item.user_id} value={item.user_id}>
+                          {item.user_id}{item.display_name ? ` · ${item.display_name}` : ''}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              ) : (
+                <p><span className="text-white/50">已分配专家：</span>{assignedExpertReadonly}</p>
+              )}
 
               <div>
                 <Label>管理标签</Label>
@@ -441,7 +454,9 @@ export function AdminPage({ pageType }: { pageType: 'system' | 'review' }) {
               {reviewTip ? <p className="text-[#c8f7c5] text-xs">{reviewTip}</p> : null}
 
               <div className="flex gap-2">
-                <Button onClick={() => { void assignExpert(); }} disabled={updatingReview || !assignExpertId.trim()} className="bg-[#c8f7c5] text-black">分配复核任务</Button>
+                {showAssignControls ? (
+                  <Button onClick={() => { void assignExpert(); }} disabled={updatingReview || !assignExpertId.trim()} className="bg-[#c8f7c5] text-black">分配复核任务</Button>
+                ) : null}
                 <Button variant="outline" onClick={() => { void updateFlowStatus(); }} disabled={updatingReview}>保存管理标签</Button>
               </div>
             </>
