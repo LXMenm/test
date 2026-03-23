@@ -88,6 +88,10 @@ def _is_admin(actor: dict[str, str]) -> bool:
     return actor.get("role") == "ADMIN"
 
 
+def _is_expert(actor: dict[str, str]) -> bool:
+    return actor.get("role") in {"EXPERT", "ADMIN"}
+
+
 def _apply_farmer_scope(actor: dict[str, str], requested_farmer_id: str | None) -> str | None:
     if _is_admin(actor):
         return requested_farmer_id
@@ -102,6 +106,11 @@ def _apply_farmer_scope(actor: dict[str, str], requested_farmer_id: str | None) 
 
 def _require_admin(actor: dict[str, str], message: str = "当前操作仅管理员可执行") -> None:
     if not _is_admin(actor):
+        raise HTTPException(status_code=403, detail=message)
+
+
+def _require_expert(actor: dict[str, str], message: str = "当前操作仅专家可执行") -> None:
+    if not _is_expert(actor):
         raise HTTPException(status_code=403, detail=message)
 
 
@@ -1504,6 +1513,11 @@ async def diagnose_image(
         "expert_review_recommended": expert_review_recommended,
         "expert_review_selected": expert_review_selected,
         "expert_review_status": expert_review_status,
+        "assigned_expert_id": None,
+        "expert_review_result": None,
+        "expert_review_supplement_symptoms": None,
+        "expert_review_notes": None,
+        "expert_reviewed_at": None,
         "expert_review_actions": [],
         "graph_treatment_generated": graph_treatment_generated,
         "fallback_treatment_used": fallback_treatment_used,
@@ -1593,6 +1607,11 @@ async def diagnose_image(
         "expert_review_recommended": expert_review_recommended,
         "expert_review_selected": expert_review_selected,
         "expert_review_status": expert_review_status,
+        "assigned_expert_id": None,
+        "expert_review_result": None,
+        "expert_review_supplement_symptoms": None,
+        "expert_review_notes": None,
+        "expert_reviewed_at": None,
         "expert_review_actions": [],
         "confirm_message": None,
         "treatment_skipped_due_need_confirm": need_confirm_waiting,
@@ -1969,6 +1988,11 @@ def diagnose_confirm(request: Request, payload: dict = Body(...)) -> dict:
         "expert_review_recommended": expert_review_recommended,
         "expert_review_selected": expert_review_selected,
         "expert_review_status": expert_review_status,
+        "assigned_expert_id": previous_case_event.get("assigned_expert_id") if isinstance(previous_case_event, dict) else None,
+        "expert_review_result": previous_case_event.get("expert_review_result") if isinstance(previous_case_event, dict) else None,
+        "expert_review_supplement_symptoms": previous_case_event.get("expert_review_supplement_symptoms") if isinstance(previous_case_event, dict) else None,
+        "expert_review_notes": previous_case_event.get("expert_review_notes") if isinstance(previous_case_event, dict) else None,
+        "expert_reviewed_at": previous_case_event.get("expert_reviewed_at") if isinstance(previous_case_event, dict) else None,
         "expert_review_actions": expert_review_actions,
         "status": confirm_status,
         "treatment_available": bool(state.get("treatment_plan")) and confirm_status != "pending_expert_review",
@@ -2047,6 +2071,11 @@ def diagnose_confirm(request: Request, payload: dict = Body(...)) -> dict:
         "expert_review_recommended": expert_review_recommended,
         "expert_review_selected": expert_review_selected,
         "expert_review_status": expert_review_status,
+        "assigned_expert_id": previous_case_event.get("assigned_expert_id") if isinstance(previous_case_event, dict) else None,
+        "expert_review_result": previous_case_event.get("expert_review_result") if isinstance(previous_case_event, dict) else None,
+        "expert_review_supplement_symptoms": previous_case_event.get("expert_review_supplement_symptoms") if isinstance(previous_case_event, dict) else None,
+        "expert_review_notes": previous_case_event.get("expert_review_notes") if isinstance(previous_case_event, dict) else None,
+        "expert_reviewed_at": previous_case_event.get("expert_reviewed_at") if isinstance(previous_case_event, dict) else None,
         "expert_review_actions": expert_review_actions,
         "status": confirm_status,
         "confirm_message": confirm_message,
@@ -2574,6 +2603,92 @@ def get_events(
     return {"events": [_serialize_event_dto(event, inject_trace_steps=True) for event in filtered_events]}
 
 
+@app.get("/api/expert-reviews/pending")
+def get_pending_expert_reviews(request: Request, limit: int = 20) -> dict[str, Any]:
+    actor = _get_request_actor(request)
+    _require_expert(actor)
+    safe_limit = max(1, min(100, int(limit)))
+    events = list_events(200000)
+    latest_events = _pick_latest_case_by_trace(events)
+    pending = [
+        event for event in latest_events
+        if str(event.get("status") or "").strip() == "pending_expert_review"
+        or str(event.get("expert_review_status") or "").strip().upper() == "PENDING"
+    ]
+    items = [_build_expert_review_list_item(event) for event in pending[:safe_limit]]
+    return {
+        "count": len(pending),
+        "items": items,
+    }
+
+
+@app.get("/api/expert-reviews/{trace_id}")
+def get_expert_review_case_detail(trace_id: str, request: Request) -> dict[str, Any]:
+    actor = _get_request_actor(request)
+    _require_expert(actor)
+    event = _latest_case_event_by_trace(trace_id)
+    if not event:
+        raise HTTPException(status_code=404, detail="病例不存在")
+    return {"item": _build_expert_review_detail(event)}
+
+
+@app.post("/api/expert-reviews/{trace_id}/submit")
+def submit_expert_review(trace_id: str, request: Request, payload: dict = Body(...)) -> dict[str, Any]:
+    actor = _get_request_actor(request)
+    _require_expert(actor)
+    event = _latest_case_event_by_trace(trace_id)
+    if not event:
+        raise HTTPException(status_code=404, detail="病例不存在")
+
+    confirmed_disease = str(payload.get("expert_review_result") or "").strip()
+    if not confirmed_disease:
+        raise HTTPException(status_code=400, detail="expert_review_result 不能为空")
+    supplement_symptoms = sanitize_user_text(payload.get("expert_review_supplement_symptoms"))
+    review_notes = sanitize_user_text(payload.get("expert_review_notes"))
+    regenerate_treatment = bool(payload.get("regenerate_treatment", True))
+
+    next_event = dict(event)
+    next_event["id"] = uuid.uuid4().hex
+    next_event["ts"] = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    next_event["final_disease"] = confirmed_disease
+    next_event["status"] = "completed"
+    next_event["assigned_expert_id"] = actor.get("user_id") or event.get("assigned_expert_id")
+    next_event["expert_review_status"] = "COMPLETED"
+    next_event["expert_review_selected"] = True
+    next_event["expert_review_result"] = confirmed_disease
+    next_event["expert_review_supplement_symptoms"] = supplement_symptoms
+    next_event["expert_review_notes"] = review_notes
+    next_event["expert_reviewed_at"] = next_event["ts"]
+    next_event["expert_review_recommended"] = False
+    next_event["manual_review_recommended"] = False
+    next_event["manual_review_required_before_execution"] = False
+    next_event["expert_review_actions"] = []
+    next_event["confirm_message"] = "专家已确认，方案已更新"
+
+    if regenerate_treatment:
+        treatment, personalization_outputs = _build_degraded_treatment(
+            confirmed_disease,
+            {
+                "farm_scale": _safe_record(next_event.get("meta")).get("farm_scale"),
+                "pesticide_access_level": _safe_record(next_event.get("meta")).get("pesticide_access_level"),
+                "equipment": _safe_record(next_event.get("meta")).get("equipment") or [],
+                "cultivation_mode": _safe_record(next_event.get("meta")).get("cultivation_mode"),
+            },
+        )
+        if treatment is not None:
+            next_event["treatment"] = {
+                "plan": treatment.plan,
+                "prevention": treatment.prevention,
+            }
+            next_event["treatment_available"] = True
+            next_event["graph_treatment_generated"] = True
+            if isinstance(personalization_outputs, dict):
+                next_event["selected_branch"] = personalization_outputs.get("selected_branch") or next_event.get("selected_branch")
+
+    append_event(serialize_final_response(next_event))
+    return {"item": _build_expert_review_detail(next_event)}
+
+
 
 
 @app.get("/api/agents")
@@ -2729,6 +2844,81 @@ def _event_model_label(event: dict[str, Any]) -> str:
 def _event_farmer_id(event: dict[str, Any]) -> str:
     meta = _safe_record(event.get("meta"))
     return str(meta.get("farmer_id") or event.get("farmer_id") or "").strip()
+
+
+def _event_farmer_name(event: dict[str, Any]) -> str:
+    meta = _safe_record(event.get("meta"))
+    return str(meta.get("farmer_name") or meta.get("name") or event.get("farmer_name") or "").strip()
+
+
+def _event_top1(event: dict[str, Any]) -> str:
+    image_result = _safe_record(event.get("image_result"))
+    top3 = _normalize_top3_candidates(image_result.get("top3"))
+    if top3:
+        return str(top3[0][0]).strip()
+    return str(image_result.get("disease") or event.get("final_disease") or "未知").strip() or "未知"
+
+
+def _pick_latest_case_by_trace(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    latest: dict[str, dict[str, Any]] = {}
+    for event in events:
+        trace_id = str(event.get("trace_id") or "").strip()
+        if not trace_id or trace_id in latest:
+            continue
+        latest[trace_id] = event
+    return list(latest.values())
+
+
+def _build_expert_review_list_item(event: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "trace_id": event.get("trace_id"),
+        "case_id": event.get("id"),
+        "submitted_at": event.get("ts"),
+        "farmer_id": _event_farmer_id(event),
+        "farmer_name": _event_farmer_name(event),
+        "top1_disease": _event_top1(event),
+        "status": event.get("status"),
+        "expert_review_status": event.get("expert_review_status") or "NONE",
+        "assigned_expert_id": event.get("assigned_expert_id"),
+    }
+
+
+def _build_expert_review_detail(event: dict[str, Any]) -> dict[str, Any]:
+    meta = _safe_record(event.get("meta"))
+    image_result = _safe_record(event.get("image_result"))
+    image_top3 = _normalize_top3_candidates(image_result.get("top3"))
+    text_top3 = _normalize_top3_candidates(event.get("text_top3"))
+    fusion_top3 = _normalize_top3_candidates(event.get("fusion_top3"))
+    diagnosis_evidence = _safe_record(event.get("diagnosis_evidence"))
+    return {
+        **_build_expert_review_list_item(event),
+        "image_url": event.get("image_url") or (f"/uploads/{event.get('image_id')}" if event.get("image_id") else None),
+        "symptoms": event.get("symptoms") if isinstance(event.get("symptoms"), list) else [],
+        "symptoms_text": "，".join([str(item).strip() for item in _as_clean_list(event.get("symptoms")) if str(item).strip()]),
+        "crop_type": event.get("crop_type"),
+        "growth_stage": meta.get("growth_stage") or event.get("growth_stage"),
+        "base_id": meta.get("base_id") or event.get("base_id"),
+        "base_name": meta.get("base_name") or event.get("base_name"),
+        "environment": meta.get("environment"),
+        "profile_summary": {
+            "farm_scale": meta.get("farm_scale"),
+            "pesticide_access_level": meta.get("pesticide_access_level"),
+            "equipment": meta.get("equipment") if isinstance(meta.get("equipment"), list) else [],
+            "cultivation_mode": meta.get("cultivation_mode"),
+        },
+        "model_outputs": {
+            "image_top3": [[name, prob] for name, prob in image_top3],
+            "text_top3": [[name, prob] for name, prob in text_top3],
+            "fusion_top3": [[name, prob] for name, prob in fusion_top3],
+            "final_confidence": event.get("final_confidence") or diagnosis_evidence.get("final_confidence"),
+            "modality_conflict_flag": event.get("modality_conflict_flag"),
+        },
+        "expert_review_selected": event.get("expert_review_selected") is True,
+        "expert_review_result": event.get("expert_review_result"),
+        "expert_review_supplement_symptoms": event.get("expert_review_supplement_symptoms"),
+        "expert_review_notes": event.get("expert_review_notes"),
+        "expert_reviewed_at": event.get("expert_reviewed_at"),
+    }
 
 
 def _event_base_id(event: dict[str, Any]) -> str:
