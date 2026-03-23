@@ -65,6 +65,7 @@ interface DiagnosisResult {
   expert_review_recommended?: boolean;
   expert_review_selected?: boolean;
   expert_review_status?: string;
+  expert_review_actions?: string[];
   treatment_available?: boolean;
   confirm_reasons?: string[];
   fusion_mode?: string;
@@ -443,6 +444,7 @@ export function DiagnosePage() {
       expert_review_recommended: payload.expert_review_recommended === true,
       expert_review_selected: payload.expert_review_selected === true,
       expert_review_status: typeof payload.expert_review_status === 'string' ? payload.expert_review_status : undefined,
+      expert_review_actions: Array.isArray(payload.expert_review_actions) ? payload.expert_review_actions.map((item) => String(item)) : [],
       treatment_available: payload.treatment_available === true,
       confirm_reasons: getConfirmReasons(payload),
       fusion_mode: typeof payload.fusion_mode === 'string' ? payload.fusion_mode : undefined,
@@ -561,7 +563,7 @@ export function DiagnosePage() {
     const shouldTick =
       loading
       || confirmSubmitting
-      || (phase1StartTime !== null && !['completed', 'pending_expert_review', 'waiting_for_supplement'].includes(result?.status ?? ''));
+      || (phase1StartTime !== null && !['completed', 'pending_expert_review', 'waiting_for_supplement', 'waiting_for_expert_decision'].includes(result?.status ?? ''));
     if (!shouldTick) {
       setTimingNowMs(Date.now());
       return undefined;
@@ -865,7 +867,7 @@ export function DiagnosePage() {
   const shouldShowSupplementSection = result?.status === 'waiting_for_supplement' && supplementMode !== 'none';
   const expertReviewRecommended = result?.expert_review_recommended === true;
   const expertReviewPending = result?.status === 'pending_expert_review' || result?.expert_review_status === 'PENDING';
-  const shouldShowExpertReviewDecision = result?.status === 'waiting_for_supplement' && expertReviewRecommended && !expertReviewPending;
+  const shouldShowExpertReviewDecision = result?.status === 'waiting_for_expert_decision' && expertReviewRecommended && !expertReviewPending;
   const primaryRiskLabels = (() => {
     if (!result) return [] as string[];
     if (Array.isArray(result.risk_items) && result.risk_items.length > 0) {

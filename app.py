@@ -70,6 +70,40 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Tomato Diagnosis API", version="1.0.0", lifespan=lifespan)
 
+SUPPORTED_ROLES = {"USER", "EXPERT", "ADMIN"}
+
+
+def _get_request_actor(request: Request | None) -> dict[str, str]:
+    headers = request.headers if request is not None else {}
+    user_id = str(headers.get("X-User-Id") or "").strip()
+    raw_role = str(headers.get("X-User-Role") or "USER").strip().upper()
+    role = raw_role if raw_role in SUPPORTED_ROLES else "USER"
+    return {
+        "user_id": user_id,
+        "role": role,
+    }
+
+
+def _is_admin(actor: dict[str, str]) -> bool:
+    return actor.get("role") == "ADMIN"
+
+
+def _apply_farmer_scope(actor: dict[str, str], requested_farmer_id: str | None) -> str | None:
+    if _is_admin(actor):
+        return requested_farmer_id
+    actor_user_id = str(actor.get("user_id") or "").strip()
+    if not actor_user_id:
+        return requested_farmer_id
+    requested = str(requested_farmer_id or "").strip()
+    if requested and requested != actor_user_id:
+        raise HTTPException(status_code=403, detail="当前角色仅允许访问自己的数据")
+    return actor_user_id
+
+
+def _require_admin(actor: dict[str, str], message: str = "当前操作仅管理员可执行") -> None:
+    if not _is_admin(actor):
+        raise HTTPException(status_code=403, detail=message)
+
 
 class _LazyKBProxy:
     def __getattr__(self, item: str):
@@ -188,6 +222,7 @@ class DiagnoseResponse(BaseModel):
     expert_review_recommended: bool = False
     expert_review_selected: bool = False
     expert_review_status: str = "NONE"
+    expert_review_actions: list[str] = []
     confirm_message: str | None = None
     treatment_skipped_due_need_confirm: bool = False
     treatment_available: bool = False
@@ -1076,6 +1111,7 @@ def _collect_runtime_debug() -> dict[str, Any]:
 
 @app.post("/api/diagnose-image", response_model=DiagnoseResponse, response_model_exclude_none=True)
 async def diagnose_image(
+    request: Request,
     file: UploadFile = File(...),
     crop_type: str = Form("番茄"),
     symptoms: str | None = Form(None),
@@ -1088,6 +1124,8 @@ async def diagnose_image(
     debug_runtime: bool | None = Form(None),
 ) -> DiagnoseResponse:
     request_started = time.perf_counter()
+    actor = _get_request_actor(request)
+    farmer_id = _apply_farmer_scope(actor, farmer_id)
     trace_id = uuid.uuid4().hex
     emit_node_event(trace_id, node="ParseInput", status="start", message="开始解析上传请求")
     debug_mode = bool(debug_runtime) or str(os.getenv("DIAG_DEBUG_RUNTIME", "0")).lower() in {"1", "true", "yes"}
@@ -1466,6 +1504,7 @@ async def diagnose_image(
         "expert_review_recommended": expert_review_recommended,
         "expert_review_selected": expert_review_selected,
         "expert_review_status": expert_review_status,
+        "expert_review_actions": [],
         "graph_treatment_generated": graph_treatment_generated,
         "fallback_treatment_used": fallback_treatment_used,
     }
@@ -1554,6 +1593,7 @@ async def diagnose_image(
         "expert_review_recommended": expert_review_recommended,
         "expert_review_selected": expert_review_selected,
         "expert_review_status": expert_review_status,
+        "expert_review_actions": [],
         "confirm_message": None,
         "treatment_skipped_due_need_confirm": need_confirm_waiting,
         "treatment_available": treatment_available,
@@ -1574,7 +1614,7 @@ async def diagnose_image(
 
 
 @app.post("/api/diagnose-confirm")
-def diagnose_confirm(payload: dict = Body(...)) -> dict:
+def diagnose_confirm(request: Request, payload: dict = Body(...)) -> dict:
     request_started = time.perf_counter()
     trace_id = payload.get("trace_id")
     previous_trace_id = payload.get("previous_trace_id")
@@ -1587,6 +1627,9 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
     expert_review_decision = _normalize_expert_review_decision(payload.get("expert_review_decision"))
     farmer_id = payload.get("farmer_id")
     base_id = payload.get("base_id")
+
+    actor = _get_request_actor(request)
+    farmer_id = _apply_farmer_scope(actor, str(farmer_id) if farmer_id is not None else None)
 
     if not image_id:
         raise HTTPException(status_code=400, detail="image_id 不能为空")
@@ -1772,6 +1815,7 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
     expert_review_recommended = False
     expert_review_selected = False
     expert_review_status = "NONE"
+    expert_review_actions: list[str] = []
     if terminal_action == "await_user_confirmation":
         manual_review_recommended = False
         need_confirm = True
@@ -1779,6 +1823,7 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
     elif terminal_action == "manual_review":
         expert_review_recommended = True
         manual_review_recommended = True
+        expert_review_actions = ["use_current_result", "request_expert_review"]
         need_confirm = False
         if expert_review_decision == "decline":
             state = _ensure_follow_up_plan(state)
@@ -1809,7 +1854,7 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
         else:
             expert_review_selected = False
             expert_review_status = "NONE"
-            confirm_status = "waiting_for_supplement"
+            confirm_status = "waiting_for_expert_decision"
             manual_review_required_before_execution = False
     else:
         if choice and choice != "other":
@@ -1826,7 +1871,7 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
         state["verification_risk_level"] = None
         state["verification_issues"] = []
         state["verification_summary"] = None
-    elif confirm_status == "waiting_for_supplement" and terminal_action == "manual_review":
+    elif confirm_status in {"waiting_for_supplement", "waiting_for_expert_decision"} and terminal_action == "manual_review":
         state["treatment_plan"] = None
         state["prevention_advice"] = None
         state["verification_result"] = None
@@ -1849,7 +1894,7 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
     confirm_message = None
     if confirm_status == "pending_expert_review":
         confirm_message = "已进入待专家复核状态，后续将由专家确认病害并补充最终方案。"
-    elif confirm_status == "waiting_for_supplement" and expert_review_recommended:
+    elif confirm_status == "waiting_for_expert_decision" and expert_review_recommended:
         confirm_message = "多次补充后仍存在不确定性。你可以使用当前结果结束，或转入待专家复核状态。"
     elif confirm_status == "waiting_for_supplement":
         confirm_message = "置信度较低，建议补充症状、确认候选病害或重新拍摄。"
@@ -1924,6 +1969,7 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
         "expert_review_recommended": expert_review_recommended,
         "expert_review_selected": expert_review_selected,
         "expert_review_status": expert_review_status,
+        "expert_review_actions": expert_review_actions,
         "status": confirm_status,
         "treatment_available": bool(state.get("treatment_plan")) and confirm_status != "pending_expert_review",
         "verification_available": (state.get("verification_result") is not None) and confirm_status != "pending_expert_review",
@@ -2001,6 +2047,7 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
         "expert_review_recommended": expert_review_recommended,
         "expert_review_selected": expert_review_selected,
         "expert_review_status": expert_review_status,
+        "expert_review_actions": expert_review_actions,
         "status": confirm_status,
         "confirm_message": confirm_message,
         "treatment": None if confirm_status == "pending_expert_review" else {
@@ -2039,7 +2086,7 @@ def diagnose_confirm(payload: dict = Body(...)) -> dict:
         "verification_available": (state.get("verification_result") is not None) and confirm_status != "pending_expert_review",
         "graph_treatment_generated": bool(state.get("treatment_plan")),
         "fallback_treatment_used": bool(previous_case_event.get("fallback_treatment_used")) if isinstance(previous_case_event, dict) else False,
-        "treatment_skipped_due_need_confirm": bool(confirm_status == "waiting_for_supplement"),
+        "treatment_skipped_due_need_confirm": bool(confirm_status in {"waiting_for_supplement", "waiting_for_expert_decision"}),
         "confirm_round_parent_trace_id": trace_id,
         "meta": response_meta,
         "events": events,
@@ -2055,9 +2102,13 @@ def get_models() -> dict[str, object]:
 
 
 @app.get("/api/profiles")
-def list_profiles() -> dict[str, list[dict[str, str | None]]]:
+def list_profiles(request: Request) -> dict[str, list[dict[str, str | None]]]:
+    actor = _get_request_actor(request)
+    scoped_farmer_id = _apply_farmer_scope(actor, None)
     profiles = []
     for farmer_id in list_profile_ids():
+        if scoped_farmer_id and farmer_id != scoped_farmer_id:
+            continue
         path = get_profile_path(farmer_id)
         profile = load_profile(farmer_id)
         profiles.append({
@@ -2096,11 +2147,14 @@ def _collect_existing_base_ids(exclude_farmer_id: str | None = None) -> dict[str
 
 
 @app.get("/api/profiles/base-ids")
-def list_all_base_ids() -> dict[str, list[dict[str, str]]]:
-    items = [
-        {"base_id": base_id, "farmer_id": owner}
-        for base_id, owner in sorted(_collect_existing_base_ids().items(), key=lambda item: (item[0], item[1]))
-    ]
+def list_all_base_ids(request: Request) -> dict[str, list[dict[str, str]]]:
+    actor = _get_request_actor(request)
+    scoped_farmer_id = _apply_farmer_scope(actor, None)
+    items = []
+    for base_id, owner in sorted(_collect_existing_base_ids().items(), key=lambda item: (item[0], item[1])):
+        if scoped_farmer_id and owner != scoped_farmer_id:
+            continue
+        items.append({"base_id": base_id, "farmer_id": owner})
     return {"items": items}
 
 
@@ -2180,10 +2234,16 @@ def _generate_farmer_id() -> str | None:
 
 
 @app.post("/api/profiles")
-def create_profile(payload: dict = Body(...)) -> dict[str, bool | str]:
+def create_profile(request: Request, payload: dict = Body(...)) -> dict[str, bool | str]:
+    actor = _get_request_actor(request)
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="档案内容非法")
     farmer_id = payload.get("farmer_id")
+    actor_user_id = str(actor.get("user_id") or "").strip()
+    if not _is_admin(actor) and actor_user_id:
+        if farmer_id and str(farmer_id).strip() != actor_user_id:
+            raise HTTPException(status_code=403, detail="当前角色仅允许创建自己的档案")
+        farmer_id = actor_user_id
     if not farmer_id:
         farmer_id = _generate_farmer_id()
         if not farmer_id:
@@ -2219,7 +2279,11 @@ def create_profile(payload: dict = Body(...)) -> dict[str, bool | str]:
 
 
 @app.get("/api/profiles/{farmer_id}")
-def get_profile(farmer_id: str) -> dict:
+def get_profile(farmer_id: str, request: Request) -> dict:
+    actor = _get_request_actor(request)
+    scoped_farmer_id = _apply_farmer_scope(actor, farmer_id)
+    if scoped_farmer_id and scoped_farmer_id != farmer_id:
+        raise HTTPException(status_code=403, detail="当前角色仅允许访问自己的档案")
     profile = load_profile(farmer_id)
     if profile is None:
         raise HTTPException(status_code=404, detail="档案不存在")
@@ -2227,7 +2291,11 @@ def get_profile(farmer_id: str) -> dict:
 
 
 @app.post("/api/profiles/{farmer_id}")
-def save_profile_route(farmer_id: str, payload: dict = Body(...)) -> dict[str, bool]:
+def save_profile_route(farmer_id: str, request: Request, payload: dict = Body(...)) -> dict[str, bool]:
+    actor = _get_request_actor(request)
+    scoped_farmer_id = _apply_farmer_scope(actor, farmer_id)
+    if scoped_farmer_id and scoped_farmer_id != farmer_id:
+        raise HTTPException(status_code=403, detail="当前角色仅允许修改自己的档案")
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="档案内容非法")
     try:
@@ -2242,7 +2310,11 @@ def save_profile_route(farmer_id: str, payload: dict = Body(...)) -> dict[str, b
 
 
 @app.delete("/api/profiles/{farmer_id}")
-def delete_profile(farmer_id: str) -> dict[str, bool]:
+def delete_profile(farmer_id: str, request: Request) -> dict[str, bool]:
+    actor = _get_request_actor(request)
+    scoped_farmer_id = _apply_farmer_scope(actor, farmer_id)
+    if scoped_farmer_id and scoped_farmer_id != farmer_id:
+        raise HTTPException(status_code=403, detail="当前角色仅允许删除自己的档案")
     if load_profile(farmer_id) is None:
         raise HTTPException(status_code=404, detail="档案不存在")
     try:
@@ -2476,14 +2548,30 @@ def weather_summary(lat: float, lon: float) -> dict[str, Any]:
 
 
 @app.get("/api/events")
-def get_events(start: str | None = None, end: str | None = None, limit: int = 50) -> dict[str, list[dict[str, Any]]]:
+def get_events(
+    request: Request,
+    start: str | None = None,
+    end: str | None = None,
+    limit: int = 50,
+    farmer_id: str | None = None,
+) -> dict[str, list[dict[str, Any]]]:
+    actor = _get_request_actor(request)
+    scoped_farmer_id = _apply_farmer_scope(actor, farmer_id)
     if start or end:
         if (start and not validate_date_str(start)) or (end and not validate_date_str(end)):
             raise HTTPException(status_code=400, detail="日期格式应为 YYYY-MM-DD")
         events = list_events_range(start, end, limit)
-        return {"events": [_serialize_event_dto(event, inject_trace_steps=True) for event in events]}
+        filtered_events = [
+            event for event in events
+            if not scoped_farmer_id or _event_farmer_id(event) == scoped_farmer_id
+        ]
+        return {"events": [_serialize_event_dto(event, inject_trace_steps=True) for event in filtered_events]}
     events = list_events(limit)
-    return {"events": [_serialize_event_dto(event, inject_trace_steps=True) for event in events]}
+    filtered_events = [
+        event for event in events
+        if not scoped_farmer_id or _event_farmer_id(event) == scoped_farmer_id
+    ]
+    return {"events": [_serialize_event_dto(event, inject_trace_steps=True) for event in filtered_events]}
 
 
 
@@ -2837,8 +2925,14 @@ def _load_filtered_events(
     ]
 
 
+def _scoped_farmer_query(request: Request, farmer_id: str | None) -> str | None:
+    actor = _get_request_actor(request)
+    return _apply_farmer_scope(actor, farmer_id)
+
+
 @app.get("/api/stats/disease")
 def get_disease_stats(
+    request: Request,
     start: str | None = None,
     end: str | None = None,
     days: int = 30,
@@ -2849,6 +2943,7 @@ def get_disease_stats(
     selected_branch: str | None = None,
     personalization_status: str | None = None,
 ) -> dict[str, Any]:
+    farmer_id = _scoped_farmer_query(request, farmer_id)
     if start or end:
         if (start and not validate_date_str(start)) or (end and not validate_date_str(end)):
             raise HTTPException(status_code=400, detail="日期格式应为 YYYY-MM-DD")
@@ -2867,6 +2962,7 @@ def get_disease_stats(
 
 @app.get("/api/stats/timeseries")
 def get_timeseries(
+    request: Request,
     start: str | None = None,
     end: str | None = None,
     days: int = 30,
@@ -2877,6 +2973,7 @@ def get_timeseries(
     selected_branch: str | None = None,
     personalization_status: str | None = None,
 ) -> dict[str, Any]:
+    farmer_id = _scoped_farmer_query(request, farmer_id)
     if start or end:
         if (start and not validate_date_str(start)) or (end and not validate_date_str(end)):
             raise HTTPException(status_code=400, detail="日期格式应为 YYYY-MM-DD")
@@ -2899,10 +2996,22 @@ def get_timeseries(
 
 @app.get("/api/stats/geo")
 def get_geo_stats(
+    request: Request,
     start: str | None = None,
     end: str | None = None,
     days: int = 30,
 ) -> dict[str, Any]:
+    scoped_farmer_id = _scoped_farmer_query(request, None)
+    if scoped_farmer_id:
+        events = _load_filtered_events(start, end, scoped_farmer_id, None, None, None, None, None)
+        points = []
+        for event in events:
+            meta = _safe_record(event.get("meta"))
+            lat = meta.get("lat")
+            lon = meta.get("lon")
+            if isinstance(lat, (int, float)) and isinstance(lon, (int, float)):
+                points.append({"lat": float(lat), "lon": float(lon), "count": 1})
+        return {"items": points}
     if start or end:
         if (start and not validate_date_str(start)) or (end and not validate_date_str(end)):
             raise HTTPException(status_code=400, detail="日期格式应为 YYYY-MM-DD")
@@ -2913,6 +3022,7 @@ def get_geo_stats(
 
 @app.get("/api/stats/models")
 def get_model_stats(
+    request: Request,
     start: str | None = None,
     end: str | None = None,
     farmer_id: str | None = None,
@@ -2922,6 +3032,7 @@ def get_model_stats(
     selected_branch: str | None = None,
     personalization_status: str | None = None,
 ) -> dict[str, Any]:
+    farmer_id = _scoped_farmer_query(request, farmer_id)
     if (start and not validate_date_str(start)) or (end and not validate_date_str(end)):
         raise HTTPException(status_code=400, detail="日期格式应为 YYYY-MM-DD")
     events = _load_filtered_events(start, end, farmer_id, base_id, disease, model_id, selected_branch, personalization_status)
@@ -2967,6 +3078,7 @@ def get_model_stats(
 
 @app.get("/api/stats/summary")
 def get_stats_summary(
+    request: Request,
     start: str | None = None,
     end: str | None = None,
     farmer_id: str | None = None,
@@ -2976,6 +3088,7 @@ def get_stats_summary(
     selected_branch: str | None = None,
     personalization_status: str | None = None,
 ) -> dict[str, float | int]:
+    farmer_id = _scoped_farmer_query(request, farmer_id)
     if (start and not validate_date_str(start)) or (end and not validate_date_str(end)):
         raise HTTPException(status_code=400, detail="日期格式应为 YYYY-MM-DD")
 
@@ -3028,6 +3141,7 @@ def get_stats_summary(
 
 @app.get("/api/stats/filter-reasons")
 def get_filter_reasons_stats(
+    request: Request,
     start: str | None = None,
     end: str | None = None,
     farmer_id: str | None = None,
@@ -3037,6 +3151,7 @@ def get_filter_reasons_stats(
     selected_branch: str | None = None,
     personalization_status: str | None = None,
 ) -> dict[str, Any]:
+    farmer_id = _scoped_farmer_query(request, farmer_id)
     if (start and not validate_date_str(start)) or (end and not validate_date_str(end)):
         raise HTTPException(status_code=400, detail="日期格式应为 YYYY-MM-DD")
     events = _load_filtered_events(start, end, farmer_id, base_id, disease, model_id, selected_branch, personalization_status)
@@ -3050,6 +3165,7 @@ def get_filter_reasons_stats(
 
 @app.get("/api/stats/by-farmer")
 def get_stats_by_farmer(
+    request: Request,
     start: str | None = None,
     end: str | None = None,
     base_id: str | None = None,
@@ -3058,9 +3174,10 @@ def get_stats_by_farmer(
     selected_branch: str | None = None,
     personalization_status: str | None = None,
 ) -> dict[str, Any]:
+    scoped_farmer_id = _scoped_farmer_query(request, None)
     if (start and not validate_date_str(start)) or (end and not validate_date_str(end)):
         raise HTTPException(status_code=400, detail="日期格式应为 YYYY-MM-DD")
-    events = _load_filtered_events(start, end, None, base_id, disease, model_id, selected_branch, personalization_status)
+    events = _load_filtered_events(start, end, scoped_farmer_id, base_id, disease, model_id, selected_branch, personalization_status)
     grouped: dict[str, dict[str, Any]] = {}
     for event in events:
         farmer_id = _event_farmer_id(event) or "未绑定农户"
@@ -3091,6 +3208,7 @@ def get_stats_by_farmer(
 
 @app.get("/api/stats/by-base")
 def get_stats_by_base(
+    request: Request,
     start: str | None = None,
     end: str | None = None,
     farmer_id: str | None = None,
@@ -3098,6 +3216,7 @@ def get_stats_by_base(
     selected_branch: str | None = None,
     personalization_status: str | None = None,
 ) -> dict[str, Any]:
+    farmer_id = _scoped_farmer_query(request, farmer_id)
     if (start and not validate_date_str(start)) or (end and not validate_date_str(end)):
         raise HTTPException(status_code=400, detail="日期格式应为 YYYY-MM-DD")
     events = _load_filtered_events(start, end, farmer_id, None, None, model_id, selected_branch, personalization_status)
@@ -3141,6 +3260,11 @@ def get_profiles_page() -> Response:
     return serve_frontend_index()
 
 
+@app.get("/cases")
+def get_cases_page() -> Response:
+    return serve_frontend_index()
+
+
 @app.get("/kb")
 def get_kb_page() -> Response:
     return serve_frontend_index()
@@ -3148,6 +3272,18 @@ def get_kb_page() -> Response:
 
 @app.get("/kb/{name:path}")
 def get_kb_detail_page(name: str) -> Response:
+    if not name.strip():
+        raise HTTPException(status_code=404, detail="Not Found")
+    return serve_frontend_index()
+
+
+@app.get("/expert-review")
+def get_expert_review_page() -> Response:
+    return serve_frontend_index()
+
+
+@app.get("/admin/{name:path}")
+def get_admin_page(name: str) -> Response:
     if not name.strip():
         raise HTTPException(status_code=404, detail="Not Found")
     return serve_frontend_index()
@@ -3177,7 +3313,8 @@ def get_kb_disease_detail(name: str) -> dict:
 
 
 @app.post("/api/kb/diseases")
-def create_kb_disease(payload: dict = Body(...)) -> dict[str, bool]:
+def create_kb_disease(request: Request, payload: dict = Body(...)) -> dict[str, bool]:
+    _require_admin(_get_request_actor(request))
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="参数非法")
     name = (payload.get("name") or "").strip()
@@ -3192,7 +3329,8 @@ def create_kb_disease(payload: dict = Body(...)) -> dict[str, bool]:
 
 
 @app.put("/api/kb/diseases/{name}")
-def update_kb_disease(name: str, payload: dict = Body(...)) -> dict[str, bool]:
+def update_kb_disease(name: str, request: Request, payload: dict = Body(...)) -> dict[str, bool]:
+    _require_admin(_get_request_actor(request))
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="参数非法")
     description = (payload.get("description") or "").strip()
@@ -3206,7 +3344,8 @@ def update_kb_disease(name: str, payload: dict = Body(...)) -> dict[str, bool]:
 
 
 @app.delete("/api/kb/diseases")
-def delete_kb_diseases(payload: dict = Body(...)) -> dict:
+def delete_kb_diseases(request: Request, payload: dict = Body(...)) -> dict:
+    _require_admin(_get_request_actor(request))
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="参数非法")
     names = payload.get("names")
@@ -3222,7 +3361,8 @@ def list_kb_treatments() -> dict:
 
 
 @app.post("/api/kb/treatments")
-def create_kb_treatments(payload: dict = Body(...)) -> dict[str, bool]:
+def create_kb_treatments(request: Request, payload: dict = Body(...)) -> dict[str, bool]:
+    _require_admin(_get_request_actor(request))
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="参数非法")
     disease = (payload.get("disease") or "").strip()
@@ -3240,7 +3380,8 @@ def create_kb_treatments(payload: dict = Body(...)) -> dict[str, bool]:
 
 
 @app.put("/api/kb/treatments/{disease}")
-def update_kb_treatments(disease: str, payload: dict = Body(...)) -> dict[str, bool]:
+def update_kb_treatments(disease: str, request: Request, payload: dict = Body(...)) -> dict[str, bool]:
+    _require_admin(_get_request_actor(request))
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="参数非法")
     treatment = (payload.get("treatment") or "").strip()
@@ -3257,7 +3398,8 @@ def update_kb_treatments(disease: str, payload: dict = Body(...)) -> dict[str, b
 
 
 @app.delete("/api/kb/treatments")
-def delete_kb_treatments(payload: dict = Body(...)) -> dict:
+def delete_kb_treatments(request: Request, payload: dict = Body(...)) -> dict:
+    _require_admin(_get_request_actor(request))
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="参数非法")
     diseases = payload.get("diseases")
@@ -3273,7 +3415,8 @@ def list_kb_rules(crop_type: str | None = None) -> dict:
 
 
 @app.post("/api/kb/rules")
-def create_kb_rule(payload: dict = Body(...)) -> dict[str, bool]:
+def create_kb_rule(request: Request, payload: dict = Body(...)) -> dict[str, bool]:
+    _require_admin(_get_request_actor(request))
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="参数非法")
     crop_type = (payload.get("crop_type") or "").strip() or "番茄"
@@ -3296,7 +3439,8 @@ def create_kb_rule(payload: dict = Body(...)) -> dict[str, bool]:
 
 
 @app.delete("/api/kb/rules")
-def delete_kb_rules(payload: dict = Body(...)) -> dict:
+def delete_kb_rules(request: Request, payload: dict = Body(...)) -> dict:
+    _require_admin(_get_request_actor(request))
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="参数非法")
     rule_ids = payload.get("rule_ids")
@@ -3307,7 +3451,8 @@ def delete_kb_rules(payload: dict = Body(...)) -> dict:
 
 
 @app.put("/api/kb/rules/{rule_id}")
-def update_kb_rule(rule_id: str, payload: dict = Body(...)) -> dict[str, bool]:
+def update_kb_rule(rule_id: str, request: Request, payload: dict = Body(...)) -> dict[str, bool]:
+    _require_admin(_get_request_actor(request))
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="参数非法")
     crop_type = (payload.get("crop_type") or "").strip() or "番茄"
@@ -3336,7 +3481,8 @@ def list_kb_symptom_map() -> dict:
 
 
 @app.post("/api/kb/symptom-map")
-def create_kb_symptom_map(payload: dict = Body(...)) -> dict[str, bool]:
+def create_kb_symptom_map(request: Request, payload: dict = Body(...)) -> dict[str, bool]:
+    _require_admin(_get_request_actor(request))
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="参数非法")
     symptom = (payload.get("symptom") or "").strip()
@@ -3354,7 +3500,8 @@ def create_kb_symptom_map(payload: dict = Body(...)) -> dict[str, bool]:
 
 
 @app.put("/api/kb/symptom-map/{symptom}")
-def update_kb_symptom_map(symptom: str, payload: dict = Body(...)) -> dict[str, bool]:
+def update_kb_symptom_map(symptom: str, request: Request, payload: dict = Body(...)) -> dict[str, bool]:
+    _require_admin(_get_request_actor(request))
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="参数非法")
     diseases = payload.get("diseases")
@@ -3371,7 +3518,8 @@ def update_kb_symptom_map(symptom: str, payload: dict = Body(...)) -> dict[str, 
 
 
 @app.delete("/api/kb/symptom-map")
-def delete_kb_symptom_map(payload: dict = Body(...)) -> dict:
+def delete_kb_symptom_map(request: Request, payload: dict = Body(...)) -> dict:
+    _require_admin(_get_request_actor(request))
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="参数非法")
     symptoms = payload.get("symptoms")
