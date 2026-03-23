@@ -6,7 +6,6 @@ import { DashboardPage } from './pages/DashboardPage';
 import { ProfilesPage } from './pages/ProfilesPage';
 import { KBPage } from './pages/KBPage';
 import { LoginPage } from './pages/LoginPage';
-import { SimpleRolePage } from './pages/SimpleRolePage';
 import { ExpertReviewPage } from './pages/ExpertReviewPage';
 import { AdminPage } from './pages/AdminPage';
 import {
@@ -157,8 +156,6 @@ function App() {
     switch (currentPage) {
       case 'diagnose':
         return <DiagnosePage />;
-      case 'cases':
-        return <SimpleRolePage title="我的病例" description="用于论文演示：可在此扩展为病例列表/复诊入口（当前为轻量占位页）。" />;
       case 'dashboard':
         return <DashboardPage />;
       case 'profiles':

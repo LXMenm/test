@@ -29,6 +29,8 @@ interface DiagnosisEvent {
   selectedBranch: string;
   selectedBranchRaw: string;
   confirmRound: boolean;
+  status: string;
+  expertReviewStatus: string;
   needConfirm: boolean;
   personalizationApplied: boolean;
   filtered: boolean;
@@ -703,6 +705,8 @@ function normalizeEvent(eventLike: unknown, index: number): DiagnosisEvent {
     selectedBranchRaw: selectedBranchRaw ?? '',
     selectedBranch: getSelectedBranchLabel(selectedBranchRaw),
     confirmRound: event.confirm_round === true,
+    status: readableText(event.status, ''),
+    expertReviewStatus: readableText(event.expert_review_status, ''),
     needConfirm: event.need_confirm === true,
     personalizationApplied: event.personalization_applied === true || meta?.personalization_applied === true,
     filtered: event.filtered === true || meta?.filtered === true,
@@ -1753,6 +1757,12 @@ export function DashboardPage() {
                           {event.disease}
                         </button>
                         <div className="mt-2 flex flex-wrap gap-1">
+                          {(event.status === 'pending_expert_review' || event.expertReviewStatus === 'PENDING') && (
+                            <Badge className="text-[10px] bg-orange-400 text-black">等待专家复核</Badge>
+                          )}
+                          {event.expertReviewStatus === 'COMPLETED' && (
+                            <Badge className="text-[10px] bg-emerald-400 text-black">已专家复核</Badge>
+                          )}
                           {event.personalizationApplied && <Badge className="text-[10px] bg-[#c8f7c5] text-black">个性化</Badge>}
                           {event.filtered && <Badge className="text-[10px] bg-yellow-400 text-black">已过滤</Badge>}
                           {event.confirmRound && <Badge className="text-[10px] bg-blue-400 text-black">确认轮</Badge>}

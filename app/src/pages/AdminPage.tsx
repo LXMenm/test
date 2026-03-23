@@ -51,6 +51,11 @@ interface ReviewDetail extends ReviewItem {
   expert_review_notes?: string;
 }
 
+interface ExpertOption {
+  user_id: string;
+  display_name?: string;
+}
+
 const DEFAULT_CONFIG: AdminConfig = {
   workflow: {
     confirm_round_limit: 1,
@@ -100,6 +105,7 @@ export function AdminPage({ pageType }: { pageType: 'system' | 'review' }) {
   const [flowNote, setFlowNote] = useState('');
   const [reviewTip, setReviewTip] = useState<string>('');
   const [updatingReview, setUpdatingReview] = useState(false);
+  const [expertOptions, setExpertOptions] = useState<ExpertOption[]>([]);
 
   const loadConfig = async () => {
     setConfigLoading(true);
@@ -178,6 +184,19 @@ export function AdminPage({ pageType }: { pageType: 'system' | 'review' }) {
     }
   };
 
+  const loadExperts = async () => {
+    try {
+      const resp = await fetch('/api/admin/accounts/experts');
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(String(data?.detail || '加载专家列表失败'));
+      const next = Array.isArray(data?.items) ? (data.items as ExpertOption[]) : [];
+      setExpertOptions(next);
+    } catch (error) {
+      console.error(error);
+      setExpertOptions([]);
+    }
+  };
+
   const loadReviewDetail = async (traceId: string) => {
     setReviewTip('');
     try {
@@ -251,6 +270,7 @@ export function AdminPage({ pageType }: { pageType: 'system' | 'review' }) {
   useEffect(() => {
     if (pageType === 'review') {
       void loadReviews();
+      void loadExperts();
     }
   }, [pageType, statusFilter]);
 
@@ -350,8 +370,8 @@ export function AdminPage({ pageType }: { pageType: 'system' | 'review' }) {
           <Button variant="outline" size="sm" onClick={() => { void loadReviews(); }}><RefreshCcw className="w-4 h-4 mr-1" />刷新列表</Button>
         </div>
       </CardHeader>
-      <CardContent className="grid lg:grid-cols-2 gap-4">
-        <div className="space-y-2">
+      <CardContent className="grid lg:grid-cols-2 gap-4 h-[70vh] min-h-[560px]">
+        <div className="space-y-2 overflow-y-auto pr-1 dashboard-scrollbar">
           {reviewLoading ? <p className="text-sm text-white/70 flex items-center gap-2"><Loader2 className="w-4 h-4 animate-spin" />正在加载...</p> : null}
           {!reviewLoading && reviewItems.length === 0 ? <p className="text-sm text-white/60">当前筛选下暂无病例</p> : null}
           {reviewItems.map((item) => (
@@ -366,7 +386,7 @@ export function AdminPage({ pageType }: { pageType: 'system' | 'review' }) {
           ))}
         </div>
 
-        <div className="rounded-xl border border-white/10 p-3 bg-white/5 text-sm text-white space-y-3">
+        <div className="rounded-xl border border-white/10 p-3 bg-white/5 text-sm text-white space-y-3 overflow-y-auto dashboard-scrollbar">
           {!selected ? <p className="text-white/60">请选择左侧病例查看详情</p> : (
             <>
               <p><span className="text-white/50">病例追踪号：</span>{selected.trace_id}</p>
@@ -378,7 +398,18 @@ export function AdminPage({ pageType }: { pageType: 'system' | 'review' }) {
 
               <div>
                 <Label>分配专家账号</Label>
-                <Input value={assignExpertId} onChange={(e) => setAssignExpertId(e.target.value)} className="bg-white/5 border-white/20 text-white" placeholder="例如 EXPERT_001" />
+                <Select value={assignExpertId} onValueChange={setAssignExpertId}>
+                  <SelectTrigger className="bg-white/5 border-white/20 text-white">
+                    <SelectValue placeholder="请选择专家账号" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {expertOptions.map((item) => (
+                      <SelectItem key={item.user_id} value={item.user_id}>
+                        {item.user_id}{item.display_name ? ` · ${item.display_name}` : ''}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
 
               <div>

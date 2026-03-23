@@ -44,7 +44,6 @@ export function clearAuthUser(): void {
 
 export type AppPage =
   | 'diagnose'
-  | 'cases'
   | 'dashboard'
   | 'profiles'
   | 'kb'
@@ -54,7 +53,6 @@ export type AppPage =
 
 export const PAGE_TO_PATH: Record<AppPage, string> = {
   diagnose: '/',
-  cases: '/cases',
   dashboard: '/dashboard',
   profiles: '/profiles',
   kb: '/kb',
@@ -64,15 +62,16 @@ export const PAGE_TO_PATH: Record<AppPage, string> = {
 };
 
 const LEGACY_PATH_REDIRECT_MAP: Record<string, AppPage> = {
+  '/cases': 'dashboard',
   '/admin/global-dashboard': 'dashboard',
   '/admin/profiles-management': 'profiles',
   '/admin/kb-management': 'kb',
 };
 
 const ROLE_PAGES: Record<UserRole, AppPage[]> = {
-  USER: ['diagnose', 'cases', 'dashboard', 'profiles', 'kb'],
-  EXPERT: ['diagnose', 'cases', 'dashboard', 'profiles', 'kb', 'expert_review'],
-  ADMIN: ['diagnose', 'cases', 'dashboard', 'profiles', 'kb', 'expert_review', 'system_config', 'review_management'],
+  USER: ['diagnose', 'dashboard', 'profiles', 'kb'],
+  EXPERT: ['diagnose', 'dashboard', 'profiles', 'kb', 'expert_review'],
+  ADMIN: ['diagnose', 'dashboard', 'profiles', 'kb', 'expert_review', 'system_config', 'review_management'],
 };
 
 export function getAllowedPages(role: UserRole): AppPage[] {
