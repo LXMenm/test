@@ -2615,6 +2615,58 @@ def weather_summary(lat: float, lon: float) -> dict[str, Any]:
     }
 
 
+def _refresh_base_weather(profile: FarmerProfile, base_id: str) -> dict[str, Any]:
+    base = profile.bases.get(base_id)
+    if base is None:
+        raise HTTPException(status_code=404, detail="基地不存在")
+    if base.latitude is None or base.longitude is None:
+        raise HTTPException(status_code=400, detail="基地缺少经纬度，无法刷新天气")
+
+    weather = weather_summary(lat=float(base.latitude), lon=float(base.longitude))
+    refreshed_at = _utc_now_iso()
+    summary = str(weather.get("summary") or "").strip()
+    if summary:
+        base.weather_snapshot = summary
+        base.environment = summary
+    base.relative_humidity_2m = weather.get("relative_humidity_2m")
+    base.precipitation = weather.get("precipitation")
+    base.rain_risk = weather.get("rain_risk")
+    base.weather_temperature_2m = weather.get("temperature_2m")
+    base.weather_wind_speed_10m = weather.get("wind_speed_10m")
+    base.last_weather_refresh_at = refreshed_at
+    profile.bases[base_id] = base
+    profile.updated_at = refreshed_at
+    return {
+        "base_id": base_id,
+        "weather_snapshot": base.weather_snapshot,
+        "relative_humidity_2m": base.relative_humidity_2m,
+        "precipitation": base.precipitation,
+        "rain_risk": base.rain_risk,
+        "temperature_2m": weather.get("temperature_2m"),
+        "wind_speed_10m": weather.get("wind_speed_10m"),
+        "weather_desc": weather.get("weather_desc"),
+        "last_weather_refresh_at": refreshed_at,
+    }
+
+
+@app.post("/api/profiles/{farmer_id}/bases/{base_id}/weather/refresh")
+def refresh_base_weather(farmer_id: str, base_id: str, request: Request) -> dict[str, Any]:
+    actor = _get_request_actor(request)
+    scoped_farmer_id = _apply_farmer_scope(actor, farmer_id)
+    if scoped_farmer_id and scoped_farmer_id != farmer_id:
+        raise HTTPException(status_code=403, detail="当前角色仅允许操作自己的档案")
+    profile = load_profile(farmer_id)
+    if profile is None:
+        raise HTTPException(status_code=404, detail="档案不存在")
+
+    payload = _refresh_base_weather(profile, base_id)
+    try:
+        persist_profile(profile)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"天气刷新后保存档案失败: {exc}") from exc
+    return {"ok": True, **payload}
+
+
 
 @app.get("/api/events")
 def get_events(
