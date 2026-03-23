@@ -395,3 +395,20 @@ class KBSymptomCandidateDiseaseORM(TimestampMixin, Base):
         UniqueConstraint("symptom_key", "disease_name", name="uq_kb_symptom_candidate_disease"),
         Index("idx_kb_symptom_candidate_diseases_symptom_rank", "symptom_key", "rank_no"),
     )
+
+
+class UserAccountORM(TimestampMixin, Base):
+    __tablename__ = "user_accounts"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(String(64), nullable=False, unique=True, index=True)
+    username = Column(String(64), nullable=False, unique=True, index=True)
+    display_name = Column(String(128), nullable=False)
+    role = Column(String(16), nullable=False, index=True)
+    password = Column(String(255), nullable=False, default="")
+    linked_farmer_id = Column(String(64), nullable=True, index=True)
+    status = Column(String(16), nullable=False, default="ACTIVE", index=True)
+
+    __table_args__ = (
+        Index("idx_user_accounts_role_status", "role", "status"),
+    )

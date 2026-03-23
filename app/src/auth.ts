@@ -4,6 +4,7 @@ export interface AuthUser {
   userId: string;
   displayName: string;
   role: UserRole;
+  linkedFarmerId?: string | null;
 }
 
 const AUTH_STORAGE_KEY = 'tomato_auth_user_v1';
@@ -23,8 +24,9 @@ export function loadAuthUser(): AuthUser | null {
     const userId = String(parsed.userId || '').trim();
     const displayName = String(parsed.displayName || '').trim();
     const role = normalizeRole(parsed.role);
+    const linkedFarmerId = typeof parsed.linkedFarmerId === 'string' ? parsed.linkedFarmerId : null;
     if (!userId || !displayName) return null;
-    return { userId, displayName, role };
+    return { userId, displayName, role, linkedFarmerId };
   } catch {
     return null;
   }
@@ -94,6 +96,9 @@ export function withAuthHeaders(init: RequestInit | undefined, authUser: AuthUse
   const headers = new Headers(init?.headers || {});
   headers.set('X-User-Id', authUser.userId);
   headers.set('X-User-Role', authUser.role);
+  if (authUser.linkedFarmerId) {
+    headers.set('X-Linked-Farmer-Id', authUser.linkedFarmerId);
+  }
   return {
     ...(init || {}),
     headers,

@@ -10,6 +10,7 @@ import { cn } from '@/lib/utils';
 import { getCultivationModeLabel, getEquipmentLabel, getFarmScaleLabel, getGrowthStageLabel, getPesticideAccessLevelLabel, getRiskPreferenceLabel } from '@/lib/profileLabels';
 import { getModelLabel, resolveModelOptions } from '@/lib/modelOptions';
 import { fetchTraceEvents } from '@/lib/traceClient';
+import { loadAuthUser } from '@/auth';
 
 interface DiseaseStat {
   disease: string;
@@ -763,6 +764,9 @@ function normalizeEvent(eventLike: unknown, index: number): DiagnosisEvent {
 }
 
 export function DashboardPage() {
+  const authUser = useMemo(() => loadAuthUser(), []);
+  const canViewAllFarmers = authUser?.role === 'ADMIN';
+  const scopedFarmerId = canViewAllFarmers ? 'ALL' : (authUser?.linkedFarmerId || authUser?.userId || 'ALL');
   const [presetKey, setPresetKey] = useState<'7d' | '30d' | '90d'>('7d');
   const [allEvents, setAllEvents] = useState<DiagnosisEvent[]>([]);
   const [selectedEvent, setSelectedEvent] = useState<DiagnosisEvent | null>(null);
@@ -790,7 +794,7 @@ export function DashboardPage() {
   const [farmerStats, setFarmerStats] = useState<FarmerStat[]>([]);
   const [baseStats, setBaseStats] = useState<BaseStat[]>([]);
   const [baseTopDiseases, setBaseTopDiseases] = useState<string[]>([]);
-  const [selectedFarmerId, setSelectedFarmerId] = useState('ALL');
+  const [selectedFarmerId, setSelectedFarmerId] = useState(scopedFarmerId);
   const [selectedBaseId, setSelectedBaseId] = useState('ALL');
   const [farmerBases, setFarmerBases] = useState<Array<{ id: string; name?: string }>>([]);
   const [kbDetail, setKbDetail] = useState<KbDetail | null>(null);
@@ -809,6 +813,10 @@ export function DashboardPage() {
     }
   });
   const [moduleCollapse, setModuleCollapse] = useState<ModuleCollapse>(defaultCollapse);
+
+  useEffect(() => {
+    setSelectedFarmerId(scopedFarmerId);
+  }, [scopedFarmerId]);
 
 
   const renderModuleHeader = (key: ModuleKey, title: string, icon: ReactNode) => (
@@ -1425,8 +1433,13 @@ export function DashboardPage() {
       <Card className="glass-card mt-1">
         <CardContent className="pt-5">
           <div className="grid sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3">
-            <select value={selectedFarmerId} onChange={(e) => setSelectedFarmerId(e.target.value)} className="h-10 bg-[#114a38] border border-[#2e7d63] rounded-lg px-3 text-[#e8fff0] font-medium w-full leading-none">
-              <option value="ALL">农户：全部（先选农户）</option>
+            <select
+              value={selectedFarmerId}
+              onChange={(e) => setSelectedFarmerId(e.target.value)}
+              className="h-10 bg-[#114a38] border border-[#2e7d63] rounded-lg px-3 text-[#e8fff0] font-medium w-full leading-none disabled:opacity-60"
+              disabled={!canViewAllFarmers}
+            >
+              {canViewAllFarmers ? <option value="ALL">农户：全部</option> : null}
               {profiles.map((item) => <option key={item.id} value={item.id}>{item.name ? `${item.id} · ${item.name}` : item.id}</option>)}
             </select>
             <select value={selectedBaseId} onChange={(e) => setSelectedBaseId(e.target.value)} className="h-10 bg-[#114a38] border border-[#2e7d63] rounded-lg px-3 text-[#e8fff0] font-medium disabled:opacity-50 w-full leading-none" disabled={selectedFarmerId === 'ALL'}>
