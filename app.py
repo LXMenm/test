@@ -9,7 +9,7 @@ import subprocess
 import time
 import traceback
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Optional
@@ -22,6 +22,7 @@ from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Res
 from fastapi.staticfiles import StaticFiles
 from PIL import Image
 from pydantic import BaseModel
+from sqlalchemy import select
 
 from config import DIAGNOSIS_CONFIDENCE_THRESHOLD, DIAGNOSIS_ALLOW_TORCH, log_resolved_storage_config
 from diagnosis_model import get_diagnosis_engine
@@ -60,27 +61,61 @@ from trace_store import list_trace_events, subscribe as subscribe_trace, unsubsc
 from model_registry import list_models, resolve_model
 from workflow import build_graph
 from trace_catalog import AGENTS_CATALOG, NODE_TO_AGENT
+from runtime_settings import load_admin_runtime_config, save_admin_runtime_config
+from db import engine as db_engine, get_db_session
+from mysql_models import UserAccountORM
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     log_resolved_storage_config()
+    ensure_user_accounts_seeded()
     yield
 
 
 app = FastAPI(title="Tomato Diagnosis API", version="1.0.0", lifespan=lifespan)
 
 SUPPORTED_ROLES = {"USER", "EXPERT", "ADMIN"}
+DEFAULT_DEMO_ACCOUNTS = [
+    {"user_id": "F0001", "username": "f0001", "display_name": "农户 F0001", "role": "USER", "password": "123456", "linked_farmer_id": "F0001"},
+    {"user_id": "F0002", "username": "f0002", "display_name": "农户 F0002", "role": "USER", "password": "123456", "linked_farmer_id": "F0002"},
+    {"user_id": "E0001", "username": "e0001", "display_name": "专家 E0001", "role": "EXPERT", "password": "123456", "linked_farmer_id": None},
+    {"user_id": "E0002", "username": "e0002", "display_name": "专家 E0002", "role": "EXPERT", "password": "123456", "linked_farmer_id": None},
+    {"user_id": "A0001", "username": "a0001", "display_name": "管理员 A0001", "role": "ADMIN", "password": "123456", "linked_farmer_id": None},
+]
+
+
+def ensure_user_accounts_seeded() -> None:
+    try:
+        UserAccountORM.__table__.create(bind=db_engine, checkfirst=True)
+        with get_db_session() as session:
+            existing = {
+                str(item.user_id).strip()
+                for item in session.execute(select(UserAccountORM.user_id)).all()
+                if item and item[0]
+            }
+            changed = False
+            for account in DEFAULT_DEMO_ACCOUNTS:
+                if account["user_id"] in existing:
+                    continue
+                session.add(UserAccountORM(**account, status="ACTIVE"))
+                changed = True
+            if changed:
+                session.commit()
+    except Exception as exc:
+        print(f"[AuthBootstrap] 初始化 user_accounts 失败: {exc}")
 
 
 def _get_request_actor(request: Request | None) -> dict[str, str]:
     headers = request.headers if request is not None else {}
     user_id = str(headers.get("X-User-Id") or "").strip()
     raw_role = str(headers.get("X-User-Role") or "USER").strip().upper()
+    linked_farmer_id = str(headers.get("X-Linked-Farmer-Id") or "").strip()
     role = raw_role if raw_role in SUPPORTED_ROLES else "USER"
     return {
         "user_id": user_id,
         "role": role,
+        "linked_farmer_id": linked_farmer_id,
     }
 
 
@@ -95,7 +130,7 @@ def _is_expert(actor: dict[str, str]) -> bool:
 def _apply_farmer_scope(actor: dict[str, str], requested_farmer_id: str | None) -> str | None:
     if _is_admin(actor):
         return requested_farmer_id
-    actor_user_id = str(actor.get("user_id") or "").strip()
+    actor_user_id = str(actor.get("linked_farmer_id") or actor.get("user_id") or "").strip()
     if not actor_user_id:
         return requested_farmer_id
     requested = str(requested_farmer_id or "").strip()
@@ -243,6 +278,11 @@ class DiagnoseResponse(BaseModel):
     confirm_round_parent_trace_id: str | None = None
     meta: dict[str, Any] | None = None
     events: list[dict[str, Any]] = []
+
+
+class LoginRequest(BaseModel):
+    user_id: str
+    password: str | None = None
 
 
 class SPAStaticFiles(StaticFiles):
@@ -2575,6 +2615,58 @@ def weather_summary(lat: float, lon: float) -> dict[str, Any]:
     }
 
 
+def _refresh_base_weather(profile: FarmerProfile, base_id: str) -> dict[str, Any]:
+    base = profile.bases.get(base_id)
+    if base is None:
+        raise HTTPException(status_code=404, detail="基地不存在")
+    if base.latitude is None or base.longitude is None:
+        raise HTTPException(status_code=400, detail="基地缺少经纬度，无法刷新天气")
+
+    weather = weather_summary(lat=float(base.latitude), lon=float(base.longitude))
+    refreshed_at = _utc_now_iso()
+    summary = str(weather.get("summary") or "").strip()
+    if summary:
+        base.weather_snapshot = summary
+        base.environment = summary
+    base.relative_humidity_2m = weather.get("relative_humidity_2m")
+    base.precipitation = weather.get("precipitation")
+    base.rain_risk = weather.get("rain_risk")
+    base.weather_temperature_2m = weather.get("temperature_2m")
+    base.weather_wind_speed_10m = weather.get("wind_speed_10m")
+    base.last_weather_refresh_at = refreshed_at
+    profile.bases[base_id] = base
+    profile.updated_at = refreshed_at
+    return {
+        "base_id": base_id,
+        "weather_snapshot": base.weather_snapshot,
+        "relative_humidity_2m": base.relative_humidity_2m,
+        "precipitation": base.precipitation,
+        "rain_risk": base.rain_risk,
+        "temperature_2m": weather.get("temperature_2m"),
+        "wind_speed_10m": weather.get("wind_speed_10m"),
+        "weather_desc": weather.get("weather_desc"),
+        "last_weather_refresh_at": refreshed_at,
+    }
+
+
+@app.post("/api/profiles/{farmer_id}/bases/{base_id}/weather/refresh")
+def refresh_base_weather(farmer_id: str, base_id: str, request: Request) -> dict[str, Any]:
+    actor = _get_request_actor(request)
+    scoped_farmer_id = _apply_farmer_scope(actor, farmer_id)
+    if scoped_farmer_id and scoped_farmer_id != farmer_id:
+        raise HTTPException(status_code=403, detail="当前角色仅允许操作自己的档案")
+    profile = load_profile(farmer_id)
+    if profile is None:
+        raise HTTPException(status_code=404, detail="档案不存在")
+
+    payload = _refresh_base_weather(profile, base_id)
+    try:
+        persist_profile(profile)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"天气刷新后保存档案失败: {exc}") from exc
+    return {"ok": True, **payload}
+
+
 
 @app.get("/api/events")
 def get_events(
@@ -2603,6 +2695,52 @@ def get_events(
     return {"events": [_serialize_event_dto(event, inject_trace_steps=True) for event in filtered_events]}
 
 
+@app.post("/api/auth/login")
+def login(payload: LoginRequest) -> dict[str, Any]:
+    ensure_user_accounts_seeded()
+    user_id = str(payload.user_id or "").strip()
+    if not user_id:
+        raise HTTPException(status_code=400, detail="user_id 不能为空")
+    with get_db_session() as session:
+        account = session.execute(
+            select(UserAccountORM).where(UserAccountORM.user_id == user_id)
+        ).scalar_one_or_none()
+    if not account:
+        raise HTTPException(status_code=401, detail="账号不存在")
+    if str(account.status or "").upper() != "ACTIVE":
+        raise HTTPException(status_code=403, detail="账号已禁用")
+    incoming_password = str(payload.password or "").strip()
+    stored_password = str(account.password or "").strip()
+    if stored_password and stored_password != incoming_password:
+        raise HTTPException(status_code=401, detail="密码错误")
+    return {
+        "user_id": account.user_id,
+        "display_name": account.display_name,
+        "role": str(account.role or "USER").upper(),
+        "linked_farmer_id": account.linked_farmer_id,
+        "status": account.status,
+    }
+
+
+@app.get("/api/admin/accounts/experts")
+def list_active_experts(request: Request) -> dict[str, Any]:
+    actor = _get_request_actor(request)
+    _require_admin(actor)
+    ensure_user_accounts_seeded()
+    with get_db_session() as session:
+        rows = session.execute(
+            select(UserAccountORM)
+            .where(UserAccountORM.role == "EXPERT", UserAccountORM.status == "ACTIVE")
+            .order_by(UserAccountORM.user_id.asc())
+        ).scalars().all()
+    return {
+        "items": [
+            {"user_id": row.user_id, "display_name": row.display_name}
+            for row in rows
+        ]
+    }
+
+
 @app.get("/api/expert-reviews/pending")
 def get_pending_expert_reviews(request: Request, limit: int = 20) -> dict[str, Any]:
     actor = _get_request_actor(request)
@@ -2615,6 +2753,12 @@ def get_pending_expert_reviews(request: Request, limit: int = 20) -> dict[str, A
         if str(event.get("status") or "").strip() == "pending_expert_review"
         or str(event.get("expert_review_status") or "").strip().upper() == "PENDING"
     ]
+    if not _is_admin(actor):
+        actor_id = str(actor.get("user_id") or "").strip()
+        pending = [
+            event for event in pending
+            if str(event.get("assigned_expert_id") or "").strip() == actor_id
+        ]
     items = [_build_expert_review_list_item(event) for event in pending[:safe_limit]]
     return {
         "count": len(pending),
@@ -2629,6 +2773,10 @@ def get_expert_review_case_detail(trace_id: str, request: Request) -> dict[str, 
     event = _latest_case_event_by_trace(trace_id)
     if not event:
         raise HTTPException(status_code=404, detail="病例不存在")
+    if not _is_admin(actor):
+        actor_id = str(actor.get("user_id") or "").strip()
+        if str(event.get("assigned_expert_id") or "").strip() != actor_id:
+            raise HTTPException(status_code=403, detail="当前病例未分配给你")
     return {"item": _build_expert_review_detail(event)}
 
 
@@ -2639,6 +2787,10 @@ def submit_expert_review(trace_id: str, request: Request, payload: dict = Body(.
     event = _latest_case_event_by_trace(trace_id)
     if not event:
         raise HTTPException(status_code=404, detail="病例不存在")
+    if not _is_admin(actor):
+        actor_id = str(actor.get("user_id") or "").strip()
+        if str(event.get("assigned_expert_id") or "").strip() != actor_id:
+            raise HTTPException(status_code=403, detail="当前病例未分配给你")
 
     confirmed_disease = str(payload.get("expert_review_result") or "").strip()
     if not confirmed_disease:
@@ -2686,7 +2838,100 @@ def submit_expert_review(trace_id: str, request: Request, payload: dict = Body(.
                 next_event["selected_branch"] = personalization_outputs.get("selected_branch") or next_event.get("selected_branch")
 
     append_event(serialize_final_response(next_event))
-    return {"item": _build_expert_review_detail(next_event)}
+    return {"item": _serialize_admin_review_detail(next_event)}
+
+
+@app.get("/api/admin/system-config")
+def get_admin_system_config(request: Request) -> dict[str, Any]:
+    actor = _get_request_actor(request)
+    _require_admin(actor)
+    return {"config": load_admin_runtime_config()}
+
+
+@app.put("/api/admin/system-config")
+def update_admin_system_config(request: Request, payload: dict = Body(...)) -> dict[str, Any]:
+    actor = _get_request_actor(request)
+    _require_admin(actor)
+    next_config = save_admin_runtime_config(payload if isinstance(payload, dict) else {})
+    return {"config": next_config}
+
+
+@app.get("/api/admin/reviews")
+def list_admin_reviews(request: Request, status: str = "pending", limit: int = 50) -> dict[str, Any]:
+    actor = _get_request_actor(request)
+    _require_admin(actor)
+    safe_limit = max(1, min(200, int(limit)))
+    expected = str(status or "pending").strip().lower()
+    if expected not in {"pending", "assigned", "completed"}:
+        raise HTTPException(status_code=400, detail="status 仅支持 pending / assigned / completed")
+    latest_events = _pick_latest_case_by_trace(list_events(200000))
+    filtered = [event for event in latest_events if _admin_review_bucket(event) == expected]
+    items = [_serialize_admin_review_item(event) for event in filtered[:safe_limit]]
+    return {"count": len(filtered), "items": items}
+
+
+@app.get("/api/admin/reviews/{trace_id}")
+def get_admin_review_detail(trace_id: str, request: Request) -> dict[str, Any]:
+    actor = _get_request_actor(request)
+    _require_admin(actor)
+    event = _latest_case_event_by_trace(trace_id)
+    if not event:
+        raise HTTPException(status_code=404, detail="病例不存在")
+    detail = _serialize_admin_review_detail(event)
+    detail["review_bucket"] = _admin_review_bucket(event)
+    return {"item": detail}
+
+
+@app.post("/api/admin/reviews/{trace_id}/assign")
+def assign_admin_review(trace_id: str, request: Request, payload: dict = Body(...)) -> dict[str, Any]:
+    actor = _get_request_actor(request)
+    _require_admin(actor)
+    event = _latest_case_event_by_trace(trace_id)
+    if not event:
+        raise HTTPException(status_code=404, detail="病例不存在")
+    expert_id = str(payload.get("assigned_expert_id") or "").strip()
+    if not expert_id:
+        raise HTTPException(status_code=400, detail="assigned_expert_id 不能为空")
+
+    next_event = dict(event)
+    next_event["id"] = uuid.uuid4().hex
+    next_event["ts"] = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    next_event["assigned_expert_id"] = expert_id
+    if _derive_review_task_status(next_event) not in {"COMPLETED", "CANCELLED"}:
+        next_event["expert_review_status"] = "PENDING"
+        next_event["status"] = "pending_expert_review"
+    note_value = payload.get("admin_note") if payload.get("admin_note") is not None else payload.get("review_flow_note")
+    next_event["review_flow_note"] = sanitize_user_text(note_value) or next_event.get("review_flow_note")
+    append_event(serialize_final_response(next_event))
+    detail = _serialize_admin_review_detail(next_event)
+    detail["review_bucket"] = _admin_review_bucket(next_event)
+    return {"item": detail}
+
+
+@app.post("/api/admin/reviews/{trace_id}/flow-status")
+def update_admin_review_flow_status(trace_id: str, request: Request, payload: dict = Body(...)) -> dict[str, Any]:
+    actor = _get_request_actor(request)
+    _require_admin(actor)
+    event = _latest_case_event_by_trace(trace_id)
+    if not event:
+        raise HTTPException(status_code=404, detail="病例不存在")
+    flow_raw = payload.get("admin_flag") if payload.get("admin_flag") is not None else payload.get("review_flow_status")
+    flow_status = str(flow_raw or "").strip().lower()
+    if flow_status not in {"normal", "abnormal", "closed"}:
+        raise HTTPException(status_code=400, detail="review_flow_status 仅支持 normal / abnormal / closed")
+
+    next_event = dict(event)
+    next_event["id"] = uuid.uuid4().hex
+    next_event["ts"] = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    next_event["review_flow_status"] = flow_status
+    note_value = payload.get("admin_note") if payload.get("admin_note") is not None else payload.get("review_flow_note")
+    next_event["review_flow_note"] = sanitize_user_text(note_value)
+    if flow_status == "closed":
+        next_event["status"] = "cancelled"
+    append_event(serialize_final_response(next_event))
+    detail = _serialize_admin_review_detail(next_event)
+    detail["review_bucket"] = _admin_review_bucket(next_event)
+    return {"item": detail}
 
 
 
@@ -2883,6 +3128,61 @@ def _build_expert_review_list_item(event: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _derive_review_task_status(event: dict[str, Any]) -> str:
+    review_flow_status = str(event.get("review_flow_status") or "").strip().lower()
+    case_status = str(event.get("status") or "").strip().lower()
+    expert_status = str(event.get("expert_review_status") or "").strip().upper()
+    assigned_expert_id = str(event.get("assigned_expert_id") or "").strip()
+
+    if review_flow_status == "closed" or case_status == "cancelled":
+        return "CANCELLED"
+    if expert_status == "COMPLETED" or case_status == "completed":
+        return "COMPLETED"
+    if case_status == "pending_expert_review" and assigned_expert_id:
+        return "ASSIGNED"
+    if case_status == "pending_expert_review" and not assigned_expert_id:
+        return "UNASSIGNED"
+    return "UNNEEDED"
+
+
+def _serialize_admin_review_item(event: dict[str, Any]) -> dict[str, Any]:
+    base = _build_expert_review_list_item(event)
+    case_status = str(event.get("status") or "").strip()
+    review_task_status = _derive_review_task_status(event)
+    admin_flag = str(event.get("review_flow_status") or "normal").strip().lower() or "normal"
+    admin_note = event.get("review_flow_note")
+    return {
+        **base,
+        "case_status": case_status,
+        "review_task_status": review_task_status,
+        "admin_flag": admin_flag,
+        "admin_note": admin_note,
+        # 保持向后兼容
+        "review_flow_status": admin_flag,
+        "review_flow_note": admin_note,
+        "updated_at": event.get("ts"),
+    }
+
+
+def _serialize_admin_review_detail(event: dict[str, Any]) -> dict[str, Any]:
+    detail = _build_expert_review_detail(event)
+    case_status = str(event.get("status") or "").strip()
+    review_task_status = _derive_review_task_status(event)
+    admin_flag = str(event.get("review_flow_status") or "normal").strip().lower() or "normal"
+    admin_note = event.get("review_flow_note")
+    detail.update({
+        "case_status": case_status,
+        "review_task_status": review_task_status,
+        "admin_flag": admin_flag,
+        "admin_note": admin_note,
+        # 保持向后兼容
+        "review_flow_status": admin_flag,
+        "review_flow_note": admin_note,
+        "updated_at": event.get("ts"),
+    })
+    return detail
+
+
 def _build_expert_review_detail(event: dict[str, Any]) -> dict[str, Any]:
     meta = _safe_record(event.get("meta"))
     image_result = _safe_record(event.get("image_result"))
@@ -2918,7 +3218,20 @@ def _build_expert_review_detail(event: dict[str, Any]) -> dict[str, Any]:
         "expert_review_supplement_symptoms": event.get("expert_review_supplement_symptoms"),
         "expert_review_notes": event.get("expert_review_notes"),
         "expert_reviewed_at": event.get("expert_reviewed_at"),
+        "review_flow_status": str(event.get("review_flow_status") or "normal"),
+        "review_flow_note": event.get("review_flow_note"),
     }
+
+
+def _admin_review_bucket(event: dict[str, Any]) -> str:
+    review_task_status = _derive_review_task_status(event)
+    if review_task_status == "UNASSIGNED":
+        return "pending"
+    if review_task_status == "ASSIGNED":
+        return "assigned"
+    if review_task_status in {"COMPLETED", "CANCELLED"}:
+        return "completed"
+    return "completed"
 
 
 def _event_base_id(event: dict[str, Any]) -> str:
@@ -3072,6 +3385,30 @@ def _event_elapsed_ms(event: dict[str, Any]) -> float | None:
     return zero_fallback
 
 
+ANALYTICS_TERMINAL_CASE_STATUSES = {"completed", "cancelled"}
+ANALYTICS_NON_TERMINAL_CASE_STATUSES = {
+    "pending_expert_review",
+    "waiting_for_supplement",
+    "waiting_for_expert_decision",
+}
+
+
+def _is_terminal_case_status(status: str | None, *, include_cancelled: bool = True) -> bool:
+    normalized = str(status or "").strip().lower()
+    if normalized == "completed":
+        return True
+    if include_cancelled and normalized == "cancelled":
+        return True
+    return False
+
+
+def _include_event_in_analytics(event: dict[str, Any], include_non_terminal: bool = False) -> bool:
+    if include_non_terminal:
+        return True
+    status = str(event.get("status") or "").strip().lower()
+    return _is_terminal_case_status(status, include_cancelled=True)
+
+
 def _event_in_filters(
     event: dict[str, Any],
     farmer_id: str | None,
@@ -3107,11 +3444,13 @@ def _load_filtered_events(
     model_id: str | None,
     selected_branch: str | None,
     personalization_status: str | None,
+    include_non_terminal: bool = False,
 ) -> list[dict[str, Any]]:
     events = list_events_range(start, end, 200000) if (start or end) else list_events(200000)
     return [
         event for event in events
         if _event_in_filters(event, farmer_id, base_id, disease, model_id, selected_branch, personalization_status)
+        and _include_event_in_analytics(event, include_non_terminal=include_non_terminal)
     ]
 
 
@@ -3132,20 +3471,32 @@ def get_disease_stats(
     model_id: str | None = None,
     selected_branch: str | None = None,
     personalization_status: str | None = None,
+    include_non_terminal: bool = False,
 ) -> dict[str, Any]:
     farmer_id = _scoped_farmer_query(request, farmer_id)
+    effective_start = start
+    effective_end = end
     if start or end:
         if (start and not validate_date_str(start)) or (end and not validate_date_str(end)):
             raise HTTPException(status_code=400, detail="日期格式应为 YYYY-MM-DD")
     safe_days = max(1, min(3650, int(days)))
+    if not effective_start and not effective_end:
+        end_date = datetime.now(timezone.utc).date()
+        start_date = end_date - timedelta(days=safe_days - 1)
+        effective_start = start_date.isoformat()
+        effective_end = end_date.isoformat()
     if any([farmer_id, base_id, disease, model_id, selected_branch, personalization_status]):
-        events = _load_filtered_events(start, end, farmer_id, base_id, disease, model_id, selected_branch, personalization_status)
+        events = _load_filtered_events(effective_start, effective_end, farmer_id, base_id, disease, model_id, selected_branch, personalization_status, include_non_terminal=include_non_terminal)
         counts: dict[str, int] = {}
         for event in events:
             disease_name = _event_disease(event)
             counts[disease_name] = counts.get(disease_name, 0) + 1
     else:
-        counts = stats_by_disease_range(start, end) if (start or end) else stats_by_disease(safe_days)
+        events = _load_filtered_events(effective_start, effective_end, farmer_id, base_id, disease, model_id, selected_branch, personalization_status, include_non_terminal=include_non_terminal)
+        counts: dict[str, int] = {}
+        for event in events:
+            disease_name = _event_disease(event)
+            counts[disease_name] = counts.get(disease_name, 0) + 1
     items = [{"disease": disease_name, "count": count} for disease_name, count in sorted(counts.items(), key=lambda item: item[1], reverse=True)]
     return {"items": items}
 
@@ -3162,26 +3513,30 @@ def get_timeseries(
     model_id: str | None = None,
     selected_branch: str | None = None,
     personalization_status: str | None = None,
+    include_non_terminal: bool = False,
 ) -> dict[str, Any]:
     farmer_id = _scoped_farmer_query(request, farmer_id)
+    effective_start = start
+    effective_end = end
     if start or end:
         if (start and not validate_date_str(start)) or (end and not validate_date_str(end)):
             raise HTTPException(status_code=400, detail="日期格式应为 YYYY-MM-DD")
-    if any([farmer_id, base_id, disease, model_id, selected_branch, personalization_status]):
-        events = _load_filtered_events(start, end, farmer_id, base_id, disease, model_id, selected_branch, personalization_status)
-        counts: dict[str, int] = {}
-        for event in events:
-            ts = event.get("ts")
-            if not isinstance(ts, str):
-                continue
-            day = ts.split("T", 1)[0]
-            counts[day] = counts.get(day, 0) + 1
-        items = [{"date": day, "count": counts[day]} for day in sorted(counts.keys())]
-        return {"items": items}
-    if start or end:
-        return {"items": timeseries_range(start, end)}
     safe_days = max(1, min(3650, int(days)))
-    return {"items": timeseries(safe_days)}
+    if not effective_start and not effective_end:
+        end_date = datetime.now(timezone.utc).date()
+        start_date = end_date - timedelta(days=safe_days - 1)
+        effective_start = start_date.isoformat()
+        effective_end = end_date.isoformat()
+    events = _load_filtered_events(effective_start, effective_end, farmer_id, base_id, disease, model_id, selected_branch, personalization_status, include_non_terminal=include_non_terminal)
+    counts: dict[str, int] = {}
+    for event in events:
+        ts = event.get("ts")
+        if not isinstance(ts, str):
+            continue
+        day = ts.split("T", 1)[0]
+        counts[day] = counts.get(day, 0) + 1
+    items = [{"date": day, "count": counts[day]} for day in sorted(counts.keys())]
+    return {"items": items}
 
 
 @app.get("/api/stats/geo")
@@ -3221,16 +3576,12 @@ def get_model_stats(
     model_id: str | None = None,
     selected_branch: str | None = None,
     personalization_status: str | None = None,
+    include_non_terminal: bool = False,
 ) -> dict[str, Any]:
     farmer_id = _scoped_farmer_query(request, farmer_id)
     if (start and not validate_date_str(start)) or (end and not validate_date_str(end)):
         raise HTTPException(status_code=400, detail="日期格式应为 YYYY-MM-DD")
-    events = _load_filtered_events(start, end, farmer_id, base_id, disease, model_id, selected_branch, personalization_status)
-    if not events and not any([farmer_id, base_id, disease, model_id, selected_branch, personalization_status]):
-        raw_counts = model_usage_range(start, end)
-        return {
-            "items": [{"model": model, "count": count, "success": count, "fallback": 0, "degraded": 0, "llm_failed_rate": 0.0, "avg_response_ms": 0.0} for model, count in raw_counts.items()],
-        }
+    events = _load_filtered_events(start, end, farmer_id, base_id, disease, model_id, selected_branch, personalization_status, include_non_terminal=include_non_terminal)
 
     aggregates: dict[str, dict[str, float]] = {}
     for event in events:
@@ -3277,12 +3628,13 @@ def get_stats_summary(
     model_id: str | None = None,
     selected_branch: str | None = None,
     personalization_status: str | None = None,
+    include_non_terminal: bool = False,
 ) -> dict[str, float | int]:
     farmer_id = _scoped_farmer_query(request, farmer_id)
     if (start and not validate_date_str(start)) or (end and not validate_date_str(end)):
         raise HTTPException(status_code=400, detail="日期格式应为 YYYY-MM-DD")
 
-    events = _load_filtered_events(start, end, farmer_id, base_id, disease, model_id, selected_branch, personalization_status)
+    events = _load_filtered_events(start, end, farmer_id, base_id, disease, model_id, selected_branch, personalization_status, include_non_terminal=include_non_terminal)
     total = len(events)
     today = datetime.now(timezone.utc).date().isoformat()
     today_count = 0
@@ -3340,11 +3692,12 @@ def get_filter_reasons_stats(
     model_id: str | None = None,
     selected_branch: str | None = None,
     personalization_status: str | None = None,
+    include_non_terminal: bool = False,
 ) -> dict[str, Any]:
     farmer_id = _scoped_farmer_query(request, farmer_id)
     if (start and not validate_date_str(start)) or (end and not validate_date_str(end)):
         raise HTTPException(status_code=400, detail="日期格式应为 YYYY-MM-DD")
-    events = _load_filtered_events(start, end, farmer_id, base_id, disease, model_id, selected_branch, personalization_status)
+    events = _load_filtered_events(start, end, farmer_id, base_id, disease, model_id, selected_branch, personalization_status, include_non_terminal=include_non_terminal)
     counts: dict[str, int] = {}
     for event in events:
         for reason in _event_filtered_reasons(event):
@@ -3363,11 +3716,12 @@ def get_stats_by_farmer(
     model_id: str | None = None,
     selected_branch: str | None = None,
     personalization_status: str | None = None,
+    include_non_terminal: bool = False,
 ) -> dict[str, Any]:
     scoped_farmer_id = _scoped_farmer_query(request, None)
     if (start and not validate_date_str(start)) or (end and not validate_date_str(end)):
         raise HTTPException(status_code=400, detail="日期格式应为 YYYY-MM-DD")
-    events = _load_filtered_events(start, end, scoped_farmer_id, base_id, disease, model_id, selected_branch, personalization_status)
+    events = _load_filtered_events(start, end, scoped_farmer_id, base_id, disease, model_id, selected_branch, personalization_status, include_non_terminal=include_non_terminal)
     grouped: dict[str, dict[str, Any]] = {}
     for event in events:
         farmer_id = _event_farmer_id(event) or "未绑定农户"
@@ -3405,11 +3759,12 @@ def get_stats_by_base(
     model_id: str | None = None,
     selected_branch: str | None = None,
     personalization_status: str | None = None,
+    include_non_terminal: bool = False,
 ) -> dict[str, Any]:
     farmer_id = _scoped_farmer_query(request, farmer_id)
     if (start and not validate_date_str(start)) or (end and not validate_date_str(end)):
         raise HTTPException(status_code=400, detail="日期格式应为 YYYY-MM-DD")
-    events = _load_filtered_events(start, end, farmer_id, None, None, model_id, selected_branch, personalization_status)
+    events = _load_filtered_events(start, end, farmer_id, None, None, model_id, selected_branch, personalization_status, include_non_terminal=include_non_terminal)
     grouped: dict[str, dict[str, Any]] = {}
     all_diseases: dict[str, int] = {}
     for event in events:

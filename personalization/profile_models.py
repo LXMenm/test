@@ -61,6 +61,9 @@ class BaseProfile(BaseModel):
     sowing_date: Optional[str] = None
     notes: Optional[str] = None
     weather_snapshot: Optional[str] = None
+    last_weather_refresh_at: Optional[str] = None
+    weather_temperature_2m: Optional[float] = None
+    weather_wind_speed_10m: Optional[float] = None
     relative_humidity_2m: Optional[float] = None
     precipitation: Optional[float] = None
     rain_risk: Optional[float] = None

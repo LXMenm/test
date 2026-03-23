@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useCallback, useRef, type ReactNode } from 'react';
-import { BarChart3, Calendar, RefreshCw, Image as ImageIcon, TrendingUp, AlertCircle, LineChart as LineChartIcon, Cpu, Settings2, ChevronDown, ChevronUp } from 'lucide-react';
+import { BarChart3, Calendar, RefreshCw, Image as ImageIcon, TrendingUp, AlertCircle, LineChart as LineChartIcon, Cpu, Settings2, ChevronDown, ChevronUp, Cloud } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -10,6 +10,7 @@ import { cn } from '@/lib/utils';
 import { getCultivationModeLabel, getEquipmentLabel, getFarmScaleLabel, getGrowthStageLabel, getPesticideAccessLevelLabel, getRiskPreferenceLabel } from '@/lib/profileLabels';
 import { getModelLabel, resolveModelOptions } from '@/lib/modelOptions';
 import { fetchTraceEvents } from '@/lib/traceClient';
+import { loadAuthUser } from '@/auth';
 
 interface DiseaseStat {
   disease: string;
@@ -28,6 +29,8 @@ interface DiagnosisEvent {
   selectedBranch: string;
   selectedBranchRaw: string;
   confirmRound: boolean;
+  status: string;
+  expertReviewStatus: string;
   needConfirm: boolean;
   personalizationApplied: boolean;
   filtered: boolean;
@@ -115,7 +118,16 @@ interface KbDiseaseListItem {
 interface ProfileDetail {
   farmer_id: string;
   name?: string;
-  bases?: Record<string, { base_id?: string; name?: string }>;
+  active_base_id?: string;
+  bases?: Record<string, {
+    base_id?: string;
+    name?: string;
+    weather_snapshot?: string;
+    last_weather_refresh_at?: string;
+    relative_humidity_2m?: number;
+    weather_temperature_2m?: number;
+    weather_wind_speed_10m?: number;
+  }>;
 }
 
 interface TraceSummaryItem {
@@ -221,6 +233,16 @@ function safeDisplayTime(value: string): string {
   const parsed = Date.parse(value);
   if (!Number.isFinite(parsed)) return '—';
   return new Date(parsed).toLocaleString();
+}
+
+function toLocalDay(value: string): string {
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed)) return '';
+  const dt = new Date(parsed);
+  const y = dt.getFullYear();
+  const m = String(dt.getMonth() + 1).padStart(2, '0');
+  const d = String(dt.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
 }
 
 
@@ -702,6 +724,8 @@ function normalizeEvent(eventLike: unknown, index: number): DiagnosisEvent {
     selectedBranchRaw: selectedBranchRaw ?? '',
     selectedBranch: getSelectedBranchLabel(selectedBranchRaw),
     confirmRound: event.confirm_round === true,
+    status: readableText(event.status, ''),
+    expertReviewStatus: readableText(event.expert_review_status, ''),
     needConfirm: event.need_confirm === true,
     personalizationApplied: event.personalization_applied === true || meta?.personalization_applied === true,
     filtered: event.filtered === true || meta?.filtered === true,
@@ -763,6 +787,9 @@ function normalizeEvent(eventLike: unknown, index: number): DiagnosisEvent {
 }
 
 export function DashboardPage() {
+  const authUser = useMemo(() => loadAuthUser(), []);
+  const canViewAllFarmers = authUser?.role === 'ADMIN';
+  const scopedFarmerId = canViewAllFarmers ? 'ALL' : (authUser?.linkedFarmerId || authUser?.userId || 'ALL');
   const [presetKey, setPresetKey] = useState<'7d' | '30d' | '90d'>('7d');
   const [allEvents, setAllEvents] = useState<DiagnosisEvent[]>([]);
   const [selectedEvent, setSelectedEvent] = useState<DiagnosisEvent | null>(null);
@@ -790,7 +817,7 @@ export function DashboardPage() {
   const [farmerStats, setFarmerStats] = useState<FarmerStat[]>([]);
   const [baseStats, setBaseStats] = useState<BaseStat[]>([]);
   const [baseTopDiseases, setBaseTopDiseases] = useState<string[]>([]);
-  const [selectedFarmerId, setSelectedFarmerId] = useState('ALL');
+  const [selectedFarmerId, setSelectedFarmerId] = useState(scopedFarmerId);
   const [selectedBaseId, setSelectedBaseId] = useState('ALL');
   const [farmerBases, setFarmerBases] = useState<Array<{ id: string; name?: string }>>([]);
   const [kbDetail, setKbDetail] = useState<KbDetail | null>(null);
@@ -809,6 +836,21 @@ export function DashboardPage() {
     }
   });
   const [moduleCollapse, setModuleCollapse] = useState<ModuleCollapse>(defaultCollapse);
+  const [weatherCard, setWeatherCard] = useState<{
+    farmerId: string;
+    baseId: string;
+    baseName: string;
+    weatherSummary: string;
+    humidity: number | null;
+    temperature: number | null;
+    windSpeed: number | null;
+    lastUpdatedAt: string;
+  } | null>(null);
+  const [weatherLoading, setWeatherLoading] = useState(false);
+
+  useEffect(() => {
+    setSelectedFarmerId(scopedFarmerId);
+  }, [scopedFarmerId]);
 
 
   const renderModuleHeader = (key: ModuleKey, title: string, icon: ReactNode) => (
@@ -1005,6 +1047,92 @@ export function DashboardPage() {
     };
     run();
   }, [selectedFarmerId]);
+
+  const weatherRiskTip = useMemo(() => {
+    if (!weatherCard) return '请先选择农户与基地，或补充基地经纬度后刷新天气。';
+    const summaryText = weatherCard.weatherSummary;
+    if (typeof weatherCard.humidity === 'number' && weatherCard.humidity >= 80) {
+      return '当前湿度较高，叶部病害风险需关注。';
+    }
+    if (typeof weatherCard.temperature === 'number' && weatherCard.temperature >= 32) {
+      return '当前环境偏炎热，注意高温胁迫与虫害风险。';
+    }
+    if (typeof weatherCard.temperature === 'number' && weatherCard.temperature <= 10) {
+      return '当前温度偏低，注意低温湿害与生长受抑风险。';
+    }
+    if (/雨|阵雨|雷暴|雾/i.test(summaryText)) {
+      return '当前天气偏潮湿，建议关注棚内通风与叶面干燥管理。';
+    }
+    if (/晴|多云|稳定/i.test(summaryText)) {
+      return '当前天气相对稳定，短期环境风险较低。';
+    }
+    return '请结合田间实际情况持续关注环境波动风险。';
+  }, [weatherCard]);
+
+  const refreshWeather = useCallback(async (farmerId: string, baseId: string) => {
+    if (!farmerId || farmerId === 'ALL' || !baseId || baseId === 'ALL') return;
+    setWeatherLoading(true);
+    try {
+      const resp = await fetch(`/api/profiles/${encodeURIComponent(farmerId)}/bases/${encodeURIComponent(baseId)}/weather/refresh`, { method: 'POST' });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(String(data?.detail || '天气刷新失败'));
+      setWeatherCard((prev) => ({
+        farmerId,
+        baseId,
+        baseName: prev?.baseName || baseId,
+        weatherSummary: String(data?.weather_snapshot || '暂无天气摘要'),
+        humidity: Number.isFinite(Number(data?.relative_humidity_2m)) ? Number(data.relative_humidity_2m) : null,
+        temperature: Number.isFinite(Number(data?.temperature_2m)) ? Number(data.temperature_2m) : null,
+        windSpeed: Number.isFinite(Number(data?.wind_speed_10m)) ? Number(data.wind_speed_10m) : null,
+        lastUpdatedAt: String(data?.last_weather_refresh_at || ''),
+      }));
+    } catch {
+      // 保持静默，避免破坏主流程
+    } finally {
+      setWeatherLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    const run = async () => {
+      if (!selectedFarmerId || selectedFarmerId === 'ALL') {
+        setWeatherCard(null);
+        return;
+      }
+      try {
+        const resp = await fetch(`/api/profiles/${encodeURIComponent(selectedFarmerId)}`);
+        const data = await resp.json() as ProfileDetail;
+        if (!resp.ok) throw new Error();
+        const bases = data?.bases && typeof data.bases === 'object' ? data.bases : {};
+        const baseId = (selectedBaseId !== 'ALL' && bases[selectedBaseId])
+          ? selectedBaseId
+          : (data.active_base_id && bases[data.active_base_id] ? data.active_base_id : Object.keys(bases)[0]);
+        if (!baseId) {
+          setWeatherCard(null);
+          return;
+        }
+        const base = bases[baseId] || {};
+        const nextCard = {
+          farmerId: selectedFarmerId,
+          baseId,
+          baseName: String(base?.name || baseId),
+          weatherSummary: String(base?.weather_snapshot || '暂无天气摘要'),
+          humidity: Number.isFinite(Number(base?.relative_humidity_2m)) ? Number(base?.relative_humidity_2m) : null,
+          temperature: Number.isFinite(Number(base?.weather_temperature_2m)) ? Number(base?.weather_temperature_2m) : null,
+          windSpeed: Number.isFinite(Number(base?.weather_wind_speed_10m)) ? Number(base?.weather_wind_speed_10m) : null,
+          lastUpdatedAt: String(base?.last_weather_refresh_at || ''),
+        };
+        setWeatherCard(nextCard);
+        const today = toLocalDay(new Date().toISOString());
+        if (!nextCard.lastUpdatedAt || toLocalDay(nextCard.lastUpdatedAt) !== today) {
+          await refreshWeather(selectedFarmerId, baseId);
+        }
+      } catch {
+        setWeatherCard(null);
+      }
+    };
+    void run();
+  }, [refreshWeather, selectedBaseId, selectedFarmerId]);
 
   const diseaseOptions = useMemo(() => kbDiseases, [kbDiseases]);
   const modelOptions = useMemo(() => resolveModelOptions(), []);
@@ -1425,8 +1553,13 @@ export function DashboardPage() {
       <Card className="glass-card mt-1">
         <CardContent className="pt-5">
           <div className="grid sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3">
-            <select value={selectedFarmerId} onChange={(e) => setSelectedFarmerId(e.target.value)} className="h-10 bg-[#114a38] border border-[#2e7d63] rounded-lg px-3 text-[#e8fff0] font-medium w-full leading-none">
-              <option value="ALL">农户：全部（先选农户）</option>
+            <select
+              value={selectedFarmerId}
+              onChange={(e) => setSelectedFarmerId(e.target.value)}
+              className="h-10 bg-[#114a38] border border-[#2e7d63] rounded-lg px-3 text-[#e8fff0] font-medium w-full leading-none disabled:opacity-60"
+              disabled={!canViewAllFarmers}
+            >
+              {canViewAllFarmers ? <option value="ALL">农户：全部</option> : null}
               {profiles.map((item) => <option key={item.id} value={item.id}>{item.name ? `${item.id} · ${item.name}` : item.id}</option>)}
             </select>
             <select value={selectedBaseId} onChange={(e) => setSelectedBaseId(e.target.value)} className="h-10 bg-[#114a38] border border-[#2e7d63] rounded-lg px-3 text-[#e8fff0] font-medium disabled:opacity-50 w-full leading-none" disabled={selectedFarmerId === 'ALL'}>
@@ -1450,6 +1583,53 @@ export function DashboardPage() {
               <option value="ALL" className="bg-[#0b241b] text-[#e8fff0]">模型：全部</option>
               {modelOptions.map((item: { value: string; label: string }) => <option key={item.value} value={item.value} className="bg-[#0b241b] text-[#e8fff0]">{item.label}</option>)}
             </select>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card className="glass-card">
+        <CardHeader className="pb-2">
+          <div className="flex items-center justify-between">
+            <CardTitle className="text-white flex items-center gap-2">
+              <Cloud className="w-5 h-5 text-[#b8ddc7]" />
+              天气概览
+            </CardTitle>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => {
+                if (weatherCard?.farmerId && weatherCard?.baseId) {
+                  void refreshWeather(weatherCard.farmerId, weatherCard.baseId);
+                }
+              }}
+              disabled={!weatherCard?.baseId || weatherLoading}
+            >
+              <RefreshCw className={cn('w-4 h-4 mr-1', weatherLoading && 'animate-spin')} />
+              刷新天气
+            </Button>
+          </div>
+        </CardHeader>
+        <CardContent className="grid md:grid-cols-5 gap-3 text-sm">
+          <div className="rounded-xl border border-white/10 bg-white/5 p-3 md:col-span-2">
+            <p className="text-white/60 text-xs">当前天气摘要</p>
+            <p className="text-white mt-1">{weatherCard?.weatherSummary || '暂无天气数据'}</p>
+            <p className="text-white/50 text-xs mt-2">基地：{weatherCard?.baseName || '未选择'}</p>
+          </div>
+          <div className="rounded-xl border border-white/10 bg-white/5 p-3">
+            <p className="text-white/60 text-xs">温度</p>
+            <p className="text-[#c8f7c5] text-lg font-semibold">{typeof weatherCard?.temperature === 'number' ? `${weatherCard.temperature.toFixed(1)}℃` : '—'}</p>
+          </div>
+          <div className="rounded-xl border border-white/10 bg-white/5 p-3">
+            <p className="text-white/60 text-xs">湿度</p>
+            <p className="text-[#c8f7c5] text-lg font-semibold">{typeof weatherCard?.humidity === 'number' ? `${weatherCard.humidity.toFixed(0)}%` : '—'}</p>
+          </div>
+          <div className="rounded-xl border border-white/10 bg-white/5 p-3">
+            <p className="text-white/60 text-xs">风速</p>
+            <p className="text-[#c8f7c5] text-lg font-semibold">{typeof weatherCard?.windSpeed === 'number' ? `${weatherCard.windSpeed.toFixed(1)} m/s` : '—'}</p>
+          </div>
+          <div className="rounded-xl border border-[#c8f7c5]/25 bg-[#1a3228] p-3 md:col-span-5">
+            <p className="text-white/60 text-xs">最近天气更新时间：{safeDisplayTime(weatherCard?.lastUpdatedAt || '')}</p>
+            <p className="text-[#c8f7c5] mt-1">天气风险提示：{weatherRiskTip}</p>
           </div>
         </CardContent>
       </Card>
@@ -1740,6 +1920,12 @@ export function DashboardPage() {
                           {event.disease}
                         </button>
                         <div className="mt-2 flex flex-wrap gap-1">
+                          {(event.status === 'pending_expert_review' || event.expertReviewStatus === 'PENDING') && (
+                            <Badge className="text-[10px] bg-orange-400 text-black">等待专家复核</Badge>
+                          )}
+                          {event.expertReviewStatus === 'COMPLETED' && (
+                            <Badge className="text-[10px] bg-emerald-400 text-black">已专家复核</Badge>
+                          )}
                           {event.personalizationApplied && <Badge className="text-[10px] bg-[#c8f7c5] text-black">个性化</Badge>}
                           {event.filtered && <Badge className="text-[10px] bg-yellow-400 text-black">已过滤</Badge>}
                           {event.confirmRound && <Badge className="text-[10px] bg-blue-400 text-black">确认轮</Badge>}
