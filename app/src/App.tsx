@@ -7,6 +7,7 @@ import { ProfilesPage } from './pages/ProfilesPage';
 import { KBPage } from './pages/KBPage';
 import { LoginPage } from './pages/LoginPage';
 import { SimpleRolePage } from './pages/SimpleRolePage';
+import { ExpertReviewPage } from './pages/ExpertReviewPage';
 import {
   clearAuthUser,
   getAllowedPages,
@@ -150,7 +151,7 @@ function App() {
       case 'kb_admin':
         return <KBPage focusDiseaseName={kbDiseaseName} />;
       case 'expert_review':
-        return <SimpleRolePage title="专家复核区" description="EXPERT/ADMIN 可见。当前阶段用于展示待复核任务入口（真实复核流程后续实现）。" />;
+        return <ExpertReviewPage />;
       case 'system_config':
         return <SimpleRolePage title="系统配置页" description="ADMIN 可见。用于演示系统级配置入口。" />;
       case 'review_management':
