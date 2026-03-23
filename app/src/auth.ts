@@ -1,0 +1,100 @@
+export type UserRole = 'USER' | 'EXPERT' | 'ADMIN';
+
+export interface AuthUser {
+  userId: string;
+  displayName: string;
+  role: UserRole;
+}
+
+const AUTH_STORAGE_KEY = 'tomato_auth_user_v1';
+
+export function normalizeRole(value: unknown): UserRole {
+  const role = String(value || '').trim().toUpperCase();
+  if (role === 'ADMIN' || role === 'EXPERT' || role === 'USER') return role;
+  return 'USER';
+}
+
+export function loadAuthUser(): AuthUser | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.localStorage.getItem(AUTH_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<AuthUser>;
+    const userId = String(parsed.userId || '').trim();
+    const displayName = String(parsed.displayName || '').trim();
+    const role = normalizeRole(parsed.role);
+    if (!userId || !displayName) return null;
+    return { userId, displayName, role };
+  } catch {
+    return null;
+  }
+}
+
+export function saveAuthUser(user: AuthUser): void {
+  if (typeof window === 'undefined') return;
+  window.localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(user));
+}
+
+export function clearAuthUser(): void {
+  if (typeof window === 'undefined') return;
+  window.localStorage.removeItem(AUTH_STORAGE_KEY);
+}
+
+export type AppPage =
+  | 'diagnose'
+  | 'cases'
+  | 'dashboard'
+  | 'profiles'
+  | 'kb'
+  | 'expert_review'
+  | 'system_config'
+  | 'review_management'
+  | 'global_dashboard'
+  | 'kb_admin'
+  | 'profiles_admin';
+
+export const PAGE_TO_PATH: Record<AppPage, string> = {
+  diagnose: '/',
+  cases: '/cases',
+  dashboard: '/dashboard',
+  profiles: '/profiles',
+  kb: '/kb',
+  expert_review: '/expert-review',
+  system_config: '/admin/system-config',
+  review_management: '/admin/review-management',
+  global_dashboard: '/admin/global-dashboard',
+  kb_admin: '/admin/kb-management',
+  profiles_admin: '/admin/profiles-management',
+};
+
+const ROLE_PAGES: Record<UserRole, AppPage[]> = {
+  USER: ['diagnose', 'cases', 'dashboard', 'profiles', 'kb'],
+  EXPERT: ['diagnose', 'cases', 'dashboard', 'profiles', 'kb', 'expert_review'],
+  ADMIN: ['diagnose', 'cases', 'dashboard', 'profiles', 'kb', 'expert_review', 'system_config', 'review_management', 'global_dashboard', 'kb_admin', 'profiles_admin'],
+};
+
+export function getAllowedPages(role: UserRole): AppPage[] {
+  return ROLE_PAGES[role] || ROLE_PAGES.USER;
+}
+
+export function getDefaultPage(role: UserRole): AppPage {
+  return getAllowedPages(role)[0] || 'diagnose';
+}
+
+export function pathToPage(pathname: string): AppPage {
+  const matched = (Object.entries(PAGE_TO_PATH).find(([, path]) => pathname === path) || [null])[0] as AppPage | null;
+  if (matched) return matched;
+  if (pathname.startsWith('/kb/')) return 'kb';
+  return 'diagnose';
+}
+
+export function withAuthHeaders(init: RequestInit | undefined, authUser: AuthUser | null): RequestInit {
+  if (!authUser) return init || {};
+  const headers = new Headers(init?.headers || {});
+  headers.set('X-User-Id', authUser.userId);
+  headers.set('X-User-Role', authUser.role);
+  return {
+    ...(init || {}),
+    headers,
+  };
+}

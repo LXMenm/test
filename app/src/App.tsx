@@ -1,24 +1,24 @@
-import { Component, useEffect, useState } from 'react';
+import { Component, useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Navbar } from './components/Navbar';
 import { DiagnosePage } from './pages/DiagnosePage';
 import { DashboardPage } from './pages/DashboardPage';
 import { ProfilesPage } from './pages/ProfilesPage';
 import { KBPage } from './pages/KBPage';
-
-type Page = 'diagnose' | 'dashboard' | 'profiles' | 'kb';
-
-const PATH_TO_PAGE: Record<string, Page> = {
-  '/': 'diagnose',
-  '/dashboard': 'dashboard',
-  '/profiles': 'profiles',
-  '/kb': 'kb',
-};
-
-function getPageFromPath(pathname: string): Page {
-  if (pathname.startsWith('/kb/')) return 'kb';
-  return PATH_TO_PAGE[pathname] ?? 'diagnose';
-}
+import { LoginPage } from './pages/LoginPage';
+import { SimpleRolePage } from './pages/SimpleRolePage';
+import {
+  clearAuthUser,
+  getAllowedPages,
+  getDefaultPage,
+  loadAuthUser,
+  PAGE_TO_PATH,
+  pathToPage,
+  saveAuthUser,
+  withAuthHeaders,
+  type AppPage,
+  type AuthUser,
+} from './auth';
 
 function getKbDiseaseFromPath(pathname: string): string {
   if (!pathname.startsWith('/kb/')) return '';
@@ -81,12 +81,31 @@ class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
 }
 
 function App() {
-  const [currentPage, setCurrentPage] = useState<Page>(() => getPageFromPath(window.location.pathname));
+  const [authUser, setAuthUser] = useState<AuthUser | null>(() => loadAuthUser());
+  const [currentPage, setCurrentPage] = useState<AppPage>(() => pathToPage(window.location.pathname));
   const [kbDiseaseName, setKbDiseaseName] = useState<string>(() => getKbDiseaseFromPath(window.location.pathname));
+
+  const allowedPages = useMemo(() => (authUser ? getAllowedPages(authUser.role) : []), [authUser]);
+
+  useEffect(() => {
+    if (!authUser) return;
+    const defaultPage = getDefaultPage(authUser.role);
+    if (!allowedPages.includes(currentPage)) {
+      setCurrentPage(defaultPage);
+      window.history.replaceState(null, '', PAGE_TO_PATH[defaultPage]);
+    }
+  }, [allowedPages, authUser, currentPage]);
 
   useEffect(() => {
     const handlePopState = () => {
-      setCurrentPage(getPageFromPath(window.location.pathname));
+      const nextPage = pathToPage(window.location.pathname);
+      if (authUser && !allowedPages.includes(nextPage)) {
+        const fallback = getDefaultPage(authUser.role);
+        setCurrentPage(fallback);
+        window.history.replaceState(null, '', PAGE_TO_PATH[fallback]);
+      } else {
+        setCurrentPage(nextPage);
+      }
       setKbDiseaseName(getKbDiseaseFromPath(window.location.pathname));
     };
 
@@ -94,27 +113,75 @@ function App() {
     return () => {
       window.removeEventListener('popstate', handlePopState);
     };
-  }, []);
+  }, [allowedPages, authUser]);
+
+  useEffect(() => {
+    const originalFetch = window.fetch.bind(window);
+    window.fetch = (input: RequestInfo | URL, init?: RequestInit) => originalFetch(input, withAuthHeaders(init, authUser));
+    return () => {
+      window.fetch = originalFetch;
+    };
+  }, [authUser]);
+
+  const handleLogin = (user: AuthUser) => {
+    setAuthUser(user);
+    saveAuthUser(user);
+    const defaultPage = getDefaultPage(user.role);
+    setCurrentPage(defaultPage);
+    window.history.replaceState(null, '', PAGE_TO_PATH[defaultPage]);
+  };
+
+  const handleLogout = () => {
+    clearAuthUser();
+    setAuthUser(null);
+  };
 
   const renderPage = () => {
     switch (currentPage) {
       case 'diagnose':
         return <DiagnosePage />;
+      case 'cases':
+        return <SimpleRolePage title="我的病例" description="用于论文演示：可在此扩展为病例列表/复诊入口（当前为轻量占位页）。" />;
       case 'dashboard':
         return <DashboardPage />;
       case 'profiles':
         return <ProfilesPage />;
       case 'kb':
+      case 'kb_admin':
         return <KBPage focusDiseaseName={kbDiseaseName} />;
+      case 'expert_review':
+        return <SimpleRolePage title="专家复核区" description="EXPERT/ADMIN 可见。当前阶段用于展示待复核任务入口（真实复核流程后续实现）。" />;
+      case 'system_config':
+        return <SimpleRolePage title="系统配置页" description="ADMIN 可见。用于演示系统级配置入口。" />;
+      case 'review_management':
+        return <SimpleRolePage title="复核管理页" description="ADMIN 可见。用于演示复核任务分配与状态管理入口。" />;
+      case 'global_dashboard':
+        return <SimpleRolePage title="全局看板" description="ADMIN 可见。用于展示全局统计维度入口。" />;
+      case 'profiles_admin':
+        return <SimpleRolePage title="全量农户档案管理" description="ADMIN 可见。当前复用档案接口并通过角色控制数据范围。" />;
       default:
         return <DiagnosePage />;
     }
   };
 
+  if (!authUser) {
+    return (
+      <ErrorBoundary>
+        <LoginPage onLogin={handleLogin} />
+      </ErrorBoundary>
+    );
+  }
+
   return (
     <ErrorBoundary>
       <div className="min-h-screen bg-black text-white">
-        <Navbar currentPage={currentPage} onPageChange={setCurrentPage} />
+        <Navbar
+          currentPage={currentPage}
+          availablePages={allowedPages}
+          onPageChange={setCurrentPage}
+          authUser={authUser}
+          onLogout={handleLogout}
+        />
         <main className="pt-20 pb-8 px-4 sm:px-6 lg:px-8 max-w-7xl mx-auto">
           {renderPage()}
         </main>
