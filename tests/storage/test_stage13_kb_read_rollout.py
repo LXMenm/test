@@ -191,10 +191,10 @@ def test_kb_parity_verification_script_passes_with_sqlite(tmp_path: Path) -> Non
     sqlite_path = tmp_path / "kb-parity.db"
     command = [
         sys.executable,
-        "scripts/verify_kb_file_mysql_parity.py",
+        "scripts/verify/verify_kb_file_mysql_parity.py",
         "--reset-schema",
     ]
     env = dict(**__import__("os").environ, DATABASE_URL=f"sqlite:///{sqlite_path}")
-    completed = subprocess.run(command, cwd=Path(__file__).resolve().parents[1], env=env, capture_output=True, text=True, check=True)
+    completed = subprocess.run(command, cwd=Path(__file__).resolve().parents[2], env=env, capture_output=True, text=True, check=True)
     assert "[kb-verify] payload parity: ok" in completed.stdout
     assert "[kb-verify] KnowledgeBaseManager parity: ok" in completed.stdout

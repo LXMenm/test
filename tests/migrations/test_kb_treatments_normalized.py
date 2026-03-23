@@ -14,7 +14,7 @@ import knowledge_base.kb_store as kb_store
 from knowledge_base.kb_manager import KnowledgeBaseManager
 from mysql_models import KBTreatmentActionORM, KBTreatmentIngredientORM, KBTreatmentORM
 from repositories import kb_repo_mysql
-import scripts.migrate_kb_treatments_normalized as migrate_treatments_script
+import scripts.migrations.migrate_kb_treatments_normalized as migrate_treatments_script
 
 
 def _fixture_payloads() -> dict[str, Any]:

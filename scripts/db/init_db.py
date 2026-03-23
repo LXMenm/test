@@ -6,7 +6,13 @@
 from __future__ import annotations
 
 import pymysql
+from pathlib import Path
+import sys
 from urllib.parse import urlparse
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 # 首先连接到 MySQL 服务器（不指定数据库）来创建数据库
 from db import engine as db_engine, Base
