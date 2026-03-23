@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Bell, Eye, Loader2 } from 'lucide-react';
+import { Bell, Eye, Loader2, User, Calendar, Stethoscope, CheckCircle2 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -7,6 +7,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
+import { cn } from '@/lib/utils';
 
 interface PendingCaseItem {
   trace_id: string;
@@ -57,7 +58,13 @@ function formatTime(value?: string): string {
   if (!value) return '-';
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString();
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  const hours = String(date.getHours()).padStart(2, '0');
+  const minutes = String(date.getMinutes()).padStart(2, '0');
+  const seconds = String(date.getSeconds()).padStart(2, '0');
+  return `${year}/${month}/${day}/${hours}:${minutes}:${seconds}`;
 }
 
 export function ExpertReviewPage() {
@@ -149,75 +156,123 @@ export function ExpertReviewPage() {
   };
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-3xl font-bold text-white">专家复核区</h1>
-          <p className="text-sm text-white/60 mt-1">最小闭环：待复核列表 → 详情查看 → 提交专家确认</p>
+    <div className="space-y-8">
+      <div className="flex flex-col lg:flex-row lg:items-start gap-6">
+        <div className="flex-1">
+          <h1 className="text-4xl font-bold text-white mb-2">专家复核区</h1>
+          <p className="text-sm text-white/60">最小闭环：待复核列表 → 详情查看 → 提交专家确认</p>
         </div>
-        <div className="rounded-xl border border-white/20 bg-white/5 p-4 min-w-72">
-          <div className="flex items-center gap-2 text-white mb-2">
-            <Bell className="w-4 h-4 text-[#c8f7c5]" />
-            <span className="font-medium">待复核提醒</span>
-            <Badge className="bg-[#c8f7c5] text-black">{pendingCount}</Badge>
+        <div className="w-full lg:w-80 rounded-2xl border border-[#c8f7c5]/20 bg-gradient-to-br from-[#13221c] to-[#0a120e] p-6 shadow-xl">
+          <div className="flex items-center gap-3 mb-4">
+            <div className="p-3 rounded-xl bg-[#c8f7c5]/10">
+              <Bell className="w-6 h-6 text-[#c8f7c5]" />
+            </div>
+            <div>
+              <h3 className="text-white font-semibold text-lg">待复核提醒</h3>
+              <p className="text-xs text-white/50">共 {pendingCount} 个病例</p>
+            </div>
+            <Badge className="ml-auto bg-[#c8f7c5] text-black text-sm px-3 py-1">{pendingCount}</Badge>
           </div>
-          <div className="space-y-1 text-xs text-white/75">
+          <div className="space-y-2">
             {recentPending.length === 0 ? (
-              <p>暂无待复核病例</p>
+              <div className="text-center py-6">
+                <CheckCircle2 className="w-12 h-12 text-[#c8f7c5]/50 mx-auto mb-2" />
+                <p className="text-white/60 text-sm">暂无待复核病例</p>
+              </div>
             ) : recentPending.map((item) => (
               <button
                 key={item.trace_id}
                 type="button"
-                className="block w-full text-left hover:text-[#c8f7c5]"
+                className="w-full text-left p-3 rounded-xl bg-white/5 hover:bg-white/10 transition-all duration-200 border border-white/5 hover:border-[#c8f7c5]/30"
                 onClick={() => { void loadDetail(item.trace_id); }}
               >
-                {item.trace_id.slice(0, 10)}... · {item.farmer_name || item.farmer_id || '未知用户'}
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-xs text-white/50 font-mono">{item.trace_id.slice(0, 12)}...</span>
+                  <span className="text-[#c8f7c5] text-xs">{item.top1_disease}</span>
+                </div>
+                <div className="flex items-center gap-2 text-xs text-white/70">
+                  <User className="w-3 h-3" />
+                  <span>{item.farmer_name || item.farmer_id || '未知用户'}</span>
+                </div>
               </button>
             ))}
           </div>
         </div>
       </div>
 
-      <Card className="glass-card">
-        <CardHeader>
-          <CardTitle className="text-white">待复核病例列表</CardTitle>
+      <Card className="glass-card bg-white/[0.02] border-[#86b89d]/20">
+        <CardHeader className="pb-4">
+          <div className="flex items-center justify-between">
+            <CardTitle className="text-2xl text-white flex items-center gap-3">
+              <div className="p-2 rounded-lg bg-[#c8f7c5]/10">
+                <Stethoscope className="w-6 h-6 text-[#c8f7c5]" />
+              </div>
+              待复核病例列表
+            </CardTitle>
+            {pendingCount > 0 && (
+              <Badge className="bg-orange-400/20 text-orange-300 border-orange-400/30 px-3 py-1">
+                {pendingCount} 个待处理
+              </Badge>
+            )}
+          </div>
         </CardHeader>
         <CardContent>
           {loading ? (
-            <div className="text-white/70 text-sm flex items-center gap-2"><Loader2 className="w-4 h-4 animate-spin" />加载中...</div>
+            <div className="flex items-center justify-center py-12">
+              <Loader2 className="w-8 h-8 animate-spin text-[#c8f7c5]" />
+              <span className="ml-3 text-white/70">加载中...</span>
+            </div>
           ) : items.length === 0 ? (
-            <p className="text-white/60 text-sm">暂无 pending_expert_review 病例</p>
+            <div className="text-center py-16">
+              <CheckCircle2 className="w-16 h-16 text-[#c8f7c5]/30 mx-auto mb-4" />
+              <h3 className="text-xl text-white/80 mb-2">所有病例已复核完成</h3>
+              <p className="text-white/50 text-sm">暂无 pending_expert_review 病例</p>
+            </div>
           ) : (
-            <div className="space-y-3">
+            <div className="space-y-4">
               {items.map((item) => (
-                <div key={item.trace_id} className="rounded-xl border border-white/10 bg-white/5 hover:bg-white/[0.07] p-3 grid md:grid-cols-6 gap-2 text-sm text-white/85">
-                  <div>
-                    <p className="text-white/50 text-xs">trace_id</p>
-                    <p>{item.trace_id.slice(0, 16)}...</p>
-                  </div>
-                  <div>
-                    <p className="text-white/50 text-xs">用户/农户</p>
-                    <p>{item.farmer_name || item.farmer_id || '-'}</p>
-                  </div>
-                  <div>
-                    <p className="text-white/50 text-xs">提交时间</p>
-                    <p>{formatTime(item.submitted_at)}</p>
-                  </div>
-                  <div>
-                    <p className="text-white/50 text-xs">系统 top1</p>
-                    <p>{item.top1_disease || '-'}</p>
-                  </div>
-                  <div>
-                    <p className="text-white/50 text-xs">当前状态</p>
-                    <div className="flex items-center gap-2">
-                      {getReviewTag(item)}
-                      <span className="text-xs text-white/70">{item.status || '-'} / {item.expert_review_status || '-'}</span>
+                <div key={item.trace_id} className="group rounded-2xl border border-white/10 bg-white/5 hover:bg-white/[0.08] p-5 transition-all duration-300 hover:border-[#c8f7c5]/30">
+                  <div className="grid grid-cols-1 md:grid-cols-12 gap-4">
+                    <div className="md:col-span-2">
+                      <p className="text-white/40 text-xs mb-1 font-mono">trace_id</p>
+                      <p className="text-white font-mono text-sm">{item.trace_id.slice(0, 20)}...</p>
                     </div>
-                  </div>
-                  <div className="flex items-end justify-end">
-                    <Button size="sm" variant="outline" className="border-[#c8f7c5]/60 text-[#c8f7c5]" onClick={() => { void loadDetail(item.trace_id); }}>
-                      <Eye className="w-4 h-4 mr-1" />详情
-                    </Button>
+                    <div className="md:col-span-2">
+                      <p className="text-white/40 text-xs mb-1 flex items-center gap-1">
+                        <User className="w-3 h-3" /> 用户/农户
+                      </p>
+                      <p className="text-white font-medium">{item.farmer_name || item.farmer_id || '-'}</p>
+                    </div>
+                    <div className="md:col-span-2">
+                      <p className="text-white/40 text-xs mb-1 flex items-center gap-1">
+                        <Calendar className="w-3 h-3" /> 提交时间
+                      </p>
+                      <p className="text-white text-sm">{formatTime(item.submitted_at)}</p>
+                    </div>
+                    <div className="md:col-span-3">
+                      <p className="text-white/40 text-xs mb-1">系统 top1</p>
+                      <div className="flex items-center gap-2">
+                        <span className="inline-block w-2 h-2 rounded-full bg-[#c8f7c5]" />
+                        <p className="text-white font-medium">{item.top1_disease || '-'}</p>
+                      </div>
+                    </div>
+                    <div className="md:col-span-2">
+                      <p className="text-white/40 text-xs mb-1">当前状态</p>
+                      <div className="flex items-center gap-2">
+                        {getReviewTag(item)}
+                      </div>
+                    </div>
+                    <div className="md:col-span-1 flex items-center justify-end">
+                      <Button 
+                        size="sm" 
+                        variant="outline" 
+                        className="border-[#c8f7c5]/30 text-[#c8f7c5] hover:bg-[#c8f7c5]/10 hover:border-[#c8f7c5] transition-all duration-200"
+                        onClick={() => { void loadDetail(item.trace_id); }}
+                      >
+                        <Eye className="w-4 h-4 mr-2" />
+                        详情
+                      </Button>
+                    </div>
                   </div>
                 </div>
               ))}
@@ -227,68 +282,201 @@ export function ExpertReviewPage() {
       </Card>
 
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto bg-[#0f1614] border-[#86b89d]/30 text-white">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
+        <DialogContent className={cn(
+          "max-w-7xl max-h-[95vh] overflow-y-auto bg-gradient-to-b from-[#0f1614] to-[#0a120e] border-[#86b89d]/30 text-white shadow-2xl dashboard-scrollbar"
+        )}>
+          <DialogHeader className="pb-4 border-b border-white/10">
+            <DialogTitle className="flex items-center gap-3 text-2xl">
+              <div className="p-2 rounded-lg bg-[#c8f7c5]/10">
+                <Stethoscope className="w-6 h-6 text-[#c8f7c5]" />
+              </div>
               专家复核详情
               {detail ? getReviewTag(detail) : null}
             </DialogTitle>
           </DialogHeader>
           {!detail || detailLoading ? (
-            <div className="text-sm text-white/70">加载中...</div>
+            <div className="flex items-center justify-center py-20">
+              <Loader2 className="w-10 h-10 animate-spin text-[#c8f7c5]" />
+              <span className="ml-4 text-white/70 text-lg">加载中...</span>
+            </div>
           ) : (
-            <div className="space-y-4 text-sm">
-              <section className="rounded-xl border border-[#86b89d]/20 bg-[#13221c] p-3 space-y-2">
-                <h3 className="text-[#c8f7c5] font-semibold">A. 用户输入</h3>
-                {detail.image_url ? <img src={detail.image_url} alt="病例图片" className="max-h-56 rounded-lg object-contain bg-black/30" /> : null}
-                <p>症状文本：{detail.symptoms_text || '-'}</p>
-                <p>生育期：{detail.growth_stage || '-'}</p>
-                <p>基地/环境：{detail.base_name || detail.base_id || '-'} / {detail.environment || '-'}</p>
-                <p>档案摘要：规模 {detail.profile_summary?.farm_scale || '-'}，购药能力 {detail.profile_summary?.pesticide_access_level || '-'}，设备 {(detail.profile_summary?.equipment || []).join('、') || '-'}</p>
+            <div className="space-y-6 py-6 px-2">
+              <section className="rounded-2xl border border-[#86b89d]/20 bg-gradient-to-br from-[#13221c] to-[#0f1a15] p-6 space-y-5">
+                <h3 className="text-[#c8f7c5] font-semibold text-xl flex items-center gap-3">
+                  <div className="w-1.5 h-7 bg-[#c8f7c5] rounded-full" />
+                  A. 用户输入
+                </h3>
+                <div className="grid md:grid-cols-12 gap-5">
+                  <div className="md:col-span-5">
+                    {detail.image_url && (
+                      <div className="rounded-xl overflow-hidden border border-white/10 bg-black/40">
+                        <img 
+                          src={detail.image_url} 
+                          alt="病例图片" 
+                          className="w-full max-h-80 object-contain mx-auto" 
+                        />
+                      </div>
+                    )}
+                  </div>
+                  <div className="md:col-span-7 space-y-4">
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="space-y-2">
+                        <p className="text-white/40 text-xs uppercase tracking-wider">症状文本</p>
+                        <div className="bg-white/5 rounded-lg p-4 min-h-[60px]">
+                          <p className="text-white/90 break-words">{detail.symptoms_text || '-'}</p>
+                        </div>
+                      </div>
+                      <div className="space-y-2">
+                        <p className="text-white/40 text-xs uppercase tracking-wider">基地 / 环境</p>
+                        <div className="bg-white/5 rounded-lg p-4 min-h-[60px]">
+                          <p className="text-white/90 break-words">{detail.base_name || detail.base_id || '-'} / {detail.environment || '-'}</p>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-3 gap-4">
+                      <div className="space-y-2">
+                        <p className="text-white/40 text-xs uppercase tracking-wider">生育期</p>
+                        <div className="bg-white/5 rounded-lg p-4">
+                          <p className="text-white/90">{detail.growth_stage || '-'}</p>
+                        </div>
+                      </div>
+                      <div className="space-y-2">
+                        <p className="text-white/40 text-xs uppercase tracking-wider">规模</p>
+                        <div className="bg-white/5 rounded-lg p-4">
+                          <p className="text-white/90">{detail.profile_summary?.farm_scale || '-'}</p>
+                        </div>
+                      </div>
+                      <div className="space-y-2">
+                        <p className="text-white/40 text-xs uppercase tracking-wider">购药能力</p>
+                        <div className="bg-white/5 rounded-lg p-4">
+                          <p className="text-white/90">{detail.profile_summary?.pesticide_access_level || '-'}</p>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="space-y-2">
+                      <p className="text-white/40 text-xs uppercase tracking-wider">设备</p>
+                      <div className="bg-white/5 rounded-lg p-4">
+                        <p className="text-white/90">{(detail.profile_summary?.equipment || []).join('、') || '-'}</p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
               </section>
 
-              <section className="rounded-xl border border-[#86b89d]/20 bg-[#13221c] p-3 space-y-2">
-                <h3 className="text-[#c8f7c5] font-semibold">B. 模型输出</h3>
-                <p>image top3：{(detail.model_outputs?.image_top3 || []).map((it) => `${it[0]}(${formatProb(it[1])})`).join('；') || '-'}</p>
-                <p>text top3：{(detail.model_outputs?.text_top3 || []).map((it) => `${it[0]}(${formatProb(it[1])})`).join('；') || '-'}</p>
-                <p>fusion top3：{(detail.model_outputs?.fusion_top3 || []).map((it) => `${it[0]}(${formatProb(it[1])})`).join('；') || '-'}</p>
-                <p>final_confidence：{formatProb(detail.model_outputs?.final_confidence)}</p>
-                <p>modality_conflict_flag：{detail.model_outputs?.modality_conflict_flag ? '是' : '否'}</p>
+              <section className="rounded-2xl border border-[#86b89d]/20 bg-gradient-to-br from-[#13221c] to-[#0f1a15] p-6 space-y-5">
+                <h3 className="text-[#c8f7c5] font-semibold text-xl flex items-center gap-3">
+                  <div className="w-1.5 h-7 bg-[#c8f7c5] rounded-full" />
+                  B. 模型输出
+                </h3>
+                <div className="grid md:grid-cols-12 gap-5">
+                  <div className="md:col-span-4 space-y-4">
+                    <div className="bg-white/5 rounded-xl p-5 border border-white/5">
+                      <p className="text-white/40 text-xs uppercase tracking-wider mb-3">Image Top 3</p>
+                      <div className="space-y-2">
+                        {(detail.model_outputs?.image_top3 || []).map((it, idx) => (
+                          <div key={idx} className="flex justify-between items-center py-1.5">
+                            <span className="text-white/90 font-medium">{it[0]}</span>
+                            <span className="text-[#c8f7c5] font-mono text-lg">{formatProb(it[1])}</span>
+                          </div>
+                        )) || '-'}
+                      </div>
+                    </div>
+                    <div className="bg-white/5 rounded-xl p-5 border border-white/5">
+                      <p className="text-white/40 text-xs uppercase tracking-wider mb-3">Text Top 3</p>
+                      <div className="space-y-2">
+                        {(detail.model_outputs?.text_top3 || []).map((it, idx) => (
+                          <div key={idx} className="flex justify-between items-center py-1.5">
+                            <span className="text-white/90 font-medium">{it[0]}</span>
+                            <span className="text-[#c8f7c5] font-mono text-lg">{formatProb(it[1])}</span>
+                          </div>
+                        )) || '-'}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="md:col-span-8 space-y-4">
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="bg-white/5 rounded-xl p-5 border border-white/5">
+                        <p className="text-white/40 text-xs uppercase tracking-wider mb-3">Fusion Top 3</p>
+                        <div className="space-y-2">
+                          {(detail.model_outputs?.fusion_top3 || []).map((it, idx) => (
+                            <div key={idx} className="flex justify-between items-center py-1.5">
+                              <span className="text-white/90 font-medium">{it[0]}</span>
+                              <span className="text-[#c8f7c5] font-mono text-lg font-bold">{formatProb(it[1])}</span>
+                            </div>
+                          )) || '-'}
+                        </div>
+                      </div>
+                      <div className="grid grid-rows-2 gap-4">
+                        <div className="bg-white/5 rounded-xl p-5 border border-white/5 text-center">
+                          <p className="text-white/40 text-xs uppercase tracking-wider mb-2">最终置信度</p>
+                          <p className="text-4xl font-bold text-[#c8f7c5]">{formatProb(detail.model_outputs?.final_confidence)}</p>
+                        </div>
+                        <div className="bg-white/5 rounded-xl p-5 border border-white/5 text-center">
+                          <p className="text-white/40 text-xs uppercase tracking-wider mb-2">图文冲突</p>
+                          <p className={`text-3xl font-bold ${detail.model_outputs?.modality_conflict_flag ? 'text-orange-400' : 'text-emerald-400'}`}>
+                            {detail.model_outputs?.modality_conflict_flag ? '是' : '否'}
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
               </section>
 
-              <section className="rounded-xl border border-[#86b89d]/20 bg-[#13221c] p-3 space-y-3">
-                <h3 className="text-[#c8f7c5] font-semibold">C. 专家填写</h3>
-                <div>
-                  <Label>最终确认病害</Label>
-                  <Input
-                    value={form.expert_review_result}
-                    onChange={(e) => setForm((prev) => ({ ...prev, expert_review_result: e.target.value }))}
-                    className="bg-white/5 border-white/20 text-white"
-                  />
-                </div>
-                <div>
-                  <Label>补充症状</Label>
-                  <Input
-                    value={form.expert_review_supplement_symptoms}
-                    onChange={(e) => setForm((prev) => ({ ...prev, expert_review_supplement_symptoms: e.target.value }))}
-                    className="bg-white/5 border-white/20 text-white"
-                  />
-                </div>
-                <div>
-                  <Label>复核备注</Label>
-                  <Textarea
-                    value={form.expert_review_notes}
-                    onChange={(e) => setForm((prev) => ({ ...prev, expert_review_notes: e.target.value }))}
-                    className="bg-white/5 border-white/20 text-white"
-                  />
+              <section className="rounded-2xl border border-[#86b89d]/20 bg-gradient-to-br from-[#13221c] to-[#0f1a15] p-6 space-y-5">
+                <h3 className="text-[#c8f7c5] font-semibold text-xl flex items-center gap-3">
+                  <div className="w-1.5 h-7 bg-[#c8f7c5] rounded-full" />
+                  C. 专家填写
+                </h3>
+                <div className="grid md:grid-cols-12 gap-5">
+                  <div className="md:col-span-6 space-y-4">
+                    <div>
+                      <Label className="text-white/70 mb-2 block text-sm uppercase tracking-wider">最终确认病害</Label>
+                      <Input
+                        value={form.expert_review_result}
+                        onChange={(e) => setForm((prev) => ({ ...prev, expert_review_result: e.target.value }))}
+                        className="bg-white/5 border-white/20 text-white focus:border-[#c8f7c5] focus:ring-[#c8f7c5]/20 h-14 text-lg"
+                        placeholder="请输入最终确认的病害名称"
+                      />
+                    </div>
+                    <div>
+                      <Label className="text-white/70 mb-2 block text-sm uppercase tracking-wider">补充症状</Label>
+                      <Input
+                        value={form.expert_review_supplement_symptoms}
+                        onChange={(e) => setForm((prev) => ({ ...prev, expert_review_supplement_symptoms: e.target.value }))}
+                        className="bg-white/5 border-white/20 text-white focus:border-[#c8f7c5] focus:ring-[#c8f7c5]/20 h-14 text-lg"
+                        placeholder="请输入补充的症状"
+                      />
+                    </div>
+                  </div>
+                  <div className="md:col-span-6">
+                    <div>
+                      <Label className="text-white/70 mb-2 block text-sm uppercase tracking-wider">复核备注</Label>
+                      <Textarea
+                        value={form.expert_review_notes}
+                        onChange={(e) => setForm((prev) => ({ ...prev, expert_review_notes: e.target.value }))}
+                        className="bg-white/5 border-white/20 text-white focus:border-[#c8f7c5] focus:ring-[#c8f7c5]/20 min-h-36 text-lg"
+                        placeholder="请输入复核备注"
+                      />
+                    </div>
+                  </div>
                 </div>
               </section>
 
-              <section className="pt-1">
-                <h3 className="text-[#c8f7c5] font-semibold mb-2">D. 提交按钮</h3>
-                <Button onClick={() => { void submitReview(); }} disabled={submitLoading || !form.expert_review_result.trim()} className="bg-[#c8f7c5] text-black hover:bg-[#b8e7b5]">
-                  {submitLoading ? '提交中...' : '提交复核结果'}
-                </Button>
+              <section className="pt-4">
+                <div className="flex justify-end">
+                  <Button 
+                    onClick={() => { void submitReview(); }} 
+                    disabled={submitLoading || !form.expert_review_result.trim()} 
+                    className="bg-gradient-to-r from-[#c8f7c5] to-[#9ed8bf] text-black hover:from-[#b8e7b5] hover:to-[#8ec8af] px-10 py-7 text-xl font-semibold shadow-xl shadow-[#c8f7c5]/25 transition-all duration-300 rounded-xl"
+                  >
+                    {submitLoading ? (
+                      <><Loader2 className="w-6 h-6 animate-spin mr-3" />提交中...</>
+                    ) : (
+                      <><CheckCircle2 className="w-6 h-6 mr-3" />提交复核结果</>
+                    )}
+                  </Button>
+                </div>
               </section>
             </div>
           )}
