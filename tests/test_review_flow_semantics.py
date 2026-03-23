@@ -172,7 +172,7 @@ def test_admin_close_marks_cancelled_and_moves_bucket(monkeypatch) -> None:
 
     completed_resp = client.get("/api/admin/reviews?status=completed", headers=_headers())
     assert completed_resp.status_code == 200
-    assert completed_resp.json()["items"][0]["review_task_status"] == "CANCELLED"
+    assert completed_resp.json()["count"] == 0
 
 
 def test_stats_exclude_non_terminal_by_default(monkeypatch) -> None:
@@ -306,14 +306,12 @@ def test_legacy_event_missing_fields_still_serializes(monkeypatch) -> None:
 
     list_resp = client.get("/api/admin/reviews?status=completed", headers=_headers())
     assert list_resp.status_code == 200
-    item = list_resp.json()["items"][0]
-    assert item["review_task_status"] == "COMPLETED"
-    assert item["admin_flag"] == "normal"
+    assert list_resp.json()["count"] == 0
 
     detail_resp = client.get("/api/admin/reviews/legacy-trace-1", headers=_headers())
     assert detail_resp.status_code == 200
     detail = detail_resp.json()["item"]
-    assert detail["review_task_status"] == "COMPLETED"
+    assert detail["review_task_status"] == "UNNEEDED"
     assert detail["admin_flag"] == "normal"
 
 
@@ -365,3 +363,40 @@ def test_clone_append_refreshes_event_id_for_assign_flow_and_submit(monkeypatch)
 
     latest_by_trace = repo.get_latest_event_by_trace("trace-eventid")
     assert latest_by_trace["event_id"] != old_event_id
+
+
+def test_review_tabs_only_include_true_review_tasks(monkeypatch) -> None:
+    now = datetime.now(timezone.utc).isoformat()
+    repo = _InMemoryCaseRepo(
+        [
+            _event(trace_id="normal-completed", status="completed", disease="晚疫病", expert_review_status="NONE", assigned_expert_id=None, ts=now),
+            _event(trace_id="waiting-expert", status="waiting_for_expert_decision", disease="早疫病", expert_review_status="NONE", assigned_expert_id=None, ts=now),
+            _event(trace_id="waiting-supplement", status="waiting_for_supplement", disease="灰霉病", expert_review_status="NONE", assigned_expert_id=None, ts=now),
+            _event(trace_id="manual-reco", status="manual_review_recommended", disease="叶霉病", expert_review_status="NONE", assigned_expert_id=None, ts=now),
+            _event(trace_id="pending-unassigned", status="pending_expert_review", disease="疫霉根腐病", expert_review_status="PENDING", assigned_expert_id=None, ts=now),
+            _event(trace_id="pending-assigned", status="pending_expert_review", disease="斑枯病", expert_review_status="PENDING", assigned_expert_id="E4001", ts=now),
+            _event(trace_id="review-completed", status="completed", disease="炭疽病", expert_review_status="COMPLETED", assigned_expert_id="E4002", ts=now),
+            _event(trace_id="declined-case", status="completed", disease="晚疫病", expert_review_status="DECLINED", assigned_expert_id=None, ts=now),
+            _event(trace_id="closed-case", status="cancelled", disease="早疫病", expert_review_status="PENDING", assigned_expert_id="E4003", review_flow_status="closed", ts=now),
+        ]
+    )
+    _install_repo(monkeypatch, repo)
+    client = TestClient(app_module.app)
+
+    pending_resp = client.get("/api/admin/reviews?status=pending", headers=_headers())
+    assert pending_resp.status_code == 200
+    pending_ids = {item["trace_id"] for item in pending_resp.json()["items"]}
+    assert pending_ids == {"pending-unassigned"}
+    assert pending_resp.json()["items"][0]["review_task_status"] == "UNASSIGNED"
+
+    assigned_resp = client.get("/api/admin/reviews?status=assigned", headers=_headers())
+    assert assigned_resp.status_code == 200
+    assigned_ids = {item["trace_id"] for item in assigned_resp.json()["items"]}
+    assert assigned_ids == {"pending-assigned"}
+    assert assigned_resp.json()["items"][0]["review_task_status"] == "ASSIGNED"
+
+    completed_resp = client.get("/api/admin/reviews?status=completed", headers=_headers())
+    assert completed_resp.status_code == 200
+    completed_ids = {item["trace_id"] for item in completed_resp.json()["items"]}
+    assert completed_ids == {"review-completed"}
+    assert completed_resp.json()["items"][0]["review_task_status"] == "COMPLETED"

@@ -3134,15 +3134,35 @@ def _derive_review_task_status(event: dict[str, Any]) -> str:
     expert_status = str(event.get("expert_review_status") or "").strip().upper()
     assigned_expert_id = str(event.get("assigned_expert_id") or "").strip()
 
+    if not _has_review_context(event):
+        return "UNNEEDED"
     if review_flow_status == "closed" or case_status == "cancelled":
         return "CANCELLED"
-    if expert_status == "COMPLETED" or case_status == "completed":
+    if expert_status == "COMPLETED":
         return "COMPLETED"
     if case_status == "pending_expert_review" and assigned_expert_id:
         return "ASSIGNED"
     if case_status == "pending_expert_review" and not assigned_expert_id:
         return "UNASSIGNED"
+    if expert_status == "DECLINED":
+        return "UNNEEDED"
     return "UNNEEDED"
+
+
+def _has_review_context(event: dict[str, Any]) -> bool:
+    case_status = str(event.get("status") or "").strip().lower()
+    expert_status = str(event.get("expert_review_status") or "").strip().upper()
+    assigned_expert_id = str(event.get("assigned_expert_id") or "").strip()
+    expert_review_result = str(event.get("expert_review_result") or "").strip()
+    if case_status == "pending_expert_review":
+        return True
+    if expert_status in {"PENDING", "COMPLETED", "DECLINED"}:
+        return True
+    if assigned_expert_id:
+        return True
+    if expert_review_result:
+        return True
+    return False
 
 
 def _normalize_admin_flag(value: Any) -> str:
@@ -3230,15 +3250,15 @@ def _build_expert_review_detail(event: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _admin_review_bucket(event: dict[str, Any]) -> str:
+def _admin_review_bucket(event: dict[str, Any]) -> str | None:
     review_task_status = _derive_review_task_status(event)
     if review_task_status == "UNASSIGNED":
         return "pending"
     if review_task_status == "ASSIGNED":
         return "assigned"
-    if review_task_status in {"COMPLETED", "CANCELLED"}:
+    if review_task_status == "COMPLETED":
         return "completed"
-    return "completed"
+    return None
 
 
 def _event_base_id(event: dict[str, Any]) -> str:
