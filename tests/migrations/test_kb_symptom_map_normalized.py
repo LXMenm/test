@@ -14,7 +14,7 @@ import knowledge_base.kb_store as kb_store
 from knowledge_base.kb_manager import KnowledgeBaseManager
 from mysql_models import KBSymptomAliasORM, KBSymptomCandidateDiseaseORM, KBSymptomMapORM
 from repositories import kb_repo_mysql
-import scripts.migrate_kb_symptom_map_normalized as migrate_symptom_map_script
+import scripts.migrations.migrate_kb_symptom_map_normalized as migrate_symptom_map_script
 
 
 def _fixture_diseases() -> dict[str, Any]:

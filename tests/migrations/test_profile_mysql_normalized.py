@@ -16,7 +16,7 @@ from mysql_models import (
     FarmerProfileORM,
 )
 from repositories import profile_repo_mysql
-import scripts.migrate_profile_normalized as migrate_profile_script
+import scripts.migrations.migrate_profile_normalized as migrate_profile_script
 
 
 def _profile_payload() -> dict[str, Any]:

@@ -41,13 +41,13 @@
 
 ### 2.3 迁移与校验脚本
 不建议删除：
-- `scripts/migrate_json_to_mysql.py`
-- `scripts/migrate_kb_json_to_mysql.py`
-- `scripts/migrate_profile_normalized.py`
-- `scripts/migrate_farm_bases_normalized.py`
-- `scripts/migrate_kb_symptom_map_normalized.py`
-- `scripts/migrate_kb_treatments_normalized.py`
-- `scripts/verify_kb_file_mysql_parity.py`
+- `scripts/migrations/migrate_json_to_mysql.py`
+- `scripts/migrations/migrate_kb_json_to_mysql.py`
+- `scripts/migrations/migrate_profile_normalized.py`
+- `scripts/migrations/migrate_farm_bases_normalized.py`
+- `scripts/migrations/migrate_kb_symptom_map_normalized.py`
+- `scripts/migrations/migrate_kb_treatments_normalized.py`
+- `scripts/verify/verify_kb_file_mysql_parity.py`
 
 原因：
 - 它们是迁移补导、回滚后再切读、以及验收复核的重要工具；

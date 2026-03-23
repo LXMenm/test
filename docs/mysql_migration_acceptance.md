@@ -183,7 +183,7 @@ KB_STORE_MODE=mysql
 - [x] 相关回归测试已覆盖该行为。
 
 ## 6.6 KB parity 验收
-- [x] `scripts/verify_kb_file_mysql_parity.py` 已存在；
+- [x] `scripts/verify/verify_kb_file_mysql_parity.py` 已存在；
 - [x] payload parity 与 `KnowledgeBaseManager` parity 均有测试支撑；
 - [x] symptom_map / treatments 的规范化子表与迁移脚本已有专项测试。
 

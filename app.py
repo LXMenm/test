@@ -139,6 +139,15 @@ def _apply_farmer_scope(actor: dict[str, str], requested_farmer_id: str | None) 
     return actor_user_id
 
 
+def _actor_role_type(actor: dict[str, str]) -> str:
+    role = str(actor.get("role") or "USER").strip().upper()
+    if role == "ADMIN":
+        return "ADMIN"
+    if role == "EXPERT":
+        return "EXPERT"
+    return "FARMER"
+
+
 def _require_admin(actor: dict[str, str], message: str = "当前操作仅管理员可执行") -> None:
     if not _is_admin(actor):
         raise HTTPException(status_code=403, detail=message)
@@ -2174,15 +2183,22 @@ def get_models() -> dict[str, object]:
 def list_profiles(request: Request) -> dict[str, list[dict[str, str | None]]]:
     actor = _get_request_actor(request)
     scoped_farmer_id = _apply_farmer_scope(actor, None)
+    role_filter = str(request.query_params.get("role_type") or "").strip().upper()
     profiles = []
     for farmer_id in list_profile_ids():
         if scoped_farmer_id and farmer_id != scoped_farmer_id:
             continue
         path = get_profile_path(farmer_id)
         profile = load_profile(farmer_id)
+        role_type = str(getattr(profile, "role_type", None) or "FARMER").strip().upper()
+        if role_filter and role_filter != "ALL" and role_type != role_filter:
+            continue
         profiles.append({
             "id": farmer_id,
             "name": profile.name if profile else None,
+            "display_name": getattr(profile, "display_name", None) if profile else None,
+            "role_type": role_type,
+            "owner_user_id": getattr(profile, "owner_user_id", None) if profile else None,
             "path": str(path),
         })
     return {"profiles": profiles}
@@ -2319,6 +2335,10 @@ def create_profile(request: Request, payload: dict = Body(...)) -> dict[str, boo
         raise HTTPException(status_code=400, detail="档案内容非法")
     farmer_id = payload.get("farmer_id")
     actor_user_id = str(actor.get("user_id") or "").strip()
+    requested_role_type = str(payload.get("role_type") or "").strip().upper()
+    role_type = requested_role_type if requested_role_type in {"FARMER", "EXPERT", "ADMIN"} else _actor_role_type(actor)
+    if not _is_admin(actor):
+        role_type = _actor_role_type(actor)
     if not _is_admin(actor) and actor_user_id:
         if farmer_id and str(farmer_id).strip() != actor_user_id:
             raise HTTPException(status_code=403, detail="当前角色仅允许创建自己的档案")
@@ -2330,7 +2350,14 @@ def create_profile(request: Request, payload: dict = Body(...)) -> dict[str, boo
     if load_profile(farmer_id) is not None:
         raise HTTPException(status_code=409, detail="农户ID已存在")
 
-    profile = FarmerProfile(farmer_id=farmer_id, name=payload.get("name"))
+    display_name = payload.get("display_name") or payload.get("name")
+    profile = FarmerProfile(
+        farmer_id=farmer_id,
+        name=payload.get("name"),
+        display_name=display_name,
+        role_type=role_type,
+        owner_user_id=str(payload.get("owner_user_id") or actor_user_id or farmer_id).strip() or farmer_id,
+    )
     for field in [
         "farm_scale",
         "pesticide_access_level",
@@ -2377,6 +2404,11 @@ def save_profile_route(farmer_id: str, request: Request, payload: dict = Body(..
         raise HTTPException(status_code=403, detail="当前角色仅允许修改自己的档案")
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="档案内容非法")
+    if not _is_admin(actor):
+        payload = dict(payload)
+        payload["owner_user_id"] = str(actor.get("user_id") or "").strip() or farmer_id
+        payload["role_type"] = _actor_role_type(actor)
+        payload["display_name"] = payload.get("display_name") or payload.get("name") or farmer_id
     try:
         profile = _normalize_profile_payload_for_save(farmer_id, payload)
     except Exception as exc:

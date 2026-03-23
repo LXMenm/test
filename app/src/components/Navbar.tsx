@@ -14,7 +14,7 @@ interface NavbarProps {
 const NAV_META: Record<AppPage, { label: string; icon: React.ElementType }> = {
   diagnose: { label: '诊断', icon: Stethoscope },
   dashboard: { label: '数据看板', icon: BarChart3 },
-  profiles: { label: '农户档案', icon: Users },
+  profiles: { label: '档案管理', icon: Users },
   kb: { label: '知识库', icon: BookOpen },
   expert_review: { label: '专家复核', icon: UserCheck },
   system_config: { label: '系统配置', icon: Settings },
