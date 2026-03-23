@@ -48,10 +48,7 @@ export type AppPage =
   | 'kb'
   | 'expert_review'
   | 'system_config'
-  | 'review_management'
-  | 'global_dashboard'
-  | 'kb_admin'
-  | 'profiles_admin';
+  | 'review_management';
 
 export const PAGE_TO_PATH: Record<AppPage, string> = {
   diagnose: '/',
@@ -62,15 +59,18 @@ export const PAGE_TO_PATH: Record<AppPage, string> = {
   expert_review: '/expert-review',
   system_config: '/admin/system-config',
   review_management: '/admin/review-management',
-  global_dashboard: '/admin/global-dashboard',
-  kb_admin: '/admin/kb-management',
-  profiles_admin: '/admin/profiles-management',
+};
+
+const LEGACY_PATH_REDIRECT_MAP: Record<string, AppPage> = {
+  '/admin/global-dashboard': 'dashboard',
+  '/admin/profiles-management': 'profiles',
+  '/admin/kb-management': 'kb',
 };
 
 const ROLE_PAGES: Record<UserRole, AppPage[]> = {
   USER: ['diagnose', 'cases', 'dashboard', 'profiles', 'kb'],
   EXPERT: ['diagnose', 'cases', 'dashboard', 'profiles', 'kb', 'expert_review'],
-  ADMIN: ['diagnose', 'cases', 'dashboard', 'profiles', 'kb', 'expert_review', 'system_config', 'review_management', 'global_dashboard', 'kb_admin', 'profiles_admin'],
+  ADMIN: ['diagnose', 'cases', 'dashboard', 'profiles', 'kb', 'expert_review', 'system_config', 'review_management'],
 };
 
 export function getAllowedPages(role: UserRole): AppPage[] {
@@ -84,6 +84,7 @@ export function getDefaultPage(role: UserRole): AppPage {
 export function pathToPage(pathname: string): AppPage {
   const matched = (Object.entries(PAGE_TO_PATH).find(([, path]) => pathname === path) || [null])[0] as AppPage | null;
   if (matched) return matched;
+  if (pathname in LEGACY_PATH_REDIRECT_MAP) return LEGACY_PATH_REDIRECT_MAP[pathname];
   if (pathname.startsWith('/kb/')) return 'kb';
   return 'diagnose';
 }

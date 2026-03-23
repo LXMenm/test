@@ -60,6 +60,7 @@ from trace_store import list_trace_events, subscribe as subscribe_trace, unsubsc
 from model_registry import list_models, resolve_model
 from workflow import build_graph
 from trace_catalog import AGENTS_CATALOG, NODE_TO_AGENT
+from runtime_settings import load_admin_runtime_config, save_admin_runtime_config
 
 
 @asynccontextmanager
@@ -2689,6 +2690,108 @@ def submit_expert_review(trace_id: str, request: Request, payload: dict = Body(.
     return {"item": _build_expert_review_detail(next_event)}
 
 
+@app.get("/api/admin/system-config")
+def get_admin_system_config(request: Request) -> dict[str, Any]:
+    actor = _get_request_actor(request)
+    _require_admin(actor)
+    return {"config": load_admin_runtime_config()}
+
+
+@app.put("/api/admin/system-config")
+def update_admin_system_config(request: Request, payload: dict = Body(...)) -> dict[str, Any]:
+    actor = _get_request_actor(request)
+    _require_admin(actor)
+    next_config = save_admin_runtime_config(payload if isinstance(payload, dict) else {})
+    return {"config": next_config}
+
+
+@app.get("/api/admin/reviews")
+def list_admin_reviews(request: Request, status: str = "pending", limit: int = 50) -> dict[str, Any]:
+    actor = _get_request_actor(request)
+    _require_admin(actor)
+    safe_limit = max(1, min(200, int(limit)))
+    expected = str(status or "pending").strip().lower()
+    if expected not in {"pending", "assigned", "completed"}:
+        raise HTTPException(status_code=400, detail="status 仅支持 pending / assigned / completed")
+    latest_events = _pick_latest_case_by_trace(list_events(200000))
+    filtered = [event for event in latest_events if _admin_review_bucket(event) == expected]
+    items: list[dict[str, Any]] = []
+    for event in filtered[:safe_limit]:
+        base = _build_expert_review_list_item(event)
+        items.append(
+            {
+                **base,
+                "review_flow_status": str(event.get("review_flow_status") or "normal"),
+                "review_flow_note": event.get("review_flow_note"),
+                "updated_at": event.get("ts"),
+            }
+        )
+    return {"count": len(filtered), "items": items}
+
+
+@app.get("/api/admin/reviews/{trace_id}")
+def get_admin_review_detail(trace_id: str, request: Request) -> dict[str, Any]:
+    actor = _get_request_actor(request)
+    _require_admin(actor)
+    event = _latest_case_event_by_trace(trace_id)
+    if not event:
+        raise HTTPException(status_code=404, detail="病例不存在")
+    detail = _build_expert_review_detail(event)
+    detail["review_bucket"] = _admin_review_bucket(event)
+    detail["updated_at"] = event.get("ts")
+    return {"item": detail}
+
+
+@app.post("/api/admin/reviews/{trace_id}/assign")
+def assign_admin_review(trace_id: str, request: Request, payload: dict = Body(...)) -> dict[str, Any]:
+    actor = _get_request_actor(request)
+    _require_admin(actor)
+    event = _latest_case_event_by_trace(trace_id)
+    if not event:
+        raise HTTPException(status_code=404, detail="病例不存在")
+    expert_id = str(payload.get("assigned_expert_id") or "").strip()
+    if not expert_id:
+        raise HTTPException(status_code=400, detail="assigned_expert_id 不能为空")
+
+    next_event = dict(event)
+    next_event["id"] = uuid.uuid4().hex
+    next_event["ts"] = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    next_event["assigned_expert_id"] = expert_id
+    if str(next_event.get("expert_review_status") or "").strip().upper() != "COMPLETED":
+        next_event["expert_review_status"] = "PENDING"
+        next_event["status"] = "pending_expert_review"
+    next_event["review_flow_status"] = str(next_event.get("review_flow_status") or "normal")
+    next_event["review_flow_note"] = sanitize_user_text(payload.get("review_flow_note")) or next_event.get("review_flow_note")
+    append_event(serialize_final_response(next_event))
+    detail = _build_expert_review_detail(next_event)
+    detail["review_bucket"] = _admin_review_bucket(next_event)
+    detail["updated_at"] = next_event.get("ts")
+    return {"item": detail}
+
+
+@app.post("/api/admin/reviews/{trace_id}/flow-status")
+def update_admin_review_flow_status(trace_id: str, request: Request, payload: dict = Body(...)) -> dict[str, Any]:
+    actor = _get_request_actor(request)
+    _require_admin(actor)
+    event = _latest_case_event_by_trace(trace_id)
+    if not event:
+        raise HTTPException(status_code=404, detail="病例不存在")
+    flow_status = str(payload.get("review_flow_status") or "").strip().lower()
+    if flow_status not in {"normal", "abnormal", "closed"}:
+        raise HTTPException(status_code=400, detail="review_flow_status 仅支持 normal / abnormal / closed")
+
+    next_event = dict(event)
+    next_event["id"] = uuid.uuid4().hex
+    next_event["ts"] = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    next_event["review_flow_status"] = flow_status
+    next_event["review_flow_note"] = sanitize_user_text(payload.get("review_flow_note"))
+    append_event(serialize_final_response(next_event))
+    detail = _build_expert_review_detail(next_event)
+    detail["review_bucket"] = _admin_review_bucket(next_event)
+    detail["updated_at"] = next_event.get("ts")
+    return {"item": detail}
+
+
 
 
 @app.get("/api/agents")
@@ -2918,7 +3021,19 @@ def _build_expert_review_detail(event: dict[str, Any]) -> dict[str, Any]:
         "expert_review_supplement_symptoms": event.get("expert_review_supplement_symptoms"),
         "expert_review_notes": event.get("expert_review_notes"),
         "expert_reviewed_at": event.get("expert_reviewed_at"),
+        "review_flow_status": str(event.get("review_flow_status") or "normal"),
+        "review_flow_note": event.get("review_flow_note"),
     }
+
+
+def _admin_review_bucket(event: dict[str, Any]) -> str:
+    expert_status = str(event.get("expert_review_status") or "").strip().upper()
+    assigned_expert = str(event.get("assigned_expert_id") or "").strip()
+    if expert_status == "COMPLETED":
+        return "completed"
+    if assigned_expert:
+        return "assigned"
+    return "pending"
 
 
 def _event_base_id(event: dict[str, Any]) -> str:
