@@ -164,7 +164,9 @@ class _LazyKBProxy:
 
 
 kb = _LazyKBProxy()
-UPLOAD_DIR = Path(".cache/uploads")
+IMAGE_UPLOAD_DIR = os.getenv("IMAGE_UPLOAD_DIR", "data/uploads")
+IMAGE_UPLOAD_TTL_HOURS = int(os.getenv("IMAGE_UPLOAD_TTL_HOURS", "0") or "0")
+UPLOAD_DIR = Path(IMAGE_UPLOAD_DIR)
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 FRONTEND_DIR = Path("app/dist")
@@ -354,14 +356,6 @@ def sanitize_user_text(value: Any) -> Any:
     return value
 
 
-GROWTH_STAGE_CANONICAL = {
-    "苗期": "SEEDLING",
-    "开花期": "FLOWERING",
-    "坐果期": "FRUIT_SET",
-    "结果期": "FRUIT_SET",
-    "成熟期": "HARVEST",
-}
-
 RISK_CODE_ALIAS = {
     "开花期_fruiting_sensitive": "FLOWERING_FRUITING_SENSITIVE",
     "fruting_sensitive": "FLOWERING_FRUITING_SENSITIVE",
@@ -376,9 +370,7 @@ def normalize_growth_stage_code(value: Any) -> Any:
     if not text:
         return value
     normalized = normalize_growth_stage(text)
-    if normalized:
-        return normalized
-    return GROWTH_STAGE_CANONICAL.get(text, text)
+    return normalized or text
 
 
 def normalize_risk_code(code: Any) -> str:
@@ -731,9 +723,13 @@ def emit_final_event_once(
     return True
 
 
-def cleanup_old_uploads(max_age_hours: int = 24) -> None:
+def cleanup_old_uploads(max_age_hours: int | None = None) -> None:
+    resolved_max_age_hours = IMAGE_UPLOAD_TTL_HOURS if max_age_hours is None else max_age_hours
+    if resolved_max_age_hours <= 0:
+        return
+
     now_ts = __import__("time").time()
-    max_age_seconds = max_age_hours * 3600
+    max_age_seconds = resolved_max_age_hours * 3600
     for path in UPLOAD_DIR.glob("*"):
         if not path.is_file():
             continue
