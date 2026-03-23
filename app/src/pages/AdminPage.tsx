@@ -39,6 +39,10 @@ interface ReviewItem {
   expert_review_status?: string;
   review_flow_status?: 'normal' | 'abnormal' | 'closed';
   review_flow_note?: string;
+  case_status?: string;
+  review_task_status?: 'UNNEEDED' | 'UNASSIGNED' | 'ASSIGNED' | 'COMPLETED' | 'CANCELLED';
+  admin_flag?: 'normal' | 'abnormal' | 'closed';
+  admin_note?: string;
   updated_at?: string;
 }
 
@@ -206,8 +210,8 @@ export function AdminPage({ pageType }: { pageType: 'system' | 'review' }) {
       const item = (data?.item || null) as ReviewDetail | null;
       setSelected(item);
       setAssignExpertId(item?.assigned_expert_id || '');
-      setFlowStatus(item?.review_flow_status || 'normal');
-      setFlowNote(item?.review_flow_note || '');
+      setFlowStatus(item?.admin_flag || item?.review_flow_status || 'normal');
+      setFlowNote(item?.admin_note || item?.review_flow_note || '');
     } catch (error) {
       console.error(error);
       setSelected(null);
@@ -223,7 +227,7 @@ export function AdminPage({ pageType }: { pageType: 'system' | 'review' }) {
       const resp = await fetch(`/api/admin/reviews/${encodeURIComponent(selected.trace_id)}/assign`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ assigned_expert_id: assignExpertId.trim(), review_flow_note: flowNote }),
+        body: JSON.stringify({ assigned_expert_id: assignExpertId.trim(), admin_note: flowNote, review_flow_note: flowNote }),
       });
       const data = await resp.json();
       if (!resp.ok) throw new Error(String(data?.detail || '分配失败'));
@@ -246,7 +250,7 @@ export function AdminPage({ pageType }: { pageType: 'system' | 'review' }) {
       const resp = await fetch(`/api/admin/reviews/${encodeURIComponent(selected.trace_id)}/flow-status`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ review_flow_status: flowStatus, review_flow_note: flowNote }),
+        body: JSON.stringify({ admin_flag: flowStatus, admin_note: flowNote, review_flow_status: flowStatus, review_flow_note: flowNote }),
       });
       const data = await resp.json();
       if (!resp.ok) throw new Error(String(data?.detail || '更新流程状态失败'));
@@ -380,7 +384,9 @@ export function AdminPage({ pageType }: { pageType: 'system' | 'review' }) {
               <p className="text-sm text-white">{item.trace_id.slice(0, 18)}...</p>
               <p className="text-xs text-white/70 mt-1">用户：{item.farmer_name || item.farmer_id || '-'}</p>
               <p className="text-xs text-white/70">系统 top1：{item.top1_disease || '-'}</p>
-              <p className="text-xs text-white/70">状态：{item.status || '-'} / {item.expert_review_status || '-'} / {item.review_flow_status || 'normal'}</p>
+              <p className="text-xs text-white/70">病例状态：{item.case_status || item.status || '-'}</p>
+              <p className="text-xs text-white/70">专家任务：{item.review_task_status || '-'}</p>
+              <p className="text-xs text-white/70">管理标签：{item.admin_flag || item.review_flow_status || 'normal'}</p>
               <p className="text-xs text-white/40">更新时间：{formatTime(item.updated_at)}</p>
             </button>
           ))}
@@ -392,6 +398,9 @@ export function AdminPage({ pageType }: { pageType: 'system' | 'review' }) {
               <p><span className="text-white/50">病例追踪号：</span>{selected.trace_id}</p>
               <p><span className="text-white/50">症状摘要：</span>{selected.symptoms_text || '-'}</p>
               <p><span className="text-white/50">当前 top1：</span>{selected.top1_disease || '-'}</p>
+              <p><span className="text-white/50">病例状态：</span>{selected.case_status || selected.status || '-'}</p>
+              <p><span className="text-white/50">专家任务：</span>{selected.review_task_status || '-'}</p>
+              <p><span className="text-white/50">管理标签：</span>{selected.admin_flag || selected.review_flow_status || 'normal'}</p>
               <p><span className="text-white/50">复核结果：</span>{selected.expert_review_result || '-'}</p>
               <p><span className="text-white/50">复核备注：</span>{selected.expert_review_notes || '-'}</p>
               <p><span className="text-white/50">最终置信度：</span>{typeof selected.model_outputs?.final_confidence === 'number' ? `${(selected.model_outputs.final_confidence * 100).toFixed(2)}%` : '-'}</p>
@@ -413,7 +422,7 @@ export function AdminPage({ pageType }: { pageType: 'system' | 'review' }) {
               </div>
 
               <div>
-                <Label>复核流程状态</Label>
+                <Label>管理标签</Label>
                 <Select value={flowStatus} onValueChange={(v) => setFlowStatus(v as 'normal' | 'abnormal' | 'closed')}>
                   <SelectTrigger className="bg-white/5 border-white/20 text-white"><SelectValue /></SelectTrigger>
                   <SelectContent>
@@ -425,7 +434,7 @@ export function AdminPage({ pageType }: { pageType: 'system' | 'review' }) {
               </div>
 
               <div>
-                <Label>干预备注</Label>
+                <Label>管理备注</Label>
                 <Textarea value={flowNote} onChange={(e) => setFlowNote(e.target.value)} className="bg-white/5 border-white/20 text-white" />
               </div>
 
@@ -433,7 +442,7 @@ export function AdminPage({ pageType }: { pageType: 'system' | 'review' }) {
 
               <div className="flex gap-2">
                 <Button onClick={() => { void assignExpert(); }} disabled={updatingReview || !assignExpertId.trim()} className="bg-[#c8f7c5] text-black">分配复核任务</Button>
-                <Button variant="outline" onClick={() => { void updateFlowStatus(); }} disabled={updatingReview}>更新流程状态</Button>
+                <Button variant="outline" onClick={() => { void updateFlowStatus(); }} disabled={updatingReview}>保存管理标签</Button>
               </div>
             </>
           )}

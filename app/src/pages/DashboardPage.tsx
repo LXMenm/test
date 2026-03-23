@@ -852,10 +852,6 @@ export function DashboardPage() {
     setSelectedFarmerId(scopedFarmerId);
   }, [scopedFarmerId]);
 
-  useEffect(() => {
-    setSelectedFarmerId(scopedFarmerId);
-  }, [scopedFarmerId]);
-
 
   const renderModuleHeader = (key: ModuleKey, title: string, icon: ReactNode) => (
     <CardHeader className="pb-2">
