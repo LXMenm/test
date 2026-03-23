@@ -2192,6 +2192,16 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
+def _clone_case_event_for_append(event: dict[str, Any]) -> dict[str, Any]:
+    next_event = dict(event)
+    new_id = uuid.uuid4().hex
+    next_event["id"] = new_id
+    # event_store/mysql ORM 优先使用 event_id 作为唯一业务事件键，必须同时刷新。
+    next_event["event_id"] = new_id
+    next_event["ts"] = _utc_now_iso()
+    return next_event
+
+
 def _build_image_refs(image_id: str | None) -> dict[str, str]:
     normalized = str(image_id or "").strip()
     if not normalized:
@@ -2795,9 +2805,7 @@ def submit_expert_review(trace_id: str, request: Request, payload: dict = Body(.
     review_notes = sanitize_user_text(payload.get("expert_review_notes"))
     regenerate_treatment = bool(payload.get("regenerate_treatment", True))
 
-    next_event = dict(event)
-    next_event["id"] = uuid.uuid4().hex
-    next_event["ts"] = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    next_event = _clone_case_event_for_append(event)
     next_event["final_disease"] = confirmed_disease
     next_event["status"] = "completed"
     next_event["assigned_expert_id"] = actor.get("user_id") or event.get("assigned_expert_id")
@@ -2889,9 +2897,7 @@ def assign_admin_review(trace_id: str, request: Request, payload: dict = Body(..
     if not expert_id:
         raise HTTPException(status_code=400, detail="assigned_expert_id 不能为空")
 
-    next_event = dict(event)
-    next_event["id"] = uuid.uuid4().hex
-    next_event["ts"] = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    next_event = _clone_case_event_for_append(event)
     next_event["assigned_expert_id"] = expert_id
     if _derive_review_task_status(next_event) not in {"COMPLETED", "CANCELLED"}:
         next_event["expert_review_status"] = "PENDING"
@@ -2916,9 +2922,7 @@ def update_admin_review_flow_status(trace_id: str, request: Request, payload: di
     if flow_status not in {"normal", "abnormal", "closed"}:
         raise HTTPException(status_code=400, detail="review_flow_status 仅支持 normal / abnormal / closed")
 
-    next_event = dict(event)
-    next_event["id"] = uuid.uuid4().hex
-    next_event["ts"] = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    next_event = _clone_case_event_for_append(event)
     next_event["review_flow_status"] = flow_status
     note_value = payload.get("admin_note") if payload.get("admin_note") is not None else payload.get("review_flow_note")
     next_event["review_flow_note"] = sanitize_user_text(note_value)

@@ -45,6 +45,16 @@ class _InMemoryCaseRepo:
         return {}
 
 
+class _UniqueEventIdRepo(_InMemoryCaseRepo):
+    def append_event(self, event: dict[str, Any]) -> dict[str, Any]:
+        next_event_id = str(event.get("event_id") or "").strip()
+        if next_event_id:
+            for item in self.events:
+                if str(item.get("event_id") or "").strip() == next_event_id:
+                    raise ValueError(f"Duplicate event_id: {next_event_id}")
+        return super().append_event(event)
+
+
 def _event(
     *,
     trace_id: str,
@@ -305,3 +315,53 @@ def test_legacy_event_missing_fields_still_serializes(monkeypatch) -> None:
     detail = detail_resp.json()["item"]
     assert detail["review_task_status"] == "COMPLETED"
     assert detail["admin_flag"] == "normal"
+
+
+def test_clone_append_refreshes_event_id_for_assign_flow_and_submit(monkeypatch) -> None:
+    now = datetime.now(timezone.utc).isoformat()
+    old_event_id = "evt-old-snapshot-1"
+    repo = _UniqueEventIdRepo(
+        [
+            _event(
+                trace_id="trace-eventid",
+                status="pending_expert_review",
+                disease="晚疫病",
+                assigned_expert_id="E3001",
+                expert_review_status="PENDING",
+                ts=now,
+            )
+            | {"event_id": old_event_id, "id": old_event_id}
+        ]
+    )
+    _install_repo(monkeypatch, repo)
+    client = TestClient(app_module.app)
+
+    assign_resp = client.post(
+        "/api/admin/reviews/trace-eventid/assign",
+        headers=_headers(role="ADMIN", user_id="A0001"),
+        json={"assigned_expert_id": "E3001"},
+    )
+    assert assign_resp.status_code == 200
+    assign_item = assign_resp.json()["item"]
+    assert assign_item["case_id"] != old_event_id
+
+    flow_resp = client.post(
+        "/api/admin/reviews/trace-eventid/flow-status",
+        headers=_headers(role="ADMIN", user_id="A0001"),
+        json={"admin_flag": "abnormal", "admin_note": "标记"},
+    )
+    assert flow_resp.status_code == 200
+    flow_item = flow_resp.json()["item"]
+    assert flow_item["case_id"] != old_event_id
+
+    submit_resp = client.post(
+        "/api/expert-reviews/trace-eventid/submit",
+        headers=_headers(role="EXPERT", user_id="E3001"),
+        json={"expert_review_result": "灰霉病"},
+    )
+    assert submit_resp.status_code == 200
+    submit_item = submit_resp.json()["item"]
+    assert submit_item["case_id"] != old_event_id
+
+    latest_by_trace = repo.get_latest_event_by_trace("trace-eventid")
+    assert latest_by_trace["event_id"] != old_event_id
