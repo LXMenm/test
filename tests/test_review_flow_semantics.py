@@ -210,3 +210,98 @@ def test_admin_detail_contains_derived_fields_for_frontend(monkeypatch) -> None:
     assert item["review_task_status"] == "ASSIGNED"
     assert item["admin_flag"] == "abnormal"
     assert "admin_note" in item
+
+
+def test_expert_pending_excludes_closed_and_cancelled(monkeypatch) -> None:
+    now = datetime.now(timezone.utc).isoformat()
+    repo = _InMemoryCaseRepo(
+        [
+            _event(trace_id="ok-assigned", status="pending_expert_review", disease="晚疫病", assigned_expert_id="E1001", expert_review_status="PENDING", ts=now),
+            _event(trace_id="closed-one", status="pending_expert_review", disease="灰霉病", assigned_expert_id="E1001", expert_review_status="PENDING", review_flow_status="closed", ts=now),
+            _event(trace_id="cancelled-one", status="cancelled", disease="早疫病", assigned_expert_id="E1001", expert_review_status="PENDING", ts=now),
+        ]
+    )
+    _install_repo(monkeypatch, repo)
+    client = TestClient(app_module.app)
+
+    resp = client.get("/api/expert-reviews/pending", headers=_headers(role="EXPERT", user_id="E1001"))
+    assert resp.status_code == 200
+    items = resp.json()["items"]
+    assert len(items) == 1
+    assert items[0]["trace_id"] == "ok-assigned"
+
+
+def test_permissions_for_admin_and_expert_actions(monkeypatch) -> None:
+    now = datetime.now(timezone.utc).isoformat()
+    repo = _InMemoryCaseRepo(
+        [
+            _event(trace_id="perm-1", status="pending_expert_review", disease="晚疫病", assigned_expert_id="E2001", expert_review_status="PENDING", ts=now),
+        ]
+    )
+    _install_repo(monkeypatch, repo)
+    client = TestClient(app_module.app)
+
+    # 管理员可以 assign / flow-status
+    assign_ok = client.post(
+        "/api/admin/reviews/perm-1/assign",
+        headers=_headers(role="ADMIN", user_id="A0001"),
+        json={"assigned_expert_id": "E2001"},
+    )
+    assert assign_ok.status_code == 200
+
+    flow_ok = client.post(
+        "/api/admin/reviews/perm-1/flow-status",
+        headers=_headers(role="ADMIN", user_id="A0001"),
+        json={"admin_flag": "abnormal", "admin_note": "管理员标记"},
+    )
+    assert flow_ok.status_code == 200
+
+    # 专家不能修改 admin_flag / admin_note
+    flow_forbidden = client.post(
+        "/api/admin/reviews/perm-1/flow-status",
+        headers=_headers(role="EXPERT", user_id="E2001"),
+        json={"admin_flag": "closed", "admin_note": "专家无权"},
+    )
+    assert flow_forbidden.status_code == 403
+
+    # 非分配专家不能查看或提交他人的病例
+    detail_forbidden = client.get("/api/expert-reviews/perm-1", headers=_headers(role="EXPERT", user_id="E9999"))
+    assert detail_forbidden.status_code == 403
+
+    submit_forbidden = client.post(
+        "/api/expert-reviews/perm-1/submit",
+        headers=_headers(role="EXPERT", user_id="E9999"),
+        json={"expert_review_result": "灰霉病"},
+    )
+    assert submit_forbidden.status_code == 403
+
+
+def test_legacy_event_missing_fields_still_serializes(monkeypatch) -> None:
+    now = datetime.now(timezone.utc).isoformat()
+    legacy_event = {
+        "id": "legacy-1",
+        "event_id": "legacy-evt-1",
+        "trace_id": "legacy-trace-1",
+        "ts": now,
+        "farmer_id": "F0001",
+        "final_disease": "晚疫病",
+        "status": "completed",
+        # 故意缺失 review_flow_status / review_flow_note / expert_review_status 等字段
+        "meta": {"farmer_id": "F0001", "base_id": "B01"},
+        "image_result": {"top3": [["晚疫病", 0.88]]},
+    }
+    repo = _InMemoryCaseRepo([legacy_event])
+    _install_repo(monkeypatch, repo)
+    client = TestClient(app_module.app)
+
+    list_resp = client.get("/api/admin/reviews?status=completed", headers=_headers())
+    assert list_resp.status_code == 200
+    item = list_resp.json()["items"][0]
+    assert item["review_task_status"] == "COMPLETED"
+    assert item["admin_flag"] == "normal"
+
+    detail_resp = client.get("/api/admin/reviews/legacy-trace-1", headers=_headers())
+    assert detail_resp.status_code == 200
+    detail = detail_resp.json()["item"]
+    assert detail["review_task_status"] == "COMPLETED"
+    assert detail["admin_flag"] == "normal"

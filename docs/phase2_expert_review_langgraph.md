@@ -12,6 +12,14 @@
 4. 从恢复点继续执行 `kb_retrieval -> treatment -> verification`；
 5. 最终再写终态病例事件，保证单一业务闭环。
 
+## 当前三层语义（已落地）
+
+- `status`：病例主状态（落库字段）。
+- `review_task_status`：专家任务状态（接口派生字段，不落库）。
+- `review_flow_status` / `admin_flag`：管理员标签（落库字段/兼容别名）。
+
+**管理员标签不是流程主状态，`/flow-status` 不等于推进病例主流程。**
+
 ## 建议状态流
 
 - `pending_expert_review`：等待专家处理（图暂停）

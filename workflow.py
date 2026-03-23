@@ -34,6 +34,9 @@ def route_next_step(state: CropDiseaseState) -> str:
     elif next_action == "await_user_confirmation":
         return END
     elif next_action == "manual_review":
+        # TODO(phase2): 当前 manual_review 仍直接 END。
+        # 后续计划改为“暂停图执行”，待专家提交后回填 state，
+        # 再恢复同一 graph 继续执行 kb_retrieval -> treatment -> verification。
         return END
     elif next_action == "end":
         return END

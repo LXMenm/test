@@ -2748,11 +2748,7 @@ def get_pending_expert_reviews(request: Request, limit: int = 20) -> dict[str, A
     safe_limit = max(1, min(100, int(limit)))
     events = list_events(200000)
     latest_events = _pick_latest_case_by_trace(events)
-    pending = [
-        event for event in latest_events
-        if str(event.get("status") or "").strip() == "pending_expert_review"
-        or str(event.get("expert_review_status") or "").strip().upper() == "PENDING"
-    ]
+    pending = [event for event in latest_events if _derive_review_task_status(event) == "ASSIGNED"]
     if not _is_admin(actor):
         actor_id = str(actor.get("user_id") or "").strip()
         pending = [
@@ -2916,7 +2912,7 @@ def update_admin_review_flow_status(trace_id: str, request: Request, payload: di
     if not event:
         raise HTTPException(status_code=404, detail="病例不存在")
     flow_raw = payload.get("admin_flag") if payload.get("admin_flag") is not None else payload.get("review_flow_status")
-    flow_status = str(flow_raw or "").strip().lower()
+    flow_status = _normalize_admin_flag(flow_raw)
     if flow_status not in {"normal", "abnormal", "closed"}:
         raise HTTPException(status_code=400, detail="review_flow_status 仅支持 normal / abnormal / closed")
 
@@ -2931,108 +2927,6 @@ def update_admin_review_flow_status(trace_id: str, request: Request, payload: di
     append_event(serialize_final_response(next_event))
     detail = _serialize_admin_review_detail(next_event)
     detail["review_bucket"] = _admin_review_bucket(next_event)
-    return {"item": detail}
-
-
-@app.get("/api/admin/system-config")
-def get_admin_system_config(request: Request) -> dict[str, Any]:
-    actor = _get_request_actor(request)
-    _require_admin(actor)
-    return {"config": load_admin_runtime_config()}
-
-
-@app.put("/api/admin/system-config")
-def update_admin_system_config(request: Request, payload: dict = Body(...)) -> dict[str, Any]:
-    actor = _get_request_actor(request)
-    _require_admin(actor)
-    next_config = save_admin_runtime_config(payload if isinstance(payload, dict) else {})
-    return {"config": next_config}
-
-
-@app.get("/api/admin/reviews")
-def list_admin_reviews(request: Request, status: str = "pending", limit: int = 50) -> dict[str, Any]:
-    actor = _get_request_actor(request)
-    _require_admin(actor)
-    safe_limit = max(1, min(200, int(limit)))
-    expected = str(status or "pending").strip().lower()
-    if expected not in {"pending", "assigned", "completed"}:
-        raise HTTPException(status_code=400, detail="status 仅支持 pending / assigned / completed")
-    latest_events = _pick_latest_case_by_trace(list_events(200000))
-    filtered = [event for event in latest_events if _admin_review_bucket(event) == expected]
-    items: list[dict[str, Any]] = []
-    for event in filtered[:safe_limit]:
-        base = _build_expert_review_list_item(event)
-        items.append(
-            {
-                **base,
-                "review_flow_status": str(event.get("review_flow_status") or "normal"),
-                "review_flow_note": event.get("review_flow_note"),
-                "updated_at": event.get("ts"),
-            }
-        )
-    return {"count": len(filtered), "items": items}
-
-
-@app.get("/api/admin/reviews/{trace_id}")
-def get_admin_review_detail(trace_id: str, request: Request) -> dict[str, Any]:
-    actor = _get_request_actor(request)
-    _require_admin(actor)
-    event = _latest_case_event_by_trace(trace_id)
-    if not event:
-        raise HTTPException(status_code=404, detail="病例不存在")
-    detail = _build_expert_review_detail(event)
-    detail["review_bucket"] = _admin_review_bucket(event)
-    detail["updated_at"] = event.get("ts")
-    return {"item": detail}
-
-
-@app.post("/api/admin/reviews/{trace_id}/assign")
-def assign_admin_review(trace_id: str, request: Request, payload: dict = Body(...)) -> dict[str, Any]:
-    actor = _get_request_actor(request)
-    _require_admin(actor)
-    event = _latest_case_event_by_trace(trace_id)
-    if not event:
-        raise HTTPException(status_code=404, detail="病例不存在")
-    expert_id = str(payload.get("assigned_expert_id") or "").strip()
-    if not expert_id:
-        raise HTTPException(status_code=400, detail="assigned_expert_id 不能为空")
-
-    next_event = dict(event)
-    next_event["id"] = uuid.uuid4().hex
-    next_event["ts"] = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
-    next_event["assigned_expert_id"] = expert_id
-    if str(next_event.get("expert_review_status") or "").strip().upper() != "COMPLETED":
-        next_event["expert_review_status"] = "PENDING"
-        next_event["status"] = "pending_expert_review"
-    next_event["review_flow_status"] = str(next_event.get("review_flow_status") or "normal")
-    next_event["review_flow_note"] = sanitize_user_text(payload.get("review_flow_note")) or next_event.get("review_flow_note")
-    append_event(serialize_final_response(next_event))
-    detail = _build_expert_review_detail(next_event)
-    detail["review_bucket"] = _admin_review_bucket(next_event)
-    detail["updated_at"] = next_event.get("ts")
-    return {"item": detail}
-
-
-@app.post("/api/admin/reviews/{trace_id}/flow-status")
-def update_admin_review_flow_status(trace_id: str, request: Request, payload: dict = Body(...)) -> dict[str, Any]:
-    actor = _get_request_actor(request)
-    _require_admin(actor)
-    event = _latest_case_event_by_trace(trace_id)
-    if not event:
-        raise HTTPException(status_code=404, detail="病例不存在")
-    flow_status = str(payload.get("review_flow_status") or "").strip().lower()
-    if flow_status not in {"normal", "abnormal", "closed"}:
-        raise HTTPException(status_code=400, detail="review_flow_status 仅支持 normal / abnormal / closed")
-
-    next_event = dict(event)
-    next_event["id"] = uuid.uuid4().hex
-    next_event["ts"] = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
-    next_event["review_flow_status"] = flow_status
-    next_event["review_flow_note"] = sanitize_user_text(payload.get("review_flow_note"))
-    append_event(serialize_final_response(next_event))
-    detail = _build_expert_review_detail(next_event)
-    detail["review_bucket"] = _admin_review_bucket(next_event)
-    detail["updated_at"] = next_event.get("ts")
     return {"item": detail}
 
 
@@ -3231,7 +3125,7 @@ def _build_expert_review_list_item(event: dict[str, Any]) -> dict[str, Any]:
 
 
 def _derive_review_task_status(event: dict[str, Any]) -> str:
-    review_flow_status = str(event.get("review_flow_status") or "").strip().lower()
+    review_flow_status = _normalize_admin_flag(event.get("review_flow_status"))
     case_status = str(event.get("status") or "").strip().lower()
     expert_status = str(event.get("expert_review_status") or "").strip().upper()
     assigned_expert_id = str(event.get("assigned_expert_id") or "").strip()
@@ -3247,11 +3141,18 @@ def _derive_review_task_status(event: dict[str, Any]) -> str:
     return "UNNEEDED"
 
 
+def _normalize_admin_flag(value: Any) -> str:
+    flag = str(value or "").strip().lower()
+    if flag in {"normal", "abnormal", "closed"}:
+        return flag
+    return "normal"
+
+
 def _serialize_admin_review_item(event: dict[str, Any]) -> dict[str, Any]:
     base = _build_expert_review_list_item(event)
     case_status = str(event.get("status") or "").strip()
     review_task_status = _derive_review_task_status(event)
-    admin_flag = str(event.get("review_flow_status") or "normal").strip().lower() or "normal"
+    admin_flag = _normalize_admin_flag(event.get("review_flow_status"))
     admin_note = event.get("review_flow_note")
     return {
         **base,
@@ -3270,7 +3171,7 @@ def _serialize_admin_review_detail(event: dict[str, Any]) -> dict[str, Any]:
     detail = _build_expert_review_detail(event)
     case_status = str(event.get("status") or "").strip()
     review_task_status = _derive_review_task_status(event)
-    admin_flag = str(event.get("review_flow_status") or "normal").strip().lower() or "normal"
+    admin_flag = _normalize_admin_flag(event.get("review_flow_status"))
     admin_note = event.get("review_flow_note")
     detail.update({
         "case_status": case_status,
@@ -3496,10 +3397,13 @@ ANALYTICS_NON_TERMINAL_CASE_STATUSES = {
 
 
 def _is_terminal_case_status(status: str | None, *, include_cancelled: bool = True) -> bool:
+    # 统计口径说明：
+    # - 默认纳入 completed 与 cancelled，两者都代表病例主流程已终结；
+    # - cancelled 仍会影响 summary/disease/timeseries 等聚合指标，便于运营看见“终止病例”体量。
     normalized = str(status or "").strip().lower()
     if normalized == "completed":
         return True
-    if include_cancelled and normalized == "cancelled":
+    if include_cancelled and normalized in ANALYTICS_TERMINAL_CASE_STATUSES:
         return True
     return False
 
