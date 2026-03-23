@@ -241,9 +241,13 @@ def _profile_row_to_dict(
         for base_row in ordered_base_rows
         if base_row.base_id
     }
+    meta_json = _safe_dict(profile_row.meta_json)
     return {
         "farmer_id": profile_row.farmer_id,
         "name": profile_row.name,
+        "display_name": meta_json.get("display_name") or profile_row.name,
+        "role_type": str(meta_json.get("role_type") or "FARMER").strip().upper() or "FARMER",
+        "owner_user_id": meta_json.get("owner_user_id") or profile_row.farmer_id,
         "schema_version": profile_row.schema_version,
         "updated_at": _datetime_to_iso(profile_row.profile_updated_at),
         "active_base_id": profile_row.active_base_id,
@@ -395,6 +399,14 @@ def save_profile_payload(payload: dict[str, Any]) -> dict[str, Any]:
             profile_row.cultivation_mode = payload.get("cultivation_mode")
             profile_row.experience_level = payload.get("experience_level")
             profile_row.risk_preference = payload.get("risk_preference")
+            meta_json = _safe_dict(profile_row.meta_json)
+            meta_json["display_name"] = payload.get("display_name") or payload.get("name") or farmer_id
+            role_type = str(payload.get("role_type") or "FARMER").strip().upper()
+            if role_type not in {"FARMER", "EXPERT", "ADMIN"}:
+                role_type = "FARMER"
+            meta_json["role_type"] = role_type
+            meta_json["owner_user_id"] = payload.get("owner_user_id") or farmer_id
+            profile_row.meta_json = meta_json
             profile_row.constraints_json = {
                 "prefer_organic": constraints_payload["prefer_organic"],
                 "harvest_window_days": constraints_payload["harvest_window_days"],

@@ -82,10 +82,13 @@ class BaseProfile(BaseModel):
 
 
 class FarmerProfile(BaseModel):
-    """农户整体档案。"""
+    """统一档案模型（农户/专家/管理员）。"""
 
     farmer_id: str
     name: Optional[str] = None
+    display_name: Optional[str] = None
+    role_type: Literal["FARMER", "EXPERT", "ADMIN"] = "FARMER"
+    owner_user_id: Optional[str] = None
     schema_version: str = "1.2"
     updated_at: Optional[str] = None
     active_base_id: Optional[str] = None
@@ -98,6 +101,17 @@ class FarmerProfile(BaseModel):
     risk_preference: Literal["CONSERVATIVE", "BALANCED", "AGGRESSIVE"] = "BALANCED"
     bases: Dict[str, BaseProfile] = Field(default_factory=dict)
     constraints: TreatmentConstraint = Field(default_factory=TreatmentConstraint)
+
+    @model_validator(mode="after")
+    def normalize_profile_identity(self) -> "FarmerProfile":
+        self.role_type = str(self.role_type or "FARMER").strip().upper()  # type: ignore[assignment]
+        if self.role_type not in {"FARMER", "EXPERT", "ADMIN"}:
+            self.role_type = "FARMER"
+        if not self.owner_user_id:
+            self.owner_user_id = self.farmer_id
+        if not self.display_name:
+            self.display_name = self.name or self.farmer_id
+        return self
 
     def ensure_timestamp(self) -> None:
         """填充更新时间。"""
