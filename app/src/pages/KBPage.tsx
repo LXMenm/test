@@ -8,6 +8,7 @@ import { Badge } from '@/components/ui/badge';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { loadAuthUser } from '@/auth';
 
 
 interface Disease {
@@ -66,6 +67,8 @@ interface KBPageProps {
 }
 
 export function KBPage({ focusDiseaseName = '' }: KBPageProps) {
+  const authUser = loadAuthUser();
+  const canEdit = authUser?.role === 'ADMIN';
   const [activeTab, setActiveTab] = useState<TabType>('diseases');
   const [, setLoading] = useState(false);
   
@@ -514,7 +517,7 @@ export function KBPage({ focusDiseaseName = '' }: KBPageProps) {
                 病害及描述
               </CardTitle>
               <div className="flex gap-2">
-                <Button
+                {canEdit ? <Button
                   onClick={() => {
                     setDiseaseDialogMode('create');
                     setEditingDiseaseOriginalName('');
@@ -525,8 +528,8 @@ export function KBPage({ focusDiseaseName = '' }: KBPageProps) {
                 >
                   <Plus className="w-4 h-4 mr-1" />
                   新增
-                </Button>
-                {selectedDiseases.length > 0 && (
+                </Button> : null}
+                {canEdit && selectedDiseases.length > 0 && (
                   <Button
                     onClick={deleteDiseases}
                     variant="outline"
@@ -582,7 +585,7 @@ export function KBPage({ focusDiseaseName = '' }: KBPageProps) {
                           <td className="p-3 text-white font-medium">{disease.name}</td>
                           <td className="p-3 text-white/70">{disease.description}</td>
                           <td className="p-3 text-right">
-                            <Button
+                            {canEdit ? <Button
                               onClick={() => {
                                 setDiseaseDialogMode('edit');
                                 setEditingDiseaseOriginalName(disease.name);
@@ -594,7 +597,7 @@ export function KBPage({ focusDiseaseName = '' }: KBPageProps) {
                               className="text-[#c8f7c5] hover:bg-[#c8f7c5]/10"
                             >
                               编辑
-                            </Button>
+                            </Button> : <span className="text-white/40 text-xs">只读</span>}
                           </td>
                         </tr>
                       ))}
@@ -615,14 +618,14 @@ export function KBPage({ focusDiseaseName = '' }: KBPageProps) {
                 治疗/预防方案
               </CardTitle>
               <div className="flex gap-2">
-                <Button
+                {canEdit ? <Button
                   onClick={() => { setEditingTreatment({ disease: '', treatment: '', prevention: '', actions: undefined, ingredients: [] }); setEditingTreatmentActionsJson(''); setEditingTreatmentActionsError(''); setShowActionsEditor(false); setShowTreatmentDialog(true); }}
                   className="bg-[#c8f7c5] text-black hover:bg-[#b8e7b5]"
                 >
                   <Plus className="w-4 h-4 mr-1" />
                   新增
-                </Button>
-                {selectedTreatments.length > 0 && (
+                </Button> : null}
+                {canEdit && selectedTreatments.length > 0 && (
                   <Button
                     onClick={deleteTreatments}
                     variant="outline"
@@ -661,14 +664,14 @@ export function KBPage({ focusDiseaseName = '' }: KBPageProps) {
                           />
                           <Badge className="bg-[#c8f7c5]/20 text-[#c8f7c5]">{treatment.disease}</Badge>
                         </div>
-                        <Button
+                        {canEdit ? <Button
                           onClick={() => { setEditingTreatment(treatment); setEditingTreatmentActionsJson(JSON.stringify(treatment.actions || {}, null, 2)); setEditingTreatmentActionsError(''); setShowActionsEditor(false); setShowTreatmentDialog(true); }}
                           variant="ghost"
                           size="sm"
                           className="text-[#c8f7c5] hover:bg-[#c8f7c5]/10"
                         >
                           编辑
-                        </Button>
+                        </Button> : <span className="text-white/40 text-xs">只读</span>}
                       </div>
                       <div className="mt-3 grid sm:grid-cols-2 gap-3">
                         <div>
@@ -705,14 +708,14 @@ export function KBPage({ focusDiseaseName = '' }: KBPageProps) {
                 诊断规则
               </CardTitle>
               <div className="flex gap-2">
-                <Button
+                {canEdit ? <Button
                   onClick={() => { setEditingRule({ rule_id: '', crop_type: '', symptoms: '', disease: '', confidence: 0.8, evidence: '' }); setShowRuleDialog(true); }}
                   className="bg-[#c8f7c5] text-black hover:bg-[#b8e7b5]"
                 >
                   <Plus className="w-4 h-4 mr-1" />
                   新增
-                </Button>
-                {selectedRules.length > 0 && (
+                </Button> : null}
+                {canEdit && selectedRules.length > 0 && (
                   <Button
                     onClick={deleteRules}
                     variant="outline"
@@ -774,14 +777,14 @@ export function KBPage({ focusDiseaseName = '' }: KBPageProps) {
                           </td>
                           <td className="p-3 text-[#c8f7c5] font-mono">{(rule.confidence * 100).toFixed(0)}%</td>
                           <td className="p-3 text-right">
-                            <Button
+                            {canEdit ? <Button
                               onClick={() => { setEditingRule(rule); setShowRuleDialog(true); }}
                               variant="ghost"
                               size="sm"
                               className="text-[#c8f7c5] hover:bg-[#c8f7c5]/10"
                             >
                               编辑
-                            </Button>
+                            </Button> : <span className="text-white/40 text-xs">只读</span>}
                           </td>
                         </tr>
                       ))}
@@ -802,7 +805,7 @@ export function KBPage({ focusDiseaseName = '' }: KBPageProps) {
                 症状-病害映射
               </CardTitle>
               <div className="flex gap-2">
-                <Button
+                {canEdit ? <Button
                   onClick={() => {
                     setSymptomDialogMode('create');
                     setEditingSymptomOriginalName('');
@@ -813,8 +816,8 @@ export function KBPage({ focusDiseaseName = '' }: KBPageProps) {
                 >
                   <Plus className="w-4 h-4 mr-1" />
                   新增
-                </Button>
-                {selectedSymptomMaps.length > 0 && (
+                </Button> : null}
+                {canEdit && selectedSymptomMaps.length > 0 && (
                   <Button
                     onClick={deleteSymptomMaps}
                     variant="outline"
@@ -859,7 +862,7 @@ export function KBPage({ focusDiseaseName = '' }: KBPageProps) {
                           </div>
                         </div>
                       </div>
-                      <Button
+                      {canEdit ? <Button
                         onClick={() => {
                           setSymptomDialogMode('edit');
                           setEditingSymptomOriginalName(map.symptom);
@@ -871,7 +874,7 @@ export function KBPage({ focusDiseaseName = '' }: KBPageProps) {
                         className="text-[#c8f7c5] hover:bg-[#c8f7c5]/10"
                       >
                         编辑
-                      </Button>
+                      </Button> : <span className="text-white/40 text-xs">只读</span>}
                     </div>
                   ))}
                 </div>

@@ -22,6 +22,7 @@ from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Res
 from fastapi.staticfiles import StaticFiles
 from PIL import Image
 from pydantic import BaseModel
+from sqlalchemy import select
 
 from config import DIAGNOSIS_CONFIDENCE_THRESHOLD, DIAGNOSIS_ALLOW_TORCH, log_resolved_storage_config
 from diagnosis_model import get_diagnosis_engine
@@ -60,27 +61,61 @@ from trace_store import list_trace_events, subscribe as subscribe_trace, unsubsc
 from model_registry import list_models, resolve_model
 from workflow import build_graph
 from trace_catalog import AGENTS_CATALOG, NODE_TO_AGENT
+from runtime_settings import load_admin_runtime_config, save_admin_runtime_config
+from db import engine as db_engine, get_db_session
+from mysql_models import UserAccountORM
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     log_resolved_storage_config()
+    ensure_user_accounts_seeded()
     yield
 
 
 app = FastAPI(title="Tomato Diagnosis API", version="1.0.0", lifespan=lifespan)
 
 SUPPORTED_ROLES = {"USER", "EXPERT", "ADMIN"}
+DEFAULT_DEMO_ACCOUNTS = [
+    {"user_id": "F0001", "username": "f0001", "display_name": "农户 F0001", "role": "USER", "password": "123456", "linked_farmer_id": "F0001"},
+    {"user_id": "F0002", "username": "f0002", "display_name": "农户 F0002", "role": "USER", "password": "123456", "linked_farmer_id": "F0002"},
+    {"user_id": "E0001", "username": "e0001", "display_name": "专家 E0001", "role": "EXPERT", "password": "123456", "linked_farmer_id": None},
+    {"user_id": "E0002", "username": "e0002", "display_name": "专家 E0002", "role": "EXPERT", "password": "123456", "linked_farmer_id": None},
+    {"user_id": "A0001", "username": "a0001", "display_name": "管理员 A0001", "role": "ADMIN", "password": "123456", "linked_farmer_id": None},
+]
+
+
+def ensure_user_accounts_seeded() -> None:
+    try:
+        UserAccountORM.__table__.create(bind=db_engine, checkfirst=True)
+        with get_db_session() as session:
+            existing = {
+                str(item.user_id).strip()
+                for item in session.execute(select(UserAccountORM.user_id)).all()
+                if item and item[0]
+            }
+            changed = False
+            for account in DEFAULT_DEMO_ACCOUNTS:
+                if account["user_id"] in existing:
+                    continue
+                session.add(UserAccountORM(**account, status="ACTIVE"))
+                changed = True
+            if changed:
+                session.commit()
+    except Exception as exc:
+        print(f"[AuthBootstrap] 初始化 user_accounts 失败: {exc}")
 
 
 def _get_request_actor(request: Request | None) -> dict[str, str]:
     headers = request.headers if request is not None else {}
     user_id = str(headers.get("X-User-Id") or "").strip()
     raw_role = str(headers.get("X-User-Role") or "USER").strip().upper()
+    linked_farmer_id = str(headers.get("X-Linked-Farmer-Id") or "").strip()
     role = raw_role if raw_role in SUPPORTED_ROLES else "USER"
     return {
         "user_id": user_id,
         "role": role,
+        "linked_farmer_id": linked_farmer_id,
     }
 
 
@@ -95,7 +130,7 @@ def _is_expert(actor: dict[str, str]) -> bool:
 def _apply_farmer_scope(actor: dict[str, str], requested_farmer_id: str | None) -> str | None:
     if _is_admin(actor):
         return requested_farmer_id
-    actor_user_id = str(actor.get("user_id") or "").strip()
+    actor_user_id = str(actor.get("linked_farmer_id") or actor.get("user_id") or "").strip()
     if not actor_user_id:
         return requested_farmer_id
     requested = str(requested_farmer_id or "").strip()
@@ -243,6 +278,11 @@ class DiagnoseResponse(BaseModel):
     confirm_round_parent_trace_id: str | None = None
     meta: dict[str, Any] | None = None
     events: list[dict[str, Any]] = []
+
+
+class LoginRequest(BaseModel):
+    user_id: str
+    password: str | None = None
 
 
 class SPAStaticFiles(StaticFiles):
@@ -2603,6 +2643,52 @@ def get_events(
     return {"events": [_serialize_event_dto(event, inject_trace_steps=True) for event in filtered_events]}
 
 
+@app.post("/api/auth/login")
+def login(payload: LoginRequest) -> dict[str, Any]:
+    ensure_user_accounts_seeded()
+    user_id = str(payload.user_id or "").strip()
+    if not user_id:
+        raise HTTPException(status_code=400, detail="user_id 不能为空")
+    with get_db_session() as session:
+        account = session.execute(
+            select(UserAccountORM).where(UserAccountORM.user_id == user_id)
+        ).scalar_one_or_none()
+    if not account:
+        raise HTTPException(status_code=401, detail="账号不存在")
+    if str(account.status or "").upper() != "ACTIVE":
+        raise HTTPException(status_code=403, detail="账号已禁用")
+    incoming_password = str(payload.password or "").strip()
+    stored_password = str(account.password or "").strip()
+    if stored_password and stored_password != incoming_password:
+        raise HTTPException(status_code=401, detail="密码错误")
+    return {
+        "user_id": account.user_id,
+        "display_name": account.display_name,
+        "role": str(account.role or "USER").upper(),
+        "linked_farmer_id": account.linked_farmer_id,
+        "status": account.status,
+    }
+
+
+@app.get("/api/admin/accounts/experts")
+def list_active_experts(request: Request) -> dict[str, Any]:
+    actor = _get_request_actor(request)
+    _require_admin(actor)
+    ensure_user_accounts_seeded()
+    with get_db_session() as session:
+        rows = session.execute(
+            select(UserAccountORM)
+            .where(UserAccountORM.role == "EXPERT", UserAccountORM.status == "ACTIVE")
+            .order_by(UserAccountORM.user_id.asc())
+        ).scalars().all()
+    return {
+        "items": [
+            {"user_id": row.user_id, "display_name": row.display_name}
+            for row in rows
+        ]
+    }
+
+
 @app.get("/api/expert-reviews/pending")
 def get_pending_expert_reviews(request: Request, limit: int = 20) -> dict[str, Any]:
     actor = _get_request_actor(request)
@@ -2615,6 +2701,12 @@ def get_pending_expert_reviews(request: Request, limit: int = 20) -> dict[str, A
         if str(event.get("status") or "").strip() == "pending_expert_review"
         or str(event.get("expert_review_status") or "").strip().upper() == "PENDING"
     ]
+    if not _is_admin(actor):
+        actor_id = str(actor.get("user_id") or "").strip()
+        pending = [
+            event for event in pending
+            if str(event.get("assigned_expert_id") or "").strip() == actor_id
+        ]
     items = [_build_expert_review_list_item(event) for event in pending[:safe_limit]]
     return {
         "count": len(pending),
@@ -2629,6 +2721,10 @@ def get_expert_review_case_detail(trace_id: str, request: Request) -> dict[str, 
     event = _latest_case_event_by_trace(trace_id)
     if not event:
         raise HTTPException(status_code=404, detail="病例不存在")
+    if not _is_admin(actor):
+        actor_id = str(actor.get("user_id") or "").strip()
+        if str(event.get("assigned_expert_id") or "").strip() != actor_id:
+            raise HTTPException(status_code=403, detail="当前病例未分配给你")
     return {"item": _build_expert_review_detail(event)}
 
 
@@ -2639,6 +2735,10 @@ def submit_expert_review(trace_id: str, request: Request, payload: dict = Body(.
     event = _latest_case_event_by_trace(trace_id)
     if not event:
         raise HTTPException(status_code=404, detail="病例不存在")
+    if not _is_admin(actor):
+        actor_id = str(actor.get("user_id") or "").strip()
+        if str(event.get("assigned_expert_id") or "").strip() != actor_id:
+            raise HTTPException(status_code=403, detail="当前病例未分配给你")
 
     confirmed_disease = str(payload.get("expert_review_result") or "").strip()
     if not confirmed_disease:
@@ -2687,6 +2787,108 @@ def submit_expert_review(trace_id: str, request: Request, payload: dict = Body(.
 
     append_event(serialize_final_response(next_event))
     return {"item": _build_expert_review_detail(next_event)}
+
+
+@app.get("/api/admin/system-config")
+def get_admin_system_config(request: Request) -> dict[str, Any]:
+    actor = _get_request_actor(request)
+    _require_admin(actor)
+    return {"config": load_admin_runtime_config()}
+
+
+@app.put("/api/admin/system-config")
+def update_admin_system_config(request: Request, payload: dict = Body(...)) -> dict[str, Any]:
+    actor = _get_request_actor(request)
+    _require_admin(actor)
+    next_config = save_admin_runtime_config(payload if isinstance(payload, dict) else {})
+    return {"config": next_config}
+
+
+@app.get("/api/admin/reviews")
+def list_admin_reviews(request: Request, status: str = "pending", limit: int = 50) -> dict[str, Any]:
+    actor = _get_request_actor(request)
+    _require_admin(actor)
+    safe_limit = max(1, min(200, int(limit)))
+    expected = str(status or "pending").strip().lower()
+    if expected not in {"pending", "assigned", "completed"}:
+        raise HTTPException(status_code=400, detail="status 仅支持 pending / assigned / completed")
+    latest_events = _pick_latest_case_by_trace(list_events(200000))
+    filtered = [event for event in latest_events if _admin_review_bucket(event) == expected]
+    items: list[dict[str, Any]] = []
+    for event in filtered[:safe_limit]:
+        base = _build_expert_review_list_item(event)
+        items.append(
+            {
+                **base,
+                "review_flow_status": str(event.get("review_flow_status") or "normal"),
+                "review_flow_note": event.get("review_flow_note"),
+                "updated_at": event.get("ts"),
+            }
+        )
+    return {"count": len(filtered), "items": items}
+
+
+@app.get("/api/admin/reviews/{trace_id}")
+def get_admin_review_detail(trace_id: str, request: Request) -> dict[str, Any]:
+    actor = _get_request_actor(request)
+    _require_admin(actor)
+    event = _latest_case_event_by_trace(trace_id)
+    if not event:
+        raise HTTPException(status_code=404, detail="病例不存在")
+    detail = _build_expert_review_detail(event)
+    detail["review_bucket"] = _admin_review_bucket(event)
+    detail["updated_at"] = event.get("ts")
+    return {"item": detail}
+
+
+@app.post("/api/admin/reviews/{trace_id}/assign")
+def assign_admin_review(trace_id: str, request: Request, payload: dict = Body(...)) -> dict[str, Any]:
+    actor = _get_request_actor(request)
+    _require_admin(actor)
+    event = _latest_case_event_by_trace(trace_id)
+    if not event:
+        raise HTTPException(status_code=404, detail="病例不存在")
+    expert_id = str(payload.get("assigned_expert_id") or "").strip()
+    if not expert_id:
+        raise HTTPException(status_code=400, detail="assigned_expert_id 不能为空")
+
+    next_event = dict(event)
+    next_event["id"] = uuid.uuid4().hex
+    next_event["ts"] = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    next_event["assigned_expert_id"] = expert_id
+    if str(next_event.get("expert_review_status") or "").strip().upper() != "COMPLETED":
+        next_event["expert_review_status"] = "PENDING"
+        next_event["status"] = "pending_expert_review"
+    next_event["review_flow_status"] = str(next_event.get("review_flow_status") or "normal")
+    next_event["review_flow_note"] = sanitize_user_text(payload.get("review_flow_note")) or next_event.get("review_flow_note")
+    append_event(serialize_final_response(next_event))
+    detail = _build_expert_review_detail(next_event)
+    detail["review_bucket"] = _admin_review_bucket(next_event)
+    detail["updated_at"] = next_event.get("ts")
+    return {"item": detail}
+
+
+@app.post("/api/admin/reviews/{trace_id}/flow-status")
+def update_admin_review_flow_status(trace_id: str, request: Request, payload: dict = Body(...)) -> dict[str, Any]:
+    actor = _get_request_actor(request)
+    _require_admin(actor)
+    event = _latest_case_event_by_trace(trace_id)
+    if not event:
+        raise HTTPException(status_code=404, detail="病例不存在")
+    flow_status = str(payload.get("review_flow_status") or "").strip().lower()
+    if flow_status not in {"normal", "abnormal", "closed"}:
+        raise HTTPException(status_code=400, detail="review_flow_status 仅支持 normal / abnormal / closed")
+
+    next_event = dict(event)
+    next_event["id"] = uuid.uuid4().hex
+    next_event["ts"] = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    next_event["review_flow_status"] = flow_status
+    next_event["review_flow_note"] = sanitize_user_text(payload.get("review_flow_note"))
+    append_event(serialize_final_response(next_event))
+    detail = _build_expert_review_detail(next_event)
+    detail["review_bucket"] = _admin_review_bucket(next_event)
+    detail["updated_at"] = next_event.get("ts")
+    return {"item": detail}
 
 
 
@@ -2918,7 +3120,19 @@ def _build_expert_review_detail(event: dict[str, Any]) -> dict[str, Any]:
         "expert_review_supplement_symptoms": event.get("expert_review_supplement_symptoms"),
         "expert_review_notes": event.get("expert_review_notes"),
         "expert_reviewed_at": event.get("expert_reviewed_at"),
+        "review_flow_status": str(event.get("review_flow_status") or "normal"),
+        "review_flow_note": event.get("review_flow_note"),
     }
+
+
+def _admin_review_bucket(event: dict[str, Any]) -> str:
+    expert_status = str(event.get("expert_review_status") or "").strip().upper()
+    assigned_expert = str(event.get("assigned_expert_id") or "").strip()
+    if expert_status == "COMPLETED":
+        return "completed"
+    if assigned_expert:
+        return "assigned"
+    return "pending"
 
 
 def _event_base_id(event: dict[str, Any]) -> str:

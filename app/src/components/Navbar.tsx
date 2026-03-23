@@ -1,4 +1,4 @@
-import { Leaf, BarChart3, Users, BookOpen, Stethoscope, ClipboardList, UserCheck, Shield, Settings, Database, LayoutDashboard, LogOut } from 'lucide-react';
+import { Leaf, BarChart3, Users, BookOpen, Stethoscope, ClipboardList, UserCheck, Shield, Settings, LogOut } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { AppPage, AuthUser } from '@/auth';
 import { PAGE_TO_PATH } from '@/auth';
@@ -12,17 +12,14 @@ interface NavbarProps {
 }
 
 const NAV_META: Record<AppPage, { label: string; icon: React.ElementType }> = {
-  diagnose: { label: '诊断页', icon: Stethoscope },
-  cases: { label: '我的病例', icon: ClipboardList },
-  dashboard: { label: '我的数据看板', icon: BarChart3 },
-  profiles: { label: '我的农户档案', icon: Users },
-  kb: { label: '知识库(只读)', icon: BookOpen },
-  expert_review: { label: '专家复核区', icon: UserCheck },
+  diagnose: { label: '诊断', icon: Stethoscope },
+  cases: { label: '病例', icon: ClipboardList },
+  dashboard: { label: '数据看板', icon: BarChart3 },
+  profiles: { label: '农户档案', icon: Users },
+  kb: { label: '知识库', icon: BookOpen },
+  expert_review: { label: '专家复核', icon: UserCheck },
   system_config: { label: '系统配置', icon: Settings },
   review_management: { label: '复核管理', icon: Shield },
-  global_dashboard: { label: '全局看板', icon: LayoutDashboard },
-  kb_admin: { label: '知识库管理', icon: Database },
-  profiles_admin: { label: '全量档案管理', icon: Users },
 };
 
 export function Navbar({ currentPage, availablePages, onPageChange, authUser, onLogout }: NavbarProps) {
