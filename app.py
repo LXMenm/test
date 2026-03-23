@@ -356,14 +356,6 @@ def sanitize_user_text(value: Any) -> Any:
     return value
 
 
-GROWTH_STAGE_CANONICAL = {
-    "苗期": "SEEDLING",
-    "开花期": "FLOWERING",
-    "坐果期": "FRUIT_SET",
-    "结果期": "FRUIT_SET",
-    "成熟期": "HARVEST",
-}
-
 RISK_CODE_ALIAS = {
     "开花期_fruiting_sensitive": "FLOWERING_FRUITING_SENSITIVE",
     "fruting_sensitive": "FLOWERING_FRUITING_SENSITIVE",
@@ -378,9 +370,7 @@ def normalize_growth_stage_code(value: Any) -> Any:
     if not text:
         return value
     normalized = normalize_growth_stage(text)
-    if normalized:
-        return normalized
-    return GROWTH_STAGE_CANONICAL.get(text, text)
+    return normalized or text
 
 
 def normalize_risk_code(code: Any) -> str:

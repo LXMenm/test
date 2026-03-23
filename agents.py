@@ -11,6 +11,7 @@ from runtime_settings import get_admin_flag
 from confidence_policy import make_confidence_flags
 from personalization.profile_models import FarmerProfile, BaseProfile, TreatmentConstraint
 from personalization.profile_rules import apply_personalization_to_treatment, normalize_filter_outputs
+from personalization.profile_constants import normalize_growth_stage
 from personalization.utils import (
     dedupe_reasons,
     compute_personalization_applied,
@@ -34,22 +35,12 @@ class _LazyKBManagerProxy:
 # 获取知识库管理器实例（延迟初始化，避免模块导入时强制连接持久化后端）
 kb_manager = _LazyKBManagerProxy()
 
-GROWTH_STAGE_CANONICAL = {
-    "苗期": "SEEDLING",
-    "开花期": "FLOWERING",
-    "坐果期": "FRUIT_SET",
-    "结果期": "FRUIT_SET",
-    "成熟期": "HARVEST",
-}
-
-
 def _canonicalize_growth_stage(value: str | None) -> str | None:
     text = str(value or "").strip()
     if not text:
         return None
-    if text in GROWTH_STAGE_CANONICAL.values():
-        return text
-    return GROWTH_STAGE_CANONICAL.get(text, text)
+    normalized = normalize_growth_stage(text)
+    return normalized or text
 
 VERIFICATION_SYSTEM_PROMPT = """
 你是一名严格的农业安全审查员（Verification Agent）。
