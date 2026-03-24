@@ -413,54 +413,65 @@ export function AdminPage({ pageType }: { pageType: 'system' | 'review' }) {
             </div>
           </section>
 
-          <section className="grid md:grid-cols-3 gap-4 rounded-xl border border-white/10 p-3">
-            <h3 className="md:col-span-3 font-semibold text-[#c8f7c5]">大语言模型参数</h3>
-            <div className="flex items-center justify-between rounded-lg border border-white/10 p-3"><Label>启用大语言模型</Label><Switch checked={config.llm.enable_llm} onCheckedChange={(v) => setConfig((prev) => ({ ...prev, llm: { ...prev.llm, enable_llm: v } }))} /></div>
-            <div className="flex items-center justify-between rounded-lg border border-white/10 p-3"><Label>启用治疗建议生成</Label><Switch checked={config.llm.enable_treatment_generation} onCheckedChange={(v) => setConfig((prev) => ({ ...prev, llm: { ...prev.llm, enable_treatment_generation: v } }))} /></div>
-            <div className="flex items-center justify-between rounded-lg border border-white/10 p-3"><Label>启用约束校验</Label><Switch checked={config.llm.enable_constraint_validation} onCheckedChange={(v) => setConfig((prev) => ({ ...prev, llm: { ...prev.llm, enable_constraint_validation: v } }))} /></div>
-
-            <div className="md:col-span-3 grid md:grid-cols-3 gap-4 rounded-lg border border-white/10 p-3 bg-white/5">
-              <h4 className="md:col-span-3 text-sm font-semibold text-white/90">当前大模型信息</h4>
-              <div>
-                <Label>当前大模型提供方</Label>
-                <Input value={llmRuntimeSnapshot.model.provider_display_name} readOnly className="bg-white/5 border-white/20 text-white/90" />
+          <section className="rounded-xl border border-white/10 p-5 space-y-4">
+            <h3 className="font-semibold text-[#c8f7c5] text-lg flex items-center gap-2">
+              <div className="w-1.5 h-6 bg-[#c8f7c5] rounded-full" />
+              大语言模型参数
+            </h3>
+            <div className="grid md:grid-cols-3 gap-4">
+              <div className="flex items-center justify-between rounded-lg border border-white/10 p-4 bg-white/5">
+                <Label className="text-white">启用大语言模型</Label>
+                <Switch checked={config.llm.enable_llm} onCheckedChange={(v) => setConfig((prev) => ({ ...prev, llm: { ...prev.llm, enable_llm: v } }))} />
               </div>
-              <div>
-                <Label>当前模型名称 / model_id</Label>
-                <Input value={llmRuntimeSnapshot.model.model_id} readOnly className="bg-white/5 border-white/20 text-white/90" />
+              <div className="flex items-center justify-between rounded-lg border border-white/10 p-4 bg-white/5">
+                <Label className="text-white">启用治疗建议生成</Label>
+                <Switch checked={config.llm.enable_treatment_generation} onCheckedChange={(v) => setConfig((prev) => ({ ...prev, llm: { ...prev.llm, enable_treatment_generation: v } }))} />
               </div>
-              <div>
-                <Label>当前模型显示名称</Label>
-                <Input value={llmRuntimeSnapshot.model.model_display_name} readOnly className="bg-white/5 border-white/20 text-white/90" />
+              <div className="flex items-center justify-between rounded-lg border border-white/10 p-4 bg-white/5">
+                <Label className="text-white">启用约束校验</Label>
+                <Switch checked={config.llm.enable_constraint_validation} onCheckedChange={(v) => setConfig((prev) => ({ ...prev, llm: { ...prev.llm, enable_constraint_validation: v } }))} />
               </div>
             </div>
 
-            <div className="md:col-span-3 grid md:grid-cols-3 gap-4 rounded-lg border border-white/10 p-3 bg-white/5">
-              <h4 className="md:col-span-3 text-sm font-semibold text-white/90">当前治疗建议模板信息</h4>
-              <div>
-                <Label>当前治疗建议模板</Label>
-                <Input value={llmRuntimeSnapshot.template.name} readOnly className="bg-white/5 border-white/20 text-white/90" />
-              </div>
-              <div className="md:col-span-2">
-                <Label>模板适用场景</Label>
-                <Input value={llmRuntimeSnapshot.template.scenes} readOnly className="bg-white/5 border-white/20 text-white/90" />
-              </div>
-              <div className="md:col-span-3 rounded-lg border border-white/10 p-3 text-xs text-white/70">
-                <p className="text-white/90 mb-1">模板用途说明</p>
-                <p>{llmRuntimeSnapshot.template.purpose}</p>
+            <div className="rounded-xl border border-white/10 p-4 bg-gradient-to-br from-[#13221c] to-[#0f1a15]">
+              <h4 className="text-sm font-semibold text-[#c8f7c5] mb-4 flex items-center gap-2">
+                <div className="w-1 h-5 bg-[#c8f7c5] rounded-full" />
+                当前大模型信息
+              </h4>
+              <div className="grid md:grid-cols-3 gap-4">
+                <div>
+                  <Label className="text-white/50 text-xs mb-1 block">当前大模型提供方</Label>
+                  <div className="bg-white/5 border border-white/10 rounded-lg p-3 text-white/90">{llmRuntimeSnapshot.model.provider_display_name}</div>
+                </div>
+                <div>
+                  <Label className="text-white/50 text-xs mb-1 block">当前模型名称 / model_id</Label>
+                  <div className="bg-white/5 border border-white/10 rounded-lg p-3 text-white/90">{llmRuntimeSnapshot.model.model_id}</div>
+                </div>
+                <div>
+                  <Label className="text-white/50 text-xs mb-1 block">当前模型显示名称</Label>
+                  <div className="bg-white/5 border border-white/10 rounded-lg p-3 text-white/90">{llmRuntimeSnapshot.model.model_display_name}</div>
+                </div>
               </div>
             </div>
 
-            <div className="md:col-span-3 rounded-lg border border-white/10 p-3 bg-white/5 space-y-2">
-              <h4 className="text-sm font-semibold text-white/90">当前约束校验内容摘要</h4>
-              <p className="text-xs text-white/60">以下为当前系统默认启用的约束摘要（结合运行时配置展示）。</p>
-              <div className="grid md:grid-cols-2 gap-2">
-                {llmRuntimeSnapshot.constraint_validation.items.map((item) => (
-                  <div key={item.key} className="rounded-lg border border-white/10 px-3 py-2 text-xs text-white/80">
-                    <p className="text-white">{item.label} · {item.enabled ? '已启用' : '未启用'}</p>
-                    <p className="text-white/60 mt-1">{item.description}</p>
-                  </div>
-                ))}
+            <div className="rounded-xl border border-white/10 p-4 bg-gradient-to-br from-[#13221c] to-[#0f1a15]">
+              <h4 className="text-sm font-semibold text-[#c8f7c5] mb-4 flex items-center gap-2">
+                <div className="w-1 h-5 bg-[#c8f7c5] rounded-full" />
+                当前治疗建议模板信息
+              </h4>
+              <div className="grid md:grid-cols-3 gap-4">
+                <div>
+                  <Label className="text-white/50 text-xs mb-1 block">当前治疗建议模板</Label>
+                  <div className="bg-white/5 border border-white/10 rounded-lg p-3 text-white/90">{llmRuntimeSnapshot.template.name}</div>
+                </div>
+                <div className="md:col-span-2">
+                  <Label className="text-white/50 text-xs mb-1 block">模板适用场景</Label>
+                  <div className="bg-white/5 border border-white/10 rounded-lg p-3 text-white/90">{llmRuntimeSnapshot.template.scenes}</div>
+                </div>
+                <div className="md:col-span-3">
+                  <Label className="text-white/50 text-xs mb-1 block">模板用途说明</Label>
+                  <div className="bg-white/5 border border-white/10 rounded-lg p-4 text-white/80 text-sm">{llmRuntimeSnapshot.template.purpose}</div>
+                </div>
               </div>
             </div>
           </section>
