@@ -1,0 +1,33 @@
+# 最优阈值配置
+# 基于 5 折交叉验证结果确定
+thresholds:
+  # 图像相关阈值
+  image_top1_threshold: 0.65  # 图像可靠判定阈值
+  image_margin_threshold: 0.15  # 图像类别间距阈值（默认值）
+  
+  # 文本相关阈值
+  text_top1_threshold: 0.40  # 文本可靠判定阈值
+  text_margin_threshold: 0.10  # 文本类别间距阈值（默认值）
+  
+  # 弱冲突相关阈值
+  weak_conflict_min_image_top1: 0.50  # 弱冲突图像触发阈值（默认值）
+  weak_conflict_min_text_top1: 0.40  # 弱冲突文本触发阈值（默认值）
+  
+  # 全局阈值
+  diagnosis_conf_threshold: 0.50  # 诊断置信度阈值
+  low_margin_threshold: 0.03  # 低margin阈值
+
+# 配置说明：
+# - diagnosis_confidence: 诊断置信度阈值，用于判断自动完成的置信度
+# - need_confirm: 需要确认的阈值，低于此值的样本需要人工确认
+# - low_margin: 低 margin 阈值，用于检测置信度接近的情况
+
+# 交叉验证结果：
+# - 平均准确率：96.19% ± 0.89%
+# - 平均确认率：7.61% ± 0.98%
+# - 自动完成精度：100.00%
+# - 误放行率：未观察到
+
+# 高风险桶分布：
+# - conflict: n=1
+# - both_weak: n=2

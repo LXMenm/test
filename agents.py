@@ -4,11 +4,11 @@
 """
 from state import CropDiseaseState
 from llm_utils import call_llm, extract_json_from_response
-from diagnosis_model import build_reliability_summary, get_diagnosis_engine
+from diagnosis_model import build_reliability_summary, get_diagnosis_engine, evaluate_confirmation_decision
 from knowledge_base import get_kb_manager
 from config import DIAGNOSIS_CONFIDENCE_THRESHOLD, DIAGNOSIS_ALLOW_TORCH
 from runtime_settings import get_admin_flag
-from confidence_policy import make_confidence_flags
+from confidence_policy import make_confidence_flags, LOW_MARGIN_THRESHOLD
 from personalization.profile_models import FarmerProfile, BaseProfile, TreatmentConstraint
 from personalization.profile_rules import apply_personalization_to_treatment, normalize_filter_outputs
 from personalization.profile_constants import normalize_growth_stage
@@ -616,33 +616,45 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
         flags["need_confirm"] = True
         flags["fallback_reason"] = list(confidence_policy.get("reasons") or [])
 
-    # 双可靠性驱动的确认策略。
-    if fusion_case == "conflict":
+    # 使用纯函数评估确认决策（线上/离线共用逻辑）
+    confirmation_result = evaluate_confirmation_decision(
+        fusion_top3=fusion_top3,
+        fusion_meta=fusion_meta if isinstance(fusion_meta, dict) else {},
+        image_top3=image_top3,
+        text_top3=text_top3,
+        final_confidence=final_confidence,
+        diagnosis_conf_threshold=DIAGNOSIS_CONFIDENCE_THRESHOLD,
+        low_margin_threshold=LOW_MARGIN_THRESHOLD,
+        need_confirm_threshold=float(get_admin_flag("model_fusion.need_confirm_threshold", DIAGNOSIS_CONFIDENCE_THRESHOLD) or DIAGNOSIS_CONFIDENCE_THRESHOLD),
+    )
+    
+    # 统一回填纯函数结果，后面所有逻辑都用这一份
+    fusion_case = str(confirmation_result["fusion_case"])
+    weak_conflict_flag = bool(confirmation_result["weak_conflict_flag"])
+    modality_conflict_flag = bool(confirmation_result["modality_conflict_flag"])
+    image_reliable = bool(confirmation_result["image_reliable"])
+    text_reliable = bool(confirmation_result["text_reliable"])
+    supplement_mode = str(confirmation_result["supplement_mode"])
+    
+    # 先用 make_confidence_flags() 产出 low_confidence / low_margin
+    # 再用 confirmation_result 叠加冲突类原因
+    # 再根据 confirmation_result["should_clear_confirm"] 清理 low_confidence / low_margin
+    if confirmation_result["need_confirm"]:
         flags["need_confirm"] = True
         flags.setdefault("fallback_reason", [])
-        if "image_text_conflict" not in flags["fallback_reason"]:
-            flags["fallback_reason"].append("image_text_conflict")
-    elif weak_conflict_flag:
-        flags["need_confirm"] = True
-        flags.setdefault("fallback_reason", [])
-        if "weak_image_text_conflict" not in flags["fallback_reason"]:
-            flags["fallback_reason"].append("weak_image_text_conflict")
-    elif fusion_case == "both_weak":
-        flags["need_confirm"] = True
-        flags.setdefault("fallback_reason", [])
-        if "both_modalities_weak" not in flags["fallback_reason"]:
-            flags["fallback_reason"].append("both_modalities_weak")
-    elif fusion_case in {"image_strong_text_weak", "image_weak_text_strong", "consistent", "image_only", "text_only"}:
-        need_confirm_threshold = float(get_admin_flag("model_fusion.need_confirm_threshold", DIAGNOSIS_CONFIDENCE_THRESHOLD) or DIAGNOSIS_CONFIDENCE_THRESHOLD)
-        should_clear_confirm = final_confidence >= need_confirm_threshold
-        if should_clear_confirm:
-            flags["need_confirm"] = False
-            reasons = [r for r in list(flags.get("fallback_reason") or []) if r != "low_margin"]
-            reasons = [r for r in reasons if r != "low_confidence"]
-            if reasons:
-                flags["fallback_reason"] = reasons
-            else:
-                flags.pop("fallback_reason", None)
+        for reason in confirmation_result["reasons"]:
+            if reason not in flags["fallback_reason"]:
+                flags["fallback_reason"].append(reason)
+    
+    # 如果纯函数判断可以清除确认，则清除
+    if confirmation_result["should_clear_confirm"]:
+        flags["need_confirm"] = False
+        reasons = [r for r in list(flags.get("fallback_reason") or []) if r != "low_margin"]
+        reasons = [r for r in reasons if r != "low_confidence"]
+        if reasons:
+            flags["fallback_reason"] = reasons
+        else:
+            flags.pop("fallback_reason", None)
 
     disease_description = diagnosis_engine._get_disease_description(final_disease, normalized_symptoms)
 

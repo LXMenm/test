@@ -5,7 +5,7 @@ from typing import Iterable, Optional
 from config import DIAGNOSIS_CONFIDENCE_THRESHOLD
 
 
-LOW_MARGIN_THRESHOLD = 0.05
+LOW_MARGIN_THRESHOLD = 0.03
 
 
 def evaluate_confidence(

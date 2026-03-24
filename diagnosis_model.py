@@ -79,12 +79,110 @@ def _load_tf_custom_objects(model_path: str) -> Dict[str, object]:
 
 FUSE_MULTIMODAL_VERSION = "fuse_v4_text_gate_with_weak_conflict_20260321"
 PREDICT_TEXT_PROBA_VERSION = "text_v3_bert_with_rule_fallback_20260316"
-IMAGE_RELIABLE_TOP1_THRESHOLD = 0.70
+IMAGE_RELIABLE_TOP1_THRESHOLD = 0.65
 IMAGE_RELIABLE_MARGIN_THRESHOLD = 0.15
-TEXT_RELIABLE_TOP1_THRESHOLD = 0.45
+TEXT_RELIABLE_TOP1_THRESHOLD = 0.40
 TEXT_RELIABLE_MARGIN_THRESHOLD = 0.10
 WEAK_CONFLICT_MIN_IMAGE_TOP1 = 0.50
 WEAK_CONFLICT_MIN_TEXT_TOP1 = 0.40
+
+
+def evaluate_confirmation_decision(
+    *,
+    fusion_top3: List[Tuple[str, float]],
+    fusion_meta: Dict[str, object],
+    image_top3: List[Tuple[str, float]],
+    text_top3: List[Tuple[str, float]],
+    final_confidence: float,
+    diagnosis_conf_threshold: float = DIAGNOSIS_CONFIDENCE_THRESHOLD,
+    low_margin_threshold: float = 0.05,
+    need_confirm_threshold: Optional[float] = None,
+) -> Dict[str, object]:
+    """
+    纯函数：评估确认决策
+    
+    这是线上/离线共用的确认决策纯函数。
+    当前主要依据 fusion_meta + fusion_top3。
+    image_top3 / text_top3 先作为兼容参数保留。
+    
+    参数：
+        fusion_top3: 融合后的 top3 概率分布 [(disease, prob), ...]
+        fusion_meta: 融合元信息，包含 fusion_case, image_reliable, text_reliable 等
+        image_top3: 图像模型 top3 概率分布（兼容参数，暂未使用）
+        text_top3: 文本模型 top3 概率分布（兼容参数，暂未使用）
+        final_confidence: 最终置信度
+        diagnosis_conf_threshold: 诊断置信度阈值
+        low_margin_threshold: 低 margin 阈值
+        need_confirm_threshold: 需要确认的阈值（可选，默认使用 diagnosis_conf_threshold）
+    
+    返回：
+        {
+            "need_confirm": bool,
+            "reasons": List[str],
+            "weak_conflict_flag": bool,
+            "modality_conflict_flag": bool,
+            "fusion_case": str,
+            "image_reliable": bool,
+            "text_reliable": bool,
+            "supplement_mode": str,
+            "should_clear_confirm": bool,
+        }
+    """
+    if need_confirm_threshold is None:
+        need_confirm_threshold = diagnosis_conf_threshold
+    
+    reasons: List[str] = []
+    need_confirm = False
+    
+    fusion_case = str(fusion_meta.get("fusion_case", "unknown") if isinstance(fusion_meta, dict) else "unknown")
+    image_reliable = bool(fusion_meta.get("image_reliable") if isinstance(fusion_meta, dict) else False)
+    text_reliable = bool(fusion_meta.get("text_reliable") if isinstance(fusion_meta, dict) else False)
+    modality_conflict_flag = bool(fusion_meta.get("modality_conflict_flag") if isinstance(fusion_meta, dict) else False)
+    weak_conflict_candidate = bool(fusion_meta.get("weak_conflict_candidate") if isinstance(fusion_meta, dict) else False)
+    supplement_mode = str(fusion_meta.get("supplement_mode", "none") if isinstance(fusion_meta, dict) else "none")
+    
+    weak_conflict_threshold = float(need_confirm_threshold if need_confirm_threshold is not None else diagnosis_conf_threshold)
+    weak_conflict_flag = bool(weak_conflict_candidate and final_confidence < weak_conflict_threshold)
+    
+    if fusion_case == "conflict":
+        need_confirm = True
+        reasons.append("image_text_conflict")
+    elif weak_conflict_flag:
+        need_confirm = True
+        reasons.append("weak_image_text_conflict")
+    elif fusion_case == "both_weak":
+        need_confirm = True
+        reasons.append("both_modalities_weak")
+    elif fusion_case in {"image_strong_text_weak", "image_weak_text_strong", "consistent", "image_only", "text_only"}:
+        if final_confidence < diagnosis_conf_threshold:
+            need_confirm = True
+            reasons.append("low_confidence")
+        if len(fusion_top3) > 1:
+            margin = fusion_top3[0][1] - fusion_top3[1][1]
+            if margin < low_margin_threshold:
+                need_confirm = True
+                reasons.append("low_margin")
+    
+    CLEARABLE_CASES = {
+        "image_strong_text_weak",
+        "image_weak_text_strong",
+        "consistent",
+        "image_only",
+        "text_only",
+    }
+    should_clear_confirm = (fusion_case in CLEARABLE_CASES and not need_confirm and final_confidence >= float(need_confirm_threshold))
+    
+    return {
+        "need_confirm": need_confirm,
+        "reasons": reasons,
+        "weak_conflict_flag": weak_conflict_flag,
+        "modality_conflict_flag": modality_conflict_flag,
+        "fusion_case": fusion_case,
+        "image_reliable": image_reliable,
+        "text_reliable": text_reliable,
+        "supplement_mode": supplement_mode,
+        "should_clear_confirm": should_clear_confirm,
+    }
 
 
 def build_reliability_summary(
