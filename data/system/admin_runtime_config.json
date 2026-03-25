@@ -9,10 +9,14 @@
     "enable_image_model": true,
     "enable_text_model": true,
     "text_backend": "auto",
-    "image_reliable_threshold": 0.7,
-    "text_reliable_threshold": 0.45,
-    "conflict_margin": 0.1,
-    "need_confirm_threshold": 0.6
+    "image_top1_threshold": 0.65,
+    "image_margin_threshold": 0.15,
+    "text_top1_threshold": 0.4,
+    "text_margin_threshold": 0.1,
+    "weak_conflict_min_image_top1": 0.5,
+    "weak_conflict_min_text_top1": 0.4,
+    "diagnosis_conf_threshold": 0.5,
+    "low_margin_threshold": 0.03
   },
   "llm": {
     "enable_llm": true,

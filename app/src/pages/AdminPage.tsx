@@ -17,10 +17,14 @@ interface AdminConfig {
     enable_image_model: boolean;
     enable_text_model: boolean;
     text_backend: 'auto' | 'bert' | 'rule';
-    image_reliable_threshold: number;
-    text_reliable_threshold: number;
-    conflict_margin: number;
-    need_confirm_threshold: number;
+    image_top1_threshold: number;
+    image_margin_threshold: number;
+    text_top1_threshold: number;
+    text_margin_threshold: number;
+    weak_conflict_min_image_top1: number;
+    weak_conflict_min_text_top1: number;
+    diagnosis_conf_threshold: number;
+    low_margin_threshold: number;
   };
   llm: {
     enable_llm: boolean;
@@ -92,10 +96,14 @@ const DEFAULT_CONFIG: AdminConfig = {
     enable_image_model: true,
     enable_text_model: true,
     text_backend: 'auto',
-    image_reliable_threshold: 0.7,
-    text_reliable_threshold: 0.45,
-    conflict_margin: 0.1,
-    need_confirm_threshold: 0.6,
+    image_top1_threshold: 0.65,
+    image_margin_threshold: 0.15,
+    text_top1_threshold: 0.4,
+    text_margin_threshold: 0.1,
+    weak_conflict_min_image_top1: 0.5,
+    weak_conflict_min_text_top1: 0.4,
+    diagnosis_conf_threshold: 0.5,
+    low_margin_threshold: 0.03,
   },
   llm: {
     enable_llm: true,
@@ -178,10 +186,14 @@ export function AdminPage({ pageType }: { pageType: 'system' | 'review' }) {
           enable_image_model: Boolean((raw.model_fusion as Record<string, unknown>)?.enable_image_model),
           enable_text_model: Boolean((raw.model_fusion as Record<string, unknown>)?.enable_text_model),
           text_backend: (((raw.model_fusion as Record<string, unknown>)?.text_backend as 'auto' | 'bert' | 'rule') || 'auto'),
-          image_reliable_threshold: Number((raw.model_fusion as Record<string, unknown>)?.image_reliable_threshold ?? 0.7),
-          text_reliable_threshold: Number((raw.model_fusion as Record<string, unknown>)?.text_reliable_threshold ?? 0.45),
-          conflict_margin: Number((raw.model_fusion as Record<string, unknown>)?.conflict_margin ?? 0.1),
-          need_confirm_threshold: Number((raw.model_fusion as Record<string, unknown>)?.need_confirm_threshold ?? 0.6),
+          image_top1_threshold: Number((raw.model_fusion as Record<string, unknown>)?.image_top1_threshold ?? 0.65),
+          image_margin_threshold: Number((raw.model_fusion as Record<string, unknown>)?.image_margin_threshold ?? 0.15),
+          text_top1_threshold: Number((raw.model_fusion as Record<string, unknown>)?.text_top1_threshold ?? 0.4),
+          text_margin_threshold: Number((raw.model_fusion as Record<string, unknown>)?.text_margin_threshold ?? 0.1),
+          weak_conflict_min_image_top1: Number((raw.model_fusion as Record<string, unknown>)?.weak_conflict_min_image_top1 ?? 0.5),
+          weak_conflict_min_text_top1: Number((raw.model_fusion as Record<string, unknown>)?.weak_conflict_min_text_top1 ?? 0.4),
+          diagnosis_conf_threshold: Number((raw.model_fusion as Record<string, unknown>)?.diagnosis_conf_threshold ?? 0.5),
+          low_margin_threshold: Number((raw.model_fusion as Record<string, unknown>)?.low_margin_threshold ?? 0.03),
         },
         llm: {
           enable_llm: Boolean((raw.llm as Record<string, unknown>)?.enable_llm),
@@ -396,20 +408,36 @@ export function AdminPage({ pageType }: { pageType: 'system' | 'review' }) {
               </Select>
             </div>
             <div>
-              <Label>图像可靠性阈值</Label>
-              <Input type="number" step="0.01" value={config.model_fusion.image_reliable_threshold} onChange={(e) => setConfig((prev) => ({ ...prev, model_fusion: { ...prev.model_fusion, image_reliable_threshold: Number(e.target.value || 0) } }))} className="bg-white/5 border-white/20 text-white" />
+              <Label>图像 top1 可靠阈值</Label>
+              <Input type="number" step="0.01" value={config.model_fusion.image_top1_threshold} onChange={(e) => setConfig((prev) => ({ ...prev, model_fusion: { ...prev.model_fusion, image_top1_threshold: Number(e.target.value || 0) } }))} className="bg-white/5 border-white/20 text-white" />
             </div>
             <div>
-              <Label>文本可靠性阈值</Label>
-              <Input type="number" step="0.01" value={config.model_fusion.text_reliable_threshold} onChange={(e) => setConfig((prev) => ({ ...prev, model_fusion: { ...prev.model_fusion, text_reliable_threshold: Number(e.target.value || 0) } }))} className="bg-white/5 border-white/20 text-white" />
+              <Label>图像 margin 阈值</Label>
+              <Input type="number" step="0.01" value={config.model_fusion.image_margin_threshold} onChange={(e) => setConfig((prev) => ({ ...prev, model_fusion: { ...prev.model_fusion, image_margin_threshold: Number(e.target.value || 0) } }))} className="bg-white/5 border-white/20 text-white" />
             </div>
             <div>
-              <Label>冲突判定阈值</Label>
-              <Input type="number" step="0.01" value={config.model_fusion.conflict_margin} onChange={(e) => setConfig((prev) => ({ ...prev, model_fusion: { ...prev.model_fusion, conflict_margin: Number(e.target.value || 0) } }))} className="bg-white/5 border-white/20 text-white" />
+              <Label>文本 top1 可靠阈值</Label>
+              <Input type="number" step="0.01" value={config.model_fusion.text_top1_threshold} onChange={(e) => setConfig((prev) => ({ ...prev, model_fusion: { ...prev.model_fusion, text_top1_threshold: Number(e.target.value || 0) } }))} className="bg-white/5 border-white/20 text-white" />
             </div>
             <div>
-              <Label>低置信度阈值</Label>
-              <Input type="number" step="0.01" value={config.model_fusion.need_confirm_threshold} onChange={(e) => setConfig((prev) => ({ ...prev, model_fusion: { ...prev.model_fusion, need_confirm_threshold: Number(e.target.value || 0) } }))} className="bg-white/5 border-white/20 text-white" />
+              <Label>文本 margin 阈值</Label>
+              <Input type="number" step="0.01" value={config.model_fusion.text_margin_threshold} onChange={(e) => setConfig((prev) => ({ ...prev, model_fusion: { ...prev.model_fusion, text_margin_threshold: Number(e.target.value || 0) } }))} className="bg-white/5 border-white/20 text-white" />
+            </div>
+            <div>
+              <Label>弱冲突图像阈值</Label>
+              <Input type="number" step="0.01" value={config.model_fusion.weak_conflict_min_image_top1} onChange={(e) => setConfig((prev) => ({ ...prev, model_fusion: { ...prev.model_fusion, weak_conflict_min_image_top1: Number(e.target.value || 0) } }))} className="bg-white/5 border-white/20 text-white" />
+            </div>
+            <div>
+              <Label>弱冲突文本阈值</Label>
+              <Input type="number" step="0.01" value={config.model_fusion.weak_conflict_min_text_top1} onChange={(e) => setConfig((prev) => ({ ...prev, model_fusion: { ...prev.model_fusion, weak_conflict_min_text_top1: Number(e.target.value || 0) } }))} className="bg-white/5 border-white/20 text-white" />
+            </div>
+            <div>
+              <Label>诊断低置信度阈值</Label>
+              <Input type="number" step="0.01" value={config.model_fusion.diagnosis_conf_threshold} onChange={(e) => setConfig((prev) => ({ ...prev, model_fusion: { ...prev.model_fusion, diagnosis_conf_threshold: Number(e.target.value || 0) } }))} className="bg-white/5 border-white/20 text-white" />
+            </div>
+            <div>
+              <Label>低 margin 阈值</Label>
+              <Input type="number" step="0.01" value={config.model_fusion.low_margin_threshold} onChange={(e) => setConfig((prev) => ({ ...prev, model_fusion: { ...prev.model_fusion, low_margin_threshold: Number(e.target.value || 0) } }))} className="bg-white/5 border-white/20 text-white" />
             </div>
           </section>
 

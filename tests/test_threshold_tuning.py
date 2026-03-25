@@ -69,7 +69,6 @@ def test_image_strong_text_weak_high_confidence_should_clear():
         text_top3=text_top3,
         final_confidence=0.82,
         diagnosis_conf_threshold=0.60,
-        need_confirm_threshold=0.60,
     )
     
     assert result["need_confirm"] is False, "高置信度 image_strong_text_weak 样本应该不需要确认"
@@ -184,7 +183,6 @@ def test_high_confidence_consistent_should_clear():
         text_top3=text_top3,
         final_confidence=0.85,
         diagnosis_conf_threshold=0.60,
-        need_confirm_threshold=0.60,
     )
     
     assert result["need_confirm"] is False, "高置信度 consistent 样本应该不需要确认"
@@ -242,7 +240,6 @@ def test_image_weak_text_strong_high_confidence():
         text_top3=text_top3,
         final_confidence=0.75,
         diagnosis_conf_threshold=0.60,
-        need_confirm_threshold=0.60,
     )
     
     assert result["need_confirm"] is False, "高置信度 image_weak_text_strong 样本应该不需要确认"
@@ -326,7 +323,6 @@ def test_image_strong_text_weak_clear_low_confidence():
         text_top3=text_top3,
         final_confidence=0.82,
         diagnosis_conf_threshold=0.60,
-        need_confirm_threshold=0.60,
     )
     
     assert result["need_confirm"] is False, "高置信度 image_strong_text_weak 样本应该不需要确认"
@@ -355,20 +351,20 @@ def test_weak_conflict_with_adjustable_threshold():
         image_top3=image_top3,
         text_top3=text_top3,
         final_confidence=0.54,
-        need_confirm_threshold=0.55,
+        diagnosis_conf_threshold=0.55,
     )
-    
+
     assert result["weak_conflict_flag"] is True, "final_confidence=0.54 < threshold=0.55 时，weak_conflict_flag 应为 True"
-    
+
     result2 = evaluate_confirmation_decision(
         fusion_top3=fusion_top3,
         fusion_meta=fusion_meta,
         image_top3=image_top3,
         text_top3=text_top3,
         final_confidence=0.54,
-        need_confirm_threshold=0.50,
+        diagnosis_conf_threshold=0.50,
     )
-    
+
     assert result2["weak_conflict_flag"] is False, "final_confidence=0.54 >= threshold=0.50 时，weak_conflict_flag 应为 False"
     print("✓ test_weak_conflict_with_adjustable_threshold 通过")
 

@@ -9,6 +9,17 @@ from config import LLM_PROVIDER, OPENAI_MODEL, QWEN_MODEL, WENXIN_MODEL
 
 RUNTIME_CONFIG_PATH = Path("data/system/admin_runtime_config.json")
 
+RUNTIME_THRESHOLD_DEFAULTS: dict[str, float] = {
+    "image_top1_threshold": 0.65,
+    "image_margin_threshold": 0.15,
+    "text_top1_threshold": 0.40,
+    "text_margin_threshold": 0.10,
+    "weak_conflict_min_image_top1": 0.50,
+    "weak_conflict_min_text_top1": 0.40,
+    "diagnosis_conf_threshold": 0.50,
+    "low_margin_threshold": 0.03,
+}
+
 DEFAULT_ADMIN_CONFIG: dict[str, Any] = {
     "workflow": {
         "confirm_round_limit": 1,
@@ -20,10 +31,7 @@ DEFAULT_ADMIN_CONFIG: dict[str, Any] = {
         "enable_image_model": True,
         "enable_text_model": True,
         "text_backend": "auto",
-        "image_reliable_threshold": 0.70,
-        "text_reliable_threshold": 0.45,
-        "conflict_margin": 0.10,
-        "need_confirm_threshold": 0.60,
+        **RUNTIME_THRESHOLD_DEFAULTS,
     },
     "llm": {
         "enable_llm": True,
@@ -70,7 +78,26 @@ def _normalize_text_backend(value: Any, default: str) -> str:
     return default
 
 
-def _sanitize_config(raw: dict[str, Any] | None) -> dict[str, Any]:
+def _coalesce_threshold(model_input: dict[str, Any], new_key: str, default_value: float) -> float:
+    # 兼容迁移：旧字段仅用于一次性读取并迁移，运行时真值统一收口到新字段。
+    legacy_alias_map = {
+        "image_top1_threshold": ("image_reliable_threshold",),
+        "text_top1_threshold": ("text_reliable_threshold",),
+        # 旧 conflict_margin 历史上用于文本弱冲突兜底，迁移到 weak_conflict_min_text_top1。
+        "weak_conflict_min_text_top1": ("conflict_margin",),
+        # need_confirm_threshold 已弃用：在线逻辑统一使用 diagnosis_conf_threshold + low_margin_threshold。
+        "diagnosis_conf_threshold": (),
+    }
+    raw_value = model_input.get(new_key)
+    if raw_value is None:
+        for old_key in legacy_alias_map.get(new_key, ()):  # pragma: no cover - simple fallback path
+            if model_input.get(old_key) is not None:
+                raw_value = model_input.get(old_key)
+                break
+    return _as_float(raw_value, default_value)
+
+
+def _sanitize_config(raw: dict[str, Any] | None) -> tuple[dict[str, Any], bool]:
     source = raw if isinstance(raw, dict) else {}
 
     default_workflow = DEFAULT_ADMIN_CONFIG["workflow"]
@@ -88,10 +115,14 @@ def _sanitize_config(raw: dict[str, Any] | None) -> dict[str, Any]:
         "enable_image_model": _as_bool(model_input.get("enable_image_model"), bool(default_model["enable_image_model"])),
         "enable_text_model": _as_bool(model_input.get("enable_text_model"), bool(default_model["enable_text_model"])),
         "text_backend": _normalize_text_backend(model_input.get("text_backend"), str(default_model["text_backend"])),
-        "image_reliable_threshold": _as_float(model_input.get("image_reliable_threshold"), float(default_model["image_reliable_threshold"])),
-        "text_reliable_threshold": _as_float(model_input.get("text_reliable_threshold"), float(default_model["text_reliable_threshold"])),
-        "conflict_margin": _as_float(model_input.get("conflict_margin"), float(default_model["conflict_margin"])),
-        "need_confirm_threshold": _as_float(model_input.get("need_confirm_threshold"), float(default_model["need_confirm_threshold"])),
+        "image_top1_threshold": _coalesce_threshold(model_input, "image_top1_threshold", float(default_model["image_top1_threshold"])),
+        "image_margin_threshold": _coalesce_threshold(model_input, "image_margin_threshold", float(default_model["image_margin_threshold"])),
+        "text_top1_threshold": _coalesce_threshold(model_input, "text_top1_threshold", float(default_model["text_top1_threshold"])),
+        "text_margin_threshold": _coalesce_threshold(model_input, "text_margin_threshold", float(default_model["text_margin_threshold"])),
+        "weak_conflict_min_image_top1": _coalesce_threshold(model_input, "weak_conflict_min_image_top1", float(default_model["weak_conflict_min_image_top1"])),
+        "weak_conflict_min_text_top1": _coalesce_threshold(model_input, "weak_conflict_min_text_top1", float(default_model["weak_conflict_min_text_top1"])),
+        "diagnosis_conf_threshold": _coalesce_threshold(model_input, "diagnosis_conf_threshold", float(default_model["diagnosis_conf_threshold"])),
+        "low_margin_threshold": _coalesce_threshold(model_input, "low_margin_threshold", float(default_model["low_margin_threshold"])),
     }
 
     default_llm = DEFAULT_ADMIN_CONFIG["llm"]
@@ -102,11 +133,13 @@ def _sanitize_config(raw: dict[str, Any] | None) -> dict[str, Any]:
         "enable_constraint_validation": _as_bool(llm_input.get("enable_constraint_validation"), bool(default_llm["enable_constraint_validation"])),
     }
 
-    return {
+    normalized = {
         "workflow": workflow,
         "model_fusion": model_fusion,
         "llm": llm,
     }
+    was_migrated = normalized != (source if isinstance(source, dict) else {})
+    return normalized, was_migrated
 
 
 def load_admin_runtime_config() -> dict[str, Any]:
@@ -116,14 +149,26 @@ def load_admin_runtime_config() -> dict[str, Any]:
         raw = json.loads(RUNTIME_CONFIG_PATH.read_text(encoding="utf-8"))
     except Exception:
         return deepcopy(DEFAULT_ADMIN_CONFIG)
-    return _sanitize_config(raw if isinstance(raw, dict) else None)
+    normalized, was_migrated = _sanitize_config(raw if isinstance(raw, dict) else None)
+    if was_migrated:
+        save_admin_runtime_config(normalized)
+    return normalized
 
 
 def save_admin_runtime_config(raw: dict[str, Any]) -> dict[str, Any]:
-    normalized = _sanitize_config(raw)
+    normalized, _ = _sanitize_config(raw)
     RUNTIME_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     RUNTIME_CONFIG_PATH.write_text(json.dumps(normalized, ensure_ascii=False, indent=2), encoding="utf-8")
     return normalized
+
+
+def get_runtime_thresholds(config: dict[str, Any] | None = None) -> dict[str, float]:
+    current = config if isinstance(config, dict) else load_admin_runtime_config()
+    model_fusion = current.get("model_fusion") if isinstance(current.get("model_fusion"), dict) else {}
+    return {
+        key: _as_float(model_fusion.get(key), default)
+        for key, default in RUNTIME_THRESHOLD_DEFAULTS.items()
+    }
 
 
 def get_admin_flag(path: str, default: Any = None) -> Any:

@@ -2,18 +2,13 @@ from __future__ import annotations
 
 from typing import Iterable, Optional
 
-from config import DIAGNOSIS_CONFIDENCE_THRESHOLD
-
-
-LOW_MARGIN_THRESHOLD = 0.03
-
 
 def evaluate_confidence(
     *,
     top1_confidence: float,
     top2_confidence: Optional[float] = None,
-    threshold: float = DIAGNOSIS_CONFIDENCE_THRESHOLD,
-    margin_threshold: float = LOW_MARGIN_THRESHOLD,
+    threshold: float,
+    margin_threshold: float,
 ) -> dict[str, object]:
     reasons: list[str] = []
     if top1_confidence < threshold:
@@ -34,8 +29,8 @@ def make_confidence_flags(
     top3: Iterable[tuple[str, float]] | None,
     *,
     fallback_confidence: float = 0.0,
-    threshold: float = DIAGNOSIS_CONFIDENCE_THRESHOLD,
-    margin_threshold: float = LOW_MARGIN_THRESHOLD,
+    threshold: float,
+    margin_threshold: float,
 ) -> dict[str, object]:
     top3_list = list(top3 or [])
     top1_conf = float(top3_list[0][1]) if top3_list else float(fallback_confidence)
