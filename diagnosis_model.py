@@ -18,7 +18,6 @@ from config import (
     DIAGNOSIS_ALLOW_TORCH,
     DIAGNOSIS_BACKEND,
     USE_GPU,
-    DIAGNOSIS_CONFIDENCE_THRESHOLD,
     TEXT_DIAGNOSIS_BACKEND,
     TEXT_MODEL_DIR,
     PROJECT_ROOT,
@@ -26,7 +25,7 @@ from config import (
 import os
 from knowledge_base import get_kb_manager
 from text_model.infer_text_classifier import BertTextClassifier
-from runtime_settings import get_admin_flag
+from runtime_settings import RUNTIME_THRESHOLD_DEFAULTS, get_admin_flag, get_runtime_thresholds
 
 
 _kb_manager = None
@@ -79,14 +78,6 @@ def _load_tf_custom_objects(model_path: str) -> Dict[str, object]:
 
 FUSE_MULTIMODAL_VERSION = "fuse_v4_text_gate_with_weak_conflict_20260321"
 PREDICT_TEXT_PROBA_VERSION = "text_v3_bert_with_rule_fallback_20260316"
-IMAGE_RELIABLE_TOP1_THRESHOLD = 0.65
-IMAGE_RELIABLE_MARGIN_THRESHOLD = 0.15
-TEXT_RELIABLE_TOP1_THRESHOLD = 0.40
-TEXT_RELIABLE_MARGIN_THRESHOLD = 0.10
-WEAK_CONFLICT_MIN_IMAGE_TOP1 = 0.50
-WEAK_CONFLICT_MIN_TEXT_TOP1 = 0.40
-
-
 def evaluate_confirmation_decision(
     *,
     fusion_top3: List[Tuple[str, float]],
@@ -94,9 +85,8 @@ def evaluate_confirmation_decision(
     image_top3: List[Tuple[str, float]],
     text_top3: List[Tuple[str, float]],
     final_confidence: float,
-    diagnosis_conf_threshold: float = DIAGNOSIS_CONFIDENCE_THRESHOLD,
-    low_margin_threshold: float = 0.05,
-    need_confirm_threshold: Optional[float] = None,
+    diagnosis_conf_threshold: float = RUNTIME_THRESHOLD_DEFAULTS["diagnosis_conf_threshold"],
+    low_margin_threshold: float = RUNTIME_THRESHOLD_DEFAULTS["low_margin_threshold"],
 ) -> Dict[str, object]:
     """
     纯函数：评估确认决策
@@ -113,7 +103,6 @@ def evaluate_confirmation_decision(
         final_confidence: 最终置信度
         diagnosis_conf_threshold: 诊断置信度阈值
         low_margin_threshold: 低 margin 阈值
-        need_confirm_threshold: 需要确认的阈值（可选，默认使用 diagnosis_conf_threshold）
     
     返回：
         {
@@ -128,9 +117,6 @@ def evaluate_confirmation_decision(
             "should_clear_confirm": bool,
         }
     """
-    if need_confirm_threshold is None:
-        need_confirm_threshold = diagnosis_conf_threshold
-    
     reasons: List[str] = []
     need_confirm = False
     
@@ -141,7 +127,7 @@ def evaluate_confirmation_decision(
     weak_conflict_candidate = bool(fusion_meta.get("weak_conflict_candidate") if isinstance(fusion_meta, dict) else False)
     supplement_mode = str(fusion_meta.get("supplement_mode", "none") if isinstance(fusion_meta, dict) else "none")
     
-    weak_conflict_threshold = float(need_confirm_threshold if need_confirm_threshold is not None else diagnosis_conf_threshold)
+    weak_conflict_threshold = float(diagnosis_conf_threshold)
     weak_conflict_flag = bool(weak_conflict_candidate and final_confidence < weak_conflict_threshold)
     
     if fusion_case == "conflict":
@@ -170,7 +156,7 @@ def evaluate_confirmation_decision(
         "image_only",
         "text_only",
     }
-    should_clear_confirm = (fusion_case in CLEARABLE_CASES and not need_confirm and final_confidence >= float(need_confirm_threshold))
+    should_clear_confirm = (fusion_case in CLEARABLE_CASES and not need_confirm and final_confidence >= float(diagnosis_conf_threshold))
     
     return {
         "need_confirm": need_confirm,
@@ -448,7 +434,8 @@ class DiseaseDiagnosisEngine:
                 raw_label = self.class_names[predicted_idx]
                 disease_type = self._map_label_cn(raw_label)
                 probs_dict = {self._map_label_cn(label): float(prob) for label, prob in zip(self.class_names, probs)}
-                if confidence_score < DIAGNOSIS_CONFIDENCE_THRESHOLD:
+                diagnosis_conf_threshold = float(get_runtime_thresholds()["diagnosis_conf_threshold"])
+                if confidence_score < diagnosis_conf_threshold:
                     disease_type = "疑似病害（置信度不足）"
                 return disease_type, confidence_score, probs_dict
             except Exception as e:
@@ -600,19 +587,23 @@ class DiseaseDiagnosisEngine:
         image_top1_conf = float(image_top3[0][1]) if image_top3 else 0.0
         image_top2_conf = float(image_top3[1][1]) if len(image_top3) > 1 else 0.0
         image_margin = image_top1_conf - image_top2_conf
-        image_reliable_threshold = float(get_admin_flag("model_fusion.image_reliable_threshold", IMAGE_RELIABLE_TOP1_THRESHOLD) or IMAGE_RELIABLE_TOP1_THRESHOLD)
-        reliable_image = bool(image_top3 and image_top1_conf >= image_reliable_threshold and image_margin >= IMAGE_RELIABLE_MARGIN_THRESHOLD)
+        thresholds = get_runtime_thresholds()
+        image_top1_threshold = float(thresholds["image_top1_threshold"])
+        image_margin_threshold = float(thresholds["image_margin_threshold"])
+        reliable_image = bool(image_top3 and image_top1_conf >= image_top1_threshold and image_margin >= image_margin_threshold)
         text_top1_conf = float(text_top3[0][1]) if text_top3 else 0.0
         text_top2_conf = float(text_top3[1][1]) if len(text_top3) > 1 else 0.0
         text_margin = text_top1_conf - text_top2_conf
-        text_reliable_threshold = float(get_admin_flag("model_fusion.text_reliable_threshold", TEXT_RELIABLE_TOP1_THRESHOLD) or TEXT_RELIABLE_TOP1_THRESHOLD)
-        reliable_text = bool(text_top3 and text_top1_conf >= text_reliable_threshold and text_margin >= TEXT_RELIABLE_MARGIN_THRESHOLD)
+        text_top1_threshold = float(thresholds["text_top1_threshold"])
+        text_margin_threshold = float(thresholds["text_margin_threshold"])
+        reliable_text = bool(text_top3 and text_top1_conf >= text_top1_threshold and text_margin >= text_margin_threshold)
         text_probs_for_fusion = text_probs if reliable_text else {}
         image_top1 = image_top3[0][0] if image_top3 else None
         text_top1 = text_top3[0][0] if text_top3 else None
         conflict = bool(has_image and has_text and reliable_image and reliable_text and image_top1 and text_top1 and image_top1 != text_top1)
-        conflict_margin = float(get_admin_flag("model_fusion.conflict_margin", WEAK_CONFLICT_MIN_TEXT_TOP1) or WEAK_CONFLICT_MIN_TEXT_TOP1)
-        weak_conflict_candidate = bool(has_image and has_text and image_top1 and text_top1 and image_top1 != text_top1 and (image_top1_conf >= WEAK_CONFLICT_MIN_IMAGE_TOP1 or text_top1_conf >= conflict_margin))
+        weak_conflict_min_image_top1 = float(thresholds["weak_conflict_min_image_top1"])
+        weak_conflict_min_text_top1 = float(thresholds["weak_conflict_min_text_top1"])
+        weak_conflict_candidate = bool(has_image and has_text and image_top1 and text_top1 and image_top1 != text_top1 and (image_top1_conf >= weak_conflict_min_image_top1 or text_top1_conf >= weak_conflict_min_text_top1))
         reliability_summary = build_reliability_summary(image_reliable=reliable_image, text_reliable=reliable_text, modality_conflict_flag=conflict)
         base_weights = {"image": 0.0, "text": 0.0, "prior": 0.0}
         confidence_drop_reason = None

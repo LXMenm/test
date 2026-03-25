@@ -24,7 +24,7 @@ from PIL import Image
 from pydantic import BaseModel
 from sqlalchemy import select
 
-from config import DIAGNOSIS_CONFIDENCE_THRESHOLD, DIAGNOSIS_ALLOW_TORCH, log_resolved_storage_config
+from config import DIAGNOSIS_ALLOW_TORCH, log_resolved_storage_config
 from diagnosis_model import get_diagnosis_engine
 import diagnosis_model as diagnosis_model_module
 import agents as agents_module
@@ -61,7 +61,7 @@ from trace_store import list_trace_events, subscribe as subscribe_trace, unsubsc
 from model_registry import list_models, resolve_model
 from workflow import build_graph
 from trace_catalog import AGENTS_CATALOG, NODE_TO_AGENT
-from runtime_settings import get_admin_llm_runtime_snapshot, load_admin_runtime_config, save_admin_runtime_config
+from runtime_settings import get_admin_llm_runtime_snapshot, get_runtime_thresholds, load_admin_runtime_config, save_admin_runtime_config
 from db import engine as db_engine, get_db_session
 from mysql_models import UserAccountORM
 
@@ -172,7 +172,6 @@ IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 FRONTEND_DIR = Path("app/dist")
 LEGACY_WEB_DIR = Path("web")
 MAX_UPLOAD_MB = 8
-TOP_MARGIN = 0.15
 
 
 @app.exception_handler(Exception)
@@ -1261,9 +1260,10 @@ async def diagnose_image(
     fallback_reasons: list[str] = []
     emit_node_event(trace_id, node="DiagnosisAgent", status="end", message="图像诊断完成", payload={"disease": disease, "confidence": conf})
     emit_node_event(trace_id, node="ConfidenceGate", status="start", message="评估置信度")
-    if top1_conf < DIAGNOSIS_CONFIDENCE_THRESHOLD:
+    runtime_thresholds = get_runtime_thresholds()
+    if top1_conf < float(runtime_thresholds["diagnosis_conf_threshold"]):
         fallback_reasons.append("low_confidence")
-    if top2_conf is not None and (top1_conf - top2_conf) < TOP_MARGIN:
+    if top2_conf is not None and (top1_conf - top2_conf) < float(runtime_thresholds["low_margin_threshold"]):
         fallback_reasons.append("low_margin")
 
     symptoms_list = [s.strip() for s in (symptoms or "").split(",") if s.strip()]

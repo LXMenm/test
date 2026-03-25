@@ -6,9 +6,9 @@ from state import CropDiseaseState
 from llm_utils import call_llm, extract_json_from_response
 from diagnosis_model import build_reliability_summary, get_diagnosis_engine, evaluate_confirmation_decision
 from knowledge_base import get_kb_manager
-from config import DIAGNOSIS_CONFIDENCE_THRESHOLD, DIAGNOSIS_ALLOW_TORCH
-from runtime_settings import get_admin_flag
-from confidence_policy import make_confidence_flags, LOW_MARGIN_THRESHOLD
+from config import DIAGNOSIS_ALLOW_TORCH
+from runtime_settings import get_admin_flag, get_runtime_thresholds
+from confidence_policy import make_confidence_flags
 from personalization.profile_models import FarmerProfile, BaseProfile, TreatmentConstraint
 from personalization.profile_rules import apply_personalization_to_treatment, normalize_filter_outputs
 from personalization.profile_constants import normalize_growth_stage
@@ -329,6 +329,7 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
     flags = state.get("personalization_flags", {}) or {}
     flags["need_confirm"] = False
     runtime_enable_personalization = bool(get_admin_flag("workflow.enable_personalization_agent", True))
+    thresholds = get_runtime_thresholds()
     if not runtime_enable_personalization:
         flags = {}
         state["personalization_context"] = None
@@ -511,12 +512,12 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
     image_reliable = (
         bool(fusion_meta.get("image_reliable"))
         if isinstance(fusion_meta, dict) and "image_reliable" in fusion_meta
-        else bool(image_confidence >= 0.6)
+        else bool(image_confidence >= float(thresholds["image_top1_threshold"]))
     )
     text_reliable = (
         bool(fusion_meta.get("text_reliable"))
         if isinstance(fusion_meta, dict) and "text_reliable" in fusion_meta
-        else bool(text_confidence >= 0.6)
+        else bool(text_confidence >= float(thresholds["text_top1_threshold"]))
     )
     fusion_case = (fusion_meta.get("fusion_case") if isinstance(fusion_meta, dict) else None) or "unknown"
     weak_conflict_candidate = bool(
@@ -526,7 +527,7 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
     )
     weak_conflict_flag = bool(
         weak_conflict_candidate
-        and final_confidence < 0.5
+        and final_confidence < float(thresholds["diagnosis_conf_threshold"])
     )
     top1_conflict = bool(
         has_image_active
@@ -611,7 +612,12 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
             "summary": f"融合诊断Top1: {final_disease}",
         }
 
-    confidence_policy = make_confidence_flags(fusion_top3, fallback_confidence=float(final_confidence or 0.0))
+    confidence_policy = make_confidence_flags(
+        fusion_top3,
+        fallback_confidence=float(final_confidence or 0.0),
+        threshold=float(thresholds["diagnosis_conf_threshold"]),
+        margin_threshold=float(thresholds["low_margin_threshold"]),
+    )
     if confidence_policy.get("need_confirm"):
         flags["need_confirm"] = True
         flags["fallback_reason"] = list(confidence_policy.get("reasons") or [])
@@ -623,9 +629,8 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
         image_top3=image_top3,
         text_top3=text_top3,
         final_confidence=final_confidence,
-        diagnosis_conf_threshold=DIAGNOSIS_CONFIDENCE_THRESHOLD,
-        low_margin_threshold=LOW_MARGIN_THRESHOLD,
-        need_confirm_threshold=float(get_admin_flag("model_fusion.need_confirm_threshold", DIAGNOSIS_CONFIDENCE_THRESHOLD) or DIAGNOSIS_CONFIDENCE_THRESHOLD),
+        diagnosis_conf_threshold=float(thresholds["diagnosis_conf_threshold"]),
+        low_margin_threshold=float(thresholds["low_margin_threshold"]),
     )
     
     # 统一回填纯函数结果，后面所有逻辑都用这一份
@@ -681,11 +686,10 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
     should_skip_low_conf_confirm = (
         fusion_case == "image_weak_text_strong"
         and text_reliable
-        and final_confidence >= 0.5
+        and final_confidence >= float(thresholds["diagnosis_conf_threshold"])
         and not weak_conflict_flag
     )
-    need_confirm_threshold = float(get_admin_flag("model_fusion.need_confirm_threshold", DIAGNOSIS_CONFIDENCE_THRESHOLD) or DIAGNOSIS_CONFIDENCE_THRESHOLD)
-    if flags.get("confirm_when_low_confidence") and final_confidence < need_confirm_threshold and not should_skip_low_conf_confirm:
+    if flags.get("confirm_when_low_confidence") and final_confidence < float(thresholds["diagnosis_conf_threshold"]) and not should_skip_low_conf_confirm:
         follow_ups = [
             "请补充叶片正反面近照。",
             "病斑颜色、边缘、是否有霉层或水渍状？",
@@ -1855,7 +1859,7 @@ def _rule_based_supervisor(current_step: str, state: CropDiseaseState, flags: di
     if (
         current_step == "diagnosis_complete"
         and flags.get("confirm_when_low_confidence")
-        and disease_confidence < DIAGNOSIS_CONFIDENCE_THRESHOLD
+        and disease_confidence < float(get_runtime_thresholds()["diagnosis_conf_threshold"])
         and not state.get("final_disease")
     ):
         return "reception", False, "番茄病害监督智能体：置信度低且无有效诊断，回到接待追问补充信息"

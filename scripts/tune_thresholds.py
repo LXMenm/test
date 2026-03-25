@@ -45,18 +45,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 import yaml
-from diagnosis_model import (
-    DiseaseDiagnosisEngine,
-    evaluate_confirmation_decision,
-    IMAGE_RELIABLE_TOP1_THRESHOLD,
-    IMAGE_RELIABLE_MARGIN_THRESHOLD,
-    TEXT_RELIABLE_TOP1_THRESHOLD,
-    TEXT_RELIABLE_MARGIN_THRESHOLD,
-    WEAK_CONFLICT_MIN_IMAGE_TOP1,
-    WEAK_CONFLICT_MIN_TEXT_TOP1,
-    DIAGNOSIS_CONFIDENCE_THRESHOLD,
-)
-from confidence_policy import LOW_MARGIN_THRESHOLD
+from diagnosis_model import DiseaseDiagnosisEngine, evaluate_confirmation_decision
+from runtime_settings import RUNTIME_THRESHOLD_DEFAULTS
 
 
 def load_eval_data(data_path: str) -> List[Dict[str, Any]]:
@@ -157,9 +147,8 @@ def evaluate_single_sample(
         image_top3=image_top3,
         text_top3=text_top3,
         final_confidence=final_confidence,
-        diagnosis_conf_threshold=thresholds.get('diagnosis_conf_threshold', DIAGNOSIS_CONFIDENCE_THRESHOLD),
-        low_margin_threshold=thresholds.get('low_margin_threshold', 0.05),
-        need_confirm_threshold=thresholds.get('diagnosis_conf_threshold', DIAGNOSIS_CONFIDENCE_THRESHOLD),
+        diagnosis_conf_threshold=thresholds.get('diagnosis_conf_threshold', RUNTIME_THRESHOLD_DEFAULTS['diagnosis_conf_threshold']),
+        low_margin_threshold=thresholds.get('low_margin_threshold', RUNTIME_THRESHOLD_DEFAULTS['low_margin_threshold']),
     )
     
     ground_truth = sample.get('ground_truth')
