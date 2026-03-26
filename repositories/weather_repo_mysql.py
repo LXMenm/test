@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from db import get_db_session
 from mysql_models import WeatherSnapshotORM
@@ -86,31 +86,59 @@ def _row_to_payload(row: WeatherSnapshotORM) -> dict[str, Any]:
     }
 
 
-def append_weather_snapshot_mysql(payload: dict[str, Any]) -> dict[str, Any]:
-    row = WeatherSnapshotORM(
-        farmer_id=str(payload.get("farmer_id") or "").strip() or None,
-        base_id=str(payload.get("base_id") or "").strip() or None,
-        lat=payload.get("lat"),
-        lon=payload.get("lon"),
-        temperature=payload.get("temperature"),
-        humidity=payload.get("humidity"),
-        precipitation=payload.get("precipitation"),
-        rain_probability=payload.get("rain_probability"),
-        weather_code=str(payload.get("weather_code") or "").strip() or None,
-        weather_desc=str(payload.get("weather_desc") or "").strip() or None,
-        source=str(payload.get("source") or "open-meteo").strip() or "open-meteo",
-        snapshot_time=_parse_dt(payload.get("snapshot_time")) or datetime.utcnow(),
-        raw_json=_as_dict(payload.get("raw_json")) or None,
-    )
+def upsert_weather_snapshot_mysql(payload: dict[str, Any]) -> dict[str, Any]:
+    farmer_id = str(payload.get("farmer_id") or "").strip() or None
+    base_id = str(payload.get("base_id") or "").strip() or None
+    resolved_snapshot_time = _parse_dt(payload.get("snapshot_time")) or datetime.utcnow()
+    resolved_weather_code = str(payload.get("weather_code") or "").strip() or None
+    resolved_weather_desc = str(payload.get("weather_desc") or "").strip() or None
+    resolved_source = str(payload.get("source") or "open-meteo").strip() or "open-meteo"
+    resolved_raw_json = _as_dict(payload.get("raw_json")) or None
+
     with get_db_session() as session:
         try:
-            session.add(row)
+            row: WeatherSnapshotORM | None = None
+            if farmer_id and base_id:
+                matched_rows = session.execute(
+                    select(WeatherSnapshotORM)
+                    .where(
+                        WeatherSnapshotORM.farmer_id == farmer_id,
+                        WeatherSnapshotORM.base_id == base_id,
+                    )
+                    .order_by(WeatherSnapshotORM.id.asc())
+                ).scalars().all()
+                if matched_rows:
+                    row = matched_rows[0]
+                    duplicate_ids = [item.id for item in matched_rows[1:] if item.id is not None]
+                    if duplicate_ids:
+                        session.execute(delete(WeatherSnapshotORM).where(WeatherSnapshotORM.id.in_(duplicate_ids)))
+
+            if row is None:
+                row = WeatherSnapshotORM(farmer_id=farmer_id, base_id=base_id)
+                session.add(row)
+
+            row.lat = payload.get("lat")
+            row.lon = payload.get("lon")
+            row.temperature = payload.get("temperature")
+            row.humidity = payload.get("humidity")
+            row.precipitation = payload.get("precipitation")
+            row.rain_probability = payload.get("rain_probability")
+            row.weather_code = resolved_weather_code
+            row.weather_desc = resolved_weather_desc
+            row.source = resolved_source
+            row.snapshot_time = resolved_snapshot_time
+            row.raw_json = resolved_raw_json
             session.commit()
             session.refresh(row)
             return _row_to_payload(row)
         except Exception:
             session.rollback()
             raise
+
+
+def append_weather_snapshot_mysql(payload: dict[str, Any]) -> dict[str, Any]:
+    """兼容旧命名：内部语义已改为 upsert。"""
+    return upsert_weather_snapshot_mysql(payload)
 
 
 def list_weather_snapshots_mysql(

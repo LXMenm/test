@@ -61,8 +61,8 @@ from repositories.profile_repo_mysql import (
     save_profile_payload as save_profile_payload_mysql,
 )
 from repositories.weather_repo_mysql import (
-    append_weather_snapshot_mysql,
     list_weather_snapshots_mysql,
+    upsert_weather_snapshot_mysql,
 )
 from personalization.utils import dedupe_reasons, compute_personalization_applied, normalize_follow_up_questions
 from state import create_initial_state
@@ -2813,7 +2813,7 @@ def _should_write_weather_snapshot() -> bool:
     return mode in {"mysql", "dual"}
 
 
-def _append_weather_snapshot_from_refresh(
+def _upsert_weather_snapshot_from_refresh(
     *,
     farmer_id: str,
     profile: FarmerProfile,
@@ -2838,7 +2838,7 @@ def _append_weather_snapshot_from_refresh(
         "snapshot_time": payload.get("last_weather_refresh_at"),
         "raw_json": dict(payload),
     }
-    append_weather_snapshot_mysql(snapshot_payload)
+    upsert_weather_snapshot_mysql(snapshot_payload)
 
 
 @app.post("/api/profiles/{farmer_id}/bases/{base_id}/weather/refresh")
@@ -2854,14 +2854,14 @@ def refresh_base_weather(farmer_id: str, base_id: str, request: Request) -> dict
     payload = _refresh_base_weather(profile, base_id)
     if _should_write_weather_snapshot():
         try:
-            _append_weather_snapshot_from_refresh(
+            _upsert_weather_snapshot_from_refresh(
                 farmer_id=farmer_id,
                 profile=profile,
                 base_id=base_id,
                 payload=payload,
             )
         except Exception as exc:
-            print(f"[WeatherSnapshot] 写入 weather_snapshots 失败（已忽略，不影响主流程）: {exc}")
+            print(f"[WeatherSnapshot] upsert weather_snapshots 失败（已忽略，不影响主流程）: {exc}")
     try:
         persist_profile(profile)
     except Exception as exc:

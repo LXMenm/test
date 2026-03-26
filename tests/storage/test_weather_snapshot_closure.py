@@ -29,12 +29,12 @@ def _make_session_scope(tmp_path: Path) -> tuple[Any, Callable[[], Any]]:
     return engine, _session_scope
 
 
-def test_weather_repo_append_and_query_with_filters(monkeypatch, tmp_path: Path) -> None:
+def test_weather_repo_upsert_and_query_with_filters(monkeypatch, tmp_path: Path) -> None:
     engine, session_scope = _make_session_scope(tmp_path)
     WeatherSnapshotORM.__table__.create(bind=engine, checkfirst=True)
     monkeypatch.setattr(weather_repo_mysql, "get_db_session", session_scope)
 
-    weather_repo_mysql.append_weather_snapshot_mysql(
+    weather_repo_mysql.upsert_weather_snapshot_mysql(
         {
             "farmer_id": "F0001",
             "base_id": "B001",
@@ -51,7 +51,24 @@ def test_weather_repo_append_and_query_with_filters(monkeypatch, tmp_path: Path)
             "raw_json": {"summary": "有降雨"},
         }
     )
-    weather_repo_mysql.append_weather_snapshot_mysql(
+    weather_repo_mysql.upsert_weather_snapshot_mysql(
+        {
+            "farmer_id": "F0001",
+            "base_id": "B001",
+            "lat": 36.2,
+            "lon": 118.3,
+            "temperature": 26.1,
+            "humidity": 81.0,
+            "precipitation": 0.4,
+            "rain_probability": 30.0,
+            "weather_code": "2",
+            "weather_desc": "多云",
+            "source": "open-meteo",
+            "snapshot_time": "2026-03-21T09:00:00Z",
+            "raw_json": {"summary": "转多云"},
+        }
+    )
+    weather_repo_mysql.upsert_weather_snapshot_mysql(
         {
             "farmer_id": "F0002",
             "base_id": "B002",
@@ -72,9 +89,14 @@ def test_weather_repo_append_and_query_with_filters(monkeypatch, tmp_path: Path)
     by_farmer = weather_repo_mysql.list_weather_snapshots_mysql(farmer_id="F0001")
     assert len(by_farmer) == 1
     assert by_farmer[0]["base_id"] == "B001"
+    assert by_farmer[0]["weather_desc"] == "多云"
     assert by_farmer[0]["snapshot_time"].endswith("Z")
 
-    by_time = weather_repo_mysql.list_weather_snapshots_mysql(start="2026-03-21", end="2026-03-23")
+    by_time = weather_repo_mysql.list_weather_snapshots_mysql(
+        farmer_id="F0002",
+        start="2026-03-21",
+        end="2026-03-23",
+    )
     assert len(by_time) == 1
     assert by_time[0]["farmer_id"] == "F0002"
     assert isinstance(by_time[0]["raw_json"], dict)
@@ -84,7 +106,7 @@ def test_refresh_weather_writes_snapshot_and_keeps_profile_updates(monkeypatch, 
     engine, session_scope = _make_session_scope(tmp_path)
     WeatherSnapshotORM.__table__.create(bind=engine, checkfirst=True)
     monkeypatch.setattr(weather_repo_mysql, "get_db_session", session_scope)
-    monkeypatch.setattr(app_module, "append_weather_snapshot_mysql", weather_repo_mysql.append_weather_snapshot_mysql)
+    monkeypatch.setattr(app_module, "upsert_weather_snapshot_mysql", weather_repo_mysql.upsert_weather_snapshot_mysql)
     monkeypatch.setattr(app_module, "list_weather_snapshots_mysql", weather_repo_mysql.list_weather_snapshots_mysql)
     monkeypatch.setattr(app_module, "PROFILE_STORE_MODE", "mysql")
 
@@ -138,6 +160,12 @@ def test_refresh_weather_writes_snapshot_and_keeps_profile_updates(monkeypatch, 
     assert persisted["called"] is True
     assert profile.bases["B001"].weather_snapshot == "未来24小时降雨概率较高"
 
+    second = client.post(
+        "/api/profiles/F0001/bases/B001/weather/refresh",
+        headers={"X-User-Id": "F0001", "X-User-Role": "USER"},
+    )
+    assert second.status_code == 200
+
     with session_scope() as session:
         rows = session.execute(select(WeatherSnapshotORM)).scalars().all()
     assert len(rows) == 1
@@ -153,7 +181,7 @@ def test_weather_snapshot_api_permission_and_admin_scope(monkeypatch, tmp_path: 
     monkeypatch.setattr(app_module, "list_weather_snapshots_mysql", weather_repo_mysql.list_weather_snapshots_mysql)
     monkeypatch.setattr(app_module, "PROFILE_STORE_MODE", "mysql")
 
-    weather_repo_mysql.append_weather_snapshot_mysql(
+    weather_repo_mysql.upsert_weather_snapshot_mysql(
         {
             "farmer_id": "F0001",
             "base_id": "B001",
@@ -170,7 +198,7 @@ def test_weather_snapshot_api_permission_and_admin_scope(monkeypatch, tmp_path: 
             "raw_json": {"summary": "有降雨"},
         }
     )
-    weather_repo_mysql.append_weather_snapshot_mysql(
+    weather_repo_mysql.upsert_weather_snapshot_mysql(
         {
             "farmer_id": "F0002",
             "base_id": "B002",
