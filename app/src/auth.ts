@@ -48,6 +48,7 @@ export type AppPage =
   | 'profiles'
   | 'kb'
   | 'expert_review'
+  | 'account_management'
   | 'system_config'
   | 'review_management';
 
@@ -57,6 +58,7 @@ export const PAGE_TO_PATH: Record<AppPage, string> = {
   profiles: '/profiles',
   kb: '/kb',
   expert_review: '/expert-review',
+  account_management: '/admin/accounts',
   system_config: '/admin/system-config',
   review_management: '/admin/review-management',
 };
@@ -71,7 +73,7 @@ const LEGACY_PATH_REDIRECT_MAP: Record<string, AppPage> = {
 const ROLE_PAGES: Record<UserRole, AppPage[]> = {
   USER: ['diagnose', 'dashboard', 'profiles', 'kb'],
   EXPERT: ['diagnose', 'dashboard', 'profiles', 'kb', 'expert_review'],
-  ADMIN: ['diagnose', 'dashboard', 'profiles', 'kb', 'expert_review', 'system_config', 'review_management'],
+  ADMIN: ['diagnose', 'dashboard', 'profiles', 'kb', 'expert_review', 'account_management', 'system_config', 'review_management'],
 };
 
 export function getAllowedPages(role: UserRole): AppPage[] {

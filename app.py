@@ -63,7 +63,7 @@ from workflow import build_graph
 from trace_catalog import AGENTS_CATALOG, NODE_TO_AGENT
 from runtime_settings import get_admin_llm_runtime_snapshot, get_runtime_thresholds, load_admin_runtime_config, save_admin_runtime_config
 from db import engine as db_engine, get_db_session
-from mysql_models import UserAccountORM
+from mysql_models import FarmerProfileORM, UserAccountORM
 
 
 @asynccontextmanager
@@ -109,6 +109,7 @@ def _generate_user_id() -> str | None:
 def ensure_user_accounts_seeded() -> None:
     try:
         UserAccountORM.__table__.create(bind=db_engine, checkfirst=True)
+        FarmerProfileORM.__table__.create(bind=db_engine, checkfirst=True)
         with get_db_session() as session:
             existing = {
                 str(item.user_id).strip()
@@ -276,6 +277,73 @@ def _set_account_role(session, user_id: str, role: str) -> None:
     account.role = normalized_role
 
 
+def _next_generated_user_id(session) -> str:
+    existing_ids: list[int] = []
+    rows = session.execute(select(UserAccountORM.user_id)).all()
+    for row in rows:
+        user_id = str(row[0] or "").strip().upper() if row else ""
+        if user_id.startswith("F") and user_id[1:].isdigit():
+            existing_ids.append(int(user_id[1:]))
+    next_no = (max(existing_ids) + 1) if existing_ids else 1
+    return f"F{next_no:04d}"
+
+
+def _create_account_with_profile(
+    session,
+    *,
+    username: str,
+    display_name: str,
+    password: str,
+    role: str | None = "USER",
+) -> tuple[UserAccountORM, FarmerProfileORM]:
+    normalized_username = str(username or "").strip()
+    normalized_display_name = str(display_name or "").strip()
+    normalized_password = str(password or "").strip()
+    normalized_role = str(role or "USER").strip().upper() or "USER"
+
+    if not normalized_username:
+        raise HTTPException(status_code=400, detail="username 不能为空")
+    if not normalized_display_name:
+        raise HTTPException(status_code=400, detail="display_name 不能为空")
+    if not normalized_password:
+        raise HTTPException(status_code=400, detail="password 不能为空")
+    if normalized_role not in SUPPORTED_ROLES:
+        raise HTTPException(status_code=400, detail="非法角色类型")
+
+    existing_user = session.execute(
+        select(UserAccountORM).where(UserAccountORM.username == normalized_username)
+    ).scalar_one_or_none()
+    if existing_user is not None:
+        raise HTTPException(status_code=400, detail="用户名已存在")
+
+    user_id = _next_generated_user_id(session)
+    existing_profile = session.execute(
+        select(FarmerProfileORM).where(FarmerProfileORM.owner_user_id == user_id)
+    ).scalar_one_or_none()
+    if existing_profile is not None:
+        raise HTTPException(status_code=409, detail="账号档案冲突，请稍后重试")
+
+    account = UserAccountORM(
+        user_id=user_id,
+        username=normalized_username,
+        display_name=normalized_display_name,
+        role=normalized_role,
+        password=normalized_password,
+        linked_farmer_id=user_id,
+        status="ACTIVE",
+    )
+    profile = FarmerProfileORM(
+        farmer_id=user_id,
+        name=normalized_display_name,
+        display_name=normalized_display_name,
+        owner_user_id=user_id,
+        role_type=_account_role_to_profile_type(normalized_role),
+    )
+    session.add(account)
+    session.add(profile)
+    return account, profile
+
+
 def _serialize_account_sync(account: UserAccountORM) -> dict[str, Any]:
     return {
         "user_id": account.user_id,
@@ -429,6 +497,17 @@ class DiagnoseResponse(BaseModel):
 class LoginRequest(BaseModel):
     user_id: str
     password: str | None = None
+
+
+class AdminCreateAccountRequest(BaseModel):
+    username: str
+    display_name: str
+    password: str
+    role: str = "USER"
+
+
+class AdminUpdateAccountRoleRequest(BaseModel):
+    role: str
 
 
 class SPAStaticFiles(StaticFiles):
@@ -3003,6 +3082,73 @@ def login(payload: LoginRequest) -> dict[str, Any]:
         "linked_farmer_id": account.linked_farmer_id,
         "status": account.status,
     }
+
+
+@app.get("/api/admin/accounts")
+def list_admin_accounts(request: Request) -> dict[str, Any]:
+    actor = _get_request_actor(request)
+    _require_admin(actor)
+    with get_db_session() as session:
+        rows = session.execute(
+            select(UserAccountORM).order_by(UserAccountORM.user_id.asc())
+        ).scalars().all()
+    items = []
+    for row in rows:
+        user_id = str(row.user_id or "").strip()
+        items.append(
+            {
+                "user_id": user_id,
+                "username": row.username,
+                "display_name": row.display_name,
+                "role": str(row.role or "USER").strip().upper(),
+                "status": str(row.status or "ACTIVE").strip().upper(),
+                "farmer_id": user_id,
+            }
+        )
+    return {"items": items}
+
+
+@app.post("/api/admin/accounts")
+def create_admin_account(request: Request, payload: AdminCreateAccountRequest) -> dict[str, Any]:
+    actor = _get_request_actor(request)
+    _require_admin(actor)
+    try:
+        with get_db_session() as session:
+            account, profile = _create_account_with_profile(
+                session,
+                username=payload.username,
+                display_name=payload.display_name,
+                password=payload.password,
+                role=payload.role,
+            )
+            session.commit()
+            return {
+                "ok": True,
+                "user_id": account.user_id,
+                "farmer_id": profile.farmer_id,
+                "role": str(account.role or "USER").strip().upper(),
+            }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"新增账号失败: {exc}") from exc
+
+
+@app.post("/api/admin/accounts/{user_id}/role")
+def update_admin_account_role(user_id: str, request: Request, payload: AdminUpdateAccountRoleRequest) -> dict[str, Any]:
+    actor = _get_request_actor(request)
+    _require_admin(actor)
+    normalized_user_id = str(user_id or "").strip()
+    if not normalized_user_id:
+        raise HTTPException(status_code=400, detail="user_id 不能为空")
+    normalized_role = str(payload.role or "").strip().upper()
+    if normalized_role not in SUPPORTED_ROLES:
+        raise HTTPException(status_code=400, detail="非法角色类型")
+    with get_db_session() as session:
+        account = _validate_account_exists(session, normalized_user_id)
+        account.role = normalized_role
+        session.commit()
+    return {"ok": True, "user_id": normalized_user_id, "role": normalized_role}
 
 
 @app.get("/api/admin/accounts/experts")
