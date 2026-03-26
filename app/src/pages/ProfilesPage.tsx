@@ -269,7 +269,6 @@ const normalizeProfile = (raw: unknown): FarmerProfile => {
     display_name: toSafeString(rawObj.display_name || rawObj.name || rawObj.farmer_id),
     role_type: (PROFILE_ROLE_OPTIONS.includes(toSafeString(rawObj.role_type) as never) ? toSafeString(rawObj.role_type) : 'FARMER') as FarmerProfile['role_type'],
     owner_user_id: toSafeString(rawObj.owner_user_id),
-    set_as_default_profile: Boolean(rawObj.set_as_default_profile),
     active_base_id: toSafeString(rawObj.active_base_id),
     confirm_when_low_confidence: Boolean(rawObj.confirm_when_low_confidence),
     schema_version: toSafeString(rawObj.schema_version, '1.2'),
@@ -318,7 +317,6 @@ const normalizeProfileList = (raw: unknown): FarmerProfile[] => {
         display_name: displayName || farmerId,
         role_type: 'FARMER',
         owner_user_id: '',
-        set_as_default_profile: false,
         active_base_id: '',
         confirm_when_low_confidence: true,
         schema_version: '1.1',
@@ -351,14 +349,13 @@ export function ProfilesPage() {
   const [newProfileName, setNewProfileName] = useState('');
   const [newProfileRoleType, setNewProfileRoleType] = useState<FarmerProfile['role_type']>('FARMER');
   const [newProfileOwnerUserId, setNewProfileOwnerUserId] = useState('');
-  const [newProfileSetAsDefault, setNewProfileSetAsDefault] = useState(false);
   const [editedProfile, setEditedProfile] = useState<FarmerProfile | null>(null);
   const [newIngredient, setNewIngredient] = useState('');
   const [showAddBaseDialog, setShowAddBaseDialog] = useState(false);
   const [newBaseId, setNewBaseId] = useState('');
   const [allBaseIds, setAllBaseIds] = useState<Set<string>>(new Set());
   const [adminRoleFilter, setAdminRoleFilter] = useState<'ALL' | FarmerProfile['role_type']>('ALL');
-  const [adminViewMode, setAdminViewMode] = useState<'MINE' | 'ALL'>(authUser?.linkedFarmerId ? 'MINE' : 'ALL');
+  const [adminViewMode, setAdminViewMode] = useState<'MINE' | 'ALL'>(canManageAllProfiles ? 'MINE' : 'ALL');
 
   // 获取所有基地ID，用于检查全局重复
   const fetchAllBaseIds = async () => {
@@ -416,10 +413,10 @@ export function ProfilesPage() {
         userId: authUser.userId,
         displayName: authUser.displayName,
         role: normalizeRole(syncObj.role),
-        linkedFarmerId: toSafeString(syncObj.linked_farmer_id) || null,
+        linkedFarmerId: authUser.userId,
       });
       if (canManageAllProfiles) {
-        setAdminViewMode((toSafeString(syncObj.linked_farmer_id) || authUser.linkedFarmerId) ? 'MINE' : 'ALL');
+        setAdminViewMode('MINE');
       }
       setInfoMessage('已同步当前登录账号的主诊断档案与权限角色。');
       return;
@@ -526,7 +523,6 @@ export function ProfilesPage() {
           display_name: editedProfile.display_name || editedProfile.name || editedProfile.farmer_id,
           owner_user_id: editedProfile.owner_user_id,
           role_type: editedProfile.role_type,
-          set_as_default_profile: Boolean(editedProfile.set_as_default_profile),
           bases: basesMap,
           constraints: {
             ...editedProfile.constraints,
@@ -572,7 +568,6 @@ export function ProfilesPage() {
         setNewProfileName('');
         setNewProfileRoleType('FARMER');
         setNewProfileOwnerUserId('');
-        setNewProfileSetAsDefault(false);
       } else {
         setErrorDialogMessage('创建成功但未返回有效 farmer_id，无法自动打开详情');
         setShowErrorDialog(true);
@@ -592,7 +587,6 @@ export function ProfilesPage() {
       display_name: newProfileName,
       role_type: newProfileRoleType,
       owner_user_id: canManageAllProfiles ? newProfileOwnerUserId.trim() : (authUser?.userId || ''),
-      set_as_default_profile: canManageAllProfiles ? newProfileSetAsDefault : true,
       confirm_when_low_confidence: true,
       constraints: {
         prefer_organic: false,
@@ -911,7 +905,7 @@ export function ProfilesPage() {
           </CardContent>
         </Card>
       )}
-      {canManageAllProfiles && adminViewMode === 'MINE' && !authUser?.linkedFarmerId && (
+      {canManageAllProfiles && adminViewMode === 'MINE' && !authUser?.userId && (
         <Card className="border-amber-400/30 bg-amber-500/10">
           <CardContent className="pt-6 text-amber-200 text-sm">
             当前未绑定主诊断档案
@@ -1110,17 +1104,9 @@ export function ProfilesPage() {
                       />
                     </div>
                     {canManageAllProfiles && (
-                      <div className="flex items-center gap-2">
-                        <Checkbox
-                          checked={Boolean(editedProfile.set_as_default_profile)}
-                          onCheckedChange={(v) => setEditedProfile({ ...editedProfile, set_as_default_profile: Boolean(v) })}
-                          className="border-white/30 data-[state=checked]:bg-[#c8f7c5] data-[state=checked]:text-black"
-                        />
-                        <Label className="text-white/80">设为该账号主诊断档案</Label>
-                        <p className="text-xs text-white/50">
-                          勾选后会把当前档案绑定为该账号当前使用的诊断档案；不勾选仅保存档案，不影响账号已有绑定。
-                        </p>
-                      </div>
+                      <p className="text-xs text-white/50 sm:col-span-2">
+                        一账号一档案模式下，每个账号固定使用其唯一档案（farmer_id = owner_user_id = user_id）。
+                      </p>
                     )}
                     <div className="space-y-2">
                       <Label className="text-white/60">当前基地</Label>
@@ -1563,14 +1549,9 @@ export function ProfilesPage() {
               </div>
             )}
             {canManageAllProfiles && (
-              <div className="flex items-center gap-2">
-                <Checkbox
-                  checked={newProfileSetAsDefault}
-                  onCheckedChange={(v) => setNewProfileSetAsDefault(Boolean(v))}
-                  className="border-white/30 data-[state=checked]:bg-[#c8f7c5] data-[state=checked]:text-black"
-                />
-                <Label className="text-white/80">绑定该账号为主诊断档案</Label>
-              </div>
+              <p className="text-xs text-white/50">
+                一账号一档案模式：创建后账号将自动使用自己的唯一档案。
+              </p>
             )}
           </div>
           <DialogFooter>

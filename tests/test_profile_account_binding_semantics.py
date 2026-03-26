@@ -29,14 +29,14 @@ def test_sync_profile_sets_role_and_default_profile():
         set_as_default_profile=True,
     )
     session.commit()
-    assert account_sync == {"user_id": "E0001", "role": "ADMIN", "linked_farmer_id": "F0100"}
+    assert account_sync == {"user_id": "E0001", "role": "EXPERT", "linked_farmer_id": "F0100"}
 
     row = session.query(UserAccountORM).filter(UserAccountORM.user_id == "E0001").one()
-    assert row.role == "ADMIN"
+    assert row.role == "EXPERT"
     assert row.linked_farmer_id == "F0100"
 
 
-def test_sync_profile_does_not_clear_default_profile_when_not_set_default():
+def test_sync_profile_always_aligns_to_owned_profile_and_keeps_role():
     session = _build_session()
     session.add(UserAccountORM(user_id="X0001", username="x0001", display_name="X0001", role="USER", password="", status="ACTIVE", linked_farmer_id="F0009"))
     session.commit()
@@ -52,8 +52,8 @@ def test_sync_profile_does_not_clear_default_profile_when_not_set_default():
     session.commit()
 
     row = session.query(UserAccountORM).filter(UserAccountORM.user_id == "X0001").one()
-    assert row.role == "EXPERT"
-    assert row.linked_farmer_id == "F0009"
+    assert row.role == "USER"
+    assert row.linked_farmer_id == "F0099"
 
 
 def test_sync_profile_rejects_missing_or_inactive_account():

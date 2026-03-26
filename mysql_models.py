@@ -67,6 +67,7 @@ class FarmerProfileORM(TimestampMixin, Base):
 
     __table_args__ = (
         Index("idx_farmer_profiles_name", "name"),
+        UniqueConstraint("owner_user_id", name="uq_farmer_profiles_owner_user_id"),
     )
 
 
