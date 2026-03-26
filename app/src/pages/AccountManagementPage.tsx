@@ -86,6 +86,7 @@ export function AccountManagementPage() {
       setCreateOpen(false);
       setForm(DEFAULT_FORM);
       await loadAccounts();
+      window.dispatchEvent(new CustomEvent('profiles:invalidate'));
     } catch (error) {
       console.error(error);
       setTip(error instanceof Error ? error.message : '新增账号失败，请稍后重试。');
@@ -121,6 +122,7 @@ export function AccountManagementPage() {
       if (!resp.ok) throw new Error(String(data?.detail || '删除账号失败'));
       setTip(`账号 ${userId} 已删除，对应档案已同步删除。`);
       await loadAccounts();
+      window.dispatchEvent(new CustomEvent('profiles:invalidate'));
     } catch (error) {
       console.error(error);
       setTip(error instanceof Error ? error.message : '删除账号失败，请稍后重试。');

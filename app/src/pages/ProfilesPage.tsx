@@ -203,6 +203,12 @@ export function ProfilesPage() {
 
   useEffect(() => {
     void fetchProfiles();
+
+    const handleProfilesInvalidated = () => {
+      void fetchProfiles();
+    };
+    window.addEventListener('profiles:invalidate', handleProfilesInvalidated);
+    return () => window.removeEventListener('profiles:invalidate', handleProfilesInvalidated);
   }, []);
 
   const saveProfile = async () => {
