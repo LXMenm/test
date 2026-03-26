@@ -347,6 +347,7 @@ export function ProfilesPage() {
   const [showAddDialog, setShowAddDialog] = useState(false);
   const [newProfileName, setNewProfileName] = useState('');
   const [newProfileRoleType, setNewProfileRoleType] = useState<FarmerProfile['role_type']>('FARMER');
+  const [newProfileOwnerUserId, setNewProfileOwnerUserId] = useState('');
   const [editedProfile, setEditedProfile] = useState<FarmerProfile | null>(null);
   const [newIngredient, setNewIngredient] = useState('');
   const [showAddBaseDialog, setShowAddBaseDialog] = useState(false);
@@ -484,7 +485,7 @@ export function ProfilesPage() {
         body: JSON.stringify({
           ...editedProfile,
           display_name: editedProfile.display_name || editedProfile.name || editedProfile.farmer_id,
-          owner_user_id: editedProfile.owner_user_id || editedProfile.farmer_id,
+          owner_user_id: editedProfile.owner_user_id,
           bases: basesMap,
           constraints: {
             ...editedProfile.constraints,
@@ -526,6 +527,7 @@ export function ProfilesPage() {
         setShowAddDialog(false);
         setNewProfileName('');
         setNewProfileRoleType('FARMER');
+        setNewProfileOwnerUserId('');
       } else {
         setErrorDialogMessage('创建成功但未返回有效 farmer_id，无法自动打开详情');
         setShowErrorDialog(true);
@@ -544,7 +546,7 @@ export function ProfilesPage() {
       name: newProfileName,
       display_name: newProfileName,
       role_type: newProfileRoleType,
-      owner_user_id: authUser?.userId || '',
+      owner_user_id: canManageAllProfiles ? newProfileOwnerUserId.trim() : (authUser?.userId || ''),
       confirm_when_low_confidence: true,
       constraints: {
         prefer_organic: false,
@@ -997,17 +999,34 @@ export function ProfilesPage() {
                     <div className="space-y-2">
                       <Label className="text-white/60">角色类型</Label>
                       {canManageAllProfiles ? (
-                        <Select value={editedProfile.role_type} onValueChange={(v) => setEditedProfile({ ...editedProfile, role_type: v as FarmerProfile['role_type'] })}>
-                          <SelectTrigger className="bg-white/5 border-white/20 text-white"><SelectValue /></SelectTrigger>
-                          <SelectContent className="bg-[#1a1a1a] border-white/20">
-                            <SelectItem value="FARMER">农户</SelectItem>
-                            <SelectItem value="EXPERT">专家</SelectItem>
-                            <SelectItem value="ADMIN">管理员</SelectItem>
-                          </SelectContent>
-                        </Select>
+                        <div className="space-y-2">
+                          <Select value={editedProfile.role_type} onValueChange={(v) => setEditedProfile({ ...editedProfile, role_type: v as FarmerProfile['role_type'] })}>
+                            <SelectTrigger className="bg-white/5 border-white/20 text-white"><SelectValue /></SelectTrigger>
+                            <SelectContent className="bg-[#1a1a1a] border-white/20">
+                              <SelectItem value="FARMER">农户</SelectItem>
+                              <SelectItem value="EXPERT">专家</SelectItem>
+                              <SelectItem value="ADMIN">管理员</SelectItem>
+                            </SelectContent>
+                          </Select>
+                          <p className="text-xs text-white/60 leading-5">
+                            FARMER：登录角色同步为 USER，并绑定到当前 farmer_id。<br />
+                            EXPERT：登录角色同步为 EXPERT，解绑 farmer 归属。<br />
+                            ADMIN：登录角色同步为 ADMIN，解绑 farmer 归属。
+                          </p>
+                        </div>
                       ) : (
                         <Input value={PROFILE_ROLE_LABELS[editedProfile.role_type]} disabled className="bg-white/5 border-white/20 text-white/60" />
                       )}
+                    </div>
+                    <div className="space-y-2">
+                      <Label className="text-white/60">绑定账号ID</Label>
+                      <Input
+                        value={editedProfile.owner_user_id || ''}
+                        onChange={(e) => setEditedProfile({ ...editedProfile, owner_user_id: e.target.value })}
+                        disabled={!canManageAllProfiles}
+                        placeholder={canManageAllProfiles ? '可留空（仅保存档案，不同步账号）' : ''}
+                        className="bg-white/5 border-white/20 text-white focus:border-[#c8f7c5] disabled:text-white/60"
+                      />
                     </div>
                     <div className="space-y-2">
                       <Label className="text-white/60">当前基地</Label>
@@ -1438,6 +1457,17 @@ export function ProfilesPage() {
                 </SelectContent>
               </Select>
             </div>
+            {canManageAllProfiles && (
+              <div className="space-y-2">
+                <Label>绑定账号ID</Label>
+                <Input
+                  placeholder="可留空（仅保存档案，不同步账号）"
+                  value={newProfileOwnerUserId}
+                  onChange={(e) => setNewProfileOwnerUserId(e.target.value)}
+                  className="bg-white/5 border-white/20 text-white focus:border-[#c8f7c5]"
+                />
+              </div>
+            )}
           </div>
           <DialogFooter>
             <Button
