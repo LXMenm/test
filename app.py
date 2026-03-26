@@ -55,6 +55,11 @@ from personalization.profile_store import (
     list_profile_ids,
     save_profile as persist_profile,
 )
+from repositories.profile_repo_mysql import (
+    get_profile as get_profile_mysql,
+    list_profile_ids as list_profile_ids_mysql,
+    save_profile_payload as save_profile_payload_mysql,
+)
 from personalization.utils import dedupe_reasons, compute_personalization_applied, normalize_follow_up_questions
 from state import create_initial_state
 from trace_store import list_trace_events, subscribe as subscribe_trace, unsubscribe as unsubscribe_trace, emit_trace_event
@@ -2390,19 +2395,18 @@ def list_profiles(request: Request) -> dict[str, list[dict[str, str | None]]]:
     requested_farmer_id = _resolve_default_profile_id(actor, None, prefer_actor_linked=False)
     scoped_farmer_id = _apply_farmer_scope(actor, requested_farmer_id)
     profiles = []
-    for farmer_id in list_profile_ids():
+    for farmer_id in list_profile_ids_mysql():
         if scoped_farmer_id and farmer_id != scoped_farmer_id:
             continue
-        path = get_profile_path(farmer_id)
-        profile = load_profile(farmer_id)
-        owner_user_id = str(getattr(profile, "owner_user_id", None) or "").strip()
+        profile = get_profile_mysql(farmer_id) or {}
+        owner_user_id = str(profile.get("owner_user_id") or "").strip()
         profiles.append({
             "id": farmer_id,
             "farmer_id": farmer_id,
-            "name": profile.name if profile else None,
-            "display_name": getattr(profile, "display_name", None) if profile else None,
+            "name": profile.get("name"),
+            "display_name": profile.get("display_name"),
             "owner_user_id": owner_user_id or None,
-            "path": str(path),
+            "path": str(get_profile_path(farmer_id)),
         })
     return {"profiles": profiles}
 
@@ -2433,13 +2437,16 @@ def _build_image_refs(image_id: str | None) -> dict[str, str]:
 def _collect_existing_base_ids(exclude_farmer_id: str | None = None) -> dict[str, str]:
     """收集系统内已有基地ID -> 所属farmer_id（用于全局唯一校验）。"""
     result: dict[str, str] = {}
-    for existing_farmer_id in list_profile_ids():
+    for existing_farmer_id in list_profile_ids_mysql():
         if exclude_farmer_id and existing_farmer_id == exclude_farmer_id:
             continue
-        profile = load_profile(existing_farmer_id)
-        if not profile:
+        profile = get_profile_mysql(existing_farmer_id)
+        if not profile or not isinstance(profile, dict):
             continue
-        for base_id in profile.bases.keys():
+        bases = profile.get("bases")
+        if not isinstance(bases, dict):
+            continue
+        for base_id in bases.keys():
             result[base_id] = existing_farmer_id
     return result
 
@@ -2560,81 +2567,9 @@ def _sync_user_account_from_profile(
 
 @app.post("/api/profiles")
 def create_profile(request: Request, payload: dict = Body(...)) -> dict[str, Any]:
-    actor = _get_request_actor(request)
-    if _is_admin(actor):
-        raise HTTPException(status_code=400, detail="档案创建入口已废弃，请改用管理员账号管理创建账号")
-    if not isinstance(payload, dict):
-        raise HTTPException(status_code=400, detail="档案内容非法")
-    actor_user_id = str(actor.get("user_id") or "").strip()
-    owner_user_id = str(payload.get("owner_user_id") or "").strip()
-    if not owner_user_id:
-        owner_user_id = actor_user_id
-    if not owner_user_id:
-        raise HTTPException(status_code=400, detail="owner_user_id 不能为空")
-    if not _is_admin(actor) and actor_user_id and owner_user_id != actor_user_id:
-        raise HTTPException(status_code=403, detail="当前角色仅允许创建自己的档案")
-    farmer_id = owner_user_id
-    if load_profile(farmer_id) is not None:
-        raise HTTPException(status_code=409, detail="农户ID已存在")
-
-    display_name = payload.get("display_name") or payload.get("name")
-    with get_db_session() as session:
-        _validate_account_exists(session, owner_user_id)
-    profile = FarmerProfile(
-        farmer_id=farmer_id,
-        name=payload.get("name"),
-        display_name=display_name,
-        role_type="FARMER",
-        owner_user_id=owner_user_id,
-    )
-    for field in [
-        "farm_scale",
-        "pesticide_access_level",
-        "equipment",
-        "cultivation_mode",
-        "experience_level",
-        "risk_preference",
-    ]:
-        if field in payload:
-            setattr(profile, field, payload.get(field))
-    if "confirm_when_low_confidence" in payload:
-        profile.confirm_when_low_confidence = bool(payload.get("confirm_when_low_confidence"))
-    if "constraints" in payload and isinstance(payload.get("constraints"), dict):
-        try:
-            profile.constraints = TreatmentConstraint.model_validate(payload["constraints"])
-        except Exception:
-            profile.constraints = TreatmentConstraint()
-    profile.ensure_timestamp()
-    profile.updated_at = _utc_now_iso()
-    try:
-        persist_profile(profile)
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"创建档案失败: {exc}") from exc
-    account_sync: dict[str, Any] | None = None
-    try:
-        with get_db_session() as session:
-            account_sync = _sync_user_account_from_profile(
-                session=session,
-                farmer_id=farmer_id,
-                owner_user_id=owner_user_id,
-                role_type="FARMER",
-                display_name=display_name,
-                set_as_default_profile=False,
-            )
-            session.commit()
-    except HTTPException:
-        try:
-            delete_profile_store(farmer_id)
-        except Exception:
-            pass
-        raise
-    except Exception as exc:
-        try:
-            delete_profile_store(farmer_id)
-        except Exception:
-            pass
-        raise HTTPException(status_code=500, detail=f"账号授权同步失败: {exc}") from exc
-    return {"ok": True, "id": farmer_id, "farmer_id": farmer_id, "account_sync": account_sync}
+    _ = request
+    _ = payload
+    raise HTTPException(status_code=400, detail="档案创建入口已废弃，请通过账号管理创建账号")
 
 
 @app.get("/api/profiles/{farmer_id}")
@@ -2643,10 +2578,10 @@ def get_profile(farmer_id: str, request: Request) -> dict:
     scoped_farmer_id = _apply_farmer_scope(actor, farmer_id)
     if scoped_farmer_id and scoped_farmer_id != farmer_id:
         raise HTTPException(status_code=403, detail="当前角色仅允许访问自己的档案")
-    profile = load_profile(farmer_id)
+    profile = get_profile_mysql(farmer_id)
     if profile is None:
         raise HTTPException(status_code=404, detail="档案不存在")
-    return profile.model_dump()
+    return profile
 
 
 @app.post("/api/profiles/{farmer_id}")
@@ -2677,7 +2612,7 @@ def save_profile_route(farmer_id: str, request: Request, payload: dict = Body(..
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"档案格式非法: {exc}") from exc
     try:
-        persist_profile(profile)
+        save_profile_payload_mysql(profile.model_dump())
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"保存档案失败: {exc}") from exc
     account_sync: dict[str, Any] | None = None
@@ -2701,29 +2636,9 @@ def save_profile_route(farmer_id: str, request: Request, payload: dict = Body(..
 
 @app.delete("/api/profiles/{farmer_id}")
 def delete_profile(farmer_id: str, request: Request) -> dict[str, bool]:
-    actor = _get_request_actor(request)
-    if _is_admin(actor):
-        raise HTTPException(status_code=400, detail="档案删除入口已废弃，请改用管理员账号管理删除账号")
-    scoped_farmer_id = _apply_farmer_scope(actor, farmer_id)
-    if scoped_farmer_id and scoped_farmer_id != farmer_id:
-        raise HTTPException(status_code=403, detail="当前角色仅允许删除自己的档案")
-    if load_profile(farmer_id) is None:
-        raise HTTPException(status_code=404, detail="档案不存在")
-    try:
-        with get_db_session() as session:
-            accounts = session.execute(
-                select(UserAccountORM).where(UserAccountORM.linked_farmer_id == farmer_id)
-            ).scalars().all()
-            for account in accounts:
-                account.linked_farmer_id = None
-            session.commit()
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"解绑账号失败: {exc}") from exc
-    try:
-        delete_profile_store(farmer_id)
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"删除档案失败: {exc}") from exc
-    return {"ok": True}
+    _ = farmer_id
+    _ = request
+    raise HTTPException(status_code=400, detail="档案删除入口已废弃，请通过账号管理删除账号")
 
 
 def _http_get_json(url: str) -> dict[str, Any] | None:
