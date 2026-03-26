@@ -66,6 +66,7 @@ interface FarmerProfile {
   display_name: string;
   role_type: 'FARMER' | 'EXPERT' | 'ADMIN';
   owner_user_id: string;
+  set_as_default_profile?: boolean;
   active_base_id: string;
   confirm_when_low_confidence: boolean;
   schema_version: string;
@@ -830,6 +831,7 @@ export function ProfilesPage() {
     void createProfileWithPayload({
       farmer_id: authUser.userId,
       owner_user_id: authUser.userId,
+      set_as_default_profile: true,
       role_type: currentRole === 'EXPERT' ? 'EXPERT' : 'FARMER',
       name: authUser.displayName || authUser.userId,
       display_name: authUser.displayName || authUser.userId,
