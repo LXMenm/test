@@ -83,6 +83,26 @@ DEFAULT_DEMO_ACCOUNTS = [
     {"user_id": "E0002", "username": "e0002", "display_name": "专家 E0002", "role": "EXPERT", "password": "123456", "linked_farmer_id": None},
     {"user_id": "A0001", "username": "a0001", "display_name": "管理员 A0001", "role": "ADMIN", "password": "123456", "linked_farmer_id": None},
 ]
+# 注册功能预留语义：
+# - 默认创建 USER 账号
+# - 默认 linked_farmer_id = None
+# - 注册阶段不强制创建档案，后续可在档案页绑定/创建
+
+
+def _generate_user_id() -> str | None:
+    """预留统一账号ID生成策略：新账号统一 FXXXX；权限只看 role，不看前缀。"""
+    try:
+        with get_db_session() as session:
+            existing_ids = []
+            rows = session.execute(select(UserAccountORM.user_id)).all()
+            for row in rows:
+                user_id = str(row[0] or "").strip().upper() if row else ""
+                if user_id.startswith("F") and user_id[1:].isdigit():
+                    existing_ids.append(int(user_id[1:]))
+            next_no = (max(existing_ids) + 1) if existing_ids else 1
+            return f"F{next_no:04d}"
+    except Exception:
+        return None
 
 
 def ensure_user_accounts_seeded() -> None:
@@ -139,6 +159,27 @@ def _apply_farmer_scope(actor: dict[str, str], requested_farmer_id: str | None) 
     return actor_user_id
 
 
+def _resolve_default_profile_id(
+    actor: dict[str, str],
+    requested_farmer_id: str | None = None,
+    *,
+    prefer_actor_linked: bool = False,
+) -> str | None:
+    """统一语义：
+    - role: 登录权限角色（USER / EXPERT / ADMIN）
+    - linked_farmer_id: 账号默认诊断档案 ID（所有角色都可拥有）
+    - role_type: 档案展示类型（FARMER / EXPERT / ADMIN）
+    """
+    requested = str(requested_farmer_id or "").strip() or None
+    if requested:
+        return requested
+    if prefer_actor_linked:
+        linked_farmer_id = str(actor.get("linked_farmer_id") or "").strip()
+        if linked_farmer_id:
+            return linked_farmer_id
+    return None
+
+
 def _actor_role_type(actor: dict[str, str]) -> str:
     role = str(actor.get("role") or "USER").strip().upper()
     if role == "ADMIN":
@@ -146,6 +187,41 @@ def _actor_role_type(actor: dict[str, str]) -> str:
     if role == "EXPERT":
         return "EXPERT"
     return "FARMER"
+
+
+def _validate_account_exists(session, user_id: str) -> UserAccountORM:
+    normalized_user_id = str(user_id or "").strip()
+    if not normalized_user_id:
+        raise HTTPException(status_code=400, detail="绑定账号不存在")
+    account = session.execute(
+        select(UserAccountORM).where(UserAccountORM.user_id == normalized_user_id)
+    ).scalar_one_or_none()
+    if account is None:
+        raise HTTPException(status_code=400, detail="绑定账号不存在")
+    if str(account.status or "").strip().upper() != "ACTIVE":
+        raise HTTPException(status_code=400, detail="绑定账号不是激活状态")
+    return account
+
+
+def _set_account_default_profile(session, user_id: str, farmer_id: str | None) -> None:
+    account = _validate_account_exists(session, user_id)
+    account.linked_farmer_id = str(farmer_id or "").strip() or None
+
+
+def _set_account_role(session, user_id: str, role: str) -> None:
+    account = _validate_account_exists(session, user_id)
+    normalized_role = str(role or "").strip().upper()
+    if normalized_role not in SUPPORTED_ROLES:
+        raise HTTPException(status_code=400, detail="非法角色类型")
+    account.role = normalized_role
+
+
+def _serialize_account_sync(account: UserAccountORM) -> dict[str, Any]:
+    return {
+        "user_id": account.user_id,
+        "role": str(account.role or "USER").upper(),
+        "linked_farmer_id": account.linked_farmer_id,
+    }
 
 
 def _require_admin(actor: dict[str, str], message: str = "当前操作仅管理员可执行") -> None:
@@ -2178,15 +2254,34 @@ def get_models() -> dict[str, object]:
 @app.get("/api/profiles")
 def list_profiles(request: Request) -> dict[str, list[dict[str, str | None]]]:
     actor = _get_request_actor(request)
-    scoped_farmer_id = _apply_farmer_scope(actor, None)
+    prefer_actor_linked = str(request.query_params.get("prefer_actor_linked") or "").strip().lower() in {"1", "true", "yes"}
+    requested_farmer_id = _resolve_default_profile_id(actor, None, prefer_actor_linked=prefer_actor_linked)
+    scoped_farmer_id = _apply_farmer_scope(actor, requested_farmer_id)
     role_filter = str(request.query_params.get("role_type") or "").strip().upper()
     profiles = []
+    account_role_by_user_id: dict[str, str] = {}
+    try:
+        with get_db_session() as session:
+            rows = session.execute(select(UserAccountORM.user_id, UserAccountORM.role)).all()
+            for row in rows:
+                if row and row[0]:
+                    account_role_by_user_id[str(row[0]).strip()] = str(row[1] or "USER").strip().upper()
+    except Exception:
+        account_role_by_user_id = {}
     for farmer_id in list_profile_ids():
         if scoped_farmer_id and farmer_id != scoped_farmer_id:
             continue
         path = get_profile_path(farmer_id)
         profile = load_profile(farmer_id)
         role_type = str(getattr(profile, "role_type", None) or "FARMER").strip().upper()
+        owner_user_id = str(getattr(profile, "owner_user_id", None) or "").strip()
+        owner_role = account_role_by_user_id.get(owner_user_id)
+        if owner_role == "ADMIN":
+            role_type = "ADMIN"
+        elif owner_role == "EXPERT":
+            role_type = "EXPERT"
+        elif owner_role == "USER":
+            role_type = "FARMER"
         if role_filter and role_filter != "ALL" and role_type != role_filter:
             continue
         profiles.append({
@@ -2194,7 +2289,7 @@ def list_profiles(request: Request) -> dict[str, list[dict[str, str | None]]]:
             "name": profile.name if profile else None,
             "display_name": getattr(profile, "display_name", None) if profile else None,
             "role_type": role_type,
-            "owner_user_id": getattr(profile, "owner_user_id", None) if profile else None,
+            "owner_user_id": owner_user_id or None,
             "path": str(path),
         })
     return {"profiles": profiles}
@@ -2324,8 +2419,43 @@ def _generate_farmer_id() -> str | None:
     return f"F{next_id:04d}"
 
 
+def _sync_user_account_from_profile(
+    session,
+    farmer_id: str,
+    owner_user_id: str | None,
+    role_type: str | None,
+    display_name: str | None,
+    *,
+    set_as_default_profile: bool = False,
+) -> dict[str, Any] | None:
+    normalized_owner_user_id = str(owner_user_id or "").strip()
+    normalized_role_type = str(role_type or "").strip().upper()
+    normalized_farmer_id = str(farmer_id or "").strip()
+    normalized_display_name = str(display_name or "").strip()
+
+    if not normalized_owner_user_id:
+        return None
+
+    account = _validate_account_exists(session, normalized_owner_user_id)
+
+    if normalized_role_type == "FARMER":
+        next_role = "USER"
+    elif normalized_role_type == "EXPERT":
+        next_role = "EXPERT"
+    elif normalized_role_type == "ADMIN":
+        next_role = "ADMIN"
+    else:
+        raise HTTPException(status_code=400, detail="非法角色类型")
+    _set_account_role(session, account.user_id, next_role)
+    if set_as_default_profile:
+        _set_account_default_profile(session, account.user_id, normalized_farmer_id)
+    if normalized_display_name:
+        account.display_name = normalized_display_name
+    return _serialize_account_sync(account)
+
+
 @app.post("/api/profiles")
-def create_profile(request: Request, payload: dict = Body(...)) -> dict[str, bool | str]:
+def create_profile(request: Request, payload: dict = Body(...)) -> dict[str, Any]:
     actor = _get_request_actor(request)
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="档案内容非法")
@@ -2347,12 +2477,17 @@ def create_profile(request: Request, payload: dict = Body(...)) -> dict[str, boo
         raise HTTPException(status_code=409, detail="农户ID已存在")
 
     display_name = payload.get("display_name") or payload.get("name")
+    owner_user_id = str(payload.get("owner_user_id") or "").strip()
+    set_as_default_profile = bool(payload.get("set_as_default_profile"))
+    if not _is_admin(actor):
+        owner_user_id = actor_user_id or str(farmer_id).strip()
+        set_as_default_profile = True
     profile = FarmerProfile(
         farmer_id=farmer_id,
         name=payload.get("name"),
         display_name=display_name,
         role_type=role_type,
-        owner_user_id=str(payload.get("owner_user_id") or actor_user_id or farmer_id).strip() or farmer_id,
+        owner_user_id=owner_user_id,
     )
     for field in [
         "farm_scale",
@@ -2377,7 +2512,31 @@ def create_profile(request: Request, payload: dict = Body(...)) -> dict[str, boo
         persist_profile(profile)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"创建档案失败: {exc}") from exc
-    return {"ok": True, "id": farmer_id}
+    account_sync: dict[str, Any] | None = None
+    try:
+        with get_db_session() as session:
+            account_sync = _sync_user_account_from_profile(
+                session=session,
+                farmer_id=farmer_id,
+                owner_user_id=owner_user_id,
+                role_type=role_type,
+                display_name=display_name,
+                set_as_default_profile=set_as_default_profile,
+            )
+            session.commit()
+    except HTTPException:
+        try:
+            delete_profile_store(farmer_id)
+        except Exception:
+            pass
+        raise
+    except Exception as exc:
+        try:
+            delete_profile_store(farmer_id)
+        except Exception:
+            pass
+        raise HTTPException(status_code=500, detail=f"账号授权同步失败: {exc}") from exc
+    return {"ok": True, "id": farmer_id, "farmer_id": farmer_id, "account_sync": account_sync}
 
 
 @app.get("/api/profiles/{farmer_id}")
@@ -2393,7 +2552,7 @@ def get_profile(farmer_id: str, request: Request) -> dict:
 
 
 @app.post("/api/profiles/{farmer_id}")
-def save_profile_route(farmer_id: str, request: Request, payload: dict = Body(...)) -> dict[str, bool]:
+def save_profile_route(farmer_id: str, request: Request, payload: dict = Body(...)) -> dict[str, Any]:
     actor = _get_request_actor(request)
     scoped_farmer_id = _apply_farmer_scope(actor, farmer_id)
     if scoped_farmer_id and scoped_farmer_id != farmer_id:
@@ -2405,6 +2564,12 @@ def save_profile_route(farmer_id: str, request: Request, payload: dict = Body(..
         payload["owner_user_id"] = str(actor.get("user_id") or "").strip() or farmer_id
         payload["role_type"] = _actor_role_type(actor)
         payload["display_name"] = payload.get("display_name") or payload.get("name") or farmer_id
+    owner_user_id = str(payload.get("owner_user_id") or "").strip()
+    role_type = str(payload.get("role_type") or "").strip().upper()
+    display_name = str(payload.get("display_name") or payload.get("name") or "").strip()
+    set_as_default_profile = bool(payload.get("set_as_default_profile"))
+    if not _is_admin(actor):
+        set_as_default_profile = True
     try:
         profile = _normalize_profile_payload_for_save(farmer_id, payload)
     except Exception as exc:
@@ -2413,7 +2578,23 @@ def save_profile_route(farmer_id: str, request: Request, payload: dict = Body(..
         persist_profile(profile)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"保存档案失败: {exc}") from exc
-    return {"ok": True}
+    account_sync: dict[str, Any] | None = None
+    try:
+        with get_db_session() as session:
+            account_sync = _sync_user_account_from_profile(
+                session=session,
+                farmer_id=farmer_id,
+                owner_user_id=owner_user_id,
+                role_type=role_type,
+                display_name=display_name,
+                set_as_default_profile=set_as_default_profile,
+            )
+            session.commit()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"账号授权同步失败: {exc}") from exc
+    return {"ok": True, "farmer_id": farmer_id, "account_sync": account_sync}
 
 
 @app.delete("/api/profiles/{farmer_id}")
@@ -2424,6 +2605,16 @@ def delete_profile(farmer_id: str, request: Request) -> dict[str, bool]:
         raise HTTPException(status_code=403, detail="当前角色仅允许删除自己的档案")
     if load_profile(farmer_id) is None:
         raise HTTPException(status_code=404, detail="档案不存在")
+    try:
+        with get_db_session() as session:
+            accounts = session.execute(
+                select(UserAccountORM).where(UserAccountORM.linked_farmer_id == farmer_id)
+            ).scalars().all()
+            for account in accounts:
+                account.linked_farmer_id = None
+            session.commit()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"解绑账号失败: {exc}") from exc
     try:
         delete_profile_store(farmer_id)
     except Exception as exc:
@@ -2886,7 +3077,7 @@ def update_admin_system_config(request: Request, payload: dict = Body(...)) -> d
     actor = _get_request_actor(request)
     _require_admin(actor)
     next_config = save_admin_runtime_config(payload if isinstance(payload, dict) else {})
-    return {"config": next_config}
+    return {"config": next_config, "llm_runtime_snapshot": get_admin_llm_runtime_snapshot(next_config)}
 
 
 @app.get("/api/admin/reviews")

@@ -12,6 +12,8 @@ interface AdminConfig {
   workflow: {
     confirm_round_limit: number;
     validator_rewrite_limit: number;
+    enable_validator_agent: boolean;
+    enable_personalization_agent: boolean;
   };
   model_fusion: {
     enable_image_model: boolean;
@@ -47,6 +49,7 @@ interface LlmRuntimeSnapshot {
   };
   constraint_validation: {
     mode: string;
+    global_enabled?: boolean;
     items: Array<{
       key: string;
       label: string;
@@ -91,6 +94,8 @@ const DEFAULT_CONFIG: AdminConfig = {
   workflow: {
     confirm_round_limit: 1,
     validator_rewrite_limit: 1,
+    enable_validator_agent: true,
+    enable_personalization_agent: true,
   },
   model_fusion: {
     enable_image_model: true,
@@ -126,6 +131,7 @@ const DEFAULT_LLM_RUNTIME_SNAPSHOT: LlmRuntimeSnapshot = {
   },
   constraint_validation: {
     mode: 'runtime_default_summary',
+    global_enabled: true,
     items: [
       { key: 'banned_ingredients', label: '禁用成分', enabled: true, description: '校验并剔除禁用成分建议' },
       { key: 'harvest_window', label: '采收窗口', enabled: true, description: '采收临近时补充窗口与时机提醒' },
@@ -150,12 +156,53 @@ function formatTime(value?: string): string {
   return date.toLocaleString();
 }
 
+const WORKFLOW_LIMIT_MIN = 0;
+const WORKFLOW_LIMIT_MAX = 10;
+const THRESHOLD_MIN = 0;
+const THRESHOLD_MAX = 1;
+
+function normalizeSystemConfig(raw: Record<string, unknown> | null | undefined): AdminConfig {
+  const workflow = raw?.workflow as Record<string, unknown> | undefined;
+  const modelFusion = raw?.model_fusion as Record<string, unknown> | undefined;
+  const llm = raw?.llm as Record<string, unknown> | undefined;
+  const textBackend = String(modelFusion?.text_backend || DEFAULT_CONFIG.model_fusion.text_backend) as AdminConfig['model_fusion']['text_backend'];
+  const safeTextBackend = (textBackend === 'auto' || textBackend === 'bert' || textBackend === 'rule') ? textBackend : 'auto';
+
+  return {
+    workflow: {
+      confirm_round_limit: Number(workflow?.confirm_round_limit ?? DEFAULT_CONFIG.workflow.confirm_round_limit),
+      validator_rewrite_limit: Number(workflow?.validator_rewrite_limit ?? DEFAULT_CONFIG.workflow.validator_rewrite_limit),
+      enable_validator_agent: workflow?.enable_validator_agent === undefined ? DEFAULT_CONFIG.workflow.enable_validator_agent : Boolean(workflow?.enable_validator_agent),
+      enable_personalization_agent: workflow?.enable_personalization_agent === undefined ? DEFAULT_CONFIG.workflow.enable_personalization_agent : Boolean(workflow?.enable_personalization_agent),
+    },
+    model_fusion: {
+      enable_image_model: modelFusion?.enable_image_model === undefined ? DEFAULT_CONFIG.model_fusion.enable_image_model : Boolean(modelFusion?.enable_image_model),
+      enable_text_model: modelFusion?.enable_text_model === undefined ? DEFAULT_CONFIG.model_fusion.enable_text_model : Boolean(modelFusion?.enable_text_model),
+      text_backend: safeTextBackend,
+      image_top1_threshold: Number(modelFusion?.image_top1_threshold ?? DEFAULT_CONFIG.model_fusion.image_top1_threshold),
+      image_margin_threshold: Number(modelFusion?.image_margin_threshold ?? DEFAULT_CONFIG.model_fusion.image_margin_threshold),
+      text_top1_threshold: Number(modelFusion?.text_top1_threshold ?? DEFAULT_CONFIG.model_fusion.text_top1_threshold),
+      text_margin_threshold: Number(modelFusion?.text_margin_threshold ?? DEFAULT_CONFIG.model_fusion.text_margin_threshold),
+      weak_conflict_min_image_top1: Number(modelFusion?.weak_conflict_min_image_top1 ?? DEFAULT_CONFIG.model_fusion.weak_conflict_min_image_top1),
+      weak_conflict_min_text_top1: Number(modelFusion?.weak_conflict_min_text_top1 ?? DEFAULT_CONFIG.model_fusion.weak_conflict_min_text_top1),
+      diagnosis_conf_threshold: Number(modelFusion?.diagnosis_conf_threshold ?? DEFAULT_CONFIG.model_fusion.diagnosis_conf_threshold),
+      low_margin_threshold: Number(modelFusion?.low_margin_threshold ?? DEFAULT_CONFIG.model_fusion.low_margin_threshold),
+    },
+    llm: {
+      enable_llm: llm?.enable_llm === undefined ? DEFAULT_CONFIG.llm.enable_llm : Boolean(llm?.enable_llm),
+      enable_treatment_generation: llm?.enable_treatment_generation === undefined ? DEFAULT_CONFIG.llm.enable_treatment_generation : Boolean(llm?.enable_treatment_generation),
+      enable_constraint_validation: llm?.enable_constraint_validation === undefined ? DEFAULT_CONFIG.llm.enable_constraint_validation : Boolean(llm?.enable_constraint_validation),
+    },
+  };
+}
+
 export function AdminPage({ pageType }: { pageType: 'system' | 'review' }) {
   const [config, setConfig] = useState<AdminConfig>(DEFAULT_CONFIG);
   const [llmRuntimeSnapshot, setLlmRuntimeSnapshot] = useState<LlmRuntimeSnapshot>(DEFAULT_LLM_RUNTIME_SNAPSHOT);
   const [configLoading, setConfigLoading] = useState(false);
   const [configSaving, setConfigSaving] = useState(false);
   const [configTip, setConfigTip] = useState<string>('');
+  const [configErrors, setConfigErrors] = useState<string[]>([]);
 
   const [statusFilter, setStatusFilter] = useState<(typeof REVIEW_STATUS_OPTIONS)[number]['value']>('pending');
   const [reviewLoading, setReviewLoading] = useState(false);
@@ -177,30 +224,8 @@ export function AdminPage({ pageType }: { pageType: 'system' | 'review' }) {
       if (!resp.ok) throw new Error(String(data?.detail || '加载配置失败'));
       const raw = (data?.config || DEFAULT_CONFIG) as Record<string, unknown>;
       const snapshot = (data?.llm_runtime_snapshot || DEFAULT_LLM_RUNTIME_SNAPSHOT) as LlmRuntimeSnapshot;
-      setConfig({
-        workflow: {
-          confirm_round_limit: Number((raw.workflow as Record<string, unknown>)?.confirm_round_limit ?? DEFAULT_CONFIG.workflow.confirm_round_limit),
-          validator_rewrite_limit: Number((raw.workflow as Record<string, unknown>)?.validator_rewrite_limit ?? DEFAULT_CONFIG.workflow.validator_rewrite_limit),
-        },
-        model_fusion: {
-          enable_image_model: Boolean((raw.model_fusion as Record<string, unknown>)?.enable_image_model),
-          enable_text_model: Boolean((raw.model_fusion as Record<string, unknown>)?.enable_text_model),
-          text_backend: (((raw.model_fusion as Record<string, unknown>)?.text_backend as 'auto' | 'bert' | 'rule') || 'auto'),
-          image_top1_threshold: Number((raw.model_fusion as Record<string, unknown>)?.image_top1_threshold ?? 0.65),
-          image_margin_threshold: Number((raw.model_fusion as Record<string, unknown>)?.image_margin_threshold ?? 0.15),
-          text_top1_threshold: Number((raw.model_fusion as Record<string, unknown>)?.text_top1_threshold ?? 0.4),
-          text_margin_threshold: Number((raw.model_fusion as Record<string, unknown>)?.text_margin_threshold ?? 0.1),
-          weak_conflict_min_image_top1: Number((raw.model_fusion as Record<string, unknown>)?.weak_conflict_min_image_top1 ?? 0.5),
-          weak_conflict_min_text_top1: Number((raw.model_fusion as Record<string, unknown>)?.weak_conflict_min_text_top1 ?? 0.4),
-          diagnosis_conf_threshold: Number((raw.model_fusion as Record<string, unknown>)?.diagnosis_conf_threshold ?? 0.5),
-          low_margin_threshold: Number((raw.model_fusion as Record<string, unknown>)?.low_margin_threshold ?? 0.03),
-        },
-        llm: {
-          enable_llm: Boolean((raw.llm as Record<string, unknown>)?.enable_llm),
-          enable_treatment_generation: Boolean((raw.llm as Record<string, unknown>)?.enable_treatment_generation),
-          enable_constraint_validation: Boolean((raw.llm as Record<string, unknown>)?.enable_constraint_validation),
-        },
-      });
+      setConfig(normalizeSystemConfig(raw));
+      setConfigErrors([]);
       setLlmRuntimeSnapshot(snapshot);
     } catch (error) {
       console.error(error);
@@ -211,7 +236,45 @@ export function AdminPage({ pageType }: { pageType: 'system' | 'review' }) {
     }
   };
 
+  const validateConfig = (candidate: AdminConfig): string[] => {
+    const errors: string[] = [];
+    const intFields = [
+      { key: '补充诊断轮次上限', value: candidate.workflow.confirm_round_limit },
+      { key: '校验智能体最大重写次数', value: candidate.workflow.validator_rewrite_limit },
+    ];
+    intFields.forEach((item) => {
+      if (!Number.isInteger(item.value) || item.value < WORKFLOW_LIMIT_MIN || item.value > WORKFLOW_LIMIT_MAX) {
+        errors.push(`${item.key} 仅支持 ${WORKFLOW_LIMIT_MIN}~${WORKFLOW_LIMIT_MAX} 的整数`);
+      }
+    });
+    const thresholdFields: Array<[string, number]> = [
+      ['图像 top1 可靠阈值', candidate.model_fusion.image_top1_threshold],
+      ['图像 margin 阈值', candidate.model_fusion.image_margin_threshold],
+      ['文本 top1 可靠阈值', candidate.model_fusion.text_top1_threshold],
+      ['文本 margin 阈值', candidate.model_fusion.text_margin_threshold],
+      ['弱冲突图像阈值', candidate.model_fusion.weak_conflict_min_image_top1],
+      ['弱冲突文本阈值', candidate.model_fusion.weak_conflict_min_text_top1],
+      ['诊断低置信度阈值', candidate.model_fusion.diagnosis_conf_threshold],
+      ['低 margin 阈值', candidate.model_fusion.low_margin_threshold],
+    ];
+    thresholdFields.forEach(([label, value]) => {
+      if (!Number.isFinite(value) || value < THRESHOLD_MIN || value > THRESHOLD_MAX) {
+        errors.push(`${label} 取值范围必须在 ${THRESHOLD_MIN}~${THRESHOLD_MAX}`);
+      }
+    });
+    if (!['auto', 'bert', 'rule'].includes(candidate.model_fusion.text_backend)) {
+      errors.push('文本诊断后端仅支持 auto / bert / rule');
+    }
+    return errors;
+  };
+
   const saveConfig = async () => {
+    const errors = validateConfig(config);
+    setConfigErrors(errors);
+    if (errors.length > 0) {
+      setConfigTip('保存失败：请先修正配置项。');
+      return;
+    }
     setConfigSaving(true);
     setConfigTip('');
     try {
@@ -222,6 +285,13 @@ export function AdminPage({ pageType }: { pageType: 'system' | 'review' }) {
       });
       const data = await resp.json();
       if (!resp.ok) throw new Error(String(data?.detail || '保存配置失败'));
+      const nextConfig = normalizeSystemConfig((data?.config || {}) as Record<string, unknown>);
+      setConfig(nextConfig);
+      if (data?.llm_runtime_snapshot && typeof data.llm_runtime_snapshot === 'object') {
+        setLlmRuntimeSnapshot(data.llm_runtime_snapshot as LlmRuntimeSnapshot);
+      } else {
+        await loadConfig();
+      }
       setConfigTip('配置保存成功。');
     } catch (error) {
       console.error(error);
@@ -367,6 +437,17 @@ export function AdminPage({ pageType }: { pageType: 'system' | 'review' }) {
             <Button variant="outline" size="sm" onClick={() => { void loadConfig(); }}>
               <RefreshCcw className="w-4 h-4 mr-1" />刷新配置
             </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                setConfig(JSON.parse(JSON.stringify(DEFAULT_CONFIG)) as AdminConfig);
+                setConfigErrors([]);
+                setConfigTip('已恢复默认配置（尚未保存到服务器）。');
+              }}
+            >
+              恢复默认配置
+            </Button>
             <Button size="sm" className="bg-[#c8f7c5] text-black" onClick={() => { void saveConfig(); }} disabled={configSaving}>
               <Save className="w-4 h-4 mr-1" />{configSaving ? '保存中...' : '保存配置'}
             </Button>
@@ -375,16 +456,37 @@ export function AdminPage({ pageType }: { pageType: 'system' | 'review' }) {
         <CardContent className="space-y-5 text-white">
           {configLoading ? <p className="text-sm text-white/70 flex items-center gap-2"><Loader2 className="w-4 h-4 animate-spin" />正在加载配置...</p> : null}
           {configTip ? <p className="text-sm text-[#c8f7c5]">{configTip}</p> : null}
+          {configErrors.length > 0 ? (
+            <div className="rounded-lg border border-red-400/30 bg-red-500/10 p-3 text-xs text-red-200 space-y-1">
+              {configErrors.map((item) => <p key={item}>• {item}</p>)}
+            </div>
+          ) : null}
 
           <section className="grid md:grid-cols-2 gap-4 rounded-xl border border-white/10 p-3">
             <h3 className="md:col-span-2 font-semibold text-[#c8f7c5]">流程参数</h3>
             <div>
               <Label>补充诊断轮次上限</Label>
-              <Input type="number" value={config.workflow.confirm_round_limit} onChange={(e) => setConfig((prev) => ({ ...prev, workflow: { ...prev.workflow, confirm_round_limit: Number(e.target.value || 0) } }))} className="bg-white/5 border-white/20 text-white" />
+              <Input type="number" min={WORKFLOW_LIMIT_MIN} max={WORKFLOW_LIMIT_MAX} value={config.workflow.confirm_round_limit} onChange={(e) => setConfig((prev) => ({ ...prev, workflow: { ...prev.workflow, confirm_round_limit: Number(e.target.value || 0) } }))} className="bg-white/5 border-white/20 text-white" />
+              <p className="text-xs text-white/50 mt-1">取值范围 {WORKFLOW_LIMIT_MIN}~{WORKFLOW_LIMIT_MAX}（整数）</p>
             </div>
             <div>
               <Label>校验智能体最大重写次数</Label>
-              <Input type="number" value={config.workflow.validator_rewrite_limit} onChange={(e) => setConfig((prev) => ({ ...prev, workflow: { ...prev.workflow, validator_rewrite_limit: Number(e.target.value || 0) } }))} className="bg-white/5 border-white/20 text-white" />
+              <Input type="number" min={WORKFLOW_LIMIT_MIN} max={WORKFLOW_LIMIT_MAX} value={config.workflow.validator_rewrite_limit} onChange={(e) => setConfig((prev) => ({ ...prev, workflow: { ...prev.workflow, validator_rewrite_limit: Number(e.target.value || 0) } }))} className="bg-white/5 border-white/20 text-white" />
+              <p className="text-xs text-white/50 mt-1">取值范围 {WORKFLOW_LIMIT_MIN}~{WORKFLOW_LIMIT_MAX}（整数）</p>
+            </div>
+            <div className="rounded-lg border border-white/10 p-3 bg-white/5 space-y-2">
+              <div className="flex items-center justify-between">
+                <Label>启用校验智能体</Label>
+                <Switch checked={config.workflow.enable_validator_agent} onCheckedChange={(v) => setConfig((prev) => ({ ...prev, workflow: { ...prev.workflow, enable_validator_agent: v } }))} />
+              </div>
+              <p className="text-xs text-white/50">关闭后跳过验证/重写相关流程。</p>
+            </div>
+            <div className="rounded-lg border border-white/10 p-3 bg-white/5 space-y-2">
+              <div className="flex items-center justify-between">
+                <Label>启用个性化智能体</Label>
+                <Switch checked={config.workflow.enable_personalization_agent} onCheckedChange={(v) => setConfig((prev) => ({ ...prev, workflow: { ...prev.workflow, enable_personalization_agent: v } }))} />
+              </div>
+              <p className="text-xs text-white/50">关闭后不注入个性化上下文与个性化约束。</p>
             </div>
           </section>
 
@@ -409,35 +511,43 @@ export function AdminPage({ pageType }: { pageType: 'system' | 'review' }) {
             </div>
             <div>
               <Label>图像 top1 可靠阈值</Label>
-              <Input type="number" step="0.01" value={config.model_fusion.image_top1_threshold} onChange={(e) => setConfig((prev) => ({ ...prev, model_fusion: { ...prev.model_fusion, image_top1_threshold: Number(e.target.value || 0) } }))} className="bg-white/5 border-white/20 text-white" />
+              <Input type="number" min={THRESHOLD_MIN} max={THRESHOLD_MAX} step="0.01" value={config.model_fusion.image_top1_threshold} onChange={(e) => setConfig((prev) => ({ ...prev, model_fusion: { ...prev.model_fusion, image_top1_threshold: Number(e.target.value || 0) } }))} className="bg-white/5 border-white/20 text-white" />
+              <p className="text-xs text-white/50 mt-1">取值范围 0~1</p>
             </div>
             <div>
               <Label>图像 margin 阈值</Label>
-              <Input type="number" step="0.01" value={config.model_fusion.image_margin_threshold} onChange={(e) => setConfig((prev) => ({ ...prev, model_fusion: { ...prev.model_fusion, image_margin_threshold: Number(e.target.value || 0) } }))} className="bg-white/5 border-white/20 text-white" />
+              <Input type="number" min={THRESHOLD_MIN} max={THRESHOLD_MAX} step="0.01" value={config.model_fusion.image_margin_threshold} onChange={(e) => setConfig((prev) => ({ ...prev, model_fusion: { ...prev.model_fusion, image_margin_threshold: Number(e.target.value || 0) } }))} className="bg-white/5 border-white/20 text-white" />
+              <p className="text-xs text-white/50 mt-1">取值范围 0~1</p>
             </div>
             <div>
               <Label>文本 top1 可靠阈值</Label>
-              <Input type="number" step="0.01" value={config.model_fusion.text_top1_threshold} onChange={(e) => setConfig((prev) => ({ ...prev, model_fusion: { ...prev.model_fusion, text_top1_threshold: Number(e.target.value || 0) } }))} className="bg-white/5 border-white/20 text-white" />
+              <Input type="number" min={THRESHOLD_MIN} max={THRESHOLD_MAX} step="0.01" value={config.model_fusion.text_top1_threshold} onChange={(e) => setConfig((prev) => ({ ...prev, model_fusion: { ...prev.model_fusion, text_top1_threshold: Number(e.target.value || 0) } }))} className="bg-white/5 border-white/20 text-white" />
+              <p className="text-xs text-white/50 mt-1">取值范围 0~1</p>
             </div>
             <div>
               <Label>文本 margin 阈值</Label>
-              <Input type="number" step="0.01" value={config.model_fusion.text_margin_threshold} onChange={(e) => setConfig((prev) => ({ ...prev, model_fusion: { ...prev.model_fusion, text_margin_threshold: Number(e.target.value || 0) } }))} className="bg-white/5 border-white/20 text-white" />
+              <Input type="number" min={THRESHOLD_MIN} max={THRESHOLD_MAX} step="0.01" value={config.model_fusion.text_margin_threshold} onChange={(e) => setConfig((prev) => ({ ...prev, model_fusion: { ...prev.model_fusion, text_margin_threshold: Number(e.target.value || 0) } }))} className="bg-white/5 border-white/20 text-white" />
+              <p className="text-xs text-white/50 mt-1">取值范围 0~1</p>
             </div>
             <div>
               <Label>弱冲突图像阈值</Label>
-              <Input type="number" step="0.01" value={config.model_fusion.weak_conflict_min_image_top1} onChange={(e) => setConfig((prev) => ({ ...prev, model_fusion: { ...prev.model_fusion, weak_conflict_min_image_top1: Number(e.target.value || 0) } }))} className="bg-white/5 border-white/20 text-white" />
+              <Input type="number" min={THRESHOLD_MIN} max={THRESHOLD_MAX} step="0.01" value={config.model_fusion.weak_conflict_min_image_top1} onChange={(e) => setConfig((prev) => ({ ...prev, model_fusion: { ...prev.model_fusion, weak_conflict_min_image_top1: Number(e.target.value || 0) } }))} className="bg-white/5 border-white/20 text-white" />
+              <p className="text-xs text-white/50 mt-1">取值范围 0~1</p>
             </div>
             <div>
               <Label>弱冲突文本阈值</Label>
-              <Input type="number" step="0.01" value={config.model_fusion.weak_conflict_min_text_top1} onChange={(e) => setConfig((prev) => ({ ...prev, model_fusion: { ...prev.model_fusion, weak_conflict_min_text_top1: Number(e.target.value || 0) } }))} className="bg-white/5 border-white/20 text-white" />
+              <Input type="number" min={THRESHOLD_MIN} max={THRESHOLD_MAX} step="0.01" value={config.model_fusion.weak_conflict_min_text_top1} onChange={(e) => setConfig((prev) => ({ ...prev, model_fusion: { ...prev.model_fusion, weak_conflict_min_text_top1: Number(e.target.value || 0) } }))} className="bg-white/5 border-white/20 text-white" />
+              <p className="text-xs text-white/50 mt-1">取值范围 0~1</p>
             </div>
             <div>
               <Label>诊断低置信度阈值</Label>
-              <Input type="number" step="0.01" value={config.model_fusion.diagnosis_conf_threshold} onChange={(e) => setConfig((prev) => ({ ...prev, model_fusion: { ...prev.model_fusion, diagnosis_conf_threshold: Number(e.target.value || 0) } }))} className="bg-white/5 border-white/20 text-white" />
+              <Input type="number" min={THRESHOLD_MIN} max={THRESHOLD_MAX} step="0.01" value={config.model_fusion.diagnosis_conf_threshold} onChange={(e) => setConfig((prev) => ({ ...prev, model_fusion: { ...prev.model_fusion, diagnosis_conf_threshold: Number(e.target.value || 0) } }))} className="bg-white/5 border-white/20 text-white" />
+              <p className="text-xs text-white/50 mt-1">取值范围 0~1</p>
             </div>
             <div>
               <Label>低 margin 阈值</Label>
-              <Input type="number" step="0.01" value={config.model_fusion.low_margin_threshold} onChange={(e) => setConfig((prev) => ({ ...prev, model_fusion: { ...prev.model_fusion, low_margin_threshold: Number(e.target.value || 0) } }))} className="bg-white/5 border-white/20 text-white" />
+              <Input type="number" min={THRESHOLD_MIN} max={THRESHOLD_MAX} step="0.01" value={config.model_fusion.low_margin_threshold} onChange={(e) => setConfig((prev) => ({ ...prev, model_fusion: { ...prev.model_fusion, low_margin_threshold: Number(e.target.value || 0) } }))} className="bg-white/5 border-white/20 text-white" />
+              <p className="text-xs text-white/50 mt-1">取值范围 0~1</p>
             </div>
           </section>
 
@@ -460,11 +570,15 @@ export function AdminPage({ pageType }: { pageType: 'system' | 'review' }) {
                 <Switch checked={config.llm.enable_constraint_validation} onCheckedChange={(v) => setConfig((prev) => ({ ...prev, llm: { ...prev.llm, enable_constraint_validation: v } }))} />
               </div>
             </div>
+            <div className="rounded-xl border border-white/10 p-4 bg-white/5">
+              <h4 className="text-sm font-semibold text-[#c8f7c5] mb-2">运行时快照（只读）</h4>
+              <p className="text-xs text-white/50">以下信息来自当前环境与运行时配置，仅用于观测，不可在此处直接编辑。</p>
+            </div>
 
             <div className="rounded-xl border border-white/10 p-4 bg-gradient-to-br from-[#13221c] to-[#0f1a15]">
               <h4 className="text-sm font-semibold text-[#c8f7c5] mb-4 flex items-center gap-2">
                 <div className="w-1 h-5 bg-[#c8f7c5] rounded-full" />
-                当前大模型信息
+                当前大模型信息（只读）
               </h4>
               <div className="grid md:grid-cols-3 gap-4">
                 <div>
@@ -485,7 +599,7 @@ export function AdminPage({ pageType }: { pageType: 'system' | 'review' }) {
             <div className="rounded-xl border border-white/10 p-4 bg-gradient-to-br from-[#13221c] to-[#0f1a15]">
               <h4 className="text-sm font-semibold text-[#c8f7c5] mb-4 flex items-center gap-2">
                 <div className="w-1 h-5 bg-[#c8f7c5] rounded-full" />
-                当前治疗建议模板信息
+                当前治疗建议模板信息（只读）
               </h4>
               <div className="grid md:grid-cols-3 gap-4">
                 <div>
@@ -500,6 +614,32 @@ export function AdminPage({ pageType }: { pageType: 'system' | 'review' }) {
                   <Label className="text-white/50 text-xs mb-1 block">模板用途说明</Label>
                   <div className="bg-white/5 border border-white/10 rounded-lg p-4 text-white/80 text-sm">{llmRuntimeSnapshot.template.purpose}</div>
                 </div>
+              </div>
+            </div>
+
+            <div className="rounded-xl border border-white/10 p-4 bg-gradient-to-br from-[#13221c] to-[#0f1a15]">
+              <h4 className="text-sm font-semibold text-[#c8f7c5] mb-4 flex items-center gap-2">
+                <div className="w-1 h-5 bg-[#c8f7c5] rounded-full" />
+                约束校验信息（只读）
+              </h4>
+              <div className="rounded-lg border border-white/10 bg-white/5 p-3 mb-3">
+                <p className="text-xs text-white/50">全局开关状态</p>
+                <p className={`text-sm mt-1 ${llmRuntimeSnapshot.constraint_validation.global_enabled === false ? 'text-red-300' : 'text-[#c8f7c5]'}`}>
+                  {llmRuntimeSnapshot.constraint_validation.global_enabled === false ? '当前约束校验未启用' : '当前约束校验已启用'}
+                </p>
+              </div>
+              <div className="space-y-2">
+                {llmRuntimeSnapshot.constraint_validation.items.map((item) => (
+                  <div key={item.key} className="rounded-lg border border-white/10 bg-white/5 p-3">
+                    <div className="flex items-center justify-between">
+                      <p className="text-sm text-white">{item.label}</p>
+                      <span className={`text-xs px-2 py-1 rounded border ${item.enabled ? 'border-[#c8f7c5]/40 text-[#c8f7c5]' : 'border-white/20 text-white/60'}`}>
+                        {item.enabled ? '已启用' : '已关闭'}
+                      </span>
+                    </div>
+                    <p className="text-xs text-white/50 mt-1">{item.description}</p>
+                  </div>
+                ))}
               </div>
             </div>
           </section>

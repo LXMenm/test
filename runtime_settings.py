@@ -183,6 +183,10 @@ def get_admin_flag(path: str, default: Any = None) -> Any:
 def get_admin_llm_runtime_snapshot(config: dict[str, Any] | None = None) -> dict[str, Any]:
     current_config = config if isinstance(config, dict) else load_admin_runtime_config()
     llm_config = current_config.get("llm") if isinstance(current_config.get("llm"), dict) else {}
+    constraint_global_enabled = _as_bool(
+        llm_config.get("enable_constraint_validation"),
+        bool(DEFAULT_ADMIN_CONFIG["llm"]["enable_constraint_validation"]),
+    )
 
     provider = str(LLM_PROVIDER or "openai").strip().lower() or "openai"
     provider_meta = {
@@ -200,12 +204,12 @@ def get_admin_llm_runtime_snapshot(config: dict[str, Any] | None = None) -> dict
         template_scene = "仅知识库后备方案（可用于禁用生成或失败降级）"
 
     constraint_summary_items = [
-        {"key": "banned_ingredients", "label": "禁用成分", "enabled": True, "description": "校验并剔除禁用成分建议"},
-        {"key": "harvest_window", "label": "采收窗口", "enabled": True, "description": "采收临近时补充窗口与时机提醒"},
-        {"key": "safety_interval", "label": "安全间隔", "enabled": True, "description": "提示施药后采收安全间隔"},
-        {"key": "equipment_capability", "label": "设备能力", "enabled": True, "description": "结合设备条件约束执行流程"},
-        {"key": "organic_preference", "label": "有机偏好", "enabled": True, "description": "偏好低残留/有机友好方案"},
-        {"key": "risk_preference", "label": "风险偏好", "enabled": True, "description": "按风险偏好控制建议激进程度"},
+        {"key": "banned_ingredients", "label": "禁用成分", "enabled": constraint_global_enabled, "description": "校验并剔除禁用成分建议"},
+        {"key": "harvest_window", "label": "采收窗口", "enabled": constraint_global_enabled, "description": "采收临近时补充窗口与时机提醒"},
+        {"key": "safety_interval", "label": "安全间隔", "enabled": constraint_global_enabled, "description": "提示施药后采收安全间隔"},
+        {"key": "equipment_capability", "label": "设备能力", "enabled": constraint_global_enabled, "description": "结合设备条件约束执行流程"},
+        {"key": "organic_preference", "label": "有机偏好", "enabled": constraint_global_enabled, "description": "偏好低残留/有机友好方案"},
+        {"key": "risk_preference", "label": "风险偏好", "enabled": constraint_global_enabled, "description": "按风险偏好控制建议激进程度"},
     ]
 
     return {
@@ -222,6 +226,7 @@ def get_admin_llm_runtime_snapshot(config: dict[str, Any] | None = None) -> dict
         },
         "constraint_validation": {
             "mode": "runtime_default_summary",
+            "global_enabled": constraint_global_enabled,
             "items": constraint_summary_items,
         },
     }
