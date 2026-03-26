@@ -74,7 +74,9 @@ from mysql_models import FarmerProfileORM, UserAccountORM
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     log_resolved_storage_config()
-    if os.getenv("ENABLE_DEMO_ACCOUNTS", "false").strip().lower() in {"1", "true", "yes", "on"}:
+    demo_accounts_enabled = os.getenv("ENABLE_DEMO_ACCOUNTS", "false").strip().lower() in {"1", "true", "yes", "on"}
+    print(f"[DemoAccounts] ENABLE_DEMO_ACCOUNTS={'true' if demo_accounts_enabled else 'false'}")
+    if demo_accounts_enabled:
         ensure_user_accounts_seeded()
     ensure_account_profile_consistency()
     yield

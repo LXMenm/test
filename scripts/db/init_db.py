@@ -1,6 +1,10 @@
 """
-数据库初始化脚本
-用于创建 MySQL 表结构。
+数据库初始化脚本（仅用于新库初始化）
+
+注意：
+- 本脚本使用 SQLAlchemy create_all，仅会创建不存在的表；
+- 不会自动为旧表补列/改列/加约束；
+- 旧库结构变更请使用 scripts/migrations 下的迁移脚本。
 """
 
 from __future__ import annotations
@@ -50,8 +54,8 @@ def main() -> None:
     finally:
         conn.close()
     
-    # 3. 创建所有表
-    print("正在创建表结构...")
+    # 3. 创建所有表（仅创建缺失表，不做旧表 schema migration）
+    print("正在创建表结构（create_all，仅新表创建，不执行旧表结构迁移）...")
     Base.metadata.create_all(bind=db_engine)
     
     # 4. 验证表已创建
