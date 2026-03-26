@@ -74,7 +74,9 @@ from mysql_models import FarmerProfileORM, UserAccountORM
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     log_resolved_storage_config()
-    if os.getenv("ENABLE_DEMO_ACCOUNTS", "false").strip().lower() in {"1", "true", "yes", "on"}:
+    demo_accounts_enabled = os.getenv("ENABLE_DEMO_ACCOUNTS", "false").strip().lower() in {"1", "true", "yes", "on"}
+    print(f"[DemoAccounts] ENABLE_DEMO_ACCOUNTS={'true' if demo_accounts_enabled else 'false'}")
+    if demo_accounts_enabled:
         ensure_user_accounts_seeded()
     ensure_account_profile_consistency()
     yield
@@ -90,10 +92,7 @@ DEFAULT_DEMO_ACCOUNTS = [
     {"user_id": "E0002", "username": "e0002", "display_name": "专家 E0002", "role": "EXPERT", "password": "123456", "linked_farmer_id": None},
     {"user_id": "A0001", "username": "a0001", "display_name": "管理员 A0001", "role": "ADMIN", "password": "123456", "linked_farmer_id": None},
 ]
-# 注册功能预留语义：
-# - 默认创建 USER 账号
-# - 默认 linked_farmer_id = None
-# - 注册阶段不强制创建档案，后续可在档案页绑定/创建
+# linked_farmer_id 为兼容字段：一账号一档案阶段默认应与 user_id 相同，不再用于切换他人档案。
 
 
 def _generate_user_id() -> str | None:
@@ -134,11 +133,6 @@ def ensure_user_accounts_seeded() -> None:
         print(f"[AuthBootstrap] 初始化 user_accounts 失败: {exc}")
 
 
-def _account_role_to_profile_type(role: str | None) -> str:
-    # 兼容字段：role_type 已废弃，档案不再承载身份语义。
-    return "FARMER"
-
-
 def ensure_account_profile_consistency() -> None:
     """一账号一档案收敛：确保每个账号有且仅有自己 user_id 对应档案（farmer_id=user_id, owner_user_id=user_id）。"""
     try:
@@ -149,25 +143,15 @@ def ensure_account_profile_consistency() -> None:
                 user_id = str(account.user_id or "").strip()
                 if not user_id:
                     continue
-                source_profile = load_profile(str(account.linked_farmer_id or "").strip() or user_id)
                 profile = load_profile(user_id)
                 if profile is None:
-                    if source_profile is None:
-                        profile = FarmerProfile(
-                            farmer_id=user_id,
-                            name=account.display_name,
-                            display_name=account.display_name,
-                            owner_user_id=user_id,
-                            role_type="FARMER",
-                        )
-                    else:
-                        payload = source_profile.model_dump()
-                        payload["farmer_id"] = user_id
-                        payload["owner_user_id"] = user_id
-                        payload["display_name"] = payload.get("display_name") or account.display_name or user_id
-                        payload["name"] = payload.get("name") or account.display_name or user_id
-                        payload["role_type"] = "FARMER"
-                        profile = FarmerProfile.model_validate(payload)
+                    profile = FarmerProfile(
+                        farmer_id=user_id,
+                        name=account.display_name,
+                        display_name=account.display_name,
+                        owner_user_id=user_id,
+                        role_type="FARMER",
+                    )
                     persist_profile(profile)
                 else:
                     changed = False
@@ -222,31 +206,11 @@ def _apply_farmer_scope(actor: dict[str, str], requested_farmer_id: str | None) 
 def _resolve_default_profile_id(
     actor: dict[str, str],
     requested_farmer_id: str | None = None,
-    *,
-    prefer_actor_linked: bool = False,
 ) -> str | None:
-    """统一语义：
-    - role: 登录权限角色（USER / EXPERT / ADMIN）
-    - linked_farmer_id: 账号默认诊断档案 ID（所有角色都可拥有）
-    - role_type: 档案展示类型（FARMER / EXPERT / ADMIN）
-    """
+    """兼容函数：保留显式 farmer_id 解析，不再支持通过 linked_farmer_id 切换他人档案。"""
+    _ = actor
     requested = str(requested_farmer_id or "").strip() or None
-    if requested:
-        return requested
-    if prefer_actor_linked:
-        actor_user_id = str(actor.get("user_id") or "").strip()
-        if actor_user_id:
-            return actor_user_id
-    return None
-
-
-def _actor_role_type(actor: dict[str, str]) -> str:
-    role = str(actor.get("role") or "USER").strip().upper()
-    if role == "ADMIN":
-        return "ADMIN"
-    if role == "EXPERT":
-        return "EXPERT"
-    return "FARMER"
+    return requested
 
 
 def _validate_account_exists(session, user_id: str) -> UserAccountORM:
@@ -261,19 +225,6 @@ def _validate_account_exists(session, user_id: str) -> UserAccountORM:
     if str(account.status or "").strip().upper() != "ACTIVE":
         raise HTTPException(status_code=400, detail="绑定账号不是激活状态")
     return account
-
-
-def _set_account_default_profile(session, user_id: str, farmer_id: str | None) -> None:
-    account = _validate_account_exists(session, user_id)
-    account.linked_farmer_id = str(farmer_id or "").strip() or None
-
-
-def _set_account_role(session, user_id: str, role: str) -> None:
-    account = _validate_account_exists(session, user_id)
-    normalized_role = str(role or "").strip().upper()
-    if normalized_role not in SUPPORTED_ROLES:
-        raise HTTPException(status_code=400, detail="非法角色类型")
-    account.role = normalized_role
 
 
 def _next_generated_user_id(session) -> str:
@@ -336,7 +287,8 @@ def _create_account_with_profile(
         name=normalized_display_name,
         display_name=normalized_display_name,
         owner_user_id=user_id,
-        role_type=_account_role_to_profile_type(normalized_role),
+        # role_type 兼容保留（已废弃，不承载身份语义）。
+        role_type="FARMER",
     )
     session.add(account)
     session.add(profile)
@@ -2392,7 +2344,7 @@ def get_models() -> dict[str, object]:
 @app.get("/api/profiles")
 def list_profiles(request: Request) -> dict[str, list[dict[str, str | None]]]:
     actor = _get_request_actor(request)
-    requested_farmer_id = _resolve_default_profile_id(actor, None, prefer_actor_linked=False)
+    requested_farmer_id = _resolve_default_profile_id(actor, None)
     scoped_farmer_id = _apply_farmer_scope(actor, requested_farmer_id)
     profiles = []
     for farmer_id in list_profile_ids_mysql():
@@ -2538,33 +2490,6 @@ def _generate_farmer_id() -> str | None:
     return f"F{next_id:04d}"
 
 
-def _sync_user_account_from_profile(
-    session,
-    farmer_id: str,
-    owner_user_id: str | None,
-    role_type: str | None,
-    display_name: str | None,
-    *,
-    set_as_default_profile: bool = False,
-) -> dict[str, Any] | None:
-    """兼容函数：一账号一档案阶段仅维护 owner 账号与其唯一档案绑定，不再由档案反向改账号角色。"""
-    normalized_owner_user_id = str(owner_user_id or "").strip()
-    normalized_farmer_id = str(farmer_id or "").strip()
-    normalized_display_name = str(display_name or "").strip()
-
-    if not normalized_owner_user_id:
-        return None
-
-    account = _validate_account_exists(session, normalized_owner_user_id)
-
-    _ = role_type  # 兼容入参：已不参与账号权限语义。
-    # set_as_default_profile 在一账号一档案模型下已废弃：总是绑定到自己的唯一档案。
-    _set_account_default_profile(session, account.user_id, normalized_farmer_id)
-    if normalized_display_name:
-        account.display_name = normalized_display_name
-    return _serialize_account_sync(account)
-
-
 @app.post("/api/profiles")
 def create_profile(request: Request, payload: dict = Body(...)) -> dict[str, Any]:
     _ = request
@@ -2605,8 +2530,6 @@ def save_profile_route(farmer_id: str, request: Request, payload: dict = Body(..
     with get_db_session() as session:
         _validate_account_exists(session, owner_user_id)
     payload = dict(payload)
-    payload["role_type"] = "FARMER"
-    display_name = str(payload.get("display_name") or payload.get("name") or "").strip()
     try:
         profile = _normalize_profile_payload_for_save(farmer_id, payload)
     except Exception as exc:
@@ -2615,23 +2538,7 @@ def save_profile_route(farmer_id: str, request: Request, payload: dict = Body(..
         save_profile_payload_mysql(profile.model_dump())
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"保存档案失败: {exc}") from exc
-    account_sync: dict[str, Any] | None = None
-    try:
-        with get_db_session() as session:
-            account_sync = _sync_user_account_from_profile(
-                session=session,
-                farmer_id=farmer_id,
-                owner_user_id=owner_user_id,
-                role_type="FARMER",
-                display_name=display_name,
-                set_as_default_profile=False,
-            )
-            session.commit()
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"账号授权同步失败: {exc}") from exc
-    return {"ok": True, "farmer_id": farmer_id, "account_sync": account_sync}
+    return {"ok": True, "farmer_id": farmer_id}
 
 
 @app.delete("/api/profiles/{farmer_id}")

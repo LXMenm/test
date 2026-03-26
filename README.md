@@ -51,7 +51,7 @@
 
 ---
 
-## 3. 快速启动
+## 3. 最小可运行步骤（推荐：全量 MySQL）
 
 ### 3.1 环境准备
 
@@ -60,7 +60,7 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 
-按需配置 `.env`（最常用为 MySQL 全量模式）：
+按需配置 `.env`（当前主线推荐：四类存储全部 MySQL）：
 
 ```env
 DATABASE_URL=mysql+pymysql://root:123456@127.0.0.1:3306/tomato_diagnosis?charset=utf8mb4
@@ -68,21 +68,53 @@ PROFILE_STORE_MODE=mysql
 EVENT_STORE_MODE=mysql
 TRACE_STORE_MODE=mysql
 KB_STORE_MODE=mysql
+ENABLE_DEMO_ACCOUNTS=false
 ```
 
-### 3.2 数据库初始化
+> `ENABLE_DEMO_ACCOUNTS` 默认应为 `false`。  
+> - `false`：不会自动补 demo 账号；删除 `A0001/E0001/E0002` 后重启不会回来。  
+> - `true`：启动时允许补 demo 账号（仅开发演示场景）。
+
+### 3.2 首次建库（新库初始化）
 
 ```bash
 python scripts/db/init_db.py
 ```
 
-### 3.3 启动后端（推荐）
+### 3.3 旧数据迁移 / schema 迁移（仅旧库需要）
+
+> 重要：`init_db.py` 使用 `create_all()`，**不会自动给旧表加列/改列/加约束**。  
+> 旧库请按需执行 `scripts/migrations/*.py`（见第 5 节）。
+
+推荐顺序（按需）：
+
+```bash
+# 1) 旧 JSON 数据迁入 MySQL（如果你有 file/dual 历史数据）
+python scripts/migrations/migrate_json_to_mysql.py
+python scripts/migrations/migrate_kb_json_to_mysql.py
+
+# 2) 归一化子表回填
+python scripts/migrations/migrate_profile_normalized.py
+python scripts/migrations/migrate_farm_bases_normalized.py
+python scripts/migrations/migrate_kb_symptom_map_normalized.py
+python scripts/migrations/migrate_kb_treatments_normalized.py
+
+# 3) 一账号一档案约束清洗（先 dry-run，确认报告后再 --apply）
+python scripts/migrations/migrate_one_account_one_profile_constraints.py
+python scripts/migrations/migrate_one_account_one_profile_constraints.py --apply
+```
+
+### 3.4 启动后端（推荐）
 
 ```bash
 uvicorn app:app --reload --host 0.0.0.0 --port 8000
 ```
 
-### 3.4 启动前端
+启动后检查日志：
+- `[StorageResolved] ... PROFILE_STORE_MODE=mysql EVENT_STORE_MODE=mysql TRACE_STORE_MODE=mysql KB_STORE_MODE=mysql`
+- `[DemoAccounts] ENABLE_DEMO_ACCOUNTS=false`
+
+### 3.5 启动前端
 
 ```bash
 npm --prefix app install
@@ -91,7 +123,13 @@ npm --prefix app run dev
 
 前端默认通过相对路径访问 `/api/*`，开发时可通过 Vite 代理或同域部署接入后端。
 
-### 3.5 前端构建产物
+### 3.6 首次业务操作建议
+
+1. 使用管理员账号登录（若未启用 demo，请先在数据库或初始化流程准备管理员账号）。  
+2. 进入“账号管理”创建业务账号。  
+3. 系统会自动创建对应空档案（`user_id = farmer_id = owner_user_id`）。  
+
+### 3.7 前端构建产物
 
 ```bash
 npm --prefix app run build
@@ -109,10 +147,16 @@ npm --prefix app run build
 - `TRACE_STORE_MODE`
 - `KB_STORE_MODE`
 
-可选值：
-- `file`：仅文件读写
-- `dual`：文件 + MySQL 双路径（兼容过渡）
-- `mysql`：仅 MySQL（推荐）
+当前推荐（主线）：
+- `PROFILE_STORE_MODE=mysql`
+- `EVENT_STORE_MODE=mysql`
+- `TRACE_STORE_MODE=mysql`
+- `KB_STORE_MODE=mysql`
+
+兼容模式（仅迁移/排障临时使用，不建议新环境长期使用）：
+- `file`：仅文件读写（历史兼容）
+- `dual`：文件 + MySQL 双路径（迁移过渡兼容）
+- `mysql`：仅 MySQL（生产/联调推荐）
 
 服务启动日志会打印 `[StorageResolved]`，用于确认生效模式。
 
@@ -125,15 +169,16 @@ npm --prefix app run build
 - `scripts/dev/check_config.py`：环境配置检查
 
 ### 数据库脚本（`scripts/db/`）
-- `scripts/db/init_db.py`：初始化 MySQL 数据库与表
+- `scripts/db/init_db.py`：**新库初始化**（create_all，仅创建缺失表，不做旧表 schema migration）
 
 ### 迁移脚本（`scripts/migrations/`）
-- `migrate_json_to_mysql.py`
-- `migrate_kb_json_to_mysql.py`
-- `migrate_profile_normalized.py`
-- `migrate_farm_bases_normalized.py`
-- `migrate_kb_symptom_map_normalized.py`
-- `migrate_kb_treatments_normalized.py`
+- `migrate_json_to_mysql.py`：历史 profiles/events/traces 文件数据迁入 MySQL
+- `migrate_kb_json_to_mysql.py`：历史 KB JSON 迁入 MySQL
+- `migrate_profile_normalized.py`：回填档案归一化子表（设备/禁限用/基地）
+- `migrate_farm_bases_normalized.py`：回填基地风险归一化子表
+- `migrate_kb_symptom_map_normalized.py`：回填症状映射归一化子表
+- `migrate_kb_treatments_normalized.py`：回填治疗方案归一化子表
+- `migrate_one_account_one_profile_constraints.py`：一账号一档案清洗 + 约束推进（`--apply` 前先 dry-run 看报告）
 
 ### 校验脚本（`scripts/verify/`）
 - `verify_kb_file_mysql_parity.py`
@@ -164,4 +209,3 @@ pytest tests/personalization
 - `experiments/README.md`：实验脚本说明
 - `tomato/README.md`：模型训练/推理相关说明
 - `docs/`：迁移、回滚、验收等专题文档
-

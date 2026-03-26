@@ -45,8 +45,9 @@ class FarmerProfileORM(TimestampMixin, Base):
 
     name = Column(String(128), nullable=True)
     display_name = Column(String(128), nullable=True)
-    owner_user_id = Column(String(64), nullable=True, index=True)
-    # 兼容保留字段：一账号一档案阶段不再承载身份语义（身份仅看 user_accounts.role）。
+    # 一账号一档案核心字段：owner_user_id 必须存在且全局唯一。
+    owner_user_id = Column(String(64), nullable=False, index=True)
+    # 兼容保留字段：已废弃，不再承载身份语义（身份仅看 user_accounts.role），后续可迁移删除。
     role_type = Column(String(16), nullable=False, default="FARMER", index=True)
     schema_version = Column(String(16), nullable=False, default="1.2")
     profile_updated_at = Column(DateTime, nullable=True)
