@@ -2324,6 +2324,47 @@ def _generate_farmer_id() -> str | None:
     return f"F{next_id:04d}"
 
 
+def _sync_user_account_from_profile(
+    session,
+    farmer_id: str,
+    owner_user_id: str | None,
+    role_type: str | None,
+    display_name: str | None,
+) -> None:
+    normalized_owner_user_id = str(owner_user_id or "").strip()
+    normalized_role_type = str(role_type or "").strip().upper()
+    normalized_farmer_id = str(farmer_id or "").strip()
+    normalized_display_name = str(display_name or "").strip()
+
+    if not normalized_owner_user_id:
+        return
+
+    account = session.execute(
+        select(UserAccountORM).where(UserAccountORM.user_id == normalized_owner_user_id)
+    ).scalar_one_or_none()
+    if account is None:
+        raise HTTPException(status_code=400, detail="绑定账号不存在")
+    if str(account.status or "").strip().upper() != "ACTIVE":
+        raise HTTPException(status_code=400, detail="绑定账号不是激活状态")
+
+    if normalized_role_type == "FARMER":
+        next_role = "USER"
+        next_linked_farmer_id = normalized_farmer_id or None
+    elif normalized_role_type == "EXPERT":
+        next_role = "EXPERT"
+        next_linked_farmer_id = None
+    elif normalized_role_type == "ADMIN":
+        next_role = "ADMIN"
+        next_linked_farmer_id = None
+    else:
+        raise HTTPException(status_code=400, detail="非法角色类型")
+
+    account.role = next_role
+    account.linked_farmer_id = next_linked_farmer_id
+    if normalized_display_name:
+        account.display_name = normalized_display_name
+
+
 @app.post("/api/profiles")
 def create_profile(request: Request, payload: dict = Body(...)) -> dict[str, bool | str]:
     actor = _get_request_actor(request)
@@ -2347,12 +2388,15 @@ def create_profile(request: Request, payload: dict = Body(...)) -> dict[str, boo
         raise HTTPException(status_code=409, detail="农户ID已存在")
 
     display_name = payload.get("display_name") or payload.get("name")
+    owner_user_id = str(payload.get("owner_user_id") or "").strip()
+    if not _is_admin(actor):
+        owner_user_id = actor_user_id or str(farmer_id).strip()
     profile = FarmerProfile(
         farmer_id=farmer_id,
         name=payload.get("name"),
         display_name=display_name,
         role_type=role_type,
-        owner_user_id=str(payload.get("owner_user_id") or actor_user_id or farmer_id).strip() or farmer_id,
+        owner_user_id=owner_user_id,
     )
     for field in [
         "farm_scale",
@@ -2377,6 +2421,28 @@ def create_profile(request: Request, payload: dict = Body(...)) -> dict[str, boo
         persist_profile(profile)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"创建档案失败: {exc}") from exc
+    try:
+        with get_db_session() as session:
+            _sync_user_account_from_profile(
+                session=session,
+                farmer_id=farmer_id,
+                owner_user_id=owner_user_id,
+                role_type=role_type,
+                display_name=display_name,
+            )
+            session.commit()
+    except HTTPException:
+        try:
+            delete_profile_store(farmer_id)
+        except Exception:
+            pass
+        raise
+    except Exception as exc:
+        try:
+            delete_profile_store(farmer_id)
+        except Exception:
+            pass
+        raise HTTPException(status_code=500, detail=f"账号授权同步失败: {exc}") from exc
     return {"ok": True, "id": farmer_id}
 
 
@@ -2405,6 +2471,9 @@ def save_profile_route(farmer_id: str, request: Request, payload: dict = Body(..
         payload["owner_user_id"] = str(actor.get("user_id") or "").strip() or farmer_id
         payload["role_type"] = _actor_role_type(actor)
         payload["display_name"] = payload.get("display_name") or payload.get("name") or farmer_id
+    owner_user_id = str(payload.get("owner_user_id") or "").strip()
+    role_type = str(payload.get("role_type") or "").strip().upper()
+    display_name = str(payload.get("display_name") or payload.get("name") or "").strip()
     try:
         profile = _normalize_profile_payload_for_save(farmer_id, payload)
     except Exception as exc:
@@ -2413,6 +2482,20 @@ def save_profile_route(farmer_id: str, request: Request, payload: dict = Body(..
         persist_profile(profile)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"保存档案失败: {exc}") from exc
+    try:
+        with get_db_session() as session:
+            _sync_user_account_from_profile(
+                session=session,
+                farmer_id=farmer_id,
+                owner_user_id=owner_user_id,
+                role_type=role_type,
+                display_name=display_name,
+            )
+            session.commit()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"账号授权同步失败: {exc}") from exc
     return {"ok": True}
 
 
@@ -2424,6 +2507,16 @@ def delete_profile(farmer_id: str, request: Request) -> dict[str, bool]:
         raise HTTPException(status_code=403, detail="当前角色仅允许删除自己的档案")
     if load_profile(farmer_id) is None:
         raise HTTPException(status_code=404, detail="档案不存在")
+    try:
+        with get_db_session() as session:
+            accounts = session.execute(
+                select(UserAccountORM).where(UserAccountORM.linked_farmer_id == farmer_id)
+            ).scalars().all()
+            for account in accounts:
+                account.linked_farmer_id = None
+            session.commit()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"解绑账号失败: {exc}") from exc
     try:
         delete_profile_store(farmer_id)
     except Exception as exc:
@@ -2886,7 +2979,7 @@ def update_admin_system_config(request: Request, payload: dict = Body(...)) -> d
     actor = _get_request_actor(request)
     _require_admin(actor)
     next_config = save_admin_runtime_config(payload if isinstance(payload, dict) else {})
-    return {"config": next_config}
+    return {"config": next_config, "llm_runtime_snapshot": get_admin_llm_runtime_snapshot(next_config)}
 
 
 @app.get("/api/admin/reviews")
