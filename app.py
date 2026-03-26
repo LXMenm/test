@@ -83,6 +83,10 @@ DEFAULT_DEMO_ACCOUNTS = [
     {"user_id": "E0002", "username": "e0002", "display_name": "专家 E0002", "role": "EXPERT", "password": "123456", "linked_farmer_id": None},
     {"user_id": "A0001", "username": "a0001", "display_name": "管理员 A0001", "role": "ADMIN", "password": "123456", "linked_farmer_id": None},
 ]
+# 注册功能预留语义：
+# - 默认创建 USER 账号
+# - 默认 linked_farmer_id = None
+# - 注册阶段不强制创建档案，后续可在档案页绑定/创建
 
 
 def ensure_user_accounts_seeded() -> None:
@@ -139,6 +143,27 @@ def _apply_farmer_scope(actor: dict[str, str], requested_farmer_id: str | None) 
     return actor_user_id
 
 
+def _resolve_default_profile_id(
+    actor: dict[str, str],
+    requested_farmer_id: str | None = None,
+    *,
+    prefer_actor_linked: bool = False,
+) -> str | None:
+    """统一语义：
+    - role: 登录权限角色（USER / EXPERT / ADMIN）
+    - linked_farmer_id: 账号默认诊断档案 ID（所有角色都可拥有）
+    - role_type: 档案展示类型（FARMER / EXPERT / ADMIN）
+    """
+    requested = str(requested_farmer_id or "").strip() or None
+    if requested:
+        return requested
+    if prefer_actor_linked:
+        linked_farmer_id = str(actor.get("linked_farmer_id") or "").strip()
+        if linked_farmer_id:
+            return linked_farmer_id
+    return None
+
+
 def _actor_role_type(actor: dict[str, str]) -> str:
     role = str(actor.get("role") or "USER").strip().upper()
     if role == "ADMIN":
@@ -146,6 +171,33 @@ def _actor_role_type(actor: dict[str, str]) -> str:
     if role == "EXPERT":
         return "EXPERT"
     return "FARMER"
+
+
+def _validate_account_exists(session, user_id: str) -> UserAccountORM:
+    normalized_user_id = str(user_id or "").strip()
+    if not normalized_user_id:
+        raise HTTPException(status_code=400, detail="绑定账号不存在")
+    account = session.execute(
+        select(UserAccountORM).where(UserAccountORM.user_id == normalized_user_id)
+    ).scalar_one_or_none()
+    if account is None:
+        raise HTTPException(status_code=400, detail="绑定账号不存在")
+    if str(account.status or "").strip().upper() != "ACTIVE":
+        raise HTTPException(status_code=400, detail="绑定账号不是激活状态")
+    return account
+
+
+def _set_account_default_profile(session, user_id: str, farmer_id: str | None) -> None:
+    account = _validate_account_exists(session, user_id)
+    account.linked_farmer_id = str(farmer_id or "").strip() or None
+
+
+def _set_account_role(session, user_id: str, role: str) -> None:
+    account = _validate_account_exists(session, user_id)
+    normalized_role = str(role or "").strip().upper()
+    if normalized_role not in SUPPORTED_ROLES:
+        raise HTTPException(status_code=400, detail="非法角色类型")
+    account.role = normalized_role
 
 
 def _require_admin(actor: dict[str, str], message: str = "当前操作仅管理员可执行") -> None:
@@ -2178,7 +2230,9 @@ def get_models() -> dict[str, object]:
 @app.get("/api/profiles")
 def list_profiles(request: Request) -> dict[str, list[dict[str, str | None]]]:
     actor = _get_request_actor(request)
-    scoped_farmer_id = _apply_farmer_scope(actor, None)
+    prefer_actor_linked = str(request.query_params.get("prefer_actor_linked") or "").strip().lower() in {"1", "true", "yes"}
+    requested_farmer_id = _resolve_default_profile_id(actor, None, prefer_actor_linked=prefer_actor_linked)
+    scoped_farmer_id = _apply_farmer_scope(actor, requested_farmer_id)
     role_filter = str(request.query_params.get("role_type") or "").strip().upper()
     profiles = []
     for farmer_id in list_profile_ids():
@@ -2330,6 +2384,8 @@ def _sync_user_account_from_profile(
     owner_user_id: str | None,
     role_type: str | None,
     display_name: str | None,
+    *,
+    set_as_default_profile: bool = False,
 ) -> None:
     normalized_owner_user_id = str(owner_user_id or "").strip()
     normalized_role_type = str(role_type or "").strip().upper()
@@ -2339,28 +2395,19 @@ def _sync_user_account_from_profile(
     if not normalized_owner_user_id:
         return
 
-    account = session.execute(
-        select(UserAccountORM).where(UserAccountORM.user_id == normalized_owner_user_id)
-    ).scalar_one_or_none()
-    if account is None:
-        raise HTTPException(status_code=400, detail="绑定账号不存在")
-    if str(account.status or "").strip().upper() != "ACTIVE":
-        raise HTTPException(status_code=400, detail="绑定账号不是激活状态")
+    account = _validate_account_exists(session, normalized_owner_user_id)
 
     if normalized_role_type == "FARMER":
         next_role = "USER"
-        next_linked_farmer_id = normalized_farmer_id or None
     elif normalized_role_type == "EXPERT":
         next_role = "EXPERT"
-        next_linked_farmer_id = None
     elif normalized_role_type == "ADMIN":
         next_role = "ADMIN"
-        next_linked_farmer_id = None
     else:
         raise HTTPException(status_code=400, detail="非法角色类型")
-
-    account.role = next_role
-    account.linked_farmer_id = next_linked_farmer_id
+    _set_account_role(session, account.user_id, next_role)
+    if set_as_default_profile:
+        _set_account_default_profile(session, account.user_id, normalized_farmer_id)
     if normalized_display_name:
         account.display_name = normalized_display_name
 
@@ -2389,8 +2436,10 @@ def create_profile(request: Request, payload: dict = Body(...)) -> dict[str, boo
 
     display_name = payload.get("display_name") or payload.get("name")
     owner_user_id = str(payload.get("owner_user_id") or "").strip()
+    set_as_default_profile = bool(payload.get("set_as_default_profile"))
     if not _is_admin(actor):
         owner_user_id = actor_user_id or str(farmer_id).strip()
+        set_as_default_profile = True
     profile = FarmerProfile(
         farmer_id=farmer_id,
         name=payload.get("name"),
@@ -2429,6 +2478,7 @@ def create_profile(request: Request, payload: dict = Body(...)) -> dict[str, boo
                 owner_user_id=owner_user_id,
                 role_type=role_type,
                 display_name=display_name,
+                set_as_default_profile=set_as_default_profile,
             )
             session.commit()
     except HTTPException:
@@ -2474,6 +2524,9 @@ def save_profile_route(farmer_id: str, request: Request, payload: dict = Body(..
     owner_user_id = str(payload.get("owner_user_id") or "").strip()
     role_type = str(payload.get("role_type") or "").strip().upper()
     display_name = str(payload.get("display_name") or payload.get("name") or "").strip()
+    set_as_default_profile = bool(payload.get("set_as_default_profile"))
+    if not _is_admin(actor):
+        set_as_default_profile = True
     try:
         profile = _normalize_profile_payload_for_save(farmer_id, payload)
     except Exception as exc:
@@ -2490,6 +2543,7 @@ def save_profile_route(farmer_id: str, request: Request, payload: dict = Body(..
                 owner_user_id=owner_user_id,
                 role_type=role_type,
                 display_name=display_name,
+                set_as_default_profile=set_as_default_profile,
             )
             session.commit()
     except HTTPException:
