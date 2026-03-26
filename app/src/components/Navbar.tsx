@@ -17,6 +17,7 @@ const NAV_META: Record<AppPage, { label: string; icon: React.ElementType }> = {
   profiles: { label: '档案管理', icon: Users },
   kb: { label: '知识库', icon: BookOpen },
   expert_review: { label: '专家复核', icon: UserCheck },
+  account_management: { label: '账号管理', icon: Shield },
   system_config: { label: '系统配置', icon: Settings },
   review_management: { label: '复核管理', icon: Shield },
 };
