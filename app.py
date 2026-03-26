@@ -24,7 +24,7 @@ from PIL import Image
 from pydantic import BaseModel
 from sqlalchemy import select
 
-from config import DIAGNOSIS_ALLOW_TORCH, log_resolved_storage_config
+from config import DIAGNOSIS_ALLOW_TORCH, PROFILE_STORE_MODE, log_resolved_storage_config
 from diagnosis_model import get_diagnosis_engine
 import diagnosis_model as diagnosis_model_module
 import agents as agents_module
@@ -59,6 +59,10 @@ from repositories.profile_repo_mysql import (
     get_profile as get_profile_mysql,
     list_profile_ids as list_profile_ids_mysql,
     save_profile_payload as save_profile_payload_mysql,
+)
+from repositories.weather_repo_mysql import (
+    list_weather_snapshots_mysql,
+    upsert_weather_snapshot_mysql,
 )
 from personalization.utils import dedupe_reasons, compute_personalization_applied, normalize_follow_up_questions
 from state import create_initial_state
@@ -2804,6 +2808,39 @@ def _refresh_base_weather(profile: FarmerProfile, base_id: str) -> dict[str, Any
     }
 
 
+def _should_write_weather_snapshot() -> bool:
+    mode = str(PROFILE_STORE_MODE or "file").strip().lower()
+    return mode in {"mysql", "dual"}
+
+
+def _upsert_weather_snapshot_from_refresh(
+    *,
+    farmer_id: str,
+    profile: FarmerProfile,
+    base_id: str,
+    payload: dict[str, Any],
+) -> None:
+    base = profile.bases.get(base_id)
+    if base is None:
+        return
+    snapshot_payload = {
+        "farmer_id": farmer_id,
+        "base_id": base_id,
+        "lat": base.latitude,
+        "lon": base.longitude,
+        "temperature": payload.get("temperature_2m"),
+        "humidity": payload.get("relative_humidity_2m"),
+        "precipitation": payload.get("precipitation"),
+        "rain_probability": payload.get("rain_risk"),
+        "weather_code": None,
+        "weather_desc": payload.get("weather_desc"),
+        "source": "open-meteo",
+        "snapshot_time": payload.get("last_weather_refresh_at"),
+        "raw_json": dict(payload),
+    }
+    upsert_weather_snapshot_mysql(snapshot_payload)
+
+
 @app.post("/api/profiles/{farmer_id}/bases/{base_id}/weather/refresh")
 def refresh_base_weather(farmer_id: str, base_id: str, request: Request) -> dict[str, Any]:
     actor = _get_request_actor(request)
@@ -2815,11 +2852,47 @@ def refresh_base_weather(farmer_id: str, base_id: str, request: Request) -> dict
         raise HTTPException(status_code=404, detail="档案不存在")
 
     payload = _refresh_base_weather(profile, base_id)
+    if _should_write_weather_snapshot():
+        try:
+            _upsert_weather_snapshot_from_refresh(
+                farmer_id=farmer_id,
+                profile=profile,
+                base_id=base_id,
+                payload=payload,
+            )
+        except Exception as exc:
+            print(f"[WeatherSnapshot] upsert weather_snapshots 失败（已忽略，不影响主流程）: {exc}")
     try:
         persist_profile(profile)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"天气刷新后保存档案失败: {exc}") from exc
     return {"ok": True, **payload}
+
+
+@app.get("/api/weather/snapshots")
+def list_weather_snapshots(
+    request: Request,
+    farmer_id: str | None = None,
+    base_id: str | None = None,
+    start: str | None = None,
+    end: str | None = None,
+    limit: int = 50,
+) -> dict[str, Any]:
+    scoped_farmer_id = _scoped_farmer_query(request, farmer_id)
+    if (start and not validate_date_str(start)) or (end and not validate_date_str(end)):
+        raise HTTPException(status_code=400, detail="日期格式应为 YYYY-MM-DD")
+
+    safe_limit = max(1, min(1000, int(limit)))
+    if not _should_write_weather_snapshot():
+        return {"items": []}
+    items = list_weather_snapshots_mysql(
+        farmer_id=scoped_farmer_id,
+        base_id=base_id,
+        start=start,
+        end=end,
+        limit=safe_limit,
+    )
+    return {"items": items}
 
 
 

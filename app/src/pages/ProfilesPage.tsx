@@ -29,10 +29,19 @@ interface FarmerBase {
   name: string;
   location: string;
   province: string;
+  latitude: number | null;
+  longitude: number | null;
   facility_type: string;
   growth_stage: string;
   sowing_date: string;
   notes: string;
+  weather_snapshot: string;
+  relative_humidity_2m: number | null;
+  precipitation: number | null;
+  rain_risk: number | null;
+  weather_temperature_2m: number | null;
+  weather_wind_speed_10m: number | null;
+  last_weather_refresh_at: string;
 }
 
 interface FarmerProfile {
@@ -64,6 +73,14 @@ const EXPERIENCE_OPTIONS = ['NOVICE', 'INTERMEDIATE', 'EXPERT'] as const;
 const RISK_OPTIONS = ['CONSERVATIVE', 'BALANCED', 'AGGRESSIVE'] as const;
 
 const toSafeString = (value: unknown, fallback = ''): string => (typeof value === 'string' ? value : fallback);
+const toSafeNumber = (value: unknown): number | null => {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+};
 
 const normalizeBase = (baseId: string, base: unknown): FarmerBase => {
   const baseObj = base && typeof base === 'object' ? (base as Record<string, unknown>) : {};
@@ -72,10 +89,19 @@ const normalizeBase = (baseId: string, base: unknown): FarmerBase => {
     name: toSafeString(baseObj.name),
     location: toSafeString(baseObj.location),
     province: toSafeString(baseObj.province),
+    latitude: toSafeNumber(baseObj.latitude),
+    longitude: toSafeNumber(baseObj.longitude),
     facility_type: toSafeString(baseObj.facility_type ?? baseObj.facility),
     growth_stage: normalizeGrowthStage(toSafeString(baseObj.growth_stage)),
     sowing_date: toSafeString(baseObj.sowing_date),
     notes: toSafeString(baseObj.notes),
+    weather_snapshot: toSafeString(baseObj.weather_snapshot),
+    relative_humidity_2m: toSafeNumber(baseObj.relative_humidity_2m),
+    precipitation: toSafeNumber(baseObj.precipitation),
+    rain_risk: toSafeNumber(baseObj.rain_risk),
+    weather_temperature_2m: toSafeNumber(baseObj.weather_temperature_2m ?? baseObj.temperature_2m),
+    weather_wind_speed_10m: toSafeNumber(baseObj.weather_wind_speed_10m ?? baseObj.wind_speed_10m),
+    last_weather_refresh_at: toSafeString(baseObj.last_weather_refresh_at),
   };
 };
 
@@ -141,6 +167,7 @@ export function ProfilesPage() {
   const [errorMessage, setErrorMessage] = useState('');
   const [infoMessage, setInfoMessage] = useState('');
   const [newIngredient, setNewIngredient] = useState('');
+  const [baseActionLoading, setBaseActionLoading] = useState<Record<string, boolean>>({});
 
   const sortedProfiles = useMemo(() => {
     if (!canManageAllProfiles || !authUser?.userId) return profiles;
@@ -222,10 +249,19 @@ export function ProfilesPage() {
         name: base.name,
         location: base.location,
         province: base.province,
+        latitude: base.latitude,
+        longitude: base.longitude,
         facility: base.facility_type,
         growth_stage: normalizeGrowthStage(base.growth_stage),
         sowing_date: base.sowing_date || null,
         notes: base.notes,
+        weather_snapshot: base.weather_snapshot || null,
+        relative_humidity_2m: base.relative_humidity_2m,
+        precipitation: base.precipitation,
+        rain_risk: base.rain_risk,
+        weather_temperature_2m: base.weather_temperature_2m,
+        weather_wind_speed_10m: base.weather_wind_speed_10m,
+        last_weather_refresh_at: base.last_weather_refresh_at || null,
       }]),
     );
 
@@ -276,13 +312,103 @@ export function ProfilesPage() {
     const nextId = `B${String((editedProfile.bases.length || 0) + 1).padStart(4, '0')}`;
     setEditedProfile({
       ...editedProfile,
-      bases: [...editedProfile.bases, { base_id: nextId, name: '', location: '', province: '', facility_type: '', growth_stage: '', sowing_date: '', notes: '' }],
+      bases: [...editedProfile.bases, {
+        base_id: nextId,
+        name: '',
+        location: '',
+        province: '',
+        latitude: null,
+        longitude: null,
+        facility_type: '',
+        growth_stage: '',
+        sowing_date: '',
+        notes: '',
+        weather_snapshot: '',
+        relative_humidity_2m: null,
+        precipitation: null,
+        rain_risk: null,
+        weather_temperature_2m: null,
+        weather_wind_speed_10m: null,
+        last_weather_refresh_at: '',
+      }],
     });
   };
 
   const removeBase = (idx: number) => {
     if (!editedProfile) return;
     setEditedProfile({ ...editedProfile, bases: editedProfile.bases.filter((_, i) => i !== idx) });
+  };
+
+  const updateBase = (idx: number, updater: (base: FarmerBase) => FarmerBase) => {
+    if (!editedProfile) return;
+    const next = [...editedProfile.bases];
+    next[idx] = updater(next[idx]);
+    setEditedProfile({ ...editedProfile, bases: next });
+  };
+
+  const setBaseLoading = (baseId: string, loading: boolean) => {
+    setBaseActionLoading((prev) => ({ ...prev, [baseId]: loading }));
+  };
+
+  const fetchBaseAddress = async (idx: number) => {
+    if (!editedProfile) return;
+    const base = editedProfile.bases[idx];
+    if (!base) return;
+    if (base.latitude == null || base.longitude == null) {
+      setErrorMessage(`基地 ${base.base_id} 缺少经纬度，无法获取地址`);
+      return;
+    }
+    setErrorMessage('');
+    setInfoMessage('');
+    setBaseLoading(`${base.base_id}:address`, true);
+    try {
+      const resp = await fetch(`/api/location/reverse?lat=${encodeURIComponent(base.latitude)}&lon=${encodeURIComponent(base.longitude)}`);
+      const payload = await parseJsonOrThrow(resp);
+      updateBase(idx, (current) => ({
+        ...current,
+        location: toSafeString(payload?.location, current.location),
+        province: toSafeString(payload?.province, current.province),
+      }));
+      setInfoMessage(`基地 ${base.base_id} 地址已更新（未自动保存）`);
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : '获取地址失败');
+    } finally {
+      setBaseLoading(`${base.base_id}:address`, false);
+    }
+  };
+
+  const refreshBaseWeather = async (idx: number) => {
+    if (!editedProfile) return;
+    const base = editedProfile.bases[idx];
+    if (!base) return;
+    if (base.latitude == null || base.longitude == null) {
+      setErrorMessage(`基地 ${base.base_id} 缺少经纬度，无法刷新天气`);
+      return;
+    }
+    setErrorMessage('');
+    setInfoMessage('');
+    setBaseLoading(`${base.base_id}:weather`, true);
+    try {
+      const resp = await fetch(`/api/profiles/${encodeURIComponent(editedProfile.farmer_id)}/bases/${encodeURIComponent(base.base_id)}/weather/refresh`, {
+        method: 'POST',
+      });
+      const payload = await parseJsonOrThrow(resp);
+      updateBase(idx, (current) => ({
+        ...current,
+        weather_snapshot: toSafeString(payload?.weather_snapshot, current.weather_snapshot),
+        relative_humidity_2m: toSafeNumber(payload?.relative_humidity_2m),
+        precipitation: toSafeNumber(payload?.precipitation),
+        rain_risk: toSafeNumber(payload?.rain_risk),
+        weather_temperature_2m: toSafeNumber(payload?.temperature_2m),
+        weather_wind_speed_10m: toSafeNumber(payload?.wind_speed_10m),
+        last_weather_refresh_at: toSafeString(payload?.last_weather_refresh_at, current.last_weather_refresh_at),
+      }));
+      setInfoMessage(`基地 ${base.base_id} 天气已刷新（未自动保存）`);
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : '刷新天气失败');
+    } finally {
+      setBaseLoading(`${base.base_id}:weather`, false);
+    }
   };
 
   return (
@@ -392,9 +518,44 @@ export function ProfilesPage() {
                           <div className="space-y-1"><Label className="text-white/60 text-xs">基地名称</Label><Input value={base.name} onChange={(e) => { const next = [...editedProfile.bases]; next[idx].name = e.target.value; setEditedProfile({ ...editedProfile, bases: next }); }} className="bg-white/10 border-white/20 text-white text-sm" /></div>
                           <div className="space-y-1"><Label className="text-white/60 text-xs">位置/地址</Label><Input value={base.location} onChange={(e) => { const next = [...editedProfile.bases]; next[idx].location = e.target.value; setEditedProfile({ ...editedProfile, bases: next }); }} className="bg-white/10 border-white/20 text-white text-sm" /></div>
                           <div className="space-y-1"><Label className="text-white/60 text-xs">省份</Label><Input value={base.province} onChange={(e) => { const next = [...editedProfile.bases]; next[idx].province = e.target.value; setEditedProfile({ ...editedProfile, bases: next }); }} className="bg-white/10 border-white/20 text-white text-sm" /></div>
+                          <div className="space-y-1"><Label className="text-white/60 text-xs">纬度</Label><Input type="number" value={base.latitude ?? ''} onChange={(e) => { const next = [...editedProfile.bases]; next[idx].latitude = toSafeNumber(e.target.value); setEditedProfile({ ...editedProfile, bases: next }); }} className="bg-white/10 border-white/20 text-white text-sm" /></div>
+                          <div className="space-y-1"><Label className="text-white/60 text-xs">经度</Label><Input type="number" value={base.longitude ?? ''} onChange={(e) => { const next = [...editedProfile.bases]; next[idx].longitude = toSafeNumber(e.target.value); setEditedProfile({ ...editedProfile, bases: next }); }} className="bg-white/10 border-white/20 text-white text-sm" /></div>
                           <div className="space-y-1"><Label className="text-white/60 text-xs">设施类型</Label><Input value={base.facility_type} onChange={(e) => { const next = [...editedProfile.bases]; next[idx].facility_type = e.target.value; setEditedProfile({ ...editedProfile, bases: next }); }} className="bg-white/10 border-white/20 text-white text-sm" /></div>
                           <div className="space-y-1"><Label className="text-white/60 text-xs">生长阶段</Label><Select value={normalizeGrowthStage(base.growth_stage) || '__EMPTY__'} onValueChange={(value) => { const next = [...editedProfile.bases]; next[idx].growth_stage = value === '__EMPTY__' ? '' : value; setEditedProfile({ ...editedProfile, bases: next }); }}><SelectTrigger className="bg-white/10 border-white/20 text-white text-sm"><SelectValue placeholder="请选择生长阶段" /></SelectTrigger><SelectContent><SelectItem value="__EMPTY__">未设置</SelectItem>{TOMATO_GROWTH_STAGE_OPTIONS.map((stage) => <SelectItem key={stage.value} value={stage.value}>{stage.label}</SelectItem>)}</SelectContent></Select></div>
                           <div className="space-y-1"><Label className="text-white/60 text-xs">播种日期</Label><Input type="date" value={base.sowing_date} onChange={(e) => { const next = [...editedProfile.bases]; next[idx].sowing_date = e.target.value; setEditedProfile({ ...editedProfile, bases: next }); }} className="bg-white/10 border-white/20 text-white text-sm" /></div>
+                          <div className="sm:col-span-2 flex flex-wrap items-center gap-2">
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              onClick={() => { void fetchBaseAddress(idx); }}
+                              disabled={baseActionLoading[`${base.base_id}:address`]}
+                              className="border-white/20 text-white hover:bg-white/10"
+                            >
+                              {baseActionLoading[`${base.base_id}:address`] ? <RefreshCw className="w-4 h-4 mr-1 animate-spin" /> : <MapPin className="w-4 h-4 mr-1" />}
+                              获取地址
+                            </Button>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              onClick={() => { void refreshBaseWeather(idx); }}
+                              disabled={baseActionLoading[`${base.base_id}:weather`]}
+                              className="border-[#c8f7c5]/40 text-[#c8f7c5] hover:bg-[#c8f7c5]/10"
+                            >
+                              {baseActionLoading[`${base.base_id}:weather`] ? <RefreshCw className="w-4 h-4 mr-1 animate-spin" /> : <RefreshCw className="w-4 h-4 mr-1" />}
+                              获取天气/刷新天气
+                            </Button>
+                          </div>
+                          {(base.weather_snapshot || base.last_weather_refresh_at) ? (
+                            <div className="sm:col-span-2 rounded-lg bg-white/10 border border-white/10 p-3 space-y-1">
+                              <p className="text-xs text-[#c8f7c5]">当前天气：{base.weather_snapshot || '暂无'}</p>
+                              <p className="text-xs text-white/70">最近刷新：{base.last_weather_refresh_at || '未刷新'}</p>
+                              <p className="text-xs text-white/60">
+                                温度 {base.weather_temperature_2m ?? '--'}℃ · 湿度 {base.relative_humidity_2m ?? '--'}% · 降水 {base.precipitation ?? '--'} · 雨风险 {base.rain_risk ?? '--'}
+                              </p>
+                            </div>
+                          ) : null}
                           <div className="space-y-1 sm:col-span-2"><Label className="text-white/60 text-xs">备注</Label><Textarea value={base.notes} onChange={(e) => { const next = [...editedProfile.bases]; next[idx].notes = e.target.value; setEditedProfile({ ...editedProfile, bases: next }); }} className="bg-white/10 border-white/20 text-white text-sm" /></div>
                         </div>
                       </div>
