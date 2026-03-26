@@ -66,6 +66,7 @@ interface FarmerProfile {
   display_name: string;
   role_type: 'FARMER' | 'EXPERT' | 'ADMIN';
   owner_user_id: string;
+  set_as_default_profile?: boolean;
   active_base_id: string;
   confirm_when_low_confidence: boolean;
   schema_version: string;
@@ -267,7 +268,8 @@ const normalizeProfile = (raw: unknown): FarmerProfile => {
     name: toSafeString(rawObj.name),
     display_name: toSafeString(rawObj.display_name || rawObj.name || rawObj.farmer_id),
     role_type: (PROFILE_ROLE_OPTIONS.includes(toSafeString(rawObj.role_type) as never) ? toSafeString(rawObj.role_type) : 'FARMER') as FarmerProfile['role_type'],
-    owner_user_id: toSafeString(rawObj.owner_user_id || rawObj.farmer_id),
+    owner_user_id: toSafeString(rawObj.owner_user_id),
+    set_as_default_profile: Boolean(rawObj.set_as_default_profile),
     active_base_id: toSafeString(rawObj.active_base_id),
     confirm_when_low_confidence: Boolean(rawObj.confirm_when_low_confidence),
     schema_version: toSafeString(rawObj.schema_version, '1.2'),
@@ -315,7 +317,8 @@ const normalizeProfileList = (raw: unknown): FarmerProfile[] => {
         name: displayName || farmerId,
         display_name: displayName || farmerId,
         role_type: 'FARMER',
-        owner_user_id: farmerId,
+        owner_user_id: '',
+        set_as_default_profile: false,
         active_base_id: '',
         confirm_when_low_confidence: true,
         schema_version: '1.1',
@@ -347,12 +350,15 @@ export function ProfilesPage() {
   const [showAddDialog, setShowAddDialog] = useState(false);
   const [newProfileName, setNewProfileName] = useState('');
   const [newProfileRoleType, setNewProfileRoleType] = useState<FarmerProfile['role_type']>('FARMER');
+  const [newProfileOwnerUserId, setNewProfileOwnerUserId] = useState('');
+  const [newProfileSetAsDefault, setNewProfileSetAsDefault] = useState(false);
   const [editedProfile, setEditedProfile] = useState<FarmerProfile | null>(null);
   const [newIngredient, setNewIngredient] = useState('');
   const [showAddBaseDialog, setShowAddBaseDialog] = useState(false);
   const [newBaseId, setNewBaseId] = useState('');
   const [allBaseIds, setAllBaseIds] = useState<Set<string>>(new Set());
   const [adminRoleFilter, setAdminRoleFilter] = useState<'ALL' | FarmerProfile['role_type']>('ALL');
+  const [adminViewMode, setAdminViewMode] = useState<'MINE' | 'ALL'>(authUser?.linkedFarmerId ? 'MINE' : 'ALL');
 
   // 获取所有基地ID，用于检查全局重复
   const fetchAllBaseIds = async () => {
@@ -402,14 +408,22 @@ export function ProfilesPage() {
     setLoading(true);
     setErrorMessage('');
     try {
-      const query = canManageAllProfiles && adminRoleFilter !== 'ALL'
-        ? `?role_type=${encodeURIComponent(adminRoleFilter)}`
-        : '';
+      const params = new URLSearchParams();
+      if (canManageAllProfiles && adminRoleFilter !== 'ALL') params.set('role_type', adminRoleFilter);
+      if (canManageAllProfiles && adminViewMode === 'MINE') params.set('prefer_actor_linked', '1');
+      const query = params.toString() ? `?${params.toString()}` : '';
       const resp = await fetch(`/api/profiles${query}`);
       const data = await parseJsonOrThrow(resp);
       const nextProfiles = normalizeProfileList(data?.profiles);
       setProfiles(nextProfiles);
-      if (!canManageAllProfiles && nextProfiles[0]?.farmer_id) {
+      if (canManageAllProfiles && adminViewMode === 'MINE' && authUser?.linkedFarmerId) {
+        if (nextProfiles[0]?.farmer_id) {
+          void fetchProfileDetail(nextProfiles[0].farmer_id);
+        } else {
+          setSelectedProfile(null);
+          setEditedProfile(null);
+        }
+      } else if (!canManageAllProfiles && nextProfiles[0]?.farmer_id) {
         void fetchProfileDetail(nextProfiles[0].farmer_id);
       }
     } catch (error) {
@@ -484,7 +498,9 @@ export function ProfilesPage() {
         body: JSON.stringify({
           ...editedProfile,
           display_name: editedProfile.display_name || editedProfile.name || editedProfile.farmer_id,
-          owner_user_id: editedProfile.owner_user_id || editedProfile.farmer_id,
+          owner_user_id: editedProfile.owner_user_id,
+          role_type: editedProfile.role_type,
+          set_as_default_profile: Boolean(editedProfile.set_as_default_profile),
           bases: basesMap,
           constraints: {
             ...editedProfile.constraints,
@@ -526,6 +542,8 @@ export function ProfilesPage() {
         setShowAddDialog(false);
         setNewProfileName('');
         setNewProfileRoleType('FARMER');
+        setNewProfileOwnerUserId('');
+        setNewProfileSetAsDefault(false);
       } else {
         setErrorDialogMessage('创建成功但未返回有效 farmer_id，无法自动打开详情');
         setShowErrorDialog(true);
@@ -544,7 +562,8 @@ export function ProfilesPage() {
       name: newProfileName,
       display_name: newProfileName,
       role_type: newProfileRoleType,
-      owner_user_id: authUser?.userId || '',
+      owner_user_id: canManageAllProfiles ? newProfileOwnerUserId.trim() : (authUser?.userId || ''),
+      set_as_default_profile: canManageAllProfiles ? newProfileSetAsDefault : true,
       confirm_when_low_confidence: true,
       constraints: {
         prefer_organic: false,
@@ -779,7 +798,7 @@ export function ProfilesPage() {
 
   useEffect(() => {
     void fetchProfiles();
-  }, [adminRoleFilter, canManageAllProfiles]);
+  }, [adminRoleFilter, adminViewMode, canManageAllProfiles]);
 
   useEffect(() => {
     if (canManageAllProfiles) return;
@@ -789,6 +808,7 @@ export function ProfilesPage() {
     void createProfileWithPayload({
       farmer_id: authUser.userId,
       owner_user_id: authUser.userId,
+      set_as_default_profile: true,
       role_type: currentRole === 'EXPERT' ? 'EXPERT' : 'FARMER',
       name: authUser.displayName || authUser.userId,
       display_name: authUser.displayName || authUser.userId,
@@ -816,6 +836,26 @@ export function ProfilesPage() {
             <span className="text-[#c8f7c5]">档案管理</span>
           </h1>
           <p className="text-white/60 mt-1">管理农户/专家/管理员档案、治疗约束与基地数据</p>
+          {canManageAllProfiles && (
+            <div className="flex items-center gap-2 mt-3">
+              <Button
+                variant={adminViewMode === 'MINE' ? 'default' : 'outline'}
+                size="sm"
+                onClick={() => setAdminViewMode('MINE')}
+                className={cn(adminViewMode === 'MINE' ? 'bg-[#c8f7c5] text-black' : 'border-white/20 text-white')}
+              >
+                我的档案
+              </Button>
+              <Button
+                variant={adminViewMode === 'ALL' ? 'default' : 'outline'}
+                size="sm"
+                onClick={() => setAdminViewMode('ALL')}
+                className={cn(adminViewMode === 'ALL' ? 'bg-[#c8f7c5] text-black' : 'border-white/20 text-white')}
+              >
+                全部档案
+              </Button>
+            </div>
+          )}
         </div>
         {canManageAllProfiles && (
           <Button
@@ -832,6 +872,13 @@ export function ProfilesPage() {
         <Card className="border-red-500/30 bg-red-500/10">
           <CardContent className="pt-6 text-red-300 text-sm">
             {errorMessage}
+          </CardContent>
+        </Card>
+      )}
+      {canManageAllProfiles && adminViewMode === 'MINE' && !authUser?.linkedFarmerId && (
+        <Card className="border-amber-400/30 bg-amber-500/10">
+          <CardContent className="pt-6 text-amber-200 text-sm">
+            当前未绑定默认诊断档案
           </CardContent>
         </Card>
       )}
@@ -997,18 +1044,45 @@ export function ProfilesPage() {
                     <div className="space-y-2">
                       <Label className="text-white/60">角色类型</Label>
                       {canManageAllProfiles ? (
-                        <Select value={editedProfile.role_type} onValueChange={(v) => setEditedProfile({ ...editedProfile, role_type: v as FarmerProfile['role_type'] })}>
-                          <SelectTrigger className="bg-white/5 border-white/20 text-white"><SelectValue /></SelectTrigger>
-                          <SelectContent className="bg-[#1a1a1a] border-white/20">
-                            <SelectItem value="FARMER">农户</SelectItem>
-                            <SelectItem value="EXPERT">专家</SelectItem>
-                            <SelectItem value="ADMIN">管理员</SelectItem>
-                          </SelectContent>
-                        </Select>
+                        <div className="space-y-2">
+                          <Select value={editedProfile.role_type} onValueChange={(v) => setEditedProfile({ ...editedProfile, role_type: v as FarmerProfile['role_type'] })}>
+                            <SelectTrigger className="bg-white/5 border-white/20 text-white"><SelectValue /></SelectTrigger>
+                            <SelectContent className="bg-[#1a1a1a] border-white/20">
+                              <SelectItem value="FARMER">农户</SelectItem>
+                              <SelectItem value="EXPERT">专家</SelectItem>
+                              <SelectItem value="ADMIN">管理员</SelectItem>
+                            </SelectContent>
+                          </Select>
+                          <p className="text-xs text-white/60 leading-5">
+                            角色类型仅用于档案展示，不是权限真相。<br />
+                            权限来源是绑定账号的登录角色（USER / EXPERT / ADMIN）。<br />
+                            保存时可按选择把绑定账号角色同步为 USER / EXPERT / ADMIN。
+                          </p>
+                        </div>
                       ) : (
                         <Input value={PROFILE_ROLE_LABELS[editedProfile.role_type]} disabled className="bg-white/5 border-white/20 text-white/60" />
                       )}
                     </div>
+                    <div className="space-y-2">
+                      <Label className="text-white/60">绑定账号ID</Label>
+                      <Input
+                        value={editedProfile.owner_user_id || ''}
+                        onChange={(e) => setEditedProfile({ ...editedProfile, owner_user_id: e.target.value })}
+                        disabled={!canManageAllProfiles}
+                        placeholder={canManageAllProfiles ? '可留空（仅保存档案，不同步账号）' : ''}
+                        className="bg-white/5 border-white/20 text-white focus:border-[#c8f7c5] disabled:text-white/60"
+                      />
+                    </div>
+                    {canManageAllProfiles && (
+                      <div className="flex items-center gap-2">
+                        <Checkbox
+                          checked={Boolean(editedProfile.set_as_default_profile)}
+                          onCheckedChange={(v) => setEditedProfile({ ...editedProfile, set_as_default_profile: Boolean(v) })}
+                          className="border-white/30 data-[state=checked]:bg-[#c8f7c5] data-[state=checked]:text-black"
+                        />
+                        <Label className="text-white/80">设为该账号默认诊断档案</Label>
+                      </div>
+                    )}
                     <div className="space-y-2">
                       <Label className="text-white/60">当前基地</Label>
                       <Select
@@ -1438,6 +1512,27 @@ export function ProfilesPage() {
                 </SelectContent>
               </Select>
             </div>
+            {canManageAllProfiles && (
+              <div className="space-y-2">
+                <Label>绑定账号ID</Label>
+                <Input
+                  placeholder="可留空（仅保存档案，不同步账号）"
+                  value={newProfileOwnerUserId}
+                  onChange={(e) => setNewProfileOwnerUserId(e.target.value)}
+                  className="bg-white/5 border-white/20 text-white focus:border-[#c8f7c5]"
+                />
+              </div>
+            )}
+            {canManageAllProfiles && (
+              <div className="flex items-center gap-2">
+                <Checkbox
+                  checked={newProfileSetAsDefault}
+                  onCheckedChange={(v) => setNewProfileSetAsDefault(Boolean(v))}
+                  className="border-white/30 data-[state=checked]:bg-[#c8f7c5] data-[state=checked]:text-black"
+                />
+                <Label className="text-white/80">设为该账号默认诊断档案</Label>
+              </div>
+            )}
           </div>
           <DialogFooter>
             <Button

@@ -44,6 +44,9 @@ class FarmerProfileORM(TimestampMixin, Base):
     farmer_id = Column(String(64), nullable=False, unique=True, index=True)
 
     name = Column(String(128), nullable=True)
+    display_name = Column(String(128), nullable=True)
+    owner_user_id = Column(String(64), nullable=True, index=True)
+    role_type = Column(String(16), nullable=False, default="FARMER", index=True)
     schema_version = Column(String(16), nullable=False, default="1.2")
     profile_updated_at = Column(DateTime, nullable=True)
     active_base_id = Column(String(64), nullable=True, index=True)
