@@ -2979,7 +2979,7 @@ def update_admin_system_config(request: Request, payload: dict = Body(...)) -> d
     actor = _get_request_actor(request)
     _require_admin(actor)
     next_config = save_admin_runtime_config(payload if isinstance(payload, dict) else {})
-    return {"config": next_config}
+    return {"config": next_config, "llm_runtime_snapshot": get_admin_llm_runtime_snapshot(next_config)}
 
 
 @app.get("/api/admin/reviews")

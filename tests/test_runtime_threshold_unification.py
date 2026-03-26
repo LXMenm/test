@@ -59,16 +59,57 @@ def test_system_config_api_uses_new_fields(tmp_path, monkeypatch):
     assert got.status_code == 200
     payload = got.json()["config"]
     assert "image_top1_threshold" in payload["model_fusion"]
+    assert "enable_validator_agent" in payload["workflow"]
+    assert "enable_personalization_agent" in payload["workflow"]
 
     payload["model_fusion"]["text_margin_threshold"] = 0.18
     payload["model_fusion"]["weak_conflict_min_image_top1"] = 0.66
+    payload["workflow"]["enable_validator_agent"] = False
+    payload["workflow"]["enable_personalization_agent"] = False
     put = client.put("/api/admin/system-config", json=payload)
     assert put.status_code == 200
+    put_payload = put.json()
+    assert "llm_runtime_snapshot" in put_payload
+    assert put_payload["config"]["workflow"]["enable_validator_agent"] is False
+    assert put_payload["config"]["workflow"]["enable_personalization_agent"] is False
 
     got2 = client.get("/api/admin/system-config")
     cfg2 = got2.json()["config"]
     assert cfg2["model_fusion"]["text_margin_threshold"] == 0.18
     assert cfg2["model_fusion"]["weak_conflict_min_image_top1"] == 0.66
+    assert cfg2["workflow"]["enable_validator_agent"] is False
+    assert cfg2["workflow"]["enable_personalization_agent"] is False
+
+
+def test_system_config_api_returns_sanitized_config(tmp_path, monkeypatch):
+    _with_temp_runtime_path(tmp_path, monkeypatch)
+    monkeypatch.setattr(app_module, "_get_request_actor", lambda request: {"role": "admin"})
+    monkeypatch.setattr(app_module, "_require_admin", lambda actor: None)
+    client = TestClient(app_module.app)
+
+    payload = rs.load_admin_runtime_config()
+    payload["model_fusion"]["image_top1_threshold"] = 9
+    payload["model_fusion"]["text_margin_threshold"] = -2
+    put = client.put("/api/admin/system-config", json=payload)
+    assert put.status_code == 200
+    cfg = put.json()["config"]
+    assert cfg["model_fusion"]["image_top1_threshold"] == 1.0
+    assert cfg["model_fusion"]["text_margin_threshold"] == 0.0
+
+
+def test_runtime_snapshot_constraint_validation_follows_global_switch(tmp_path, monkeypatch):
+    _with_temp_runtime_path(tmp_path, monkeypatch)
+    monkeypatch.setattr(app_module, "_get_request_actor", lambda request: {"role": "admin"})
+    monkeypatch.setattr(app_module, "_require_admin", lambda actor: None)
+    client = TestClient(app_module.app)
+
+    payload = rs.load_admin_runtime_config()
+    payload["llm"]["enable_constraint_validation"] = False
+    put = client.put("/api/admin/system-config", json=payload)
+    assert put.status_code == 200
+    snapshot = put.json()["llm_runtime_snapshot"]["constraint_validation"]
+    assert snapshot["global_enabled"] is False
+    assert all(item["enabled"] is False for item in snapshot["items"])
 
 
 def test_fuse_multimodal_thresholds_use_runtime_new_keys(monkeypatch):
