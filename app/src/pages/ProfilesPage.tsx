@@ -1569,7 +1569,7 @@ export function ProfilesPage() {
                   onCheckedChange={(v) => setNewProfileSetAsDefault(Boolean(v))}
                   className="border-white/30 data-[state=checked]:bg-[#c8f7c5] data-[state=checked]:text-black"
                 />
-                <Label className="text-white/80">设为该账号主诊断档案</Label>
+                <Label className="text-white/80">绑定该账号为主诊断档案</Label>
               </div>
             )}
           </div>
