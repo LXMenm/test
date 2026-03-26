@@ -8,6 +8,7 @@ import { KBPage } from './pages/KBPage';
 import { LoginPage } from './pages/LoginPage';
 import { ExpertReviewPage } from './pages/ExpertReviewPage';
 import { AdminPage } from './pages/AdminPage';
+import { AccountManagementPage } from './pages/AccountManagementPage';
 import {
   clearAuthUser,
   getAllowedPages,
@@ -166,6 +167,8 @@ function App() {
         return <ExpertReviewPage />;
       case 'system_config':
         return <AdminPage pageType="system" />;
+      case 'account_management':
+        return <AccountManagementPage />;
       case 'review_management':
         return <AdminPage pageType="review" />;
       default:
