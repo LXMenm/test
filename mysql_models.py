@@ -46,6 +46,7 @@ class FarmerProfileORM(TimestampMixin, Base):
     name = Column(String(128), nullable=True)
     display_name = Column(String(128), nullable=True)
     owner_user_id = Column(String(64), nullable=True, index=True)
+    # 兼容保留字段：一账号一档案阶段不再承载身份语义（身份仅看 user_accounts.role）。
     role_type = Column(String(16), nullable=False, default="FARMER", index=True)
     schema_version = Column(String(16), nullable=False, default="1.2")
     profile_updated_at = Column(DateTime, nullable=True)
@@ -410,6 +411,7 @@ class UserAccountORM(TimestampMixin, Base):
     display_name = Column(String(128), nullable=False)
     role = Column(String(16), nullable=False, index=True)
     password = Column(String(255), nullable=False, default="")
+    # 兼容保留字段：一账号一档案阶段应等于 user_id，不再表示“主档案切换”。
     linked_farmer_id = Column(String(64), nullable=True, index=True)
     status = Column(String(16), nullable=False, default="ACTIVE", index=True)
 

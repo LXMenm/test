@@ -107,6 +107,19 @@ def test_admin_accounts_endpoints():
         )
         assert bad_role.status_code == 400
 
+        deprecated_create_profile = client.post(
+            "/api/profiles",
+            headers={"X-User-Role": "ADMIN", "X-User-Id": "A0001"},
+            json={"owner_user_id": "A0001", "display_name": "deprecated"},
+        )
+        assert deprecated_create_profile.status_code == 400
+
+        deprecated_delete_profile = client.delete(
+            "/api/profiles/F0001",
+            headers={"X-User-Role": "ADMIN", "X-User-Id": "A0001"},
+        )
+        assert deprecated_delete_profile.status_code == 400
+
         role_resp = client.post(
             "/api/admin/accounts/F0001/role",
             headers={"X-User-Role": "ADMIN", "X-User-Id": "A0001"},
@@ -114,12 +127,16 @@ def test_admin_accounts_endpoints():
         )
         assert role_resp.status_code == 200
 
+        delete_resp = client.delete(
+            "/api/admin/accounts/F0001",
+            headers={"X-User-Role": "ADMIN", "X-User-Id": "A0001"},
+        )
+        assert delete_resp.status_code == 200
+
         accounts = client.get("/api/admin/accounts", headers={"X-User-Role": "ADMIN", "X-User-Id": "A0001"})
         assert accounts.status_code == 200
         items = accounts.json()["items"]
-        created_item = next(item for item in items if item["user_id"] == "F0001")
-        assert created_item["username"] == "lisi"
-        assert created_item["role"] == "EXPERT"
+        assert all(item["user_id"] != "F0001" for item in items)
     finally:
         app_module.get_db_session = original_get_db_session
         app_module.ensure_user_accounts_seeded = original_seed

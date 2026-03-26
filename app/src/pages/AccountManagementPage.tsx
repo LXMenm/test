@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Loader2, Plus, RefreshCcw } from 'lucide-react';
+import { Loader2, Plus, RefreshCcw, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -111,6 +111,22 @@ export function AccountManagementPage() {
     }
   };
 
+  const deleteAccount = async (userId: string) => {
+    if (!window.confirm(`确认删除账号 ${userId} 吗？这会同时删除对应档案。`)) return;
+    try {
+      const resp = await fetch(`/api/admin/accounts/${encodeURIComponent(userId)}`, {
+        method: 'DELETE',
+      });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(String(data?.detail || '删除账号失败'));
+      setTip(`账号 ${userId} 已删除，对应档案已同步删除。`);
+      await loadAccounts();
+    } catch (error) {
+      console.error(error);
+      setTip(error instanceof Error ? error.message : '删除账号失败，请稍后重试。');
+    }
+  };
+
   return (
     <Card className="glass-card">
       <CardHeader className="flex flex-row items-center justify-between">
@@ -170,16 +186,17 @@ export function AccountManagementPage() {
                 <th className="px-3 py-2">显示名</th>
                 <th className="px-3 py-2">角色</th>
                 <th className="px-3 py-2">状态</th>
+                <th className="px-3 py-2">操作</th>
               </tr>
             </thead>
             <tbody>
               {loading ? (
                 <tr>
-                  <td className="px-3 py-6 text-white/70" colSpan={5}><Loader2 className="w-4 h-4 animate-spin inline mr-2" />正在加载账号...</td>
+                  <td className="px-3 py-6 text-white/70" colSpan={6}><Loader2 className="w-4 h-4 animate-spin inline mr-2" />正在加载账号...</td>
                 </tr>
               ) : null}
               {!loading && items.length === 0 ? (
-                <tr><td className="px-3 py-6 text-white/60" colSpan={5}>暂无账号数据</td></tr>
+                <tr><td className="px-3 py-6 text-white/60" colSpan={6}>暂无账号数据</td></tr>
               ) : null}
               {!loading ? items.map((item) => (
                 <tr key={item.user_id} className="border-t border-white/10">
@@ -195,6 +212,16 @@ export function AccountManagementPage() {
                     </Select>
                   </td>
                   <td className="px-3 py-2">{item.status}</td>
+                  <td className="px-3 py-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => { void deleteAccount(item.user_id); }}
+                      className="border-red-500/40 text-red-300 hover:bg-red-500/10"
+                    >
+                      <Trash2 className="w-4 h-4 mr-1" />删除
+                    </Button>
+                  </td>
                 </tr>
               )) : null}
             </tbody>

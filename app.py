@@ -69,7 +69,8 @@ from mysql_models import FarmerProfileORM, UserAccountORM
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     log_resolved_storage_config()
-    ensure_user_accounts_seeded()
+    if os.getenv("ENABLE_DEMO_ACCOUNTS", "false").strip().lower() in {"1", "true", "yes", "on"}:
+        ensure_user_accounts_seeded()
     ensure_account_profile_consistency()
     yield
 
@@ -129,11 +130,7 @@ def ensure_user_accounts_seeded() -> None:
 
 
 def _account_role_to_profile_type(role: str | None) -> str:
-    normalized = str(role or "USER").strip().upper()
-    if normalized == "ADMIN":
-        return "ADMIN"
-    if normalized == "EXPERT":
-        return "EXPERT"
+    # 兼容字段：role_type 已废弃，档案不再承载身份语义。
     return "FARMER"
 
 
@@ -156,7 +153,7 @@ def ensure_account_profile_consistency() -> None:
                             name=account.display_name,
                             display_name=account.display_name,
                             owner_user_id=user_id,
-                            role_type=_account_role_to_profile_type(account.role),
+                            role_type="FARMER",
                         )
                     else:
                         payload = source_profile.model_dump()
@@ -164,16 +161,13 @@ def ensure_account_profile_consistency() -> None:
                         payload["owner_user_id"] = user_id
                         payload["display_name"] = payload.get("display_name") or account.display_name or user_id
                         payload["name"] = payload.get("name") or account.display_name or user_id
-                        payload["role_type"] = _account_role_to_profile_type(account.role)
+                        payload["role_type"] = "FARMER"
                         profile = FarmerProfile.model_validate(payload)
                     persist_profile(profile)
                 else:
                     changed = False
                     if str(profile.owner_user_id or "").strip() != user_id:
                         profile.owner_user_id = user_id
-                        changed = True
-                    if str(profile.role_type or "").strip().upper() != _account_role_to_profile_type(account.role):
-                        profile.role_type = _account_role_to_profile_type(account.role)
                         changed = True
                     if changed:
                         profile.ensure_timestamp()
@@ -2393,41 +2387,19 @@ def get_models() -> dict[str, object]:
 @app.get("/api/profiles")
 def list_profiles(request: Request) -> dict[str, list[dict[str, str | None]]]:
     actor = _get_request_actor(request)
-    prefer_actor_linked = str(request.query_params.get("prefer_actor_linked") or "").strip().lower() in {"1", "true", "yes"}
-    requested_farmer_id = _resolve_default_profile_id(actor, None, prefer_actor_linked=prefer_actor_linked)
+    requested_farmer_id = _resolve_default_profile_id(actor, None, prefer_actor_linked=False)
     scoped_farmer_id = _apply_farmer_scope(actor, requested_farmer_id)
-    role_filter = str(request.query_params.get("role_type") or "").strip().upper()
     profiles = []
-    account_role_by_user_id: dict[str, str] = {}
-    try:
-        with get_db_session() as session:
-            rows = session.execute(select(UserAccountORM.user_id, UserAccountORM.role)).all()
-            for row in rows:
-                if row and row[0]:
-                    account_role_by_user_id[str(row[0]).strip()] = str(row[1] or "USER").strip().upper()
-    except Exception:
-        account_role_by_user_id = {}
     for farmer_id in list_profile_ids():
         if scoped_farmer_id and farmer_id != scoped_farmer_id:
             continue
         path = get_profile_path(farmer_id)
         profile = load_profile(farmer_id)
-        role_type = str(getattr(profile, "role_type", None) or "FARMER").strip().upper()
         owner_user_id = str(getattr(profile, "owner_user_id", None) or "").strip()
-        owner_role = account_role_by_user_id.get(owner_user_id)
-        if owner_role == "ADMIN":
-            role_type = "ADMIN"
-        elif owner_role == "EXPERT":
-            role_type = "EXPERT"
-        elif owner_role == "USER":
-            role_type = "FARMER"
-        if role_filter and role_filter != "ALL" and role_type != role_filter:
-            continue
         profiles.append({
             "id": farmer_id,
             "name": profile.name if profile else None,
             "display_name": getattr(profile, "display_name", None) if profile else None,
-            "role_type": role_type,
             "owner_user_id": owner_user_id or None,
             "path": str(path),
         })
@@ -2569,7 +2541,6 @@ def _sync_user_account_from_profile(
 ) -> dict[str, Any] | None:
     """兼容函数：一账号一档案阶段仅维护 owner 账号与其唯一档案绑定，不再由档案反向改账号角色。"""
     normalized_owner_user_id = str(owner_user_id or "").strip()
-    normalized_role_type = str(role_type or "").strip().upper()
     normalized_farmer_id = str(farmer_id or "").strip()
     normalized_display_name = str(display_name or "").strip()
 
@@ -2578,8 +2549,7 @@ def _sync_user_account_from_profile(
 
     account = _validate_account_exists(session, normalized_owner_user_id)
 
-    if normalized_role_type and normalized_role_type not in {"FARMER", "EXPERT", "ADMIN"}:
-        raise HTTPException(status_code=400, detail="非法角色类型")
+    _ = role_type  # 兼容入参：已不参与账号权限语义。
     # set_as_default_profile 在一账号一档案模型下已废弃：总是绑定到自己的唯一档案。
     _set_account_default_profile(session, account.user_id, normalized_farmer_id)
     if normalized_display_name:
@@ -2590,6 +2560,8 @@ def _sync_user_account_from_profile(
 @app.post("/api/profiles")
 def create_profile(request: Request, payload: dict = Body(...)) -> dict[str, Any]:
     actor = _get_request_actor(request)
+    if _is_admin(actor):
+        raise HTTPException(status_code=400, detail="档案创建入口已废弃，请改用管理员账号管理创建账号")
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="档案内容非法")
     actor_user_id = str(actor.get("user_id") or "").strip()
@@ -2605,15 +2577,13 @@ def create_profile(request: Request, payload: dict = Body(...)) -> dict[str, Any
         raise HTTPException(status_code=409, detail="农户ID已存在")
 
     display_name = payload.get("display_name") or payload.get("name")
-    account_role_type = "FARMER"
     with get_db_session() as session:
-        account = _validate_account_exists(session, owner_user_id)
-        account_role_type = _account_role_to_profile_type(account.role)
+        _validate_account_exists(session, owner_user_id)
     profile = FarmerProfile(
         farmer_id=farmer_id,
         name=payload.get("name"),
         display_name=display_name,
-        role_type=account_role_type,
+        role_type="FARMER",
         owner_user_id=owner_user_id,
     )
     for field in [
@@ -2646,7 +2616,7 @@ def create_profile(request: Request, payload: dict = Body(...)) -> dict[str, Any
                 session=session,
                 farmer_id=farmer_id,
                 owner_user_id=owner_user_id,
-                role_type=account_role_type,
+                role_type="FARMER",
                 display_name=display_name,
                 set_as_default_profile=False,
             )
@@ -2696,12 +2666,10 @@ def save_profile_route(farmer_id: str, request: Request, payload: dict = Body(..
         raise HTTPException(status_code=400, detail="一账号一档案阶段 owner_user_id 必须与 farmer_id 相同")
     if not _is_admin(actor) and actor_user_id and owner_user_id != actor_user_id:
         raise HTTPException(status_code=403, detail="当前角色仅允许修改自己的档案")
-    account_role_type = "FARMER"
     with get_db_session() as session:
-        account = _validate_account_exists(session, owner_user_id)
-        account_role_type = _account_role_to_profile_type(account.role)
+        _validate_account_exists(session, owner_user_id)
     payload = dict(payload)
-    payload["role_type"] = account_role_type
+    payload["role_type"] = "FARMER"
     display_name = str(payload.get("display_name") or payload.get("name") or "").strip()
     try:
         profile = _normalize_profile_payload_for_save(farmer_id, payload)
@@ -2718,7 +2686,7 @@ def save_profile_route(farmer_id: str, request: Request, payload: dict = Body(..
                 session=session,
                 farmer_id=farmer_id,
                 owner_user_id=owner_user_id,
-                role_type=account_role_type,
+                role_type="FARMER",
                 display_name=display_name,
                 set_as_default_profile=False,
             )
@@ -2733,6 +2701,8 @@ def save_profile_route(farmer_id: str, request: Request, payload: dict = Body(..
 @app.delete("/api/profiles/{farmer_id}")
 def delete_profile(farmer_id: str, request: Request) -> dict[str, bool]:
     actor = _get_request_actor(request)
+    if _is_admin(actor):
+        raise HTTPException(status_code=400, detail="档案删除入口已废弃，请改用管理员账号管理删除账号")
     scoped_farmer_id = _apply_farmer_scope(actor, farmer_id)
     if scoped_farmer_id and scoped_farmer_id != farmer_id:
         raise HTTPException(status_code=403, detail="当前角色仅允许删除自己的档案")
@@ -3059,7 +3029,6 @@ def get_events(
 
 @app.post("/api/auth/login")
 def login(payload: LoginRequest) -> dict[str, Any]:
-    ensure_user_accounts_seeded()
     user_id = str(payload.user_id or "").strip()
     if not user_id:
         raise HTTPException(status_code=400, detail="user_id 不能为空")
@@ -3092,6 +3061,11 @@ def list_admin_accounts(request: Request) -> dict[str, Any]:
         rows = session.execute(
             select(UserAccountORM).order_by(UserAccountORM.user_id.asc())
         ).scalars().all()
+        owner_map = {
+            str(item.owner_user_id or "").strip(): str(item.farmer_id or "").strip()
+            for item in session.execute(select(FarmerProfileORM)).scalars().all()
+            if str(item.owner_user_id or "").strip()
+        }
     items = []
     for row in rows:
         user_id = str(row.user_id or "").strip()
@@ -3103,6 +3077,8 @@ def list_admin_accounts(request: Request) -> dict[str, Any]:
                 "role": str(row.role or "USER").strip().upper(),
                 "status": str(row.status or "ACTIVE").strip().upper(),
                 "farmer_id": user_id,
+                "owner_user_id": user_id,
+                "profile_farmer_id": owner_map.get(user_id) or user_id,
             }
         )
     return {"items": items}
@@ -3151,11 +3127,42 @@ def update_admin_account_role(user_id: str, request: Request, payload: AdminUpda
     return {"ok": True, "user_id": normalized_user_id, "role": normalized_role}
 
 
+@app.delete("/api/admin/accounts/{user_id}")
+def delete_admin_account(user_id: str, request: Request) -> dict[str, Any]:
+    actor = _get_request_actor(request)
+    _require_admin(actor)
+    normalized_user_id = str(user_id or "").strip()
+    if not normalized_user_id:
+        raise HTTPException(status_code=400, detail="user_id 不能为空")
+    if normalized_user_id == str(actor.get("user_id") or "").strip():
+        raise HTTPException(status_code=400, detail="不允许删除当前登录管理员账号")
+    with get_db_session() as session:
+        account = session.execute(
+            select(UserAccountORM).where(UserAccountORM.user_id == normalized_user_id)
+        ).scalar_one_or_none()
+        if account is None:
+            raise HTTPException(status_code=404, detail="账号不存在")
+        profile_rows = session.execute(
+            select(FarmerProfileORM).where(
+                (FarmerProfileORM.owner_user_id == normalized_user_id) | (FarmerProfileORM.farmer_id == normalized_user_id)
+            )
+        ).scalars().all()
+        for profile in profile_rows:
+            session.delete(profile)
+        session.delete(account)
+        session.commit()
+    try:
+        delete_profile_store(normalized_user_id)
+    except Exception:
+        # 文件/双写模式兼容删除，忽略不存在或兼容层失败。
+        pass
+    return {"ok": True, "user_id": normalized_user_id}
+
+
 @app.get("/api/admin/accounts/experts")
 def list_active_experts(request: Request) -> dict[str, Any]:
     actor = _get_request_actor(request)
     _require_admin(actor)
-    ensure_user_accounts_seeded()
     with get_db_session() as session:
         rows = session.execute(
             select(UserAccountORM)
