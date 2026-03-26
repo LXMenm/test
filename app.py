@@ -89,6 +89,22 @@ DEFAULT_DEMO_ACCOUNTS = [
 # - 注册阶段不强制创建档案，后续可在档案页绑定/创建
 
 
+def _generate_user_id() -> str | None:
+    """预留统一账号ID生成策略：新账号统一 FXXXX；权限只看 role，不看前缀。"""
+    try:
+        with get_db_session() as session:
+            existing_ids = []
+            rows = session.execute(select(UserAccountORM.user_id)).all()
+            for row in rows:
+                user_id = str(row[0] or "").strip().upper() if row else ""
+                if user_id.startswith("F") and user_id[1:].isdigit():
+                    existing_ids.append(int(user_id[1:]))
+            next_no = (max(existing_ids) + 1) if existing_ids else 1
+            return f"F{next_no:04d}"
+    except Exception:
+        return None
+
+
 def ensure_user_accounts_seeded() -> None:
     try:
         UserAccountORM.__table__.create(bind=db_engine, checkfirst=True)
@@ -198,6 +214,14 @@ def _set_account_role(session, user_id: str, role: str) -> None:
     if normalized_role not in SUPPORTED_ROLES:
         raise HTTPException(status_code=400, detail="非法角色类型")
     account.role = normalized_role
+
+
+def _serialize_account_sync(account: UserAccountORM) -> dict[str, Any]:
+    return {
+        "user_id": account.user_id,
+        "role": str(account.role or "USER").upper(),
+        "linked_farmer_id": account.linked_farmer_id,
+    }
 
 
 def _require_admin(actor: dict[str, str], message: str = "当前操作仅管理员可执行") -> None:
@@ -2235,12 +2259,29 @@ def list_profiles(request: Request) -> dict[str, list[dict[str, str | None]]]:
     scoped_farmer_id = _apply_farmer_scope(actor, requested_farmer_id)
     role_filter = str(request.query_params.get("role_type") or "").strip().upper()
     profiles = []
+    account_role_by_user_id: dict[str, str] = {}
+    try:
+        with get_db_session() as session:
+            rows = session.execute(select(UserAccountORM.user_id, UserAccountORM.role)).all()
+            for row in rows:
+                if row and row[0]:
+                    account_role_by_user_id[str(row[0]).strip()] = str(row[1] or "USER").strip().upper()
+    except Exception:
+        account_role_by_user_id = {}
     for farmer_id in list_profile_ids():
         if scoped_farmer_id and farmer_id != scoped_farmer_id:
             continue
         path = get_profile_path(farmer_id)
         profile = load_profile(farmer_id)
         role_type = str(getattr(profile, "role_type", None) or "FARMER").strip().upper()
+        owner_user_id = str(getattr(profile, "owner_user_id", None) or "").strip()
+        owner_role = account_role_by_user_id.get(owner_user_id)
+        if owner_role == "ADMIN":
+            role_type = "ADMIN"
+        elif owner_role == "EXPERT":
+            role_type = "EXPERT"
+        elif owner_role == "USER":
+            role_type = "FARMER"
         if role_filter and role_filter != "ALL" and role_type != role_filter:
             continue
         profiles.append({
@@ -2248,7 +2289,7 @@ def list_profiles(request: Request) -> dict[str, list[dict[str, str | None]]]:
             "name": profile.name if profile else None,
             "display_name": getattr(profile, "display_name", None) if profile else None,
             "role_type": role_type,
-            "owner_user_id": getattr(profile, "owner_user_id", None) if profile else None,
+            "owner_user_id": owner_user_id or None,
             "path": str(path),
         })
     return {"profiles": profiles}
@@ -2386,14 +2427,14 @@ def _sync_user_account_from_profile(
     display_name: str | None,
     *,
     set_as_default_profile: bool = False,
-) -> None:
+) -> dict[str, Any] | None:
     normalized_owner_user_id = str(owner_user_id or "").strip()
     normalized_role_type = str(role_type or "").strip().upper()
     normalized_farmer_id = str(farmer_id or "").strip()
     normalized_display_name = str(display_name or "").strip()
 
     if not normalized_owner_user_id:
-        return
+        return None
 
     account = _validate_account_exists(session, normalized_owner_user_id)
 
@@ -2410,10 +2451,11 @@ def _sync_user_account_from_profile(
         _set_account_default_profile(session, account.user_id, normalized_farmer_id)
     if normalized_display_name:
         account.display_name = normalized_display_name
+    return _serialize_account_sync(account)
 
 
 @app.post("/api/profiles")
-def create_profile(request: Request, payload: dict = Body(...)) -> dict[str, bool | str]:
+def create_profile(request: Request, payload: dict = Body(...)) -> dict[str, Any]:
     actor = _get_request_actor(request)
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="档案内容非法")
@@ -2470,9 +2512,10 @@ def create_profile(request: Request, payload: dict = Body(...)) -> dict[str, boo
         persist_profile(profile)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"创建档案失败: {exc}") from exc
+    account_sync: dict[str, Any] | None = None
     try:
         with get_db_session() as session:
-            _sync_user_account_from_profile(
+            account_sync = _sync_user_account_from_profile(
                 session=session,
                 farmer_id=farmer_id,
                 owner_user_id=owner_user_id,
@@ -2493,7 +2536,7 @@ def create_profile(request: Request, payload: dict = Body(...)) -> dict[str, boo
         except Exception:
             pass
         raise HTTPException(status_code=500, detail=f"账号授权同步失败: {exc}") from exc
-    return {"ok": True, "id": farmer_id}
+    return {"ok": True, "id": farmer_id, "farmer_id": farmer_id, "account_sync": account_sync}
 
 
 @app.get("/api/profiles/{farmer_id}")
@@ -2509,7 +2552,7 @@ def get_profile(farmer_id: str, request: Request) -> dict:
 
 
 @app.post("/api/profiles/{farmer_id}")
-def save_profile_route(farmer_id: str, request: Request, payload: dict = Body(...)) -> dict[str, bool]:
+def save_profile_route(farmer_id: str, request: Request, payload: dict = Body(...)) -> dict[str, Any]:
     actor = _get_request_actor(request)
     scoped_farmer_id = _apply_farmer_scope(actor, farmer_id)
     if scoped_farmer_id and scoped_farmer_id != farmer_id:
@@ -2535,9 +2578,10 @@ def save_profile_route(farmer_id: str, request: Request, payload: dict = Body(..
         persist_profile(profile)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"保存档案失败: {exc}") from exc
+    account_sync: dict[str, Any] | None = None
     try:
         with get_db_session() as session:
-            _sync_user_account_from_profile(
+            account_sync = _sync_user_account_from_profile(
                 session=session,
                 farmer_id=farmer_id,
                 owner_user_id=owner_user_id,
@@ -2550,7 +2594,7 @@ def save_profile_route(farmer_id: str, request: Request, payload: dict = Body(..
         raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"账号授权同步失败: {exc}") from exc
-    return {"ok": True}
+    return {"ok": True, "farmer_id": farmer_id, "account_sync": account_sync}
 
 
 @app.delete("/api/profiles/{farmer_id}")

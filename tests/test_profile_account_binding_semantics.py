@@ -20,7 +20,7 @@ def test_sync_profile_sets_role_and_default_profile():
     session.add(UserAccountORM(user_id="E0001", username="e0001", display_name="E0001", role="EXPERT", password="", status="ACTIVE"))
     session.commit()
 
-    app_module._sync_user_account_from_profile(
+    account_sync = app_module._sync_user_account_from_profile(
         session=session,
         farmer_id="F0100",
         owner_user_id="E0001",
@@ -29,6 +29,7 @@ def test_sync_profile_sets_role_and_default_profile():
         set_as_default_profile=True,
     )
     session.commit()
+    assert account_sync == {"user_id": "E0001", "role": "ADMIN", "linked_farmer_id": "F0100"}
 
     row = session.query(UserAccountORM).filter(UserAccountORM.user_id == "E0001").one()
     assert row.role == "ADMIN"
@@ -87,4 +88,3 @@ def test_sync_profile_rejects_missing_or_inactive_account():
     except HTTPException as exc:
         assert exc.status_code == 400
         assert "绑定账号不是激活状态" in str(exc.detail)
-

@@ -11,7 +11,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, Di
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Separator } from '@/components/ui/separator';
 import { cn } from '@/lib/utils';
-import { loadAuthUser, type UserRole } from '@/auth';
+import { loadAuthUser, normalizeRole, saveAuthUser, type UserRole } from '@/auth';
 import {
   getCultivationModeLabel,
   getEquipmentLabel,
@@ -387,6 +387,7 @@ export function ProfilesPage() {
     fetchAllBaseIds();
   }, []);
   const [errorMessage, setErrorMessage] = useState('');
+  const [infoMessage, setInfoMessage] = useState('');
   const [locatingBaseId, setLocatingBaseId] = useState<string | null>(null);
 
   const parseJsonOrThrow = async (resp: Response) => {
@@ -404,9 +405,32 @@ export function ProfilesPage() {
     return payload;
   };
 
+  const applyAccountSyncIfNeeded = (payload: Record<string, unknown> | null) => {
+    const accountSync = payload?.account_sync;
+    if (!accountSync || typeof accountSync !== 'object') return;
+    const syncObj = accountSync as Record<string, unknown>;
+    const syncedUserId = toSafeString(syncObj.user_id).trim();
+    if (!syncedUserId) return;
+    if (authUser?.userId && syncedUserId === authUser.userId) {
+      saveAuthUser({
+        userId: authUser.userId,
+        displayName: authUser.displayName,
+        role: normalizeRole(syncObj.role),
+        linkedFarmerId: toSafeString(syncObj.linked_farmer_id) || null,
+      });
+      if (canManageAllProfiles) {
+        setAdminViewMode((toSafeString(syncObj.linked_farmer_id) || authUser.linkedFarmerId) ? 'MINE' : 'ALL');
+      }
+      setInfoMessage('已同步当前登录账号的主诊断档案与权限角色。');
+      return;
+    }
+    setInfoMessage('绑定已保存；对方刷新页面或重新登录后可看到自己的主诊断档案。');
+  };
+
   const fetchProfiles = async () => {
     setLoading(true);
     setErrorMessage('');
+    setInfoMessage('');
     try {
       const params = new URLSearchParams();
       if (canManageAllProfiles && adminRoleFilter !== 'ALL') params.set('role_type', adminRoleFilter);
@@ -439,6 +463,7 @@ export function ProfilesPage() {
   const fetchProfileDetail = async (farmerId: string) => {
     if (!farmerId) return;
     setErrorMessage('');
+    setInfoMessage('');
     try {
       const resp = await fetch(`/api/profiles/${encodeURIComponent(farmerId)}`);
       const data = await parseJsonOrThrow(resp);
@@ -456,6 +481,7 @@ export function ProfilesPage() {
     if (!editedProfile) return;
 
     setErrorMessage('');
+    setInfoMessage('');
     const duplicateBaseId = validateUniqueBaseIds(editedProfile.bases);
     if (duplicateBaseId) {
       setErrorMessage(`基地ID重复：${duplicateBaseId}（同一农户下不允许重复）`);
@@ -508,7 +534,8 @@ export function ProfilesPage() {
           },
         })
       });
-      await parseJsonOrThrow(resp);
+      const data = await parseJsonOrThrow(resp);
+      applyAccountSyncIfNeeded(data);
       fetchProfiles();
       setSelectedProfile(editedProfile);
     } catch (error) {
@@ -524,6 +551,7 @@ export function ProfilesPage() {
   const createProfileWithPayload = async (payload: Record<string, unknown>) => {
     setErrorMessage('');
     setErrorDialogMessage('');
+    setInfoMessage('');
     try {
       const resp = await fetch('/api/profiles', {
         method: 'POST',
@@ -537,6 +565,7 @@ export function ProfilesPage() {
         : (typeof data?.farmer_id === 'string' ? data.farmer_id : null);
 
       if (createdId) {
+        applyAccountSyncIfNeeded(data);
         fetchProfiles();
         fetchProfileDetail(createdId);
         setShowAddDialog(false);
@@ -875,10 +904,17 @@ export function ProfilesPage() {
           </CardContent>
         </Card>
       )}
+      {infoMessage && (
+        <Card className="border-[#c8f7c5]/30 bg-[#c8f7c5]/10">
+          <CardContent className="pt-6 text-[#c8f7c5] text-sm">
+            {infoMessage}
+          </CardContent>
+        </Card>
+      )}
       {canManageAllProfiles && adminViewMode === 'MINE' && !authUser?.linkedFarmerId && (
         <Card className="border-amber-400/30 bg-amber-500/10">
           <CardContent className="pt-6 text-amber-200 text-sm">
-            当前未绑定默认诊断档案
+            当前未绑定主诊断档案
           </CardContent>
         </Card>
       )}
@@ -1042,7 +1078,7 @@ export function ProfilesPage() {
                       />
                     </div>
                     <div className="space-y-2">
-                      <Label className="text-white/60">角色类型</Label>
+                      <Label className="text-white/60">档案展示类型</Label>
                       {canManageAllProfiles ? (
                         <div className="space-y-2">
                           <Select value={editedProfile.role_type} onValueChange={(v) => setEditedProfile({ ...editedProfile, role_type: v as FarmerProfile['role_type'] })}>
@@ -1054,7 +1090,7 @@ export function ProfilesPage() {
                             </SelectContent>
                           </Select>
                           <p className="text-xs text-white/60 leading-5">
-                            角色类型仅用于档案展示，不是权限真相。<br />
+                            档案展示类型仅用于档案展示，不是权限真相。<br />
                             权限来源是绑定账号的登录角色（USER / EXPERT / ADMIN）。<br />
                             保存时可按选择把绑定账号角色同步为 USER / EXPERT / ADMIN。
                           </p>
@@ -1080,7 +1116,10 @@ export function ProfilesPage() {
                           onCheckedChange={(v) => setEditedProfile({ ...editedProfile, set_as_default_profile: Boolean(v) })}
                           className="border-white/30 data-[state=checked]:bg-[#c8f7c5] data-[state=checked]:text-black"
                         />
-                        <Label className="text-white/80">设为该账号默认诊断档案</Label>
+                        <Label className="text-white/80">设为该账号主诊断档案</Label>
+                        <p className="text-xs text-white/50">
+                          勾选后会把当前档案绑定为该账号当前使用的诊断档案；不勾选仅保存档案，不影响账号已有绑定。
+                        </p>
                       </div>
                     )}
                     <div className="space-y-2">
@@ -1502,7 +1541,7 @@ export function ProfilesPage() {
               />
             </div>
             <div className="space-y-2">
-              <Label>角色类型</Label>
+              <Label>档案展示类型</Label>
               <Select value={newProfileRoleType} onValueChange={(v) => setNewProfileRoleType(v as FarmerProfile['role_type'])}>
                 <SelectTrigger className="bg-white/5 border-white/20 text-white"><SelectValue /></SelectTrigger>
                 <SelectContent className="bg-[#111] text-white border-white/20">
@@ -1530,7 +1569,7 @@ export function ProfilesPage() {
                   onCheckedChange={(v) => setNewProfileSetAsDefault(Boolean(v))}
                   className="border-white/30 data-[state=checked]:bg-[#c8f7c5] data-[state=checked]:text-black"
                 />
-                <Label className="text-white/80">设为该账号默认诊断档案</Label>
+                <Label className="text-white/80">绑定该账号为主诊断档案</Label>
               </div>
             )}
           </div>
