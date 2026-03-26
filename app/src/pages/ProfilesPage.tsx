@@ -92,7 +92,7 @@ const normalizeProfile = (raw: unknown): FarmerProfile => {
       : [];
 
   return {
-    farmer_id: toSafeString(rawObj.farmer_id),
+    farmer_id: toSafeString(rawObj.farmer_id || rawObj.id),
     name: toSafeString(rawObj.name),
     display_name: toSafeString(rawObj.display_name || rawObj.name || rawObj.farmer_id),
     owner_user_id: toSafeString(rawObj.owner_user_id),

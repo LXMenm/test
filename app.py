@@ -2398,6 +2398,7 @@ def list_profiles(request: Request) -> dict[str, list[dict[str, str | None]]]:
         owner_user_id = str(getattr(profile, "owner_user_id", None) or "").strip()
         profiles.append({
             "id": farmer_id,
+            "farmer_id": farmer_id,
             "name": profile.name if profile else None,
             "display_name": getattr(profile, "display_name", None) if profile else None,
             "owner_user_id": owner_user_id or None,
