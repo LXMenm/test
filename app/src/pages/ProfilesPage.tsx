@@ -491,17 +491,10 @@ export function ProfilesPage() {
     try {
       const resp = await fetch(`/api/profiles/${encodeURIComponent(editedProfile.farmer_id)}/bases/${encodeURIComponent(base.base_id)}/weather/refresh`, withAuthHeaders({
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          latitude,
-          longitude,
-        }),
       }, authUser));
       const payload = await parseJsonOrThrow(resp);
       updateBase(idx, (current) => ({
         ...current,
-        latitude: toSafeNumber(payload?.latitude ?? latitude),
-        longitude: toSafeNumber(payload?.longitude ?? longitude),
         weather_snapshot: toSafeString(payload?.weather_snapshot, current.weather_snapshot),
         relative_humidity_2m: toSafeNumber(payload?.relative_humidity_2m),
         precipitation: toSafeNumber(payload?.precipitation),
