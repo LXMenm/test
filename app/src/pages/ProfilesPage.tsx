@@ -350,30 +350,56 @@ export function ProfilesPage() {
     setBaseActionLoading((prev) => ({ ...prev, [baseId]: loading }));
   };
 
-  const fetchBaseAddress = async (idx: number) => {
+  const reverseGeocodeBaseAddress = async (idx: number, latitude: number, longitude: number) => {
+    const resp = await fetch(`/api/location/reverse?lat=${encodeURIComponent(latitude)}&lon=${encodeURIComponent(longitude)}`, withAuthHeaders(undefined, authUser));
+    const payload = await parseJsonOrThrow(resp);
+    updateBase(idx, (current) => ({
+      ...current,
+      location: toSafeString(payload?.location, current.location),
+      province: toSafeString(payload?.province, current.province),
+    }));
+  };
+
+  const fetchBaseGeolocation = async (idx: number) => {
     if (!editedProfile) return;
     const base = editedProfile.bases[idx];
     if (!base) return;
-    if (base.latitude == null || base.longitude == null) {
-      setErrorMessage(`基地 ${base.base_id} 缺少经纬度，无法获取地址`);
+    if (typeof navigator === 'undefined' || !navigator.geolocation) {
+      setErrorMessage('当前浏览器不支持获取地理位置');
       return;
     }
     setErrorMessage('');
     setInfoMessage('');
-    setBaseLoading(`${base.base_id}:address`, true);
+    setBaseLoading(`${base.base_id}:geolocation`, true);
     try {
-      const resp = await fetch(`/api/location/reverse?lat=${encodeURIComponent(base.latitude)}&lon=${encodeURIComponent(base.longitude)}`, withAuthHeaders(undefined, authUser));
-      const payload = await parseJsonOrThrow(resp);
+      const position = await new Promise<GeolocationPosition>((resolve, reject) => {
+        navigator.geolocation.getCurrentPosition(resolve, reject, {
+          enableHighAccuracy: true,
+          timeout: 10000,
+        });
+      });
+      const latitude = Number(position.coords.latitude);
+      const longitude = Number(position.coords.longitude);
       updateBase(idx, (current) => ({
         ...current,
-        location: toSafeString(payload?.location, current.location),
-        province: toSafeString(payload?.province, current.province),
+        latitude,
+        longitude,
       }));
-      setInfoMessage(`基地 ${base.base_id} 地址已更新（未自动保存）`);
+      try {
+        await reverseGeocodeBaseAddress(idx, latitude, longitude);
+        setInfoMessage(`基地 ${base.base_id} 已获取经纬度并自动回填地址（未自动保存）`);
+      } catch {
+        setInfoMessage(`基地 ${base.base_id} 经纬度已更新，但地址回填失败`);
+      }
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : '获取地址失败');
+      const geolocationError = error as GeolocationPositionError;
+      if (geolocationError?.code === 1) {
+        setErrorMessage('已拒绝地理位置权限，请允许后重试');
+      } else {
+        setErrorMessage('获取地理位置失败，请稍后重试');
+      }
     } finally {
-      setBaseLoading(`${base.base_id}:address`, false);
+      setBaseLoading(`${base.base_id}:geolocation`, false);
     }
   };
 
@@ -528,12 +554,12 @@ export function ProfilesPage() {
                               type="button"
                               size="sm"
                               variant="outline"
-                              onClick={() => { void fetchBaseAddress(idx); }}
-                              disabled={baseActionLoading[`${base.base_id}:address`]}
+                              onClick={() => { void fetchBaseGeolocation(idx); }}
+                              disabled={baseActionLoading[`${base.base_id}:geolocation`]}
                               className="border-white/20 text-white hover:bg-white/10"
                             >
-                              {baseActionLoading[`${base.base_id}:address`] ? <RefreshCw className="w-4 h-4 mr-1 animate-spin" /> : <MapPin className="w-4 h-4 mr-1" />}
-                              获取地址
+                              {baseActionLoading[`${base.base_id}:geolocation`] ? <RefreshCw className="w-4 h-4 mr-1 animate-spin" /> : <MapPin className="w-4 h-4 mr-1" />}
+                              获取地理位置
                             </Button>
                             <Button
                               type="button"
@@ -544,18 +570,16 @@ export function ProfilesPage() {
                               className="border-[#c8f7c5]/40 text-[#c8f7c5] hover:bg-[#c8f7c5]/10"
                             >
                               {baseActionLoading[`${base.base_id}:weather`] ? <RefreshCw className="w-4 h-4 mr-1 animate-spin" /> : <RefreshCw className="w-4 h-4 mr-1" />}
-                              获取天气/刷新天气
+                              刷新天气
                             </Button>
                           </div>
-                          {(base.weather_snapshot || base.last_weather_refresh_at) ? (
-                            <div className="sm:col-span-2 rounded-lg bg-white/10 border border-white/10 p-3 space-y-1">
-                              <p className="text-xs text-[#c8f7c5]">当前天气：{base.weather_snapshot || '暂无'}</p>
-                              <p className="text-xs text-white/70">最近刷新：{base.last_weather_refresh_at || '未刷新'}</p>
-                              <p className="text-xs text-white/60">
-                                温度 {base.weather_temperature_2m ?? '--'}℃ · 湿度 {base.relative_humidity_2m ?? '--'}% · 降水 {base.precipitation ?? '--'} · 雨风险 {base.rain_risk ?? '--'}
-                              </p>
-                            </div>
-                          ) : null}
+                          <div className="sm:col-span-2 rounded-lg bg-white/10 border border-white/10 p-3 space-y-1">
+                            <p className="text-xs text-[#c8f7c5]">天气摘要：{base.weather_snapshot || '尚未获取天气信息'}</p>
+                            <p className="text-xs text-white/70">最近刷新：{base.last_weather_refresh_at || '未刷新'}</p>
+                            <p className="text-xs text-white/60">
+                              温度 {base.weather_temperature_2m ?? '--'}℃ · 湿度 {base.relative_humidity_2m ?? '--'}% · 降水 {base.precipitation ?? '--'} · 风速 {base.weather_wind_speed_10m ?? '--'} · 雨风险 {base.rain_risk ?? '--'}
+                            </p>
+                          </div>
                           <div className="space-y-1 sm:col-span-2"><Label className="text-white/60 text-xs">备注</Label><Textarea value={base.notes} onChange={(e) => { const next = [...editedProfile.bases]; next[idx].notes = e.target.value; setEditedProfile({ ...editedProfile, bases: next }); }} className="bg-white/10 border-white/20 text-white text-sm" /></div>
                         </div>
                       </div>
