@@ -338,12 +338,16 @@ def list_profile_ids() -> list[str]:
         return [row[0] for row in rows if row[0]]
 
 
-def list_all_base_ids() -> dict[str, str]:
+def list_all_base_ids() -> list[dict[str, str]]:
     with get_db_session() as session:
         rows = session.execute(
             select(FarmBaseORM.base_id, FarmBaseORM.farmer_id).order_by(FarmBaseORM.base_id.asc())
         ).all()
-        return {base_id: farmer_id for base_id, farmer_id in rows if base_id and farmer_id}
+        return [
+            {"base_id": str(base_id).strip(), "farmer_id": str(farmer_id).strip()}
+            for base_id, farmer_id in rows
+            if base_id and farmer_id
+        ]
 
 
 def _replace_base_risk_children(
