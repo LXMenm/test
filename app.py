@@ -2350,6 +2350,14 @@ def list_profiles(request: Request) -> dict[str, list[dict[str, str | None]]]:
     actor = _get_request_actor(request)
     requested_farmer_id = _resolve_default_profile_id(actor, None)
     scoped_farmer_id = _apply_farmer_scope(actor, requested_farmer_id)
+    account_role_map: dict[str, str] = {}
+    with get_db_session() as session:
+        account_rows = session.execute(select(UserAccountORM.user_id, UserAccountORM.role)).all()
+        for row in account_rows:
+            user_id = str((row[0] if row else "") or "").strip()
+            if not user_id:
+                continue
+            account_role_map[user_id] = str((row[1] if row else "USER") or "USER").strip().upper() or "USER"
     profiles = []
     for farmer_id in list_profile_ids_mysql():
         if scoped_farmer_id and farmer_id != scoped_farmer_id:
@@ -2361,6 +2369,8 @@ def list_profiles(request: Request) -> dict[str, list[dict[str, str | None]]]:
             "farmer_id": farmer_id,
             "name": profile.get("name"),
             "display_name": profile.get("display_name"),
+            "role_type": str(profile.get("role_type") or "").strip().upper() or None,
+            "account_role": account_role_map.get(owner_user_id or farmer_id),
             "owner_user_id": owner_user_id or None,
             "path": str(get_profile_path(farmer_id)),
         })
