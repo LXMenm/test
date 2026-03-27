@@ -2847,9 +2847,13 @@ def refresh_base_weather(farmer_id: str, base_id: str, request: Request) -> dict
     scoped_farmer_id = _apply_farmer_scope(actor, farmer_id)
     if scoped_farmer_id and scoped_farmer_id != farmer_id:
         raise HTTPException(status_code=403, detail="当前角色仅允许操作自己的档案")
-    profile = load_profile(farmer_id)
-    if profile is None:
+    profile_payload = get_profile_mysql(farmer_id)
+    if profile_payload is None:
         raise HTTPException(status_code=404, detail="档案不存在")
+    try:
+        profile = FarmerProfile.model_validate(profile_payload)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"档案格式非法，无法刷新天气: {exc}") from exc
 
     payload = _refresh_base_weather(profile, base_id)
     if _should_write_weather_snapshot():
@@ -2863,7 +2867,7 @@ def refresh_base_weather(farmer_id: str, base_id: str, request: Request) -> dict
         except Exception as exc:
             print(f"[WeatherSnapshot] upsert weather_snapshots 失败（已忽略，不影响主流程）: {exc}")
     try:
-        persist_profile(profile)
+        save_profile_payload_mysql(profile.model_dump())
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"天气刷新后保存档案失败: {exc}") from exc
     return {"ok": True, **payload}
