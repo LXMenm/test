@@ -1,4 +1,4 @@
-import { Leaf, BarChart3, Users, BookOpen, Stethoscope, UserCheck, Shield, Settings, LogOut } from 'lucide-react';
+import { Leaf, BarChart3, Users, BookOpen, Stethoscope, UserCheck, Shield, Settings, LogOut, ClipboardCheck } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { AppPage, AuthUser } from '@/auth';
 import { PAGE_TO_PATH } from '@/auth';
@@ -14,12 +14,12 @@ interface NavbarProps {
 const NAV_META: Record<AppPage, { label: string; icon: React.ElementType }> = {
   diagnose: { label: '诊断', icon: Stethoscope },
   dashboard: { label: '数据看板', icon: BarChart3 },
-  profiles: { label: '档案管理', icon: Users },
   kb: { label: '知识库', icon: BookOpen },
+  profiles: { label: '档案管理', icon: Users },
   expert_review: { label: '专家复核', icon: UserCheck },
+  review_management: { label: '复核管理', icon: ClipboardCheck },
   account_management: { label: '账号管理', icon: Shield },
   system_config: { label: '系统配置', icon: Settings },
-  review_management: { label: '复核管理', icon: Shield },
 };
 
 export function Navbar({ currentPage, availablePages, onPageChange, authUser, onLogout }: NavbarProps) {

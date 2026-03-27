@@ -71,9 +71,9 @@ const LEGACY_PATH_REDIRECT_MAP: Record<string, AppPage> = {
 };
 
 const ROLE_PAGES: Record<UserRole, AppPage[]> = {
-  USER: ['diagnose', 'dashboard', 'profiles', 'kb'],
-  EXPERT: ['diagnose', 'dashboard', 'profiles', 'kb', 'expert_review'],
-  ADMIN: ['diagnose', 'dashboard', 'profiles', 'kb', 'expert_review', 'account_management', 'system_config', 'review_management'],
+  USER: ['diagnose', 'dashboard', 'kb', 'profiles'],
+  EXPERT: ['diagnose', 'dashboard', 'kb', 'profiles', 'expert_review'],
+  ADMIN: ['diagnose', 'dashboard', 'kb', 'profiles', 'expert_review', 'review_management', 'account_management', 'system_config'],
 };
 
 export function getAllowedPages(role: UserRole): AppPage[] {

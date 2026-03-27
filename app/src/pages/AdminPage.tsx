@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Loader2, RefreshCcw, Save } from 'lucide-react';
+import { Loader2, RefreshCcw, Save, ClipboardCheck, User, Clock, CheckCircle2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -7,6 +7,8 @@ import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
 import { Textarea } from '@/components/ui/textarea';
+import { Badge } from '@/components/ui/badge';
+import { cn } from '@/lib/utils';
 
 interface AdminConfig {
   workflow: {
@@ -649,96 +651,206 @@ export function AdminPage({ pageType }: { pageType: 'system' | 'review' }) {
   }
 
   return (
-    <Card className="glass-card">
-      <CardHeader className="flex flex-row items-center justify-between">
-        <CardTitle className="text-white">复核管理</CardTitle>
-        <div className="flex gap-2">
-          {REVIEW_STATUS_OPTIONS.map((item) => (
-            <Button key={item.value} size="sm" variant={statusFilter === item.value ? 'default' : 'outline'} onClick={() => setStatusFilter(item.value)} className={statusFilter === item.value ? 'bg-[#c8f7c5] text-black' : ''}>{item.label}</Button>
-          ))}
-          <Button variant="outline" size="sm" onClick={() => { void loadReviews(); }}><RefreshCcw className="w-4 h-4 mr-1" />刷新列表</Button>
-        </div>
-      </CardHeader>
-      <CardContent className="grid lg:grid-cols-2 gap-4 h-[70vh] min-h-[560px]">
-        <div className="space-y-2 overflow-y-auto pr-1 dashboard-scrollbar">
-          {reviewLoading ? <p className="text-sm text-white/70 flex items-center gap-2"><Loader2 className="w-4 h-4 animate-spin" />正在加载...</p> : null}
-          {!reviewLoading && reviewItems.length === 0 ? <p className="text-sm text-white/60">当前筛选下暂无病例</p> : null}
-          {reviewItems.map((item) => (
-            <button key={item.trace_id} type="button" onClick={() => { void loadReviewDetail(item.trace_id); }} className="w-full text-left rounded-xl border border-white/10 p-3 bg-white/5 hover:border-[#c8f7c5]/40">
-              <p className="text-xs text-white/50">病例追踪号</p>
-              <p className="text-sm text-white">{item.trace_id.slice(0, 18)}...</p>
-              <p className="text-xs text-white/70 mt-1">用户：{item.farmer_name || item.farmer_id || '-'}</p>
-              <p className="text-xs text-white/70">系统 top1：{item.top1_disease || '-'}</p>
-              <p className="text-xs text-white/70">病例状态：{item.case_status || item.status || '-'}</p>
-              <p className="text-xs text-white/70">专家任务：{item.review_task_status || '-'}</p>
-              <p className="text-xs text-white/70">管理标签：{item.admin_flag || item.review_flow_status || 'normal'}</p>
-              <p className="text-xs text-white/40">更新时间：{formatTime(item.updated_at)}</p>
-            </button>
-          ))}
-        </div>
+    <div className="space-y-6 animate-fadeIn">
+      <div>
+        <h1 className="text-3xl font-bold text-white"><span className="text-[#c8f7c5]">复核管理</span></h1>
+        <p className="text-white/60 mt-1">管理专家复核任务的分配、状态跟踪和流程控制</p>
+      </div>
 
-        <div className="rounded-xl border border-white/10 p-3 bg-white/5 text-sm text-white space-y-3 overflow-y-auto dashboard-scrollbar">
-          {!selected ? <p className="text-white/60">请选择左侧病例查看详情</p> : (
-            <>
-              <p><span className="text-white/50">病例追踪号：</span>{selected.trace_id}</p>
-              <p><span className="text-white/50">症状摘要：</span>{selected.symptoms_text || '-'}</p>
-              <p><span className="text-white/50">当前 top1：</span>{selected.top1_disease || '-'}</p>
-              <p><span className="text-white/50">病例状态：</span>{selected.case_status || selected.status || '-'}</p>
-              <p><span className="text-white/50">专家任务：</span>{selected.review_task_status || '-'}</p>
-              <p><span className="text-white/50">管理标签：</span>{selected.admin_flag || selected.review_flow_status || 'normal'}</p>
-              <p><span className="text-white/50">复核结果：</span>{selected.expert_review_result || '-'}</p>
-              <p><span className="text-white/50">复核备注：</span>{selected.expert_review_notes || '-'}</p>
-              <p><span className="text-white/50">最终置信度：</span>{typeof selected.model_outputs?.final_confidence === 'number' ? `${(selected.model_outputs.final_confidence * 100).toFixed(2)}%` : '-'}</p>
-
-              {showAssignControls ? (
-                <div>
-                  <Label>分配专家账号</Label>
-                  <Select value={assignExpertId} onValueChange={setAssignExpertId}>
-                    <SelectTrigger className="bg-white/5 border-white/20 text-white">
-                      <SelectValue placeholder="请选择专家账号" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {expertOptions.map((item) => (
-                        <SelectItem key={item.user_id} value={item.user_id}>
-                          {item.user_id}{item.display_name ? ` · ${item.display_name}` : ''}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+      <Card className="glass-card">
+        <CardHeader className="flex flex-row items-center justify-between">
+          <CardTitle className="text-white flex items-center gap-2">
+            <ClipboardCheck className="w-5 h-5 text-[#c8f7c5]" />
+            复核任务列表
+          </CardTitle>
+          <div className="flex gap-2">
+            {REVIEW_STATUS_OPTIONS.map((item) => (
+              <Button key={item.value} size="sm" variant={statusFilter === item.value ? 'default' : 'outline'} onClick={() => setStatusFilter(item.value)} className={statusFilter === item.value ? 'bg-[#c8f7c5] text-black' : 'border-white/20 text-white hover:bg-white/10'}>{item.label}</Button>
+            ))}
+            <Button variant="outline" size="sm" onClick={() => { void loadReviews(); }} className="border-white/20 text-white hover:bg-white/10"><RefreshCcw className="w-4 h-4 mr-1" />刷新</Button>
+          </div>
+        </CardHeader>
+        <CardContent className="grid lg:grid-cols-2 gap-4 h-[70vh] min-h-[560px]">
+          <div className="space-y-3 overflow-y-auto pr-1 dashboard-scrollbar">
+            {reviewLoading ? (
+              <div className="flex items-center justify-center py-12">
+                <Loader2 className="w-8 h-8 animate-spin text-[#c8f7c5]" />
+                <span className="ml-3 text-white/70">加载中...</span>
+              </div>
+            ) : null}
+            {!reviewLoading && reviewItems.length === 0 ? (
+              <div className="text-center py-16">
+                <CheckCircle2 className="w-16 h-16 text-[#c8f7c5]/30 mx-auto mb-4" />
+                <h3 className="text-xl text-white/80 mb-2">当前筛选下暂无病例</h3>
+                <p className="text-white/50 text-sm">请切换筛选条件或稍后刷新</p>
+              </div>
+            ) : null}
+            {reviewItems.map((item) => (
+              <button key={item.trace_id} type="button" onClick={() => { void loadReviewDetail(item.trace_id); }} className={cn("w-full text-left rounded-xl border p-4 bg-white/5 hover:bg-white/[0.08] transition-all duration-300", selected?.trace_id === item.trace_id ? "border-[#c8f7c5]/50 bg-[#c8f7c5]/5" : "border-white/10 hover:border-[#c8f7c5]/30")}>
+                <div className="flex items-start justify-between mb-2">
+                  <div className="flex-1">
+                    <p className="text-xs text-white/40 mb-1 font-mono">trace_id</p>
+                    <p className="text-white font-mono text-sm">{item.trace_id.slice(0, 16)}...</p>
+                  </div>
+                  <Badge className={cn("text-xs", item.admin_flag === 'abnormal' ? 'bg-orange-400/20 text-orange-300 border-orange-400/30' : item.admin_flag === 'closed' ? 'bg-red-400/20 text-red-300 border-red-400/30' : 'bg-emerald-400/20 text-emerald-300 border-emerald-400/30')}>
+                    {item.admin_flag === 'abnormal' ? '异常' : item.admin_flag === 'closed' ? '关闭' : '正常'}
+                  </Badge>
                 </div>
-              ) : (
-                <p><span className="text-white/50">已分配专家：</span>{assignedExpertReadonly}</p>
-              )}
+                <div className="grid grid-cols-2 gap-2 text-xs">
+                  <div className="flex items-center gap-1 text-white/70">
+                    <User className="w-3 h-3" />
+                    <span>{item.farmer_name || item.farmer_id || '-'}</span>
+                  </div>
+                  <div className="flex items-center gap-1 text-white/70">
+                    <Clock className="w-3 h-3" />
+                    <span>{formatTime(item.updated_at)}</span>
+                  </div>
+                </div>
+                <div className="mt-2 pt-2 border-t border-white/10">
+                  <p className="text-xs text-white/50 mb-1">系统诊断</p>
+                  <p className="text-[#c8f7c5] font-medium text-sm">{item.top1_disease || '-'}</p>
+                </div>
+                <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
+                  <div>
+                    <p className="text-white/50">任务状态</p>
+                    <p className="text-white/80">{item.review_task_status || '-'}</p>
+                  </div>
+                  <div>
+                    <p className="text-white/50">病例状态</p>
+                    <p className="text-white/80">{item.case_status || item.status || '-'}</p>
+                  </div>
+                </div>
+              </button>
+            ))}
+          </div>
 
-              <div>
-                <Label>管理标签</Label>
-                <Select value={flowStatus} onValueChange={(v) => setFlowStatus(v as 'normal' | 'abnormal' | 'closed')}>
-                  <SelectTrigger className="bg-white/5 border-white/20 text-white"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="normal">正常</SelectItem>
-                    <SelectItem value="abnormal">异常</SelectItem>
-                    <SelectItem value="closed">关闭</SelectItem>
-                  </SelectContent>
-                </Select>
+          <div className="rounded-xl border border-white/10 p-4 bg-white/5 text-sm text-white space-y-4 overflow-y-auto dashboard-scrollbar">
+            {!selected ? (
+              <div className="text-center py-16">
+                <ClipboardCheck className="w-16 h-16 text-[#c8f7c5]/30 mx-auto mb-4" />
+                <h3 className="text-xl text-white/80 mb-2">请选择左侧病例</h3>
+                <p className="text-white/50 text-sm">点击病例卡片查看详细信息</p>
               </div>
+            ) : (
+              <>
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-[#c8f7c5] font-semibold">病例详情</h3>
+                    <Badge className={cn("text-xs", selected.admin_flag === 'abnormal' ? 'bg-orange-400/20 text-orange-300 border-orange-400/30' : selected.admin_flag === 'closed' ? 'bg-red-400/20 text-red-300 border-red-400/30' : 'bg-emerald-400/20 text-emerald-300 border-emerald-400/30')}>
+                      {selected.admin_flag === 'abnormal' ? '异常' : selected.admin_flag === 'closed' ? '关闭' : '正常'}
+                    </Badge>
+                  </div>
+                  
+                  <div className="rounded-lg bg-white/5 p-3 space-y-2">
+                    <div>
+                      <p className="text-white/50 text-xs mb-1">病例追踪号</p>
+                      <p className="text-white font-mono text-sm">{selected.trace_id}</p>
+                    </div>
+                    <div>
+                      <p className="text-white/50 text-xs mb-1">症状摘要</p>
+                      <p className="text-white/90">{selected.symptoms_text || '-'}</p>
+                    </div>
+                  </div>
 
-              <div>
-                <Label>管理备注</Label>
-                <Textarea value={flowNote} onChange={(e) => setFlowNote(e.target.value)} className="bg-white/5 border-white/20 text-white" />
-              </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="rounded-lg bg-white/5 p-3">
+                      <p className="text-white/50 text-xs mb-1">当前诊断</p>
+                      <p className="text-[#c8f7c5] font-medium">{selected.top1_disease || '-'}</p>
+                    </div>
+                    <div className="rounded-lg bg-white/5 p-3">
+                      <p className="text-white/50 text-xs mb-1">最终置信度</p>
+                      <p className="text-white font-medium">{typeof selected.model_outputs?.final_confidence === 'number' ? `${(selected.model_outputs.final_confidence * 100).toFixed(2)}%` : '-'}</p>
+                    </div>
+                  </div>
 
-              {reviewTip ? <p className="text-[#c8f7c5] text-xs">{reviewTip}</p> : null}
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="rounded-lg bg-white/5 p-3">
+                      <p className="text-white/50 text-xs mb-1">病例状态</p>
+                      <p className="text-white/80">{selected.case_status || selected.status || '-'}</p>
+                    </div>
+                    <div className="rounded-lg bg-white/5 p-3">
+                      <p className="text-white/50 text-xs mb-1">专家任务</p>
+                      <p className="text-white/80">{selected.review_task_status || '-'}</p>
+                    </div>
+                  </div>
 
-              <div className="flex gap-2">
-                {showAssignControls ? (
-                  <Button onClick={() => { void assignExpert(); }} disabled={updatingReview || !assignExpertId.trim()} className="bg-[#c8f7c5] text-black">分配复核任务</Button>
-                ) : null}
-                <Button variant="outline" onClick={() => { void updateFlowStatus(); }} disabled={updatingReview}>保存管理标签</Button>
-              </div>
-            </>
-          )}
-        </div>
-      </CardContent>
-    </Card>
+                  <div className="rounded-lg bg-white/5 p-3 space-y-2">
+                    <div>
+                      <p className="text-white/50 text-xs mb-1">复核结果</p>
+                      <p className="text-white/90">{selected.expert_review_result || '-'}</p>
+                    </div>
+                    <div>
+                      <p className="text-white/50 text-xs mb-1">复核备注</p>
+                      <p className="text-white/90">{selected.expert_review_notes || '-'}</p>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="pt-4 border-t border-white/10 space-y-4">
+                  <h3 className="text-[#c8f7c5] font-semibold">管理操作</h3>
+                  
+                  {showAssignControls ? (
+                    <div className="space-y-2">
+                      <Label>分配专家账号</Label>
+                      <Select value={assignExpertId} onValueChange={setAssignExpertId}>
+                        <SelectTrigger className="bg-white/5 border-white/20 text-white">
+                          <SelectValue placeholder="请选择专家账号" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {expertOptions.map((item) => (
+                            <SelectItem key={item.user_id} value={item.user_id}>
+                              {item.user_id}{item.display_name ? ` · ${item.display_name}` : ''}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  ) : (
+                    <div className="rounded-lg bg-white/5 p-3">
+                      <p className="text-white/50 text-xs mb-1">已分配专家</p>
+                      <p className="text-white/90">{assignedExpertReadonly}</p>
+                    </div>
+                  )}
+
+                  <div className="space-y-2">
+                    <Label>管理标签</Label>
+                    <Select value={flowStatus} onValueChange={(v) => setFlowStatus(v as 'normal' | 'abnormal' | 'closed')}>
+                      <SelectTrigger className="bg-white/5 border-white/20 text-white"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="normal">正常</SelectItem>
+                        <SelectItem value="abnormal">异常</SelectItem>
+                        <SelectItem value="closed">关闭</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label>管理备注</Label>
+                    <Textarea value={flowNote} onChange={(e) => setFlowNote(e.target.value)} className="bg-white/5 border-white/20 text-white" placeholder="请输入管理备注..." />
+                  </div>
+
+                  {reviewTip ? (
+                    <div className="rounded-lg bg-[#c8f7c5]/10 border border-[#c8f7c5]/30 p-3">
+                      <p className="text-[#c8f7c5] text-xs">{reviewTip}</p>
+                    </div>
+                  ) : null}
+
+                  <div className="flex gap-2">
+                    {showAssignControls ? (
+                      <Button onClick={() => { void assignExpert(); }} disabled={updatingReview || !assignExpertId.trim()} className="bg-[#c8f7c5] text-black hover:bg-[#c8f7c5]/80 transition-all">
+                        {updatingReview ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" />分配中...</> : <>分配复核任务</>}
+                      </Button>
+                    ) : null}
+                    <Button variant="outline" onClick={() => { void updateFlowStatus(); }} disabled={updatingReview} className="border-white/20 text-white hover:bg-white/10 transition-all">
+                      {updatingReview ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" />保存中...</> : <>保存管理标签</>}
+                    </Button>
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+    </div>
   );
 }

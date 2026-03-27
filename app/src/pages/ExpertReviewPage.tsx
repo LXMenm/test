@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Bell, Eye, Loader2, User, Calendar, Stethoscope, CheckCircle2 } from 'lucide-react';
+import { Bell, Eye, Loader2, User, Stethoscope, CheckCircle2 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -156,130 +156,123 @@ export function ExpertReviewPage() {
   };
 
   return (
-    <div className="space-y-8">
-      <div className="flex flex-col lg:flex-row lg:items-start gap-6">
-        <div className="flex-1">
-          <h1 className="text-4xl font-bold text-white mb-2">专家复核区</h1>
-          <p className="text-sm text-white/60">最小闭环：待复核列表 → 详情查看 → 提交专家确认</p>
-        </div>
-        <div className="w-full lg:w-80 rounded-2xl border border-[#c8f7c5]/20 bg-gradient-to-br from-[#13221c] to-[#0a120e] p-6 shadow-xl">
-          <div className="flex items-center gap-3 mb-4">
-            <div className="p-3 rounded-xl bg-[#c8f7c5]/10">
-              <Bell className="w-6 h-6 text-[#c8f7c5]" />
-            </div>
-            <div>
-              <h3 className="text-white font-semibold text-lg">待复核提醒</h3>
-              <p className="text-xs text-white/50">共 {pendingCount} 个病例</p>
-            </div>
-            <Badge className="ml-auto bg-[#c8f7c5] text-black text-sm px-3 py-1">{pendingCount}</Badge>
-          </div>
-          <div className="space-y-2">
-            {recentPending.length === 0 ? (
-              <div className="text-center py-6">
-                <CheckCircle2 className="w-12 h-12 text-[#c8f7c5]/50 mx-auto mb-2" />
-                <p className="text-white/60 text-sm">暂无待复核病例</p>
-              </div>
-            ) : recentPending.map((item) => (
-              <button
-                key={item.trace_id}
-                type="button"
-                className="w-full text-left p-3 rounded-xl bg-white/5 hover:bg-white/10 transition-all duration-200 border border-white/5 hover:border-[#c8f7c5]/30"
-                onClick={() => { void loadDetail(item.trace_id); }}
-              >
-                <div className="flex items-center justify-between mb-1">
-                  <span className="text-xs text-white/50 font-mono">{item.trace_id.slice(0, 12)}...</span>
-                  <span className="text-[#c8f7c5] text-xs">{item.top1_disease}</span>
-                </div>
-                <div className="flex items-center gap-2 text-xs text-white/70">
-                  <User className="w-3 h-3" />
-                  <span>{item.farmer_name || item.farmer_id || '未知用户'}</span>
-                </div>
-              </button>
-            ))}
-          </div>
-        </div>
+    <div className="space-y-6 animate-fadeIn">
+      <div>
+        <h1 className="text-3xl font-bold text-white"><span className="text-[#c8f7c5]">专家复核</span></h1>
+        <p className="text-white/60 mt-1">专家对系统诊断结果进行复核确认，确保诊断准确性</p>
       </div>
 
-      <Card className="glass-card bg-white/[0.02] border-[#86b89d]/20">
-        <CardHeader className="pb-4">
-          <div className="flex items-center justify-between">
-            <CardTitle className="text-2xl text-white flex items-center gap-3">
-              <div className="p-2 rounded-lg bg-[#c8f7c5]/10">
-                <Stethoscope className="w-6 h-6 text-[#c8f7c5]" />
-              </div>
-              待复核病例列表
-            </CardTitle>
-            {pendingCount > 0 && (
-              <Badge className="bg-orange-400/20 text-orange-300 border-orange-400/30 px-3 py-1">
-                {pendingCount} 个待处理
-              </Badge>
-            )}
-          </div>
-        </CardHeader>
-        <CardContent>
-          {loading ? (
-            <div className="flex items-center justify-center py-12">
-              <Loader2 className="w-8 h-8 animate-spin text-[#c8f7c5]" />
-              <span className="ml-3 text-white/70">加载中...</span>
-            </div>
-          ) : items.length === 0 ? (
-            <div className="text-center py-16">
-              <CheckCircle2 className="w-16 h-16 text-[#c8f7c5]/30 mx-auto mb-4" />
-              <h3 className="text-xl text-white/80 mb-2">所有病例已复核完成</h3>
-              <p className="text-white/50 text-sm">暂无 pending_expert_review 病例</p>
-            </div>
-          ) : (
-            <div className="space-y-4">
-              {items.map((item) => (
-                <div key={item.trace_id} className="group rounded-2xl border border-white/10 bg-white/5 hover:bg-white/[0.08] p-5 transition-all duration-300 hover:border-[#c8f7c5]/30">
-                  <div className="grid grid-cols-1 md:grid-cols-12 gap-4">
-                    <div className="md:col-span-2">
-                      <p className="text-white/40 text-xs mb-1 font-mono">trace_id</p>
-                      <p className="text-white font-mono text-sm">{item.trace_id.slice(0, 20)}...</p>
-                    </div>
-                    <div className="md:col-span-2">
-                      <p className="text-white/40 text-xs mb-1 flex items-center gap-1">
-                        <User className="w-3 h-3" /> 用户/农户
-                      </p>
-                      <p className="text-white font-medium">{item.farmer_name || item.farmer_id || '-'}</p>
-                    </div>
-                    <div className="md:col-span-2">
-                      <p className="text-white/40 text-xs mb-1 flex items-center gap-1">
-                        <Calendar className="w-3 h-3" /> 提交时间
-                      </p>
-                      <p className="text-white text-sm">{formatTime(item.submitted_at)}</p>
-                    </div>
-                    <div className="md:col-span-3">
-                      <p className="text-white/40 text-xs mb-1">系统 top1</p>
-                      <div className="flex items-center gap-2">
-                        <span className="inline-block w-2 h-2 rounded-full bg-[#c8f7c5]" />
-                        <p className="text-white font-medium">{item.top1_disease || '-'}</p>
-                      </div>
-                    </div>
-                    <div className="md:col-span-2">
-                      <p className="text-white/40 text-xs mb-1">当前状态</p>
-                      <div className="flex items-center gap-2">
-                        {getReviewTag(item)}
-                      </div>
-                    </div>
-                    <div className="md:col-span-1 flex items-center justify-end">
-                      <Button 
-                        size="sm" 
-                        variant="outline" 
-                        className="border-[#c8f7c5]/30 text-[#c8f7c5] hover:bg-[#c8f7c5]/10 hover:border-[#c8f7c5] transition-all duration-200"
-                        onClick={() => { void loadDetail(item.trace_id); }}
-                      >
-                        <Eye className="w-4 h-4 mr-2" />
-                        详情
-                      </Button>
-                    </div>
-                  </div>
+      <div className="grid lg:grid-cols-3 gap-6">
+        <div className="lg:col-span-2">
+          <Card className="glass-card">
+            <CardHeader className="flex flex-row items-center justify-between">
+              <CardTitle className="text-white flex items-center gap-2">
+                <Stethoscope className="w-5 h-5 text-[#c8f7c5]" />
+                待复核病例列表
+              </CardTitle>
+              {pendingCount > 0 && (
+                <Badge className="bg-orange-400/20 text-orange-300 border-orange-400/30 px-3 py-1">
+                  {pendingCount} 个待处理
+                </Badge>
+              )}
+            </CardHeader>
+            <CardContent>
+              {loading ? (
+                <div className="flex items-center justify-center py-12">
+                  <Loader2 className="w-8 h-8 animate-spin text-[#c8f7c5]" />
+                  <span className="ml-3 text-white/70">加载中...</span>
                 </div>
-              ))}
-            </div>
-          )}
-        </CardContent>
-      </Card>
+              ) : items.length === 0 ? (
+                <div className="text-center py-16">
+                  <CheckCircle2 className="w-16 h-16 text-[#c8f7c5]/30 mx-auto mb-4" />
+                  <h3 className="text-xl text-white/80 mb-2">所有病例已复核完成</h3>
+                  <p className="text-white/50 text-sm">暂无待复核病例</p>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {items.map((item) => (
+                    <div key={item.trace_id} className="group rounded-xl border border-white/10 bg-white/5 hover:bg-white/[0.08] p-4 transition-all duration-300 hover:border-[#c8f7c5]/30">
+                      <div className="grid grid-cols-1 md:grid-cols-12 gap-4 items-center">
+                        <div className="md:col-span-3">
+                          <p className="text-white/40 text-xs mb-1 font-mono">trace_id</p>
+                          <p className="text-white font-mono text-sm">{item.trace_id.slice(0, 16)}...</p>
+                        </div>
+                        <div className="md:col-span-2">
+                          <p className="text-white/40 text-xs mb-1">用户</p>
+                          <p className="text-white font-medium text-sm">{item.farmer_name || item.farmer_id || '-'}</p>
+                        </div>
+                        <div className="md:col-span-3">
+                          <p className="text-white/40 text-xs mb-1">提交时间</p>
+                          <p className="text-white text-sm">{formatTime(item.submitted_at)}</p>
+                        </div>
+                        <div className="md:col-span-2">
+                          <p className="text-white/40 text-xs mb-1">系统诊断</p>
+                          <p className="text-[#c8f7c5] font-medium text-sm">{item.top1_disease || '-'}</p>
+                        </div>
+                        <div className="md:col-span-1">
+                          {getReviewTag(item)}
+                        </div>
+                        <div className="md:col-span-1 flex justify-end">
+                          <Button 
+                            size="sm" 
+                            variant="outline" 
+                            className="border-[#c8f7c5]/30 text-[#c8f7c5] hover:bg-[#c8f7c5]/10 hover:border-[#c8f7c5] transition-all duration-200"
+                            onClick={() => { void loadDetail(item.trace_id); }}
+                          >
+                            <Eye className="w-4 h-4 mr-1" />
+                            详情
+                          </Button>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </div>
+
+        <div className="lg:col-span-1">
+          <Card className="glass-card">
+            <CardHeader className="pb-4">
+              <CardTitle className="text-white flex items-center gap-2">
+                <Bell className="w-5 h-5 text-[#c8f7c5]" />
+                待复核提醒
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="flex items-center justify-between mb-4">
+                <span className="text-white/60 text-sm">共 {pendingCount} 个病例</span>
+                <Badge className="bg-[#c8f7c5] text-black text-sm px-3 py-1">{pendingCount}</Badge>
+              </div>
+              <div className="space-y-2">
+                {recentPending.length === 0 ? (
+                  <div className="text-center py-6">
+                    <CheckCircle2 className="w-12 h-12 text-[#c8f7c5]/50 mx-auto mb-2" />
+                    <p className="text-white/60 text-sm">暂无待复核病例</p>
+                  </div>
+                ) : recentPending.map((item) => (
+                  <button
+                    key={item.trace_id}
+                    type="button"
+                    className="w-full text-left p-3 rounded-lg bg-white/5 hover:bg-white/10 transition-all duration-200 border border-white/5 hover:border-[#c8f7c5]/30"
+                    onClick={() => { void loadDetail(item.trace_id); }}
+                  >
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-xs text-white/50 font-mono">{item.trace_id.slice(0, 12)}...</span>
+                      <span className="text-[#c8f7c5] text-xs">{item.top1_disease}</span>
+                    </div>
+                    <div className="flex items-center gap-2 text-xs text-white/70">
+                      <User className="w-3 h-3" />
+                      <span>{item.farmer_name || item.farmer_id || '未知用户'}</span>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      </div>
 
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className={cn(

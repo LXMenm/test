@@ -20,7 +20,6 @@ import {
   getRiskPreferenceLabel,
   getSelectedBranchLabel,
   normalizeGrowthStage,
-  TOMATO_GROWTH_STAGE_OPTIONS,
   type SelectedBranch,
 } from '@/lib/profileLabels';
 
@@ -123,23 +122,7 @@ const toSafeNumber = (value: unknown): number | null => {
   return null;
 };
 
-const formatBaseLocation = (base: Pick<FarmerBase, 'province' | 'city' | 'district' | 'location'>): string => {
-  const deduped: string[] = [];
-  const pushUnique = (value: string) => {
-    const normalized = value.trim();
-    if (!normalized) return;
-    if (deduped.some((existing) => existing === normalized || existing.includes(normalized) || normalized.includes(existing))) {
-      return;
-    }
-    deduped.push(normalized);
-  };
 
-  pushUnique(toSafeString(base.province));
-  pushUnique(toSafeString(base.city));
-  pushUnique(toSafeString(base.district));
-  pushUnique(toSafeString(base.location));
-  return deduped.join(' ');
-};
 
 const getProfileRoleLabel = (profile: Pick<FarmerProfile, 'account_role' | 'role_type'>): string => {
   const normalized = toSafeString(profile.account_role || profile.role_type).trim().toUpperCase();
@@ -689,26 +672,43 @@ export function ProfilesPage() {
                     {editedProfile.bases.map((base, idx) => (
                       <div key={`${base.base_id}-${idx}`} className="bg-white/5 rounded-xl p-4 space-y-3">
                         <div className="flex items-center justify-between"><Badge className="bg-[#c8f7c5]/20 text-[#c8f7c5]">{base.base_id}</Badge><Button onClick={() => removeBase(idx)} variant="ghost" size="sm" className="text-red-400"><Trash2 className="w-4 h-4" /></Button></div>
-                        <div className="grid sm:grid-cols-2 gap-3">
-                          <div className="space-y-1"><Label className="text-white/60 text-xs">基地名称</Label><Input value={base.name} onChange={(e) => { const next = [...editedProfile.bases]; next[idx].name = e.target.value; setEditedProfile({ ...editedProfile, bases: next }); }} className="bg-white/10 border-white/20 text-white text-sm" /></div>
-                          <div className="space-y-1"><Label className="text-white/60 text-xs">位置</Label><Input value={formatBaseLocation(base)} readOnly className="bg-white/10 border-white/20 text-white/80 text-sm" /></div>
-                          <div className="space-y-1"><Label className="text-white/60 text-xs">详细地址</Label><Input value={base.location} onChange={(e) => { const next = [...editedProfile.bases]; next[idx].location = e.target.value; setEditedProfile({ ...editedProfile, bases: next }); }} className="bg-white/10 border-white/20 text-white text-sm" /></div>
-                          <div className="space-y-1"><Label className="text-white/60 text-xs">省份</Label><Input value={base.province} onChange={(e) => { const next = [...editedProfile.bases]; next[idx].province = e.target.value; setEditedProfile({ ...editedProfile, bases: next }); }} className="bg-white/10 border-white/20 text-white text-sm" /></div>
-                          <div className="space-y-1"><Label className="text-white/60 text-xs">城市</Label><Input value={base.city || ''} onChange={(e) => { const next = [...editedProfile.bases]; next[idx].city = e.target.value; setEditedProfile({ ...editedProfile, bases: next }); }} className="bg-white/10 border-white/20 text-white text-sm" /></div>
-                          <div className="space-y-1"><Label className="text-white/60 text-xs">区县</Label><Input value={base.district || ''} onChange={(e) => { const next = [...editedProfile.bases]; next[idx].district = e.target.value; setEditedProfile({ ...editedProfile, bases: next }); }} className="bg-white/10 border-white/20 text-white text-sm" /></div>
-                          <div className="space-y-1"><Label className="text-white/60 text-xs">纬度</Label><Input type="number" value={base.latitude ?? ''} readOnly className="bg-white/10 border-white/20 text-white/60 text-sm" /></div>
-                          <div className="space-y-1"><Label className="text-white/60 text-xs">经度</Label><Input type="number" value={base.longitude ?? ''} readOnly className="bg-white/10 border-white/20 text-white/60 text-sm" /></div>
-                          <div className="space-y-1"><Label className="text-white/60 text-xs">设施类型</Label><Input value={base.facility_type} onChange={(e) => { const next = [...editedProfile.bases]; next[idx].facility_type = e.target.value; setEditedProfile({ ...editedProfile, bases: next }); }} className="bg-white/10 border-white/20 text-white text-sm" /></div>
-                          <div className="space-y-1"><Label className="text-white/60 text-xs">生长阶段</Label><Select value={normalizeGrowthStage(base.growth_stage) || '__EMPTY__'} onValueChange={(value) => { const next = [...editedProfile.bases]; next[idx].growth_stage = value === '__EMPTY__' ? '' : value; setEditedProfile({ ...editedProfile, bases: next }); }}><SelectTrigger className="bg-white/10 border-white/20 text-white text-sm"><SelectValue placeholder="请选择生长阶段" /></SelectTrigger><SelectContent><SelectItem value="__EMPTY__">未设置</SelectItem>{TOMATO_GROWTH_STAGE_OPTIONS.map((stage) => <SelectItem key={stage.value} value={stage.value}>{stage.label}</SelectItem>)}</SelectContent></Select></div>
-                          <div className="space-y-1"><Label className="text-white/60 text-xs">播种日期</Label><Input type="date" value={base.sowing_date} onChange={(e) => { const next = [...editedProfile.bases]; next[idx].sowing_date = e.target.value; setEditedProfile({ ...editedProfile, bases: next }); }} className="bg-white/10 border-white/20 text-white text-sm" /></div>
-                          <div className="sm:col-span-2 flex flex-wrap items-center gap-2">
+                        <div className="space-y-4">
+                          <div className="grid sm:grid-cols-2 gap-4">
+                            <div className="space-y-2">
+                              <Label className="text-white/60 text-sm">详细地址</Label>
+                              <Input 
+                                value={base.location} 
+                                onChange={(e) => { 
+                                  const next = [...editedProfile.bases]; 
+                                  next[idx].location = e.target.value; 
+                                  setEditedProfile({ ...editedProfile, bases: next }); 
+                                }} 
+                                className="bg-white/10 border-white/20 text-white"
+                                placeholder="请输入详细地址"
+                              />
+                            </div>
+                            <div className="space-y-2">
+                              <Label className="text-white/60 text-sm">省份</Label>
+                              <Input 
+                                value={base.province} 
+                                onChange={(e) => { 
+                                  const next = [...editedProfile.bases]; 
+                                  next[idx].province = e.target.value; 
+                                  setEditedProfile({ ...editedProfile, bases: next }); 
+                                }} 
+                                className="bg-white/10 border-white/20 text-white"
+                                placeholder="请输入省份"
+                              />
+                            </div>
+                          </div>
+                          <div className="flex flex-wrap items-center gap-3">
                             <Button
                               type="button"
                               size="sm"
                               variant="outline"
                               onClick={() => { void fetchBaseGeolocation(idx); }}
                               disabled={baseActionLoading[`${idx}:geolocation`]}
-                              className="border-white/20 text-white hover:bg-white/10"
+                              className="border-[#c8f7c5]/40 text-[#c8f7c5] hover:bg-[#c8f7c5]/10 transition-all"
                             >
                               {baseActionLoading[`${idx}:geolocation`] ? <RefreshCw className="w-4 h-4 mr-1 animate-spin" /> : <MapPin className="w-4 h-4 mr-1" />}
                               获取地理位置
@@ -719,20 +719,25 @@ export function ProfilesPage() {
                               variant="outline"
                               onClick={() => { void refreshBaseWeather(idx); }}
                               disabled={baseActionLoading[`${idx}:weather`]}
-                              className="border-[#c8f7c5]/40 text-[#c8f7c5] hover:bg-[#c8f7c5]/10"
+                              className="border-[#c8f7c5]/40 text-[#c8f7c5] hover:bg-[#c8f7c5]/10 transition-all"
                             >
                               {baseActionLoading[`${idx}:weather`] ? <RefreshCw className="w-4 h-4 mr-1 animate-spin" /> : <RefreshCw className="w-4 h-4 mr-1" />}
                               刷新天气
                             </Button>
                           </div>
-                          <div className="sm:col-span-2 rounded-lg bg-white/10 border border-white/10 p-3 space-y-1">
-                            <p className="text-xs text-[#c8f7c5]">天气摘要：{base.weather_snapshot || '尚未获取天气信息'}</p>
-                            <p className="text-xs text-white/70">最近刷新：{base.last_weather_refresh_at || '未刷新'}</p>
-                            <p className="text-xs text-white/60">
-                              温度 {base.weather_temperature_2m ?? '--'}℃ · 湿度 {base.relative_humidity_2m ?? '--'}% · 降水 {base.precipitation ?? '--'} · 风速 {base.weather_wind_speed_10m ?? '--'} · 雨风险 {base.rain_risk ?? '--'}
-                            </p>
-                          </div>
-                          <div className="sm:col-span-2 rounded-lg bg-white/10 border border-white/10 p-3 space-y-2">
+                          {(base.weather_snapshot || base.last_weather_refresh_at) && (
+                            <div className="rounded-lg bg-white/10 border border-white/10 p-4 space-y-2">
+                              <p className="text-sm text-[#c8f7c5] font-medium">当前天气</p>
+                              <p className="text-sm text-white/80">{base.weather_snapshot || '暂无'}</p>
+                              <div className="flex flex-wrap items-center gap-4 mt-2 text-xs text-white/60">
+                                <span>最近刷新：{base.last_weather_refresh_at || '未刷新'}</span>
+                                {base.weather_temperature_2m && <span>温度：{base.weather_temperature_2m}℃</span>}
+                                {base.relative_humidity_2m && <span>湿度：{base.relative_humidity_2m}%</span>}
+                                {base.rain_risk && <span>雨风险：{base.rain_risk}</span>}
+                              </div>
+                            </div>
+                          )}
+                          <div className="rounded-lg bg-white/10 border border-white/10 p-3 space-y-2">
                             <p className="text-xs text-[#c8f7c5]">基地风险标签</p>
                             <div className="flex flex-wrap gap-2">
                               {base.risk_tags.length > 0 ? base.risk_tags.map((tag) => (
