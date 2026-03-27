@@ -10,7 +10,7 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Separator } from '@/components/ui/separator';
 import { cn } from '@/lib/utils';
-import { loadAuthUser, type UserRole } from '@/auth';
+import { loadAuthUser, type UserRole, withAuthHeaders } from '@/auth';
 import {
   getCultivationModeLabel,
   getEquipmentLabel,
@@ -42,6 +42,9 @@ interface FarmerBase {
   weather_temperature_2m: number | null;
   weather_wind_speed_10m: number | null;
   last_weather_refresh_at: string;
+  risk_tags: string[];
+  risk_items: Array<{ code?: string; label?: string; level?: string; reason?: string }>;
+  risk_updated_at: string;
 }
 
 interface FarmerProfile {
@@ -73,6 +76,40 @@ const EXPERIENCE_OPTIONS = ['NOVICE', 'INTERMEDIATE', 'EXPERT'] as const;
 const RISK_OPTIONS = ['CONSERVATIVE', 'BALANCED', 'AGGRESSIVE'] as const;
 
 const toSafeString = (value: unknown, fallback = ''): string => (typeof value === 'string' ? value : fallback);
+const toSafeStringArray = (value: unknown): string[] => {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => toSafeString(item).trim()).filter(Boolean);
+};
+const toSafeRiskItems = (value: unknown): Array<{ code?: string; label?: string; level?: string; reason?: string }> => {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => (item && typeof item === 'object' ? item as Record<string, unknown> : null))
+    .filter(Boolean)
+    .map((item) => ({
+      code: toSafeString((item as Record<string, unknown>).code),
+      label: toSafeString((item as Record<string, unknown>).label),
+      level: toSafeString((item as Record<string, unknown>).level),
+      reason: toSafeString((item as Record<string, unknown>).reason),
+    }))
+    .filter((item) => item.code || item.label || item.reason);
+};
+
+const RISK_TAG_LABELS: Record<string, string> = {
+  HIGH_HUMIDITY: '高湿风险',
+  RAIN_RISK: '降雨风险',
+  POOR_VENTILATION: '通风不足',
+  GREENHOUSE_PRESSURE: '温室环境压力',
+  NEAR_HARVEST: '临近采收',
+  SEEDLING_VULNERABLE: '苗期脆弱',
+  FLOWERING_FRUITING_SENSITIVE: '开花/结果期敏感',
+  CONTEXT_CONFLICT: '上下文冲突',
+  MISSING_CONTEXT: '关键信息缺失',
+};
+
+const getRiskTagLabel = (code: string): string => {
+  const normalized = code.trim().toUpperCase();
+  return RISK_TAG_LABELS[normalized] || code;
+};
 const toSafeNumber = (value: unknown): number | null => {
   if (typeof value === 'number' && Number.isFinite(value)) return value;
   if (typeof value === 'string' && value.trim()) {
@@ -89,8 +126,8 @@ const normalizeBase = (baseId: string, base: unknown): FarmerBase => {
     name: toSafeString(baseObj.name),
     location: toSafeString(baseObj.location),
     province: toSafeString(baseObj.province),
-    latitude: toSafeNumber(baseObj.latitude),
-    longitude: toSafeNumber(baseObj.longitude),
+    latitude: toSafeNumber(baseObj.latitude ?? baseObj.lat),
+    longitude: toSafeNumber(baseObj.longitude ?? baseObj.lon),
     facility_type: toSafeString(baseObj.facility_type ?? baseObj.facility),
     growth_stage: normalizeGrowthStage(toSafeString(baseObj.growth_stage)),
     sowing_date: toSafeString(baseObj.sowing_date),
@@ -101,7 +138,10 @@ const normalizeBase = (baseId: string, base: unknown): FarmerBase => {
     rain_risk: toSafeNumber(baseObj.rain_risk),
     weather_temperature_2m: toSafeNumber(baseObj.weather_temperature_2m ?? baseObj.temperature_2m),
     weather_wind_speed_10m: toSafeNumber(baseObj.weather_wind_speed_10m ?? baseObj.wind_speed_10m),
-    last_weather_refresh_at: toSafeString(baseObj.last_weather_refresh_at),
+    last_weather_refresh_at: toSafeString(baseObj.last_weather_refresh_at ?? baseObj.weather_refreshed_at),
+    risk_tags: toSafeStringArray(baseObj.risk_tags),
+    risk_items: toSafeRiskItems(baseObj.risk_items),
+    risk_updated_at: toSafeString(baseObj.risk_updated_at),
   };
 };
 
@@ -155,6 +195,25 @@ const predictBranch = (profile: Pick<FarmerProfile, 'farm_scale' | 'pesticide_ac
   return 'ENTERPRISE';
 };
 
+const generateNextBaseId = (bases: FarmerBase[]): string => {
+  const baseIdPattern = /^B(\d{4})$/i;
+  const usedIds = new Set(bases.map((base) => toSafeString(base.base_id).toUpperCase()).filter(Boolean));
+  let maxNo = 0;
+  for (const base of bases) {
+    const matched = toSafeString(base.base_id).toUpperCase().match(baseIdPattern);
+    if (!matched) continue;
+    const parsed = Number(matched[1]);
+    if (Number.isFinite(parsed)) {
+      maxNo = Math.max(maxNo, parsed);
+    }
+  }
+  let candidate = maxNo + 1;
+  while (usedIds.has(`B${String(candidate).padStart(4, '0')}`)) {
+    candidate += 1;
+  }
+  return `B${String(candidate).padStart(4, '0')}`;
+};
+
 export function ProfilesPage() {
   const authUser = loadAuthUser();
   const currentRole: UserRole = authUser?.role || 'USER';
@@ -199,7 +258,7 @@ export function ProfilesPage() {
     setErrorMessage('');
     setInfoMessage('');
     try {
-      const resp = await fetch('/api/profiles');
+      const resp = await fetch('/api/profiles', withAuthHeaders(undefined, authUser));
       const data = await parseJsonOrThrow(resp);
       const nextProfiles = normalizeProfileList(data?.profiles);
       setProfiles(nextProfiles);
@@ -218,7 +277,7 @@ export function ProfilesPage() {
   const fetchProfileDetail = async (farmerId: string) => {
     setErrorMessage('');
     try {
-      const resp = await fetch(`/api/profiles/${encodeURIComponent(farmerId)}`);
+      const resp = await fetch(`/api/profiles/${encodeURIComponent(farmerId)}`, withAuthHeaders(undefined, authUser));
       const data = await parseJsonOrThrow(resp);
       const normalized = normalizeProfile(data);
       setSelectedProfile(normalized);
@@ -243,6 +302,13 @@ export function ProfilesPage() {
     setErrorMessage('');
     setInfoMessage('');
 
+    const normalizedBaseIds = editedProfile.bases.map((base) => toSafeString(base.base_id).trim()).filter(Boolean);
+    const duplicatedBaseId = normalizedBaseIds.find((baseId, idx) => normalizedBaseIds.indexOf(baseId) !== idx);
+    if (duplicatedBaseId) {
+      setErrorMessage(`基地ID重复：${duplicatedBaseId}，请删除重复基地或重新生成`);
+      return;
+    }
+
     const basesMap = Object.fromEntries(
       editedProfile.bases.map((base) => [base.base_id, {
         base_id: base.base_id,
@@ -266,7 +332,7 @@ export function ProfilesPage() {
     );
 
     try {
-      const resp = await fetch(`/api/profiles/${encodeURIComponent(editedProfile.farmer_id)}`, {
+      const resp = await fetch(`/api/profiles/${encodeURIComponent(editedProfile.farmer_id)}`, withAuthHeaders({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -274,7 +340,7 @@ export function ProfilesPage() {
           display_name: editedProfile.display_name || editedProfile.name || editedProfile.farmer_id,
           bases: basesMap,
         }),
-      });
+      }, authUser));
       await parseJsonOrThrow(resp);
       setInfoMessage('档案业务资料已保存。');
       setSelectedProfile(editedProfile);
@@ -309,7 +375,7 @@ export function ProfilesPage() {
 
   const addBase = () => {
     if (!editedProfile) return;
-    const nextId = `B${String((editedProfile.bases.length || 0) + 1).padStart(4, '0')}`;
+    const nextId = generateNextBaseId(editedProfile.bases);
     setEditedProfile({
       ...editedProfile,
       bases: [...editedProfile.bases, {
@@ -330,6 +396,9 @@ export function ProfilesPage() {
         weather_temperature_2m: null,
         weather_wind_speed_10m: null,
         last_weather_refresh_at: '',
+        risk_tags: [],
+        risk_items: [],
+        risk_updated_at: '',
       }],
     });
   };
@@ -346,34 +415,61 @@ export function ProfilesPage() {
     setEditedProfile({ ...editedProfile, bases: next });
   };
 
-  const setBaseLoading = (baseId: string, loading: boolean) => {
-    setBaseActionLoading((prev) => ({ ...prev, [baseId]: loading }));
+  const setBaseLoading = (operationKey: string, loading: boolean) => {
+    setBaseActionLoading((prev) => ({ ...prev, [operationKey]: loading }));
   };
 
-  const fetchBaseAddress = async (idx: number) => {
+  const reverseGeocodeBaseAddress = async (idx: number, latitude: number, longitude: number) => {
+    const resp = await fetch(`/api/location/reverse?lat=${encodeURIComponent(latitude)}&lon=${encodeURIComponent(longitude)}`, withAuthHeaders(undefined, authUser));
+    const payload = await parseJsonOrThrow(resp);
+    updateBase(idx, (current) => ({
+      ...current,
+      location: toSafeString(payload?.location, current.location),
+      province: toSafeString(payload?.province, current.province),
+    }));
+  };
+
+  const fetchBaseGeolocation = async (idx: number) => {
     if (!editedProfile) return;
     const base = editedProfile.bases[idx];
     if (!base) return;
-    if (base.latitude == null || base.longitude == null) {
-      setErrorMessage(`基地 ${base.base_id} 缺少经纬度，无法获取地址`);
+    if (typeof navigator === 'undefined' || !navigator.geolocation) {
+      setErrorMessage('当前浏览器不支持获取地理位置');
       return;
     }
     setErrorMessage('');
     setInfoMessage('');
-    setBaseLoading(`${base.base_id}:address`, true);
+    const geolocationKey = `${idx}:geolocation`;
+    setBaseLoading(geolocationKey, true);
     try {
-      const resp = await fetch(`/api/location/reverse?lat=${encodeURIComponent(base.latitude)}&lon=${encodeURIComponent(base.longitude)}`);
-      const payload = await parseJsonOrThrow(resp);
+      const position = await new Promise<GeolocationPosition>((resolve, reject) => {
+        navigator.geolocation.getCurrentPosition(resolve, reject, {
+          enableHighAccuracy: true,
+          timeout: 10000,
+        });
+      });
+      const latitude = Number(position.coords.latitude);
+      const longitude = Number(position.coords.longitude);
       updateBase(idx, (current) => ({
         ...current,
-        location: toSafeString(payload?.location, current.location),
-        province: toSafeString(payload?.province, current.province),
+        latitude,
+        longitude,
       }));
-      setInfoMessage(`基地 ${base.base_id} 地址已更新（未自动保存）`);
+      try {
+        await reverseGeocodeBaseAddress(idx, latitude, longitude);
+        setInfoMessage(`基地 ${base.base_id} 已获取经纬度并自动回填地址（未自动保存）`);
+      } catch {
+        setInfoMessage(`基地 ${base.base_id} 经纬度已更新，但地址回填失败`);
+      }
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : '获取地址失败');
+      const geolocationError = error as GeolocationPositionError;
+      if (geolocationError?.code === 1) {
+        setErrorMessage('已拒绝地理位置权限，请允许后重试');
+      } else {
+        setErrorMessage('获取地理位置失败，请稍后重试');
+      }
     } finally {
-      setBaseLoading(`${base.base_id}:address`, false);
+      setBaseLoading(geolocationKey, false);
     }
   };
 
@@ -381,17 +477,21 @@ export function ProfilesPage() {
     if (!editedProfile) return;
     const base = editedProfile.bases[idx];
     if (!base) return;
-    if (base.latitude == null || base.longitude == null) {
+    const latitude = toSafeNumber(base.latitude);
+    const longitude = toSafeNumber(base.longitude);
+    if (latitude == null || longitude == null) {
       setErrorMessage(`基地 ${base.base_id} 缺少经纬度，无法刷新天气`);
       return;
     }
+    updateBase(idx, (current) => ({ ...current, latitude, longitude }));
     setErrorMessage('');
     setInfoMessage('');
-    setBaseLoading(`${base.base_id}:weather`, true);
+    const weatherKey = `${idx}:weather`;
+    setBaseLoading(weatherKey, true);
     try {
-      const resp = await fetch(`/api/profiles/${encodeURIComponent(editedProfile.farmer_id)}/bases/${encodeURIComponent(base.base_id)}/weather/refresh`, {
+      const resp = await fetch(`/api/profiles/${encodeURIComponent(editedProfile.farmer_id)}/bases/${encodeURIComponent(base.base_id)}/weather/refresh`, withAuthHeaders({
         method: 'POST',
-      });
+      }, authUser));
       const payload = await parseJsonOrThrow(resp);
       updateBase(idx, (current) => ({
         ...current,
@@ -399,15 +499,15 @@ export function ProfilesPage() {
         relative_humidity_2m: toSafeNumber(payload?.relative_humidity_2m),
         precipitation: toSafeNumber(payload?.precipitation),
         rain_risk: toSafeNumber(payload?.rain_risk),
-        weather_temperature_2m: toSafeNumber(payload?.temperature_2m),
-        weather_wind_speed_10m: toSafeNumber(payload?.wind_speed_10m),
+        weather_temperature_2m: toSafeNumber(payload?.weather_temperature_2m ?? payload?.temperature_2m),
+        weather_wind_speed_10m: toSafeNumber(payload?.weather_wind_speed_10m ?? payload?.wind_speed_10m),
         last_weather_refresh_at: toSafeString(payload?.last_weather_refresh_at, current.last_weather_refresh_at),
       }));
       setInfoMessage(`基地 ${base.base_id} 天气已刷新（未自动保存）`);
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : '刷新天气失败');
     } finally {
-      setBaseLoading(`${base.base_id}:weather`, false);
+      setBaseLoading(weatherKey, false);
     }
   };
 
@@ -518,8 +618,8 @@ export function ProfilesPage() {
                           <div className="space-y-1"><Label className="text-white/60 text-xs">基地名称</Label><Input value={base.name} onChange={(e) => { const next = [...editedProfile.bases]; next[idx].name = e.target.value; setEditedProfile({ ...editedProfile, bases: next }); }} className="bg-white/10 border-white/20 text-white text-sm" /></div>
                           <div className="space-y-1"><Label className="text-white/60 text-xs">位置/地址</Label><Input value={base.location} onChange={(e) => { const next = [...editedProfile.bases]; next[idx].location = e.target.value; setEditedProfile({ ...editedProfile, bases: next }); }} className="bg-white/10 border-white/20 text-white text-sm" /></div>
                           <div className="space-y-1"><Label className="text-white/60 text-xs">省份</Label><Input value={base.province} onChange={(e) => { const next = [...editedProfile.bases]; next[idx].province = e.target.value; setEditedProfile({ ...editedProfile, bases: next }); }} className="bg-white/10 border-white/20 text-white text-sm" /></div>
-                          <div className="space-y-1"><Label className="text-white/60 text-xs">纬度</Label><Input type="number" value={base.latitude ?? ''} onChange={(e) => { const next = [...editedProfile.bases]; next[idx].latitude = toSafeNumber(e.target.value); setEditedProfile({ ...editedProfile, bases: next }); }} className="bg-white/10 border-white/20 text-white text-sm" /></div>
-                          <div className="space-y-1"><Label className="text-white/60 text-xs">经度</Label><Input type="number" value={base.longitude ?? ''} onChange={(e) => { const next = [...editedProfile.bases]; next[idx].longitude = toSafeNumber(e.target.value); setEditedProfile({ ...editedProfile, bases: next }); }} className="bg-white/10 border-white/20 text-white text-sm" /></div>
+                          <div className="space-y-1"><Label className="text-white/60 text-xs">纬度</Label><Input type="number" value={base.latitude ?? ''} readOnly disabled className="bg-white/10 border-white/20 text-white/60 text-sm" /></div>
+                          <div className="space-y-1"><Label className="text-white/60 text-xs">经度</Label><Input type="number" value={base.longitude ?? ''} readOnly disabled className="bg-white/10 border-white/20 text-white/60 text-sm" /></div>
                           <div className="space-y-1"><Label className="text-white/60 text-xs">设施类型</Label><Input value={base.facility_type} onChange={(e) => { const next = [...editedProfile.bases]; next[idx].facility_type = e.target.value; setEditedProfile({ ...editedProfile, bases: next }); }} className="bg-white/10 border-white/20 text-white text-sm" /></div>
                           <div className="space-y-1"><Label className="text-white/60 text-xs">生长阶段</Label><Select value={normalizeGrowthStage(base.growth_stage) || '__EMPTY__'} onValueChange={(value) => { const next = [...editedProfile.bases]; next[idx].growth_stage = value === '__EMPTY__' ? '' : value; setEditedProfile({ ...editedProfile, bases: next }); }}><SelectTrigger className="bg-white/10 border-white/20 text-white text-sm"><SelectValue placeholder="请选择生长阶段" /></SelectTrigger><SelectContent><SelectItem value="__EMPTY__">未设置</SelectItem>{TOMATO_GROWTH_STAGE_OPTIONS.map((stage) => <SelectItem key={stage.value} value={stage.value}>{stage.label}</SelectItem>)}</SelectContent></Select></div>
                           <div className="space-y-1"><Label className="text-white/60 text-xs">播种日期</Label><Input type="date" value={base.sowing_date} onChange={(e) => { const next = [...editedProfile.bases]; next[idx].sowing_date = e.target.value; setEditedProfile({ ...editedProfile, bases: next }); }} className="bg-white/10 border-white/20 text-white text-sm" /></div>
@@ -528,34 +628,52 @@ export function ProfilesPage() {
                               type="button"
                               size="sm"
                               variant="outline"
-                              onClick={() => { void fetchBaseAddress(idx); }}
-                              disabled={baseActionLoading[`${base.base_id}:address`]}
+                              onClick={() => { void fetchBaseGeolocation(idx); }}
+                              disabled={baseActionLoading[`${idx}:geolocation`]}
                               className="border-white/20 text-white hover:bg-white/10"
                             >
-                              {baseActionLoading[`${base.base_id}:address`] ? <RefreshCw className="w-4 h-4 mr-1 animate-spin" /> : <MapPin className="w-4 h-4 mr-1" />}
-                              获取地址
+                              {baseActionLoading[`${idx}:geolocation`] ? <RefreshCw className="w-4 h-4 mr-1 animate-spin" /> : <MapPin className="w-4 h-4 mr-1" />}
+                              获取地理位置
                             </Button>
                             <Button
                               type="button"
                               size="sm"
                               variant="outline"
                               onClick={() => { void refreshBaseWeather(idx); }}
-                              disabled={baseActionLoading[`${base.base_id}:weather`]}
+                              disabled={baseActionLoading[`${idx}:weather`]}
                               className="border-[#c8f7c5]/40 text-[#c8f7c5] hover:bg-[#c8f7c5]/10"
                             >
-                              {baseActionLoading[`${base.base_id}:weather`] ? <RefreshCw className="w-4 h-4 mr-1 animate-spin" /> : <RefreshCw className="w-4 h-4 mr-1" />}
-                              获取天气/刷新天气
+                              {baseActionLoading[`${idx}:weather`] ? <RefreshCw className="w-4 h-4 mr-1 animate-spin" /> : <RefreshCw className="w-4 h-4 mr-1" />}
+                              刷新天气
                             </Button>
                           </div>
-                          {(base.weather_snapshot || base.last_weather_refresh_at) ? (
-                            <div className="sm:col-span-2 rounded-lg bg-white/10 border border-white/10 p-3 space-y-1">
-                              <p className="text-xs text-[#c8f7c5]">当前天气：{base.weather_snapshot || '暂无'}</p>
-                              <p className="text-xs text-white/70">最近刷新：{base.last_weather_refresh_at || '未刷新'}</p>
-                              <p className="text-xs text-white/60">
-                                温度 {base.weather_temperature_2m ?? '--'}℃ · 湿度 {base.relative_humidity_2m ?? '--'}% · 降水 {base.precipitation ?? '--'} · 雨风险 {base.rain_risk ?? '--'}
-                              </p>
+                          <div className="sm:col-span-2 rounded-lg bg-white/10 border border-white/10 p-3 space-y-1">
+                            <p className="text-xs text-[#c8f7c5]">天气摘要：{base.weather_snapshot || '尚未获取天气信息'}</p>
+                            <p className="text-xs text-white/70">最近刷新：{base.last_weather_refresh_at || '未刷新'}</p>
+                            <p className="text-xs text-white/60">
+                              温度 {base.weather_temperature_2m ?? '--'}℃ · 湿度 {base.relative_humidity_2m ?? '--'}% · 降水 {base.precipitation ?? '--'} · 风速 {base.weather_wind_speed_10m ?? '--'} · 雨风险 {base.rain_risk ?? '--'}
+                            </p>
+                          </div>
+                          <div className="sm:col-span-2 rounded-lg bg-white/10 border border-white/10 p-3 space-y-2">
+                            <p className="text-xs text-[#c8f7c5]">基地风险标签</p>
+                            <div className="flex flex-wrap gap-2">
+                              {base.risk_tags.length > 0 ? base.risk_tags.map((tag) => (
+                                <Badge key={`${base.base_id}-${tag}`} variant="outline" className="border-amber-300/50 text-amber-200">
+                                  {getRiskTagLabel(tag)}
+                                </Badge>
+                              )) : <p className="text-xs text-white/60">暂无风险标签</p>}
                             </div>
-                          ) : null}
+                            {base.risk_updated_at ? <p className="text-xs text-white/60">风险更新时间：{base.risk_updated_at}</p> : null}
+                            {base.risk_items.length > 0 ? (
+                              <div className="space-y-1">
+                                {base.risk_items.slice(0, 3).map((item, itemIdx) => (
+                                  <p key={`${base.base_id}-risk-${itemIdx}`} className="text-xs text-white/70">
+                                    {(item.label || getRiskTagLabel(item.code || '') || item.code || '风险项')}：{item.reason || item.level || item.code || '请关注风险'}
+                                  </p>
+                                ))}
+                              </div>
+                            ) : null}
+                          </div>
                           <div className="space-y-1 sm:col-span-2"><Label className="text-white/60 text-xs">备注</Label><Textarea value={base.notes} onChange={(e) => { const next = [...editedProfile.bases]; next[idx].notes = e.target.value; setEditedProfile({ ...editedProfile, bases: next }); }} className="bg-white/10 border-white/20 text-white text-sm" /></div>
                         </div>
                       </div>
