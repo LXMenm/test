@@ -9,8 +9,17 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
 import app as app_module
-from mysql_models import WeatherSnapshotORM
+from mysql_models import (
+    FarmBaseORM,
+    FarmBaseRiskItemORM,
+    FarmBaseRiskTagORM,
+    FarmerProfileBannedIngredientORM,
+    FarmerProfileEquipmentORM,
+    FarmerProfileORM,
+    WeatherSnapshotORM,
+)
 from personalization.profile_models import BaseProfile, FarmerProfile
+from repositories import profile_repo_mysql
 from repositories import weather_repo_mysql
 
 
@@ -126,14 +135,16 @@ def test_refresh_weather_writes_snapshot_and_keeps_profile_updates(monkeypatch, 
 
     persisted: dict[str, Any] = {"called": False}
 
-    def _fake_load_profile(_farmer_id: str) -> FarmerProfile:
-        return profile
+    def _fake_get_profile_mysql(_farmer_id: str) -> dict[str, Any]:
+        return profile.model_dump()
 
-    def _fake_persist_profile(_profile: FarmerProfile) -> None:
+    def _fake_save_profile_payload_mysql(payload: dict[str, Any]) -> None:
         persisted["called"] = True
+        updated = FarmerProfile.model_validate(payload)
+        profile.bases["B001"] = updated.bases["B001"]
 
-    monkeypatch.setattr(app_module, "load_profile", _fake_load_profile)
-    monkeypatch.setattr(app_module, "persist_profile", _fake_persist_profile)
+    monkeypatch.setattr(app_module, "get_profile_mysql", _fake_get_profile_mysql)
+    monkeypatch.setattr(app_module, "save_profile_payload_mysql", _fake_save_profile_payload_mysql)
     monkeypatch.setattr(
         app_module,
         "weather_summary",
@@ -157,6 +168,11 @@ def test_refresh_weather_writes_snapshot_and_keeps_profile_updates(monkeypatch, 
     body = resp.json()
     assert body["ok"] is True
     assert body["weather_snapshot"] == "未来24小时降雨概率较高"
+    # refresh 返回兼容双 key，避免前端不同版本字段名不一致导致显示失败
+    assert body["temperature_2m"] == 24.3
+    assert body["weather_temperature_2m"] == 24.3
+    assert body["wind_speed_10m"] == 2.1
+    assert body["weather_wind_speed_10m"] == 2.1
     assert persisted["called"] is True
     assert profile.bases["B001"].weather_snapshot == "未来24小时降雨概率较高"
 
@@ -234,3 +250,58 @@ def test_weather_snapshot_api_permission_and_admin_scope(monkeypatch, tmp_path: 
     assert len(items) == 1
     assert items[0]["farmer_id"] == "F0002"
     assert items[0]["snapshot_time"].endswith("Z")
+
+
+def test_profile_repo_reads_weather_fields_from_explicit_columns_first_with_extra_json_fallback(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    engine, session_scope = _make_session_scope(tmp_path)
+    FarmerProfileORM.__table__.create(bind=engine, checkfirst=True)
+    FarmBaseORM.__table__.create(bind=engine, checkfirst=True)
+    FarmerProfileEquipmentORM.__table__.create(bind=engine, checkfirst=True)
+    FarmerProfileBannedIngredientORM.__table__.create(bind=engine, checkfirst=True)
+    FarmBaseRiskTagORM.__table__.create(bind=engine, checkfirst=True)
+    FarmBaseRiskItemORM.__table__.create(bind=engine, checkfirst=True)
+    monkeypatch.setattr(profile_repo_mysql, "get_db_session", session_scope)
+
+    with session_scope() as session:
+        session.add(
+            FarmerProfileORM(
+                farmer_id="F0001",
+                owner_user_id="F0001",
+                name="农户1",
+                role_type="FARMER",
+            )
+        )
+        session.add(
+            FarmBaseORM(
+                farmer_id="F0001",
+                base_id="B001",
+                weather_snapshot="阴天",
+                relative_humidity_2m=None,
+                precipitation=0.3,
+                rain_risk=None,
+                extra_json={
+                    "relative_humidity_2m": 54.0,
+                    "rain_risk": 20.0,
+                    "weather_temperature_2m": 29.0,
+                    "wind_speed_10m": 9.3,
+                    "last_weather_refresh_at": "2026-03-27T08:00:00Z",
+                },
+            )
+        )
+        session.commit()
+
+    payload = profile_repo_mysql.get_profile("F0001")
+    assert payload is not None
+    base = payload["bases"]["B001"]
+    assert base["weather_snapshot"] == "阴天"
+    # 明确列优先：precipitation 取列值，不被 extra_json 覆盖
+    assert base["precipitation"] == 0.3
+    # 列为空时，回退 extra_json，保证历史数据可读
+    assert base["relative_humidity_2m"] == 54.0
+    assert base["rain_risk"] == 20.0
+    assert base["weather_temperature_2m"] == 29.0
+    assert base["weather_wind_speed_10m"] == 9.3
+    assert base["last_weather_refresh_at"].startswith("2026-03-27T08:00:00")
