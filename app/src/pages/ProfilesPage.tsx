@@ -195,6 +195,25 @@ const predictBranch = (profile: Pick<FarmerProfile, 'farm_scale' | 'pesticide_ac
   return 'ENTERPRISE';
 };
 
+const generateNextBaseId = (bases: FarmerBase[]): string => {
+  const baseIdPattern = /^B(\d{4})$/i;
+  const usedIds = new Set(bases.map((base) => toSafeString(base.base_id).toUpperCase()).filter(Boolean));
+  let maxNo = 0;
+  for (const base of bases) {
+    const matched = toSafeString(base.base_id).toUpperCase().match(baseIdPattern);
+    if (!matched) continue;
+    const parsed = Number(matched[1]);
+    if (Number.isFinite(parsed)) {
+      maxNo = Math.max(maxNo, parsed);
+    }
+  }
+  let candidate = maxNo + 1;
+  while (usedIds.has(`B${String(candidate).padStart(4, '0')}`)) {
+    candidate += 1;
+  }
+  return `B${String(candidate).padStart(4, '0')}`;
+};
+
 export function ProfilesPage() {
   const authUser = loadAuthUser();
   const currentRole: UserRole = authUser?.role || 'USER';
@@ -283,6 +302,13 @@ export function ProfilesPage() {
     setErrorMessage('');
     setInfoMessage('');
 
+    const normalizedBaseIds = editedProfile.bases.map((base) => toSafeString(base.base_id).trim()).filter(Boolean);
+    const duplicatedBaseId = normalizedBaseIds.find((baseId, idx) => normalizedBaseIds.indexOf(baseId) !== idx);
+    if (duplicatedBaseId) {
+      setErrorMessage(`基地ID重复：${duplicatedBaseId}，请删除重复基地或重新生成`);
+      return;
+    }
+
     const basesMap = Object.fromEntries(
       editedProfile.bases.map((base) => [base.base_id, {
         base_id: base.base_id,
@@ -349,7 +375,7 @@ export function ProfilesPage() {
 
   const addBase = () => {
     if (!editedProfile) return;
-    const nextId = `B${String((editedProfile.bases.length || 0) + 1).padStart(4, '0')}`;
+    const nextId = generateNextBaseId(editedProfile.bases);
     setEditedProfile({
       ...editedProfile,
       bases: [...editedProfile.bases, {
@@ -389,8 +415,8 @@ export function ProfilesPage() {
     setEditedProfile({ ...editedProfile, bases: next });
   };
 
-  const setBaseLoading = (baseId: string, loading: boolean) => {
-    setBaseActionLoading((prev) => ({ ...prev, [baseId]: loading }));
+  const setBaseLoading = (operationKey: string, loading: boolean) => {
+    setBaseActionLoading((prev) => ({ ...prev, [operationKey]: loading }));
   };
 
   const reverseGeocodeBaseAddress = async (idx: number, latitude: number, longitude: number) => {
@@ -413,7 +439,8 @@ export function ProfilesPage() {
     }
     setErrorMessage('');
     setInfoMessage('');
-    setBaseLoading(`${base.base_id}:geolocation`, true);
+    const geolocationKey = `${idx}:geolocation`;
+    setBaseLoading(geolocationKey, true);
     try {
       const position = await new Promise<GeolocationPosition>((resolve, reject) => {
         navigator.geolocation.getCurrentPosition(resolve, reject, {
@@ -442,7 +469,7 @@ export function ProfilesPage() {
         setErrorMessage('获取地理位置失败，请稍后重试');
       }
     } finally {
-      setBaseLoading(`${base.base_id}:geolocation`, false);
+      setBaseLoading(geolocationKey, false);
     }
   };
 
@@ -459,7 +486,8 @@ export function ProfilesPage() {
     updateBase(idx, (current) => ({ ...current, latitude, longitude }));
     setErrorMessage('');
     setInfoMessage('');
-    setBaseLoading(`${base.base_id}:weather`, true);
+    const weatherKey = `${idx}:weather`;
+    setBaseLoading(weatherKey, true);
     try {
       const resp = await fetch(`/api/profiles/${encodeURIComponent(editedProfile.farmer_id)}/bases/${encodeURIComponent(base.base_id)}/weather/refresh`, withAuthHeaders({
         method: 'POST',
@@ -479,7 +507,7 @@ export function ProfilesPage() {
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : '刷新天气失败');
     } finally {
-      setBaseLoading(`${base.base_id}:weather`, false);
+      setBaseLoading(weatherKey, false);
     }
   };
 
@@ -601,10 +629,10 @@ export function ProfilesPage() {
                               size="sm"
                               variant="outline"
                               onClick={() => { void fetchBaseGeolocation(idx); }}
-                              disabled={baseActionLoading[`${base.base_id}:geolocation`]}
+                              disabled={baseActionLoading[`${idx}:geolocation`]}
                               className="border-white/20 text-white hover:bg-white/10"
                             >
-                              {baseActionLoading[`${base.base_id}:geolocation`] ? <RefreshCw className="w-4 h-4 mr-1 animate-spin" /> : <MapPin className="w-4 h-4 mr-1" />}
+                              {baseActionLoading[`${idx}:geolocation`] ? <RefreshCw className="w-4 h-4 mr-1 animate-spin" /> : <MapPin className="w-4 h-4 mr-1" />}
                               获取地理位置
                             </Button>
                             <Button
@@ -612,10 +640,10 @@ export function ProfilesPage() {
                               size="sm"
                               variant="outline"
                               onClick={() => { void refreshBaseWeather(idx); }}
-                              disabled={baseActionLoading[`${base.base_id}:weather`]}
+                              disabled={baseActionLoading[`${idx}:weather`]}
                               className="border-[#c8f7c5]/40 text-[#c8f7c5] hover:bg-[#c8f7c5]/10"
                             >
-                              {baseActionLoading[`${base.base_id}:weather`] ? <RefreshCw className="w-4 h-4 mr-1 animate-spin" /> : <RefreshCw className="w-4 h-4 mr-1" />}
+                              {baseActionLoading[`${idx}:weather`] ? <RefreshCw className="w-4 h-4 mr-1 animate-spin" /> : <RefreshCw className="w-4 h-4 mr-1" />}
                               刷新天气
                             </Button>
                           </div>
