@@ -42,6 +42,9 @@ interface FarmerBase {
   weather_temperature_2m: number | null;
   weather_wind_speed_10m: number | null;
   last_weather_refresh_at: string;
+  risk_tags: string[];
+  risk_items: Array<{ code?: string; label?: string; level?: string; reason?: string }>;
+  risk_updated_at: string;
 }
 
 interface FarmerProfile {
@@ -73,6 +76,40 @@ const EXPERIENCE_OPTIONS = ['NOVICE', 'INTERMEDIATE', 'EXPERT'] as const;
 const RISK_OPTIONS = ['CONSERVATIVE', 'BALANCED', 'AGGRESSIVE'] as const;
 
 const toSafeString = (value: unknown, fallback = ''): string => (typeof value === 'string' ? value : fallback);
+const toSafeStringArray = (value: unknown): string[] => {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => toSafeString(item).trim()).filter(Boolean);
+};
+const toSafeRiskItems = (value: unknown): Array<{ code?: string; label?: string; level?: string; reason?: string }> => {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => (item && typeof item === 'object' ? item as Record<string, unknown> : null))
+    .filter(Boolean)
+    .map((item) => ({
+      code: toSafeString((item as Record<string, unknown>).code),
+      label: toSafeString((item as Record<string, unknown>).label),
+      level: toSafeString((item as Record<string, unknown>).level),
+      reason: toSafeString((item as Record<string, unknown>).reason),
+    }))
+    .filter((item) => item.code || item.label || item.reason);
+};
+
+const RISK_TAG_LABELS: Record<string, string> = {
+  HIGH_HUMIDITY: '高湿风险',
+  RAIN_RISK: '降雨风险',
+  POOR_VENTILATION: '通风不足',
+  GREENHOUSE_PRESSURE: '温室环境压力',
+  NEAR_HARVEST: '临近采收',
+  SEEDLING_VULNERABLE: '苗期脆弱',
+  FLOWERING_FRUITING_SENSITIVE: '开花/结果期敏感',
+  CONTEXT_CONFLICT: '上下文冲突',
+  MISSING_CONTEXT: '关键信息缺失',
+};
+
+const getRiskTagLabel = (code: string): string => {
+  const normalized = code.trim().toUpperCase();
+  return RISK_TAG_LABELS[normalized] || code;
+};
 const toSafeNumber = (value: unknown): number | null => {
   if (typeof value === 'number' && Number.isFinite(value)) return value;
   if (typeof value === 'string' && value.trim()) {
@@ -102,6 +139,9 @@ const normalizeBase = (baseId: string, base: unknown): FarmerBase => {
     weather_temperature_2m: toSafeNumber(baseObj.weather_temperature_2m ?? baseObj.temperature_2m),
     weather_wind_speed_10m: toSafeNumber(baseObj.weather_wind_speed_10m ?? baseObj.wind_speed_10m),
     last_weather_refresh_at: toSafeString(baseObj.last_weather_refresh_at ?? baseObj.weather_refreshed_at),
+    risk_tags: toSafeStringArray(baseObj.risk_tags),
+    risk_items: toSafeRiskItems(baseObj.risk_items),
+    risk_updated_at: toSafeString(baseObj.risk_updated_at),
   };
 };
 
@@ -330,6 +370,9 @@ export function ProfilesPage() {
         weather_temperature_2m: null,
         weather_wind_speed_10m: null,
         last_weather_refresh_at: '',
+        risk_tags: [],
+        risk_items: [],
+        risk_updated_at: '',
       }],
     });
   };
@@ -582,6 +625,26 @@ export function ProfilesPage() {
                             <p className="text-xs text-white/60">
                               温度 {base.weather_temperature_2m ?? '--'}℃ · 湿度 {base.relative_humidity_2m ?? '--'}% · 降水 {base.precipitation ?? '--'} · 风速 {base.weather_wind_speed_10m ?? '--'} · 雨风险 {base.rain_risk ?? '--'}
                             </p>
+                          </div>
+                          <div className="sm:col-span-2 rounded-lg bg-white/10 border border-white/10 p-3 space-y-2">
+                            <p className="text-xs text-[#c8f7c5]">基地风险标签</p>
+                            <div className="flex flex-wrap gap-2">
+                              {base.risk_tags.length > 0 ? base.risk_tags.map((tag) => (
+                                <Badge key={`${base.base_id}-${tag}`} variant="outline" className="border-amber-300/50 text-amber-200">
+                                  {getRiskTagLabel(tag)}
+                                </Badge>
+                              )) : <p className="text-xs text-white/60">暂无风险标签</p>}
+                            </div>
+                            {base.risk_updated_at ? <p className="text-xs text-white/60">风险更新时间：{base.risk_updated_at}</p> : null}
+                            {base.risk_items.length > 0 ? (
+                              <div className="space-y-1">
+                                {base.risk_items.slice(0, 3).map((item, itemIdx) => (
+                                  <p key={`${base.base_id}-risk-${itemIdx}`} className="text-xs text-white/70">
+                                    {(item.label || getRiskTagLabel(item.code || '') || item.code || '风险项')}：{item.reason || item.level || item.code || '请关注风险'}
+                                  </p>
+                                ))}
+                              </div>
+                            ) : null}
                           </div>
                           <div className="space-y-1 sm:col-span-2"><Label className="text-white/60 text-xs">备注</Label><Textarea value={base.notes} onChange={(e) => { const next = [...editedProfile.bases]; next[idx].notes = e.target.value; setEditedProfile({ ...editedProfile, bases: next }); }} className="bg-white/10 border-white/20 text-white text-sm" /></div>
                         </div>
