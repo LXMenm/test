@@ -179,6 +179,24 @@ def _base_row_to_dict(
     risk_item_rows: Iterable[FarmBaseRiskItemORM] | None = None,
 ) -> dict[str, Any]:
     extra_json = _safe_dict(base_row.extra_json)
+    relative_humidity = base_row.relative_humidity_2m
+    if relative_humidity is None:
+        relative_humidity = extra_json.get("relative_humidity_2m")
+    precipitation = base_row.precipitation
+    if precipitation is None:
+        precipitation = extra_json.get("precipitation")
+    rain_risk = base_row.rain_risk
+    if rain_risk is None:
+        rain_risk = extra_json.get("rain_risk")
+    weather_temperature_2m = extra_json.get("weather_temperature_2m")
+    if weather_temperature_2m is None:
+        weather_temperature_2m = extra_json.get("temperature_2m")
+    weather_wind_speed_10m = extra_json.get("weather_wind_speed_10m")
+    if weather_wind_speed_10m is None:
+        weather_wind_speed_10m = extra_json.get("wind_speed_10m")
+    last_weather_refresh_at = extra_json.get("last_weather_refresh_at")
+    if last_weather_refresh_at in (None, ""):
+        last_weather_refresh_at = extra_json.get("weather_refreshed_at")
     normalized_risk_tags = [
         str(row.risk_tag).strip()
         for row in sorted(risk_tag_rows or [], key=lambda item: (item.risk_tag or "", item.id or 0))
@@ -203,12 +221,12 @@ def _base_row_to_dict(
         "growth_stage": base_row.growth_stage,
         "sowing_date": base_row.sowing_date,
         "weather_snapshot": base_row.weather_snapshot,
-        "last_weather_refresh_at": _datetime_to_iso(extra_json.get("last_weather_refresh_at")),
-        "weather_temperature_2m": extra_json.get("weather_temperature_2m"),
-        "weather_wind_speed_10m": extra_json.get("weather_wind_speed_10m"),
-        "relative_humidity_2m": base_row.relative_humidity_2m,
-        "precipitation": base_row.precipitation,
-        "rain_risk": base_row.rain_risk,
+        "last_weather_refresh_at": _datetime_to_iso(last_weather_refresh_at),
+        "weather_temperature_2m": weather_temperature_2m,
+        "weather_wind_speed_10m": weather_wind_speed_10m,
+        "relative_humidity_2m": relative_humidity,
+        "precipitation": precipitation,
+        "rain_risk": rain_risk,
         "risk_tags": normalized_risk_tags or _normalize_risk_tags(base_row.risk_tags_json),
         "risk_reasons": _safe_list(base_row.risk_reasons_json),
         "risk_items": normalized_risk_items or _normalize_risk_items(base_row.risk_items_json),
