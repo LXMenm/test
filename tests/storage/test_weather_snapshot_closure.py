@@ -168,6 +168,11 @@ def test_refresh_weather_writes_snapshot_and_keeps_profile_updates(monkeypatch, 
     body = resp.json()
     assert body["ok"] is True
     assert body["weather_snapshot"] == "未来24小时降雨概率较高"
+    # refresh 返回兼容双 key，避免前端不同版本字段名不一致导致显示失败
+    assert body["temperature_2m"] == 24.3
+    assert body["weather_temperature_2m"] == 24.3
+    assert body["wind_speed_10m"] == 2.1
+    assert body["weather_wind_speed_10m"] == 2.1
     assert persisted["called"] is True
     assert profile.bases["B001"].weather_snapshot == "未来24小时降雨概率较高"
 

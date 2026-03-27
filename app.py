@@ -2795,14 +2795,19 @@ def _refresh_base_weather(profile: FarmerProfile, base_id: str) -> dict[str, Any
     base.last_weather_refresh_at = refreshed_at
     profile.bases[base_id] = base
     profile.updated_at = refreshed_at
+    temperature_2m = weather.get("temperature_2m")
+    wind_speed_10m = weather.get("wind_speed_10m")
     return {
         "base_id": base_id,
         "weather_snapshot": base.weather_snapshot,
         "relative_humidity_2m": base.relative_humidity_2m,
         "precipitation": base.precipitation,
         "rain_risk": base.rain_risk,
-        "temperature_2m": weather.get("temperature_2m"),
-        "wind_speed_10m": weather.get("wind_speed_10m"),
+        # 兼容返回双 key：避免前端运行旧 bundle 时字段名不一致导致显示不更新。
+        "temperature_2m": temperature_2m,
+        "wind_speed_10m": wind_speed_10m,
+        "weather_temperature_2m": temperature_2m,
+        "weather_wind_speed_10m": wind_speed_10m,
         "weather_desc": weather.get("weather_desc"),
         "last_weather_refresh_at": refreshed_at,
     }

@@ -10,7 +10,7 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Separator } from '@/components/ui/separator';
 import { cn } from '@/lib/utils';
-import { loadAuthUser, type UserRole } from '@/auth';
+import { loadAuthUser, type UserRole, withAuthHeaders } from '@/auth';
 import {
   getCultivationModeLabel,
   getEquipmentLabel,
@@ -89,8 +89,8 @@ const normalizeBase = (baseId: string, base: unknown): FarmerBase => {
     name: toSafeString(baseObj.name),
     location: toSafeString(baseObj.location),
     province: toSafeString(baseObj.province),
-    latitude: toSafeNumber(baseObj.latitude),
-    longitude: toSafeNumber(baseObj.longitude),
+    latitude: toSafeNumber(baseObj.latitude ?? baseObj.lat),
+    longitude: toSafeNumber(baseObj.longitude ?? baseObj.lon),
     facility_type: toSafeString(baseObj.facility_type ?? baseObj.facility),
     growth_stage: normalizeGrowthStage(toSafeString(baseObj.growth_stage)),
     sowing_date: toSafeString(baseObj.sowing_date),
@@ -101,7 +101,7 @@ const normalizeBase = (baseId: string, base: unknown): FarmerBase => {
     rain_risk: toSafeNumber(baseObj.rain_risk),
     weather_temperature_2m: toSafeNumber(baseObj.weather_temperature_2m ?? baseObj.temperature_2m),
     weather_wind_speed_10m: toSafeNumber(baseObj.weather_wind_speed_10m ?? baseObj.wind_speed_10m),
-    last_weather_refresh_at: toSafeString(baseObj.last_weather_refresh_at),
+    last_weather_refresh_at: toSafeString(baseObj.last_weather_refresh_at ?? baseObj.weather_refreshed_at),
   };
 };
 
@@ -199,7 +199,7 @@ export function ProfilesPage() {
     setErrorMessage('');
     setInfoMessage('');
     try {
-      const resp = await fetch('/api/profiles');
+      const resp = await fetch('/api/profiles', withAuthHeaders(undefined, authUser));
       const data = await parseJsonOrThrow(resp);
       const nextProfiles = normalizeProfileList(data?.profiles);
       setProfiles(nextProfiles);
@@ -218,7 +218,7 @@ export function ProfilesPage() {
   const fetchProfileDetail = async (farmerId: string) => {
     setErrorMessage('');
     try {
-      const resp = await fetch(`/api/profiles/${encodeURIComponent(farmerId)}`);
+      const resp = await fetch(`/api/profiles/${encodeURIComponent(farmerId)}`, withAuthHeaders(undefined, authUser));
       const data = await parseJsonOrThrow(resp);
       const normalized = normalizeProfile(data);
       setSelectedProfile(normalized);
@@ -266,7 +266,7 @@ export function ProfilesPage() {
     );
 
     try {
-      const resp = await fetch(`/api/profiles/${encodeURIComponent(editedProfile.farmer_id)}`, {
+      const resp = await fetch(`/api/profiles/${encodeURIComponent(editedProfile.farmer_id)}`, withAuthHeaders({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -274,7 +274,7 @@ export function ProfilesPage() {
           display_name: editedProfile.display_name || editedProfile.name || editedProfile.farmer_id,
           bases: basesMap,
         }),
-      });
+      }, authUser));
       await parseJsonOrThrow(resp);
       setInfoMessage('档案业务资料已保存。');
       setSelectedProfile(editedProfile);
@@ -362,7 +362,7 @@ export function ProfilesPage() {
     setInfoMessage('');
     setBaseLoading(`${base.base_id}:address`, true);
     try {
-      const resp = await fetch(`/api/location/reverse?lat=${encodeURIComponent(base.latitude)}&lon=${encodeURIComponent(base.longitude)}`);
+      const resp = await fetch(`/api/location/reverse?lat=${encodeURIComponent(base.latitude)}&lon=${encodeURIComponent(base.longitude)}`, withAuthHeaders(undefined, authUser));
       const payload = await parseJsonOrThrow(resp);
       updateBase(idx, (current) => ({
         ...current,
@@ -389,9 +389,9 @@ export function ProfilesPage() {
     setInfoMessage('');
     setBaseLoading(`${base.base_id}:weather`, true);
     try {
-      const resp = await fetch(`/api/profiles/${encodeURIComponent(editedProfile.farmer_id)}/bases/${encodeURIComponent(base.base_id)}/weather/refresh`, {
+      const resp = await fetch(`/api/profiles/${encodeURIComponent(editedProfile.farmer_id)}/bases/${encodeURIComponent(base.base_id)}/weather/refresh`, withAuthHeaders({
         method: 'POST',
-      });
+      }, authUser));
       const payload = await parseJsonOrThrow(resp);
       updateBase(idx, (current) => ({
         ...current,
@@ -399,8 +399,8 @@ export function ProfilesPage() {
         relative_humidity_2m: toSafeNumber(payload?.relative_humidity_2m),
         precipitation: toSafeNumber(payload?.precipitation),
         rain_risk: toSafeNumber(payload?.rain_risk),
-        weather_temperature_2m: toSafeNumber(payload?.temperature_2m),
-        weather_wind_speed_10m: toSafeNumber(payload?.wind_speed_10m),
+        weather_temperature_2m: toSafeNumber(payload?.weather_temperature_2m ?? payload?.temperature_2m),
+        weather_wind_speed_10m: toSafeNumber(payload?.weather_wind_speed_10m ?? payload?.wind_speed_10m),
         last_weather_refresh_at: toSafeString(payload?.last_weather_refresh_at, current.last_weather_refresh_at),
       }));
       setInfoMessage(`基地 ${base.base_id} 天气已刷新（未自动保存）`);
