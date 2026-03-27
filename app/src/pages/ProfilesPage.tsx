@@ -29,6 +29,8 @@ interface FarmerBase {
   name: string;
   location: string;
   province: string;
+  city?: string;
+  district?: string;
   latitude: number | null;
   longitude: number | null;
   facility_type: string;
@@ -52,6 +54,8 @@ interface FarmerProfile {
   name: string;
   display_name: string;
   owner_user_id: string;
+  role_type?: string;
+  account_role?: string;
   active_base_id: string;
   confirm_when_low_confidence: boolean;
   farm_scale: 'BALCONY' | 'SMALL' | 'MEDIUM' | 'LARGE' | 'GREENHOUSE_LARGE';
@@ -119,6 +123,32 @@ const toSafeNumber = (value: unknown): number | null => {
   return null;
 };
 
+const formatBaseLocation = (base: Pick<FarmerBase, 'province' | 'city' | 'district' | 'location'>): string => {
+  const deduped: string[] = [];
+  const pushUnique = (value: string) => {
+    const normalized = value.trim();
+    if (!normalized) return;
+    if (deduped.some((existing) => existing === normalized || existing.includes(normalized) || normalized.includes(existing))) {
+      return;
+    }
+    deduped.push(normalized);
+  };
+
+  pushUnique(toSafeString(base.province));
+  pushUnique(toSafeString(base.city));
+  pushUnique(toSafeString(base.district));
+  pushUnique(toSafeString(base.location));
+  return deduped.join(' ');
+};
+
+const getProfileRoleLabel = (profile: Pick<FarmerProfile, 'account_role' | 'role_type'>): string => {
+  const normalized = toSafeString(profile.account_role || profile.role_type).trim().toUpperCase();
+  if (normalized === 'ADMIN') return '管理员';
+  if (normalized === 'EXPERT') return '专家';
+  if (normalized === 'USER' || normalized === 'FARMER') return '农户';
+  return '';
+};
+
 const normalizeBase = (baseId: string, base: unknown): FarmerBase => {
   const baseObj = base && typeof base === 'object' ? (base as Record<string, unknown>) : {};
   return {
@@ -126,6 +156,8 @@ const normalizeBase = (baseId: string, base: unknown): FarmerBase => {
     name: toSafeString(baseObj.name),
     location: toSafeString(baseObj.location),
     province: toSafeString(baseObj.province),
+    city: toSafeString(baseObj.city),
+    district: toSafeString(baseObj.district),
     latitude: toSafeNumber(baseObj.latitude ?? baseObj.lat),
     longitude: toSafeNumber(baseObj.longitude ?? baseObj.lon),
     facility_type: toSafeString(baseObj.facility_type ?? baseObj.facility),
@@ -162,6 +194,8 @@ const normalizeProfile = (raw: unknown): FarmerProfile => {
     name: toSafeString(rawObj.name),
     display_name: toSafeString(rawObj.display_name || rawObj.name || rawObj.farmer_id),
     owner_user_id: toSafeString(rawObj.owner_user_id),
+    role_type: toSafeString(rawObj.role_type),
+    account_role: toSafeString(rawObj.account_role),
     active_base_id: toSafeString(rawObj.active_base_id),
     confirm_when_low_confidence: Boolean(rawObj.confirm_when_low_confidence),
     farm_scale: (FARM_SCALE_OPTIONS.includes(toSafeString(rawObj.farm_scale) as never) ? toSafeString(rawObj.farm_scale) : 'SMALL') as FarmerProfile['farm_scale'],
@@ -336,6 +370,8 @@ export function ProfilesPage() {
         name: base.name,
         location: base.location,
         province: base.province,
+        city: base.city,
+        district: base.district,
         latitude: base.latitude,
         longitude: base.longitude,
         facility: base.facility_type,
@@ -407,6 +443,8 @@ export function ProfilesPage() {
         name: '',
         location: '',
         province: '',
+        city: '',
+        district: '',
         latitude: null,
         longitude: null,
         facility_type: '',
@@ -454,6 +492,8 @@ export function ProfilesPage() {
       ...current,
       location: toSafeString(payload?.location, current.location),
       province: toSafeString(payload?.province, current.province),
+      city: toSafeString(payload?.city, current.city),
+      district: toSafeString(payload?.district, current.district),
     }));
   };
 
@@ -566,6 +606,7 @@ export function ProfilesPage() {
             <CardContent className="space-y-2">
               {sortedProfiles.map((profile) => {
                 const isMine = authUser?.userId && profile.owner_user_id === authUser.userId;
+                const roleLabel = getProfileRoleLabel(profile);
                 return (
                   <button
                     type="button"
@@ -581,6 +622,7 @@ export function ProfilesPage() {
                     <p className="text-white font-medium">{profile.display_name || profile.farmer_id}</p>
                     <div className="flex items-center gap-2 mt-1">
                       <p className="text-white/40 text-xs">{profile.farmer_id}</p>
+                      {roleLabel ? <Badge variant="outline" className="border-white/20 text-white/80 text-[10px]">{roleLabel}</Badge> : null}
                       {isMine ? <Badge className="bg-[#c8f7c5] text-black text-[10px]">我的档案</Badge> : null}
                     </div>
                   </button>
@@ -649,8 +691,11 @@ export function ProfilesPage() {
                         <div className="flex items-center justify-between"><Badge className="bg-[#c8f7c5]/20 text-[#c8f7c5]">{base.base_id}</Badge><Button onClick={() => removeBase(idx)} variant="ghost" size="sm" className="text-red-400"><Trash2 className="w-4 h-4" /></Button></div>
                         <div className="grid sm:grid-cols-2 gap-3">
                           <div className="space-y-1"><Label className="text-white/60 text-xs">基地名称</Label><Input value={base.name} onChange={(e) => { const next = [...editedProfile.bases]; next[idx].name = e.target.value; setEditedProfile({ ...editedProfile, bases: next }); }} className="bg-white/10 border-white/20 text-white text-sm" /></div>
-                          <div className="space-y-1"><Label className="text-white/60 text-xs">位置/地址</Label><Input value={base.location} onChange={(e) => { const next = [...editedProfile.bases]; next[idx].location = e.target.value; setEditedProfile({ ...editedProfile, bases: next }); }} className="bg-white/10 border-white/20 text-white text-sm" /></div>
+                          <div className="space-y-1"><Label className="text-white/60 text-xs">位置</Label><Input value={formatBaseLocation(base)} readOnly className="bg-white/10 border-white/20 text-white/80 text-sm" /></div>
+                          <div className="space-y-1"><Label className="text-white/60 text-xs">详细地址</Label><Input value={base.location} onChange={(e) => { const next = [...editedProfile.bases]; next[idx].location = e.target.value; setEditedProfile({ ...editedProfile, bases: next }); }} className="bg-white/10 border-white/20 text-white text-sm" /></div>
                           <div className="space-y-1"><Label className="text-white/60 text-xs">省份</Label><Input value={base.province} onChange={(e) => { const next = [...editedProfile.bases]; next[idx].province = e.target.value; setEditedProfile({ ...editedProfile, bases: next }); }} className="bg-white/10 border-white/20 text-white text-sm" /></div>
+                          <div className="space-y-1"><Label className="text-white/60 text-xs">城市</Label><Input value={base.city || ''} onChange={(e) => { const next = [...editedProfile.bases]; next[idx].city = e.target.value; setEditedProfile({ ...editedProfile, bases: next }); }} className="bg-white/10 border-white/20 text-white text-sm" /></div>
+                          <div className="space-y-1"><Label className="text-white/60 text-xs">区县</Label><Input value={base.district || ''} onChange={(e) => { const next = [...editedProfile.bases]; next[idx].district = e.target.value; setEditedProfile({ ...editedProfile, bases: next }); }} className="bg-white/10 border-white/20 text-white text-sm" /></div>
                           <div className="space-y-1"><Label className="text-white/60 text-xs">纬度</Label><Input type="number" value={base.latitude ?? ''} readOnly className="bg-white/10 border-white/20 text-white/60 text-sm" /></div>
                           <div className="space-y-1"><Label className="text-white/60 text-xs">经度</Label><Input type="number" value={base.longitude ?? ''} readOnly className="bg-white/10 border-white/20 text-white/60 text-sm" /></div>
                           <div className="space-y-1"><Label className="text-white/60 text-xs">设施类型</Label><Input value={base.facility_type} onChange={(e) => { const next = [...editedProfile.bases]; next[idx].facility_type = e.target.value; setEditedProfile({ ...editedProfile, bases: next }); }} className="bg-white/10 border-white/20 text-white text-sm" /></div>
