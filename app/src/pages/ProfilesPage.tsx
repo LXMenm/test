@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Users, RefreshCw, Save, MapPin, Ban, Sprout, Trash2, Plus } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -195,9 +195,8 @@ const predictBranch = (profile: Pick<FarmerProfile, 'farm_scale' | 'pesticide_ac
   return 'ENTERPRISE';
 };
 
-const generateNextBaseId = (bases: FarmerBase[]): string => {
+const getMaxBaseIdNumber = (bases: FarmerBase[]): number => {
   const baseIdPattern = /^B(\d{4})$/i;
-  const usedIds = new Set(bases.map((base) => toSafeString(base.base_id).toUpperCase()).filter(Boolean));
   let maxNo = 0;
   for (const base of bases) {
     const matched = toSafeString(base.base_id).toUpperCase().match(baseIdPattern);
@@ -207,7 +206,12 @@ const generateNextBaseId = (bases: FarmerBase[]): string => {
       maxNo = Math.max(maxNo, parsed);
     }
   }
-  let candidate = maxNo + 1;
+  return maxNo;
+};
+
+const generateNextBaseId = (bases: FarmerBase[], startNo: number): string => {
+  const usedIds = new Set(bases.map((base) => toSafeString(base.base_id).toUpperCase()).filter(Boolean));
+  let candidate = Math.max(1, startNo);
   while (usedIds.has(`B${String(candidate).padStart(4, '0')}`)) {
     candidate += 1;
   }
@@ -227,6 +231,7 @@ export function ProfilesPage() {
   const [infoMessage, setInfoMessage] = useState('');
   const [newIngredient, setNewIngredient] = useState('');
   const [baseActionLoading, setBaseActionLoading] = useState<Record<string, boolean>>({});
+  const nextBaseSequenceRef = useRef(1);
 
   const sortedProfiles = useMemo(() => {
     if (!canManageAllProfiles || !authUser?.userId) return profiles;
@@ -282,6 +287,8 @@ export function ProfilesPage() {
       const normalized = normalizeProfile(data);
       setSelectedProfile(normalized);
       setEditedProfile(JSON.parse(JSON.stringify(normalized)));
+      setBaseActionLoading({});
+      nextBaseSequenceRef.current = getMaxBaseIdNumber(normalized.bases) + 1;
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : '加载档案详情失败');
     }
@@ -302,16 +309,30 @@ export function ProfilesPage() {
     setErrorMessage('');
     setInfoMessage('');
 
-    const normalizedBaseIds = editedProfile.bases.map((base) => toSafeString(base.base_id).trim()).filter(Boolean);
-    const duplicatedBaseId = normalizedBaseIds.find((baseId, idx) => normalizedBaseIds.indexOf(baseId) !== idx);
+    const normalizedBaseIds = editedProfile.bases.map((base) => toSafeString(base.base_id).trim());
+    const invalidBaseIdIndex = normalizedBaseIds.findIndex((baseId) => !baseId);
+    if (invalidBaseIdIndex >= 0) {
+      setErrorMessage(`第 ${invalidBaseIdIndex + 1} 个基地缺少基地ID，请修改后再保存`);
+      return;
+    }
+    const seenBaseId = new Set<string>();
+    let duplicatedBaseId = '';
+    for (const baseId of normalizedBaseIds) {
+      const normalized = baseId.toUpperCase();
+      if (seenBaseId.has(normalized)) {
+        duplicatedBaseId = normalized;
+        break;
+      }
+      seenBaseId.add(normalized);
+    }
     if (duplicatedBaseId) {
-      setErrorMessage(`基地ID重复：${duplicatedBaseId}，请删除重复基地或重新生成`);
+      setErrorMessage(`基地ID重复：${duplicatedBaseId}，请修改后再保存`);
       return;
     }
 
     const basesMap = Object.fromEntries(
-      editedProfile.bases.map((base) => [base.base_id, {
-        base_id: base.base_id,
+      editedProfile.bases.map((base, idx) => [normalizedBaseIds[idx], {
+        base_id: normalizedBaseIds[idx],
         name: base.name,
         location: base.location,
         province: base.province,
@@ -375,7 +396,10 @@ export function ProfilesPage() {
 
   const addBase = () => {
     if (!editedProfile) return;
-    const nextId = generateNextBaseId(editedProfile.bases);
+    const nextId = generateNextBaseId(editedProfile.bases, nextBaseSequenceRef.current);
+    const matched = nextId.match(/^B(\d{4})$/);
+    nextBaseSequenceRef.current = matched ? Number(matched[1]) + 1 : nextBaseSequenceRef.current + 1;
+    setBaseActionLoading({});
     setEditedProfile({
       ...editedProfile,
       bases: [...editedProfile.bases, {
@@ -405,6 +429,7 @@ export function ProfilesPage() {
 
   const removeBase = (idx: number) => {
     if (!editedProfile) return;
+    setBaseActionLoading({});
     setEditedProfile({ ...editedProfile, bases: editedProfile.bases.filter((_, i) => i !== idx) });
   };
 
@@ -580,7 +605,7 @@ export function ProfilesPage() {
                     <div className="space-y-2"><Label className="text-white/60">当前基地</Label>
                       <Select value={editedProfile.active_base_id || ''} onValueChange={(v) => setEditedProfile({ ...editedProfile, active_base_id: v })}>
                         <SelectTrigger className="bg-white/5 border-white/20 text-white"><SelectValue /></SelectTrigger>
-                        <SelectContent>{editedProfile.bases.map((base) => <SelectItem key={base.base_id} value={base.base_id}>{base.name || base.base_id}</SelectItem>)}</SelectContent>
+                        <SelectContent>{editedProfile.bases.map((base, idx) => <SelectItem key={`${base.base_id}-${idx}`} value={base.base_id}>{base.name || base.base_id}</SelectItem>)}</SelectContent>
                       </Select>
                     </div>
                     <div className="flex items-center gap-2"><Checkbox checked={editedProfile.confirm_when_low_confidence} onCheckedChange={(v) => setEditedProfile({ ...editedProfile, confirm_when_low_confidence: Boolean(v) })} /><Label className="text-white/80">低置信度需确认</Label></div>
