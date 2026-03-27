@@ -288,6 +288,8 @@ def test_profile_repo_reads_weather_fields_from_explicit_columns_first_with_extr
                     "weather_temperature_2m": 29.0,
                     "wind_speed_10m": 9.3,
                     "last_weather_refresh_at": "2026-03-27T08:00:00Z",
+                    "lat": 31.2,
+                    "lon": 121.5,
                 },
             )
         )
@@ -297,6 +299,9 @@ def test_profile_repo_reads_weather_fields_from_explicit_columns_first_with_extr
     assert payload is not None
     base = payload["bases"]["B001"]
     assert base["weather_snapshot"] == "阴天"
+    # 经纬度列为空时，回退 extra_json(lat/lon)；避免前端按钮误判“缺少经纬度”。
+    assert base["latitude"] == 31.2
+    assert base["longitude"] == 121.5
     # 明确列优先：precipitation 取列值，不被 extra_json 覆盖
     assert base["precipitation"] == 0.3
     # 列为空时，回退 extra_json，保证历史数据可读

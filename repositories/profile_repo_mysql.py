@@ -206,6 +206,18 @@ def _base_row_to_dict(
         _risk_item_row_to_dict(row)
         for row in sorted(risk_item_rows or [], key=lambda item: item.id or 0)
     ]
+    latitude = base_row.latitude
+    if latitude is None:
+        latitude = extra_json.get("latitude")
+    if latitude is None:
+        latitude = extra_json.get("lat")
+
+    longitude = base_row.longitude
+    if longitude is None:
+        longitude = extra_json.get("longitude")
+    if longitude is None:
+        longitude = extra_json.get("lon")
+
     return {
         "base_id": base_row.base_id,
         "internal_base_uid": base_row.internal_base_uid,
@@ -214,8 +226,8 @@ def _base_row_to_dict(
         "province": base_row.province,
         "city": base_row.city,
         "district": base_row.district,
-        "latitude": base_row.latitude,
-        "longitude": base_row.longitude,
+        "latitude": latitude,
+        "longitude": longitude,
         "facility": base_row.facility,
         "environment": base_row.environment,
         "growth_stage": base_row.growth_stage,
