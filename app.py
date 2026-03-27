@@ -465,6 +465,11 @@ class AdminUpdateAccountRoleRequest(BaseModel):
     role: str
 
 
+class BaseWeatherRefreshRequest(BaseModel):
+    latitude: float | None = None
+    longitude: float | None = None
+
+
 class SPAStaticFiles(StaticFiles):
     async def get_response(self, path: str, scope):
         response = await super().get_response(path, scope)
@@ -2799,6 +2804,8 @@ def _refresh_base_weather(profile: FarmerProfile, base_id: str) -> dict[str, Any
     wind_speed_10m = weather.get("wind_speed_10m")
     return {
         "base_id": base_id,
+        "latitude": base.latitude,
+        "longitude": base.longitude,
         "weather_snapshot": base.weather_snapshot,
         "relative_humidity_2m": base.relative_humidity_2m,
         "precipitation": base.precipitation,
@@ -2847,7 +2854,12 @@ def _upsert_weather_snapshot_from_refresh(
 
 
 @app.post("/api/profiles/{farmer_id}/bases/{base_id}/weather/refresh")
-def refresh_base_weather(farmer_id: str, base_id: str, request: Request) -> dict[str, Any]:
+def refresh_base_weather(
+    farmer_id: str,
+    base_id: str,
+    request: Request,
+    body: BaseWeatherRefreshRequest = Body(default_factory=BaseWeatherRefreshRequest),
+) -> dict[str, Any]:
     actor = _get_request_actor(request)
     scoped_farmer_id = _apply_farmer_scope(actor, farmer_id)
     if scoped_farmer_id and scoped_farmer_id != farmer_id:
@@ -2859,6 +2871,17 @@ def refresh_base_weather(farmer_id: str, base_id: str, request: Request) -> dict
         profile = FarmerProfile.model_validate(profile_payload)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"档案格式非法，无法刷新天气: {exc}") from exc
+    base = profile.bases.get(base_id)
+    if base is None:
+        raise HTTPException(status_code=404, detail="基地不存在")
+    has_req_lat = body.latitude is not None
+    has_req_lon = body.longitude is not None
+    if has_req_lat != has_req_lon:
+        raise HTTPException(status_code=400, detail="经纬度参数不完整，请同时提供 latitude 与 longitude")
+    if has_req_lat and has_req_lon:
+        base.latitude = float(body.latitude)
+        base.longitude = float(body.longitude)
+        profile.bases[base_id] = base
 
     payload = _refresh_base_weather(profile, base_id)
     if _should_write_weather_snapshot():
