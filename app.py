@@ -2390,9 +2390,9 @@ def _build_image_refs(image_id: str | None) -> dict[str, str]:
 
 
 
-def _collect_existing_base_ids(exclude_farmer_id: str | None = None) -> dict[str, str]:
-    """收集系统内已有基地ID -> 所属farmer_id（用于全局唯一校验）。"""
-    result: dict[str, str] = {}
+def _collect_existing_base_ids(exclude_farmer_id: str | None = None) -> list[tuple[str, str]]:
+    """收集系统内已有基地ID与所属 farmer_id（仅用于信息展示，不参与全局唯一校验）。"""
+    result: list[tuple[str, str]] = []
     for existing_farmer_id in list_profile_ids_mysql():
         if exclude_farmer_id and existing_farmer_id == exclude_farmer_id:
             continue
@@ -2403,7 +2403,10 @@ def _collect_existing_base_ids(exclude_farmer_id: str | None = None) -> dict[str
         if not isinstance(bases, dict):
             continue
         for base_id in bases.keys():
-            result[base_id] = existing_farmer_id
+            normalized_base_id = str(base_id or "").strip()
+            if not normalized_base_id:
+                continue
+            result.append((normalized_base_id, existing_farmer_id))
     return result
 
 
@@ -2412,7 +2415,7 @@ def list_all_base_ids(request: Request) -> dict[str, list[dict[str, str]]]:
     actor = _get_request_actor(request)
     scoped_farmer_id = _apply_farmer_scope(actor, None)
     items = []
-    for base_id, owner in sorted(_collect_existing_base_ids().items(), key=lambda item: (item[0], item[1])):
+    for base_id, owner in sorted(_collect_existing_base_ids(), key=lambda item: (item[0], item[1])):
         if scoped_farmer_id and owner != scoped_farmer_id:
             continue
         items.append({"base_id": base_id, "farmer_id": owner})
@@ -2457,12 +2460,6 @@ def _normalize_profile_payload_for_save(farmer_id: str, payload: dict) -> Farmer
         normalized["bases"] = checked
 
     profile = FarmerProfile.model_validate(normalized)
-
-    existing_base_ids = _collect_existing_base_ids(exclude_farmer_id=farmer_id)
-    for base_id in profile.bases.keys():
-        owner = existing_base_ids.get(base_id)
-        if owner:
-            raise ValueError(f"基地ID已存在，请更换后再试（{base_id} 已归属 {owner}）")
 
     # 根据活跃基地播种日期自动估算采收窗口（旧字段兼容回退）。
     active_base = profile.bases.get(profile.active_base_id or "") if profile.active_base_id else None
@@ -2774,14 +2771,24 @@ def weather_summary(lat: float, lon: float) -> dict[str, Any]:
     }
 
 
-def _refresh_base_weather(profile: FarmerProfile, base_id: str) -> dict[str, Any]:
+def _refresh_base_weather(
+    profile: FarmerProfile,
+    base_id: str,
+    *,
+    requested_latitude: float | None = None,
+    requested_longitude: float | None = None,
+) -> dict[str, Any]:
     base = profile.bases.get(base_id)
     if base is None:
         raise HTTPException(status_code=404, detail="基地不存在")
-    if base.latitude is None or base.longitude is None:
+    resolved_latitude = requested_latitude if requested_latitude is not None else _safe_float(base.latitude)
+    resolved_longitude = requested_longitude if requested_longitude is not None else _safe_float(base.longitude)
+    if resolved_latitude is None or resolved_longitude is None:
         raise HTTPException(status_code=400, detail="基地缺少经纬度，无法刷新天气")
+    base.latitude = resolved_latitude
+    base.longitude = resolved_longitude
 
-    weather = weather_summary(lat=float(base.latitude), lon=float(base.longitude))
+    weather = weather_summary(lat=resolved_latitude, lon=resolved_longitude)
     refreshed_at = _utc_now_iso()
     summary = str(weather.get("summary") or "").strip()
     if summary:
@@ -2799,6 +2806,8 @@ def _refresh_base_weather(profile: FarmerProfile, base_id: str) -> dict[str, Any
     wind_speed_10m = weather.get("wind_speed_10m")
     return {
         "base_id": base_id,
+        "latitude": base.latitude,
+        "longitude": base.longitude,
         "weather_snapshot": base.weather_snapshot,
         "relative_humidity_2m": base.relative_humidity_2m,
         "precipitation": base.precipitation,
@@ -2847,7 +2856,12 @@ def _upsert_weather_snapshot_from_refresh(
 
 
 @app.post("/api/profiles/{farmer_id}/bases/{base_id}/weather/refresh")
-def refresh_base_weather(farmer_id: str, base_id: str, request: Request) -> dict[str, Any]:
+def refresh_base_weather(
+    farmer_id: str,
+    base_id: str,
+    request: Request,
+    payload: dict[str, Any] = Body(default_factory=dict),
+) -> dict[str, Any]:
     actor = _get_request_actor(request)
     scoped_farmer_id = _apply_farmer_scope(actor, farmer_id)
     if scoped_farmer_id and scoped_farmer_id != farmer_id:
@@ -2860,7 +2874,14 @@ def refresh_base_weather(farmer_id: str, base_id: str, request: Request) -> dict
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"档案格式非法，无法刷新天气: {exc}") from exc
 
-    payload = _refresh_base_weather(profile, base_id)
+    request_latitude = _safe_float(payload.get("latitude") if isinstance(payload, dict) else None)
+    request_longitude = _safe_float(payload.get("longitude") if isinstance(payload, dict) else None)
+    payload = _refresh_base_weather(
+        profile,
+        base_id,
+        requested_latitude=request_latitude,
+        requested_longitude=request_longitude,
+    )
     if _should_write_weather_snapshot():
         try:
             _upsert_weather_snapshot_from_refresh(

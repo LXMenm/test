@@ -434,10 +434,13 @@ export function ProfilesPage() {
   };
 
   const updateBase = (idx: number, updater: (base: FarmerBase) => FarmerBase) => {
-    if (!editedProfile) return;
-    const next = [...editedProfile.bases];
-    next[idx] = updater(next[idx]);
-    setEditedProfile({ ...editedProfile, bases: next });
+    setEditedProfile((prev) => {
+      if (!prev) return prev;
+      const next = [...prev.bases];
+      if (!next[idx]) return prev;
+      next[idx] = updater(next[idx]);
+      return { ...prev, bases: next };
+    });
   };
 
   const setBaseLoading = (operationKey: string, loading: boolean) => {
@@ -516,6 +519,11 @@ export function ProfilesPage() {
     try {
       const resp = await fetch(`/api/profiles/${encodeURIComponent(editedProfile.farmer_id)}/bases/${encodeURIComponent(base.base_id)}/weather/refresh`, withAuthHeaders({
         method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          latitude,
+          longitude,
+        }),
       }, authUser));
       const payload = await parseJsonOrThrow(resp);
       updateBase(idx, (current) => ({
@@ -643,8 +651,8 @@ export function ProfilesPage() {
                           <div className="space-y-1"><Label className="text-white/60 text-xs">基地名称</Label><Input value={base.name} onChange={(e) => { const next = [...editedProfile.bases]; next[idx].name = e.target.value; setEditedProfile({ ...editedProfile, bases: next }); }} className="bg-white/10 border-white/20 text-white text-sm" /></div>
                           <div className="space-y-1"><Label className="text-white/60 text-xs">位置/地址</Label><Input value={base.location} onChange={(e) => { const next = [...editedProfile.bases]; next[idx].location = e.target.value; setEditedProfile({ ...editedProfile, bases: next }); }} className="bg-white/10 border-white/20 text-white text-sm" /></div>
                           <div className="space-y-1"><Label className="text-white/60 text-xs">省份</Label><Input value={base.province} onChange={(e) => { const next = [...editedProfile.bases]; next[idx].province = e.target.value; setEditedProfile({ ...editedProfile, bases: next }); }} className="bg-white/10 border-white/20 text-white text-sm" /></div>
-                          <div className="space-y-1"><Label className="text-white/60 text-xs">纬度</Label><Input type="number" value={base.latitude ?? ''} readOnly disabled className="bg-white/10 border-white/20 text-white/60 text-sm" /></div>
-                          <div className="space-y-1"><Label className="text-white/60 text-xs">经度</Label><Input type="number" value={base.longitude ?? ''} readOnly disabled className="bg-white/10 border-white/20 text-white/60 text-sm" /></div>
+                          <div className="space-y-1"><Label className="text-white/60 text-xs">纬度</Label><Input type="number" value={base.latitude ?? ''} readOnly className="bg-white/10 border-white/20 text-white/60 text-sm" /></div>
+                          <div className="space-y-1"><Label className="text-white/60 text-xs">经度</Label><Input type="number" value={base.longitude ?? ''} readOnly className="bg-white/10 border-white/20 text-white/60 text-sm" /></div>
                           <div className="space-y-1"><Label className="text-white/60 text-xs">设施类型</Label><Input value={base.facility_type} onChange={(e) => { const next = [...editedProfile.bases]; next[idx].facility_type = e.target.value; setEditedProfile({ ...editedProfile, bases: next }); }} className="bg-white/10 border-white/20 text-white text-sm" /></div>
                           <div className="space-y-1"><Label className="text-white/60 text-xs">生长阶段</Label><Select value={normalizeGrowthStage(base.growth_stage) || '__EMPTY__'} onValueChange={(value) => { const next = [...editedProfile.bases]; next[idx].growth_stage = value === '__EMPTY__' ? '' : value; setEditedProfile({ ...editedProfile, bases: next }); }}><SelectTrigger className="bg-white/10 border-white/20 text-white text-sm"><SelectValue placeholder="请选择生长阶段" /></SelectTrigger><SelectContent><SelectItem value="__EMPTY__">未设置</SelectItem>{TOMATO_GROWTH_STAGE_OPTIONS.map((stage) => <SelectItem key={stage.value} value={stage.value}>{stage.label}</SelectItem>)}</SelectContent></Select></div>
                           <div className="space-y-1"><Label className="text-white/60 text-xs">播种日期</Label><Input type="date" value={base.sowing_date} onChange={(e) => { const next = [...editedProfile.bases]; next[idx].sowing_date = e.target.value; setEditedProfile({ ...editedProfile, bases: next }); }} className="bg-white/10 border-white/20 text-white text-sm" /></div>
