@@ -3104,7 +3104,12 @@ def auth_me(request: Request) -> dict[str, Any]:
         raise HTTPException(status_code=401, detail="未登录或登录状态已失效")
     with get_db_session() as session:
         account = session.execute(
-            select(UserAccountORM).where(UserAccountORM.user_id == user_id)
+            select(UserAccountORM).where(
+                or_(
+                    UserAccountORM.user_id == identifier,
+                    UserAccountORM.username == identifier,
+                )
+            )
         ).scalar_one_or_none()
         if account is None:
             raise HTTPException(status_code=401, detail="账号不存在")
