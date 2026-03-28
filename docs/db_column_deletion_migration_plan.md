@@ -67,3 +67,14 @@ python scripts/migrations/migrate_drop_first_batch_redundant_columns.py
   - `farmer_profiles.meta_json.role_type`
   - `farmer_profiles.role_type`
   - `user_accounts.linked_farmer_id`
+
+## 7. 第二批第一步（constraints_json 补迁移）
+
+`constraints_json` 当前仍存在历史残留，不能直接删列。已新增补迁移脚本：
+
+```bash
+python scripts/migrations/migrate_constraints_json_to_normalized.py
+```
+
+该脚本仅做保守回填（不删列）：补 `prefer_organic` / `harvest_window_days` / `farmer_profile_banned_ingredients`，
+并输出迁移前后审计摘要，用于判断是否可进入下一轮删列评估。
