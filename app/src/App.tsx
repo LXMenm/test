@@ -1,5 +1,6 @@
-import { Component, useEffect, useMemo, useState } from 'react';
+import { Component, useCallback, useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
+import { Eye, EyeOff } from 'lucide-react';
 import { Navbar } from './components/Navbar';
 import { Button } from './components/ui/button';
 import { Input } from './components/ui/input';
@@ -92,6 +93,75 @@ class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
   }
 }
 
+interface InlinePasswordFieldProps {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  placeholder: string;
+  autoComplete: string;
+  inputName: string;
+  inputId: string;
+  hint?: string;
+  hintClassName?: string;
+  onEnter?: () => void;
+}
+
+function InlinePasswordField({
+  label,
+  value,
+  onChange,
+  placeholder,
+  autoComplete,
+  inputName,
+  inputId,
+  hint,
+  hintClassName,
+  onEnter,
+}: InlinePasswordFieldProps) {
+  const [revealed, setRevealed] = useState(false);
+  const reveal = () => setRevealed(true);
+  const hide = () => setRevealed(false);
+
+  return (
+    <div className="space-y-2">
+      <Label htmlFor={inputId} className="text-white/80 text-sm">{label}</Label>
+      <div className="relative">
+        <Input
+          id={inputId}
+          name={inputName}
+          autoComplete={autoComplete}
+          type={revealed ? 'text' : 'password'}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && onEnter) {
+              e.preventDefault();
+              onEnter();
+            }
+          }}
+          placeholder={placeholder}
+          className="bg-black/20 border-white/20 text-white pr-10"
+        />
+        <button
+          type="button"
+          aria-label={revealed ? '松开后隐藏密码' : '按住显示密码'}
+          onMouseDown={reveal}
+          onMouseUp={hide}
+          onMouseLeave={hide}
+          onTouchStart={reveal}
+          onTouchEnd={hide}
+          onTouchCancel={hide}
+          onBlur={hide}
+          className="absolute right-2 top-1/2 -translate-y-1/2 text-white/70 hover:text-white"
+        >
+          {revealed ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+        </button>
+      </div>
+      {hint ? <p className={hintClassName || 'text-xs text-white/60'}>{hint}</p> : null}
+    </div>
+  );
+}
+
 function App() {
   const [authUser, setAuthUser] = useState<AuthUser | null>(() => loadAuthUser());
   const [authChecking, setAuthChecking] = useState<boolean>(() => Boolean(loadAuthUser()));
@@ -105,6 +175,7 @@ function App() {
   const [passwordSaving, setPasswordSaving] = useState(false);
   const [passwordMessage, setPasswordMessage] = useState('');
   const [passwordError, setPasswordError] = useState('');
+  const [passwordPanelKey, setPasswordPanelKey] = useState(0);
 
   const allowedPages = useMemo(() => (authUser ? getAllowedPages(authUser.role) : []), [authUser]);
 
@@ -152,45 +223,62 @@ function App() {
     };
   }, [authUser]);
 
-  useEffect(() => {
+  const resetPasswordPanelState = useCallback(() => {
+    setOldPassword('');
+    setNewPassword('');
+    setConfirmPassword('');
+    setPasswordError('');
+    setPasswordMessage('');
+    setPasswordPanelKey((prev) => prev + 1);
+  }, []);
+
+  const verifyCurrentAuth = useCallback(async (options?: { silent?: boolean }) => {
     if (!authUser) {
       setAuthChecking(false);
       return;
     }
-    let cancelled = false;
-    const verifyAuth = async () => {
-      setAuthChecking(true);
-      try {
-        const resp = await fetch('/api/auth/me', withAuthHeaders(undefined, authUser));
-        const data = await resp.json().catch(() => null);
-        if (cancelled) return;
-        if (!resp.ok) {
-          if (resp.status === 401 || resp.status === 403) {
-            clearAuthUser();
-            setAuthUser(null);
-            setAuthNotice('登录状态已失效，请重新登录');
-            setPasswordPanelOpen(false);
-            return;
-          }
-          throw new Error(String((data as Record<string, unknown> | null)?.detail || '登录状态校验失败'));
+    const silent = Boolean(options?.silent);
+    if (!silent) setAuthChecking(true);
+    try {
+      const resp = await fetch('/api/auth/me', withAuthHeaders(undefined, authUser));
+      const data = await resp.json().catch(() => null);
+      if (!resp.ok) {
+        if (resp.status === 401 || resp.status === 403) {
+          clearAuthUser();
+          setAuthUser(null);
+          setAuthNotice('登录状态已失效，请重新登录');
+          setPasswordPanelOpen(false);
+          resetPasswordPanelState();
+          return;
         }
-        const nextUser = normalizeAuthUserFromPayload(data, authUser);
-        if (nextUser) {
-          setAuthUser(nextUser);
-          saveAuthUser(nextUser);
-        }
-      } catch (error) {
-        if (cancelled) return;
-        setAuthNotice(error instanceof Error ? error.message : '登录状态校验失败');
-      } finally {
-        if (!cancelled) setAuthChecking(false);
+        throw new Error(String((data as Record<string, unknown> | null)?.detail || '登录状态校验失败'));
       }
+      const nextUser = normalizeAuthUserFromPayload(data, authUser);
+      if (nextUser) {
+        setAuthUser(nextUser);
+        saveAuthUser(nextUser);
+      }
+    } catch (error) {
+      setAuthNotice(error instanceof Error ? error.message : '登录状态校验失败');
+    } finally {
+      if (!silent) setAuthChecking(false);
+    }
+  }, [authUser, resetPasswordPanelState]);
+
+  useEffect(() => {
+    void verifyCurrentAuth();
+  }, [verifyCurrentAuth]);
+
+  useEffect(() => {
+    const handleFocus = () => {
+      if (!authUser) return;
+      void verifyCurrentAuth({ silent: true });
     };
-    void verifyAuth();
+    window.addEventListener('focus', handleFocus);
     return () => {
-      cancelled = true;
+      window.removeEventListener('focus', handleFocus);
     };
-  }, []);
+  }, [authUser, verifyCurrentAuth]);
 
   const handleLogin = (user: AuthUser) => {
     setAuthUser(user);
@@ -205,6 +293,7 @@ function App() {
     clearAuthUser();
     setAuthUser(null);
     setPasswordPanelOpen(false);
+    resetPasswordPanelState();
   };
 
   const handleChangePassword = async () => {
@@ -295,37 +384,56 @@ function App() {
           onPageChange={setCurrentPage}
           authUser={authUser}
           onOpenChangePassword={() => {
-            setPasswordPanelOpen((prev) => !prev);
-            setPasswordError('');
-            setPasswordMessage('');
+            setPasswordPanelOpen((prev) => {
+              const nextOpen = !prev;
+              if (!nextOpen) resetPasswordPanelState();
+              if (nextOpen) {
+                setPasswordError('');
+                setPasswordMessage('');
+              }
+              return nextOpen;
+            });
           }}
           onLogout={handleLogout}
         />
         <main className="pt-20 pb-8 px-4 sm:px-6 lg:px-8 max-w-7xl mx-auto">
           {passwordPanelOpen ? (
-            <div className="mb-4 rounded-xl border border-white/10 bg-white/5 p-4">
+            <div key={`password-panel-${passwordPanelKey}`} className="mb-4 rounded-xl border border-white/10 bg-white/5 p-4">
               <h3 className="text-[#c8f7c5] font-medium mb-3">修改密码</h3>
               <div className="grid md:grid-cols-3 gap-3">
-                <Input
-                  type="password"
+                <InlinePasswordField
+                  label="当前密码"
                   value={oldPassword}
-                  onChange={(e) => setOldPassword(e.target.value)}
+                  onChange={setOldPassword}
                   placeholder="当前密码"
-                  className="bg-black/20 border-white/20 text-white"
+                  autoComplete="current-password"
+                  inputName="change-password-old"
+                  inputId="change-password-old"
+                  onEnter={() => { void handleChangePassword(); }}
                 />
-                <Input
-                  type="password"
+                <InlinePasswordField
+                  label="新密码"
                   value={newPassword}
-                  onChange={(e) => setNewPassword(e.target.value)}
+                  onChange={setNewPassword}
                   placeholder="新密码（至少 6 位）"
-                  className="bg-black/20 border-white/20 text-white"
+                  autoComplete="new-password"
+                  inputName="change-password-new"
+                  inputId="change-password-new"
+                  hint={newPassword && newPassword.length < 6 ? '密码长度至少 6 位' : undefined}
+                  hintClassName="text-xs text-amber-300"
+                  onEnter={() => { void handleChangePassword(); }}
                 />
-                <Input
-                  type="password"
+                <InlinePasswordField
+                  label="确认新密码"
                   value={confirmPassword}
-                  onChange={(e) => setConfirmPassword(e.target.value)}
+                  onChange={setConfirmPassword}
                   placeholder="确认新密码"
-                  className="bg-black/20 border-white/20 text-white"
+                  autoComplete="new-password"
+                  inputName="change-password-confirm"
+                  inputId="change-password-confirm"
+                  hint={confirmPassword && confirmPassword !== newPassword ? '两次输入的新密码不一致' : undefined}
+                  hintClassName="text-xs text-amber-300"
+                  onEnter={() => { void handleChangePassword(); }}
                 />
               </div>
               <div className="mt-3 flex items-center gap-3">
