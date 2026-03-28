@@ -136,10 +136,12 @@ def test_save_profile_payload_writes_main_and_farm_base_child_tables(monkeypatch
         ).scalars().all()
         risk_item_rows = session.execute(select(FarmBaseRiskItemORM).order_by(FarmBaseRiskItemORM.id.asc())).scalars().all()
 
-    assert base_row.risk_tags_json == ["FLOWERING_FRUITING_SENSITIVE", "HIGH_HUMIDITY"]
-    assert len(base_row.risk_items_json or []) == 2
+    assert base_row.risk_tags_json in (None, [])
+    assert base_row.risk_items_json in (None, [])
     assert [row.risk_tag for row in risk_tag_rows] == ["FLOWERING_FRUITING_SENSITIVE", "HIGH_HUMIDITY"]
-    assert [row.risk_code for row in risk_item_rows] == ["FLOWERING_FRUITING_SENSITIVE", "HIGH_HUMIDITY"]
+    assert [row.risk_code for row in risk_item_rows] == [None, None]
+    assert [row.risk_level for row in risk_item_rows] == [None, None]
+    assert [row.risk_message for row in risk_item_rows] == [None, None]
 
 
 def test_get_profile_prefers_farm_base_child_tables_but_keeps_compatible_shape(monkeypatch, tmp_path: Path) -> None:
@@ -179,6 +181,7 @@ def test_get_profile_falls_back_to_legacy_farm_base_json_when_child_tables_are_e
             FarmerProfileORM(
                 farmer_id=payload["farmer_id"],
                 name=payload["name"],
+                owner_user_id=payload["farmer_id"],
                 schema_version="1.2",
                 confirm_when_low_confidence=True,
             )

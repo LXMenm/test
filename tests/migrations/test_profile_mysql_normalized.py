@@ -11,6 +11,8 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from mysql_models import (
     FarmBaseORM,
+    FarmBaseRiskItemORM,
+    FarmBaseRiskTagORM,
     FarmerProfileBannedIngredientORM,
     FarmerProfileEquipmentORM,
     FarmerProfileORM,
@@ -74,6 +76,8 @@ def _create_profile_tables(engine: Any) -> None:
     FarmerProfileEquipmentORM.__table__.create(bind=engine, checkfirst=True)
     FarmerProfileBannedIngredientORM.__table__.create(bind=engine, checkfirst=True)
     FarmBaseORM.__table__.create(bind=engine, checkfirst=True)
+    FarmBaseRiskTagORM.__table__.create(bind=engine, checkfirst=True)
+    FarmBaseRiskItemORM.__table__.create(bind=engine, checkfirst=True)
 
 
 def test_save_profile_payload_writes_main_and_normalized_child_tables(monkeypatch, tmp_path: Path) -> None:
@@ -98,6 +102,10 @@ def test_save_profile_payload_writes_main_and_normalized_child_tables(monkeypatc
 
     assert profile_row.prefer_organic is True
     assert profile_row.harvest_window_days == 9
+    assert profile_row.equipment_json in (None, [])
+    assert profile_row.constraints_json in (None, {})
+    assert not (profile_row.meta_json or {}).get("owner_user_id")
+    assert not (profile_row.meta_json or {}).get("role_type")
     assert [row.equipment_code for row in equipment_rows] == ['BACKPACK_SPRAYER', 'DRONE']
     assert [row.ingredient_name for row in ingredient_rows] == ['百菌清', '代森锰锌']
     assert len(base_rows) == 1
@@ -143,6 +151,7 @@ def test_load_profile_falls_back_to_legacy_json_when_children_are_empty(monkeypa
             FarmerProfileORM(
                 farmer_id=payload['farmer_id'],
                 name=payload['name'],
+                owner_user_id=payload['farmer_id'],
                 schema_version='1.2',
                 confirm_when_low_confidence=True,
                 equipment_json=payload['equipment'],
@@ -172,6 +181,7 @@ def test_migrate_profile_normalized_script_is_idempotent(monkeypatch, tmp_path: 
             FarmerProfileORM(
                 farmer_id=payload['farmer_id'],
                 name=payload['name'],
+                owner_user_id=payload['farmer_id'],
                 schema_version='1.2',
                 confirm_when_low_confidence=True,
                 equipment_json=payload['equipment'],
