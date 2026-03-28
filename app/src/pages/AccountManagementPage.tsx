@@ -7,6 +7,7 @@ import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
+import { loadAuthUser } from '@/auth';
 
 const ROLE_OPTIONS = ['USER', 'EXPERT', 'ADMIN'] as const;
 
@@ -36,6 +37,7 @@ const DEFAULT_FORM: NewAccountForm = {
 };
 
 export function AccountManagementPage() {
+  const authUser = loadAuthUser();
   const [items, setItems] = useState<AdminAccountItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -128,6 +130,27 @@ export function AccountManagementPage() {
     } catch (error) {
       console.error(error);
       setTip(error instanceof Error ? error.message : '删除账号失败，请稍后重试。');
+    }
+  };
+
+  const updateStatus = async (userId: string, status: 'ACTIVE' | 'DISABLED') => {
+    if (status === 'DISABLED' && authUser?.userId === userId) {
+      setTip('不允许禁用当前登录管理员账号。');
+      return;
+    }
+    try {
+      const resp = await fetch(`/api/admin/accounts/${encodeURIComponent(userId)}/status`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status }),
+      });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(String(data?.detail || '更新状态失败'));
+      setTip(`账号 ${userId} 状态已更新为 ${status}。`);
+      await loadAccounts();
+    } catch (error) {
+      console.error(error);
+      setTip(error instanceof Error ? error.message : '更新状态失败，请稍后重试。');
     }
   };
 
@@ -265,14 +288,37 @@ export function AccountManagementPage() {
                       </Badge>
                     </td>
                     <td className="px-4 py-3 text-right">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => { void deleteAccount(item.user_id); }}
-                        className="border-red-500/40 text-red-300 hover:bg-red-500/10 transition-all"
-                      >
-                        <Trash2 className="w-4 h-4 mr-1" />删除
-                      </Button>
+                      <div className="flex justify-end gap-2">
+                        {item.status === 'ACTIVE' ? (
+                          item.user_id === authUser?.userId ? null : (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => { void updateStatus(item.user_id, 'DISABLED'); }}
+                              className="border-amber-500/40 text-amber-300 hover:bg-amber-500/10 transition-all"
+                            >
+                              禁用
+                            </Button>
+                          )
+                        ) : (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => { void updateStatus(item.user_id, 'ACTIVE'); }}
+                            className="border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/10 transition-all"
+                          >
+                            启用
+                          </Button>
+                        )}
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => { void deleteAccount(item.user_id); }}
+                          className="border-red-500/40 text-red-300 hover:bg-red-500/10 transition-all"
+                        >
+                          <Trash2 className="w-4 h-4 mr-1" />删除
+                        </Button>
+                      </div>
                     </td>
                   </tr>
                 )) : null}
