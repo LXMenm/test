@@ -19,6 +19,7 @@ from mysql_models import (
     FarmerProfileEquipmentORM,
     FarmerProfileORM,
 )
+from runtime_fallback_stats import record_fallback_hit
 
 
 def _datetime_to_iso(value: Any) -> Optional[str]:
@@ -135,6 +136,7 @@ def _build_constraints_payload(
         }
 
     legacy = _safe_dict(profile_row.constraints_json)
+    record_fallback_hit("profile.constraints_json_fallback")
     return {
         "prefer_organic": _safe_bool(legacy.get("prefer_organic")),
         "harvest_window_days": _safe_int(legacy.get("harvest_window_days")),
@@ -157,11 +159,16 @@ def _build_equipment_payload(
     ]
     if equipment_values:
         return equipment_values
+    record_fallback_hit("profile.equipment_json_fallback")
     return [str(item).strip() for item in _safe_list(profile_row.equipment_json) if str(item).strip()]
 
 
 def _risk_item_row_to_dict(row: FarmBaseRiskItemORM) -> dict[str, Any]:
     payload = _safe_dict(row.payload_json)
+    code_from_structured = not payload.get("code") and bool(str(row.risk_code or "").strip())
+    level_from_structured = not payload.get("level") and bool(str(row.risk_level or "").strip())
+    reason_from_structured = not payload.get("reason") and bool(str(row.risk_message or "").strip())
+
     code = str(payload.get("code") or row.risk_code or payload.get("label") or "").strip()
     label = str(payload.get("label") or row.risk_code or row.risk_message or "风险项").strip()
     reason = str(payload.get("reason") or row.risk_message or label).strip()
@@ -170,6 +177,8 @@ def _risk_item_row_to_dict(row: FarmBaseRiskItemORM) -> dict[str, Any]:
     normalized["label"] = label or normalized["code"]
     normalized["level"] = str(payload.get("level") or row.risk_level or "low").strip() or "low"
     normalized["reason"] = reason or normalized["label"]
+    if code_from_structured or level_from_structured or reason_from_structured:
+        record_fallback_hit("base.risk_item_structured_fallback")
     return normalized
 
 
@@ -191,12 +200,18 @@ def _base_row_to_dict(
     weather_temperature_2m = extra_json.get("weather_temperature_2m")
     if weather_temperature_2m is None:
         weather_temperature_2m = extra_json.get("temperature_2m")
+        if weather_temperature_2m is not None:
+            record_fallback_hit("base.extra.weather_legacy_key_fallback")
     weather_wind_speed_10m = extra_json.get("weather_wind_speed_10m")
     if weather_wind_speed_10m is None:
         weather_wind_speed_10m = extra_json.get("wind_speed_10m")
+        if weather_wind_speed_10m is not None:
+            record_fallback_hit("base.extra.weather_legacy_key_fallback")
     last_weather_refresh_at = extra_json.get("last_weather_refresh_at")
     if last_weather_refresh_at in (None, ""):
         last_weather_refresh_at = extra_json.get("weather_refreshed_at")
+        if last_weather_refresh_at not in (None, ""):
+            record_fallback_hit("base.extra.weather_legacy_key_fallback")
     normalized_risk_tags = [
         str(row.risk_tag).strip()
         for row in sorted(risk_tag_rows or [], key=lambda item: (item.risk_tag or "", item.id or 0))
@@ -211,12 +226,21 @@ def _base_row_to_dict(
         latitude = extra_json.get("latitude")
     if latitude is None:
         latitude = extra_json.get("lat")
+        if latitude is not None:
+            record_fallback_hit("base.extra.latlon_fallback")
 
     longitude = base_row.longitude
     if longitude is None:
         longitude = extra_json.get("longitude")
     if longitude is None:
         longitude = extra_json.get("lon")
+        if longitude is not None:
+            record_fallback_hit("base.extra.latlon_fallback")
+
+    if not normalized_risk_tags and _normalize_risk_tags(base_row.risk_tags_json):
+        record_fallback_hit("base.risk_tags_json_fallback")
+    if not normalized_risk_items and _normalize_risk_items(base_row.risk_items_json):
+        record_fallback_hit("base.risk_items_json_fallback")
 
     return {
         "base_id": base_row.base_id,
@@ -272,13 +296,23 @@ def _profile_row_to_dict(
         if base_row.base_id
     }
     meta_json = _safe_dict(profile_row.meta_json)
-    owner_user_id = str(profile_row.owner_user_id or "").strip() or str(meta_json.get("owner_user_id") or "").strip() or profile_row.farmer_id
+    raw_owner_user_id = str(profile_row.owner_user_id or "").strip()
+    fallback_owner_user_id = str(meta_json.get("owner_user_id") or "").strip()
+    owner_user_id = raw_owner_user_id or fallback_owner_user_id or profile_row.farmer_id
+    if not raw_owner_user_id and fallback_owner_user_id:
+        record_fallback_hit("profile.meta.owner_user_id_fallback")
+
+    raw_role_type = str(profile_row.role_type or "").strip().upper()
+    fallback_role_type = str(meta_json.get("role_type") or "").strip().upper()
+    role_type = raw_role_type or fallback_role_type or "FARMER"
+    if not raw_role_type and fallback_role_type:
+        record_fallback_hit("profile.meta.role_type_fallback")
     return {
         "farmer_id": profile_row.farmer_id,
         "name": profile_row.name,
         "display_name": meta_json.get("display_name") or profile_row.name,
         # 兼容返回字段：role_type 已废弃，不再承载身份语义。
-        "role_type": str(profile_row.role_type or meta_json.get("role_type") or "FARMER").strip().upper() or "FARMER",
+        "role_type": role_type,
         "owner_user_id": owner_user_id,
         "schema_version": profile_row.schema_version,
         "updated_at": _datetime_to_iso(profile_row.profile_updated_at),

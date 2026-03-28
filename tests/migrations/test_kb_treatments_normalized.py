@@ -7,7 +7,7 @@ from pathlib import Path
 import sys
 from typing import Any, Callable
 
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, inspect, select
 from sqlalchemy.orm import Session, sessionmaker
 
 import knowledge_base.kb_store as kb_store
@@ -88,6 +88,19 @@ def test_save_treatments_mysql_writes_main_and_normalized_child_tables(monkeypat
     assert any(row.action_section == "immediate_actions" for row in action_rows)
     assert any(row.action_section == "treatment_plan.FAMILY" for row in action_rows)
     assert [row.ingredient_name for row in ingredient_rows] == ["氟吡菌胺", "烯酰吗啉", "霜脲氰"]
+
+
+def test_kb_treatment_weak_fields_not_in_new_schema(tmp_path: Path) -> None:
+    engine, _ = _make_session_scope(tmp_path)
+    _create_treatment_tables(engine)
+    inspector = inspect(engine)
+
+    action_columns = {col["name"] for col in inspector.get_columns("kb_treatment_actions")}
+    ingredient_columns = {col["name"] for col in inspector.get_columns("kb_treatment_ingredients")}
+
+    assert "payload_json" not in action_columns
+    assert "ingredient_type" not in ingredient_columns
+    assert "payload_json" not in ingredient_columns
 
 
 def test_load_treatments_mysql_prefers_normalized_child_tables_but_keeps_shape(monkeypatch, tmp_path: Path) -> None:
