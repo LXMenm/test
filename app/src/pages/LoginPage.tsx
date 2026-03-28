@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { Loader2 } from 'lucide-react';
+import { Eye, Loader2 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -10,12 +10,83 @@ interface LoginPageProps {
   onLogin: (user: AuthUser) => void;
 }
 
+interface PasswordFieldProps {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  placeholder?: string;
+  autoComplete?: string;
+  inputName?: string;
+  inputId?: string;
+  hint?: string;
+  hintClassName?: string;
+  onEnter?: () => void;
+}
+
+function PasswordField({
+  label,
+  value,
+  onChange,
+  placeholder,
+  autoComplete,
+  inputName,
+  inputId,
+  hint,
+  hintClassName,
+  onEnter,
+}: PasswordFieldProps) {
+  const [revealed, setRevealed] = useState(false);
+
+  const reveal = () => setRevealed(true);
+  const hide = () => setRevealed(false);
+
+  return (
+    <div className="space-y-2">
+      <Label htmlFor={inputId} className="text-white/80">{label}</Label>
+      <div className="relative">
+        <Input
+          id={inputId}
+          name={inputName}
+          autoComplete={autoComplete}
+          type={revealed ? 'text' : 'password'}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && onEnter) {
+              e.preventDefault();
+              onEnter();
+            }
+          }}
+          placeholder={placeholder}
+          className="bg-white/5 border-white/20 text-white pr-10"
+        />
+        <button
+          type="button"
+          aria-label={revealed ? '松开后隐藏密码' : '按住显示密码'}
+          onMouseDown={reveal}
+          onMouseUp={hide}
+          onMouseLeave={hide}
+          onTouchStart={reveal}
+          onTouchEnd={hide}
+          onTouchCancel={hide}
+          onBlur={hide}
+          className="absolute right-2 top-1/2 -translate-y-1/2 text-white/70 hover:text-white"
+        >
+          <Eye className="w-4 h-4" />
+        </button>
+      </div>
+      {hint ? <p className={hintClassName || 'text-xs text-white/60'}>{hint}</p> : null}
+    </div>
+  );
+}
+
 export function LoginPage({ onLogin }: LoginPageProps) {
   const [mode, setMode] = useState<'login' | 'register'>('login');
   const [identifier, setIdentifier] = useState('');
-  const [password, setPassword] = useState('');
+  const [loginPassword, setLoginPassword] = useState('');
   const [username, setUsername] = useState('');
   const [displayName, setDisplayName] = useState('');
+  const [registerPassword, setRegisterPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -30,36 +101,50 @@ export function LoginPage({ onLogin }: LoginPageProps) {
 
   const disabled = useMemo(() => {
     if (loading) return true;
-    if (mode === 'login') return !identifier.trim();
-    return !username.trim() || !displayName.trim() || !password || !confirmPassword;
-  }, [mode, loading, identifier, username, displayName, password, confirmPassword]);
+    if (mode === 'login') return !identifier.trim() || !loginPassword;
+    return !username.trim() || !displayName.trim() || !registerPassword || !confirmPassword;
+  }, [mode, loading, identifier, loginPassword, username, displayName, registerPassword, confirmPassword]);
 
-  const normalizeInputs = () => {
-    setIdentifier((prev) => prev.trim());
-    setUsername((prev) => prev.trim());
-    setDisplayName((prev) => prev.trim());
+  const switchMode = (nextMode: 'login' | 'register') => {
+    setMode(nextMode);
+    setError('');
+    if (nextMode === 'login') {
+      setRegisterPassword('');
+      setConfirmPassword('');
+    } else {
+      setLoginPassword('');
+    }
   };
 
   const handleSubmit = async () => {
-    normalizeInputs();
-    if (disabled) return;
+    const normalizedIdentifier = identifier.trim();
+    const normalizedUsername = username.trim();
+    const normalizedDisplayName = displayName.trim();
+    if (loading) return;
+    if (mode === 'login' && (!normalizedIdentifier || !loginPassword)) return;
+    if (mode === 'register' && (!normalizedUsername || !normalizedDisplayName || !registerPassword || !confirmPassword)) return;
+
+    setIdentifier(normalizedIdentifier);
+    setUsername(normalizedUsername);
+    setDisplayName(normalizedDisplayName);
+
     setLoading(true);
     setError('');
     try {
-      if (mode === 'register' && password !== confirmPassword) {
+      if (mode === 'register' && registerPassword !== confirmPassword) {
         throw new Error('两次输入的密码不一致');
       }
-      if (mode === 'register' && password.length < 6) {
+      if (mode === 'register' && registerPassword.length < 6) {
         throw new Error('密码长度不能少于 6 位');
       }
 
       const endpoint = mode === 'login' ? '/api/auth/login' : '/api/auth/register';
       const body = mode === 'login'
-        ? { identifier: identifier.trim(), password }
+        ? { identifier: normalizedIdentifier, password: loginPassword }
         : {
-          username: username.trim(),
-          display_name: displayName.trim(),
-          password,
+          username: normalizedUsername,
+          display_name: normalizedDisplayName,
+          password: registerPassword,
         };
       const resp = await fetch(endpoint, {
         method: 'POST',
@@ -69,8 +154,8 @@ export function LoginPage({ onLogin }: LoginPageProps) {
       const data = await resp.json();
       if (!resp.ok) throw new Error(String(data?.detail || (mode === 'login' ? '登录失败' : '注册失败')));
       const nextUser = normalizeAuthUserFromPayload(data, {
-        userId: identifier.trim(),
-        displayName: displayName.trim() || identifier.trim(),
+        userId: normalizedIdentifier,
+        displayName: normalizedDisplayName || normalizedIdentifier,
         role: 'USER',
         linkedFarmerId: null,
       });
@@ -95,10 +180,7 @@ export function LoginPage({ onLogin }: LoginPageProps) {
               type="button"
               variant={mode === 'login' ? 'default' : 'outline'}
               className={mode === 'login' ? 'flex-1 bg-[#c8f7c5] text-black hover:bg-[#b8e7b5]' : 'flex-1 border-white/20 text-white hover:bg-white/10'}
-              onClick={() => {
-                setMode('login');
-                setError('');
-              }}
+              onClick={() => switchMode('login')}
             >
               登录
             </Button>
@@ -106,19 +188,19 @@ export function LoginPage({ onLogin }: LoginPageProps) {
               type="button"
               variant={mode === 'register' ? 'default' : 'outline'}
               className={mode === 'register' ? 'flex-1 bg-[#c8f7c5] text-black hover:bg-[#b8e7b5]' : 'flex-1 border-white/20 text-white hover:bg-white/10'}
-              onClick={() => {
-                setMode('register');
-                setError('');
-              }}
+              onClick={() => switchMode('register')}
             >
               注册
             </Button>
           </div>
           {mode === 'login' ? (
-            <>
+            <div key="login-mode" className="space-y-4">
               <div className="space-y-2">
-                <Label className="text-white/80">用户名或账户 ID</Label>
+                <Label htmlFor="login-identifier" className="text-white/80">用户名或账户 ID</Label>
                 <Input
+                  id="login-identifier"
+                  name="login-identifier"
+                  autoComplete="username"
                   value={identifier}
                   onChange={(e) => setIdentifier(e.target.value)}
                   onBlur={() => setIdentifier((prev) => prev.trim())}
@@ -132,28 +214,25 @@ export function LoginPage({ onLogin }: LoginPageProps) {
                   className="bg-white/5 border-white/20 text-white"
                 />
               </div>
-              <div className="space-y-2">
-                <Label className="text-white/80">密码（演示默认 123456）</Label>
-                <Input
-                  type="password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      e.preventDefault();
-                      void handleSubmit();
-                    }
-                  }}
-                  placeholder="请输入密码"
-                  className="bg-white/5 border-white/20 text-white"
-                />
-              </div>
-            </>
+              <PasswordField
+                label="密码"
+                value={loginPassword}
+                onChange={setLoginPassword}
+                placeholder="请输入密码"
+                autoComplete="current-password"
+                inputName="login-password"
+                inputId="login-password"
+                onEnter={() => { void handleSubmit(); }}
+              />
+            </div>
           ) : (
-            <>
+            <div key="register-mode" className="space-y-4">
               <div className="space-y-2">
-                <Label className="text-white/80">用户名</Label>
+                <Label htmlFor="register-username" className="text-white/80">用户名</Label>
                 <Input
+                  id="register-username"
+                  name="register-username"
+                  autoComplete="username"
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
                   onBlur={() => setUsername((prev) => prev.trim())}
@@ -169,8 +248,11 @@ export function LoginPage({ onLogin }: LoginPageProps) {
                 {usernameHint ? <p className={`text-xs ${usernameHint === '用户名格式可用' ? 'text-emerald-300' : 'text-amber-300'}`}>{usernameHint}</p> : null}
               </div>
               <div className="space-y-2">
-                <Label className="text-white/80">显示名</Label>
+                <Label htmlFor="register-display-name" className="text-white/80">显示名</Label>
                 <Input
+                  id="register-display-name"
+                  name="register-display-name"
+                  autoComplete="nickname"
                   value={displayName}
                   onChange={(e) => setDisplayName(e.target.value)}
                   onBlur={() => setDisplayName((prev) => prev.trim())}
@@ -184,41 +266,31 @@ export function LoginPage({ onLogin }: LoginPageProps) {
                   className="bg-white/5 border-white/20 text-white"
                 />
               </div>
-              <div className="space-y-2">
-                <Label className="text-white/80">密码</Label>
-                <Input
-                  type="password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      e.preventDefault();
-                      void handleSubmit();
-                    }
-                  }}
-                  placeholder="请输入密码"
-                  className="bg-white/5 border-white/20 text-white"
-                />
-                {password && password.length < 6 ? <p className="text-xs text-amber-300">密码长度至少 6 位</p> : null}
-              </div>
-              <div className="space-y-2">
-                <Label className="text-white/80">确认密码</Label>
-                <Input
-                  type="password"
-                  value={confirmPassword}
-                  onChange={(e) => setConfirmPassword(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      e.preventDefault();
-                      void handleSubmit();
-                    }
-                  }}
-                  placeholder="请再次输入密码"
-                  className="bg-white/5 border-white/20 text-white"
-                />
-                {confirmPassword && confirmPassword !== password ? <p className="text-xs text-amber-300">两次输入的密码不一致</p> : null}
-              </div>
-            </>
+              <PasswordField
+                label="密码"
+                value={registerPassword}
+                onChange={setRegisterPassword}
+                placeholder="请输入密码"
+                autoComplete="new-password"
+                inputName="register-password"
+                inputId="register-password"
+                hint={registerPassword && registerPassword.length < 6 ? '密码长度至少 6 位' : undefined}
+                hintClassName="text-xs text-amber-300"
+                onEnter={() => { void handleSubmit(); }}
+              />
+              <PasswordField
+                label="确认密码"
+                value={confirmPassword}
+                onChange={setConfirmPassword}
+                placeholder="请再次输入密码"
+                autoComplete="new-password"
+                inputName="register-confirm-password"
+                inputId="register-confirm-password"
+                hint={confirmPassword && confirmPassword !== registerPassword ? '两次输入的密码不一致' : undefined}
+                hintClassName="text-xs text-amber-300"
+                onEnter={() => { void handleSubmit(); }}
+              />
+            </div>
           )}
           {error ? <p className="text-red-300 text-sm">{error}</p> : null}
           <Button
@@ -228,7 +300,6 @@ export function LoginPage({ onLogin }: LoginPageProps) {
           >
             {loading ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" />{mode === 'login' ? '登录中...' : '注册中...'}</> : mode === 'login' ? '登录' : '注册并进入系统'}
           </Button>
-          <p className="text-xs text-white/50">测试账户：F0001/F0002/E0001/E0002/A0001，默认密码 123456。</p>
         </CardContent>
       </Card>
     </div>
