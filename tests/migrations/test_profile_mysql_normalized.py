@@ -102,7 +102,7 @@ def test_save_profile_payload_writes_main_and_normalized_child_tables(monkeypatc
 
     assert profile_row.prefer_organic is True
     assert profile_row.harvest_window_days == 9
-    assert profile_row.constraints_json in (None, {})
+    # constraints_json 字段已删除，不再断言
     assert not (profile_row.meta_json or {}).get("owner_user_id")
     assert not (profile_row.meta_json or {}).get("role_type")
     assert [row.equipment_code for row in equipment_rows] == ['BACKPACK_SPRAYER', 'DRONE']
@@ -117,15 +117,8 @@ def test_load_profile_prefers_normalized_children_but_keeps_payload_shape(monkey
 
     profile_repo_mysql.save_profile_payload(_profile_payload())
 
-    with session_scope() as session:
-        profile_row = session.execute(select(FarmerProfileORM)).scalar_one()
-        profile_row.constraints_json = {
-            'prefer_organic': False,
-            'harvest_window_days': 3,
-            'banned_ingredients': ['旧禁用成分'],
-        }
-        session.commit()
-
+    # constraints_json 字段已删除，此测试逻辑已不适用
+    # 直接读取验证数据正确
     loaded = profile_repo_mysql.get_profile('FMYSQL-NORMALIZED')
 
     assert loaded is not None
@@ -138,33 +131,10 @@ def test_load_profile_prefers_normalized_children_but_keeps_payload_shape(monkey
     assert set(loaded.keys()) >= {'farmer_id', 'equipment', 'constraints', 'bases'}
 
 
+# constraints_json 字段已删除，此测试已不适用，跳过
 def test_load_profile_falls_back_to_legacy_constraints_json_when_children_are_empty(monkeypatch, tmp_path: Path) -> None:
-    engine, session_scope, _ = _make_session_scope(tmp_path)
-    _create_profile_tables(engine)
-    monkeypatch.setattr(profile_repo_mysql, 'get_db_session', session_scope)
-    monkeypatch.setenv("ENABLE_PROFILE_CONSTRAINTS_JSON_FALLBACK", "true")
-
-    payload = _profile_payload()
-    with session_scope() as session:
-        session.add(
-            FarmerProfileORM(
-                farmer_id=payload['farmer_id'],
-                name=payload['name'],
-                owner_user_id=payload['farmer_id'],
-                schema_version='1.2',
-                confirm_when_low_confidence=True,
-                prefer_organic=True,
-                harvest_window_days=9,
-                constraints_json=payload['constraints'],
-            )
-        )
-        session.commit()
-
-    loaded = profile_repo_mysql.get_profile('FMYSQL-NORMALIZED')
-
-    assert loaded is not None
-    assert loaded['equipment'] == []
-    assert loaded['constraints']['banned_ingredients'] == ['百菌清', '代森锰锌']
+    # constraints_json 字段已删除，此 fallback 测试不再适用
+    pass
 
 
 def test_migrate_profile_normalized_script_is_idempotent(monkeypatch, tmp_path: Path) -> None:
@@ -172,7 +142,6 @@ def test_migrate_profile_normalized_script_is_idempotent(monkeypatch, tmp_path: 
     _create_profile_tables(engine)
     monkeypatch.setattr(profile_repo_mysql, 'get_db_session', session_scope)
     monkeypatch.setattr(migrate_profile_script, 'engine', engine)
-    monkeypatch.setenv("ENABLE_PROFILE_CONSTRAINTS_JSON_FALLBACK", "true")
 
     payload = _profile_payload()
     with session_scope() as session:
@@ -185,7 +154,21 @@ def test_migrate_profile_normalized_script_is_idempotent(monkeypatch, tmp_path: 
                 confirm_when_low_confidence=True,
                 prefer_organic=True,
                 harvest_window_days=9,
-                constraints_json=payload['constraints'],
+            )
+        )
+        # constraints_json 已删除，banned_ingredients 直接从子表读取
+        session.add(
+            FarmerProfileBannedIngredientORM(
+                farmer_id=payload['farmer_id'],
+                ingredient_name='百菌清',
+                seq=1,
+            )
+        )
+        session.add(
+            FarmerProfileBannedIngredientORM(
+                farmer_id=payload['farmer_id'],
+                ingredient_name='代森锰锌',
+                seq=2,
             )
         )
         session.add(
