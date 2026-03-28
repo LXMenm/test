@@ -39,11 +39,8 @@ def _make_session_scope(tmp_path: Path, name: str) -> tuple[Any, Callable[[], An
 
 def test_profile_repo_fallback_stats_hits_are_recorded(monkeypatch, tmp_path: Path) -> None:
     reset_fallback_stats()
-    monkeypatch.setenv("ENABLE_PROFILE_EQUIPMENT_JSON_FALLBACK", "true")
     monkeypatch.setenv("ENABLE_PROFILE_CONSTRAINTS_JSON_FALLBACK", "true")
-    monkeypatch.setenv("ENABLE_BASE_RISK_JSON_FALLBACK", "true")
     monkeypatch.setenv("ENABLE_BASE_EXTRA_LEGACY_FALLBACK", "true")
-    monkeypatch.setenv("ENABLE_BASE_RISK_ITEM_STRUCTURED_FALLBACK", "true")
     engine, session_scope = _make_session_scope(tmp_path, "profile_fallback_stats.db")
     FarmerProfileORM.__table__.create(bind=engine, checkfirst=True)
     FarmBaseORM.__table__.create(bind=engine, checkfirst=True)
@@ -60,7 +57,6 @@ def test_profile_repo_fallback_stats_hits_are_recorded(monkeypatch, tmp_path: Pa
                 owner_user_id="",
                 role_type="",
                 name="农户1",
-                equipment_json=["LEGACY_TOOL"],
                 constraints_json={
                     "prefer_organic": True,
                     "harvest_window_days": 9,
@@ -73,8 +69,6 @@ def test_profile_repo_fallback_stats_hits_are_recorded(monkeypatch, tmp_path: Pa
             FarmBaseORM(
                 farmer_id="F0001",
                 base_id="B001",
-                risk_tags_json=["HIGH_HUMIDITY"],
-                risk_items_json=[{"code": "HIGH_HUMIDITY", "label": "高湿", "reason": "历史风险"}],
                 extra_json={
                     "lat": 31.2,
                     "lon": 121.5,
@@ -94,10 +88,7 @@ def test_profile_repo_fallback_stats_hits_are_recorded(monkeypatch, tmp_path: Pa
             FarmBaseRiskItemORM(
                 farmer_id="F0001",
                 base_id="B002",
-                risk_code="RAIN_RISK",
-                risk_level="high",
-                risk_message="依赖结构化列回退",
-                payload_json={"label": "降雨风险"},
+                payload_json={"code": "RAIN_RISK", "label": "降雨风险", "level": "high", "reason": "依赖 payload_json"},
             )
         )
         session.commit()
@@ -106,15 +97,11 @@ def test_profile_repo_fallback_stats_hits_are_recorded(monkeypatch, tmp_path: Pa
     assert payload is not None
     stats = get_fallback_stats()
 
-    assert stats["profile.equipment_json_fallback"] >= 1
     assert stats["profile.constraints_json_fallback"] >= 1
     assert stats["profile.meta.owner_user_id_fallback"] >= 1
     assert stats["profile.meta.role_type_fallback"] >= 1
-    assert stats["base.risk_tags_json_fallback"] >= 1
-    assert stats["base.risk_items_json_fallback"] >= 1
     assert stats["base.extra.latlon_fallback"] >= 1
     assert stats["base.extra.weather_legacy_key_fallback"] >= 1
-    assert stats["base.risk_item_structured_fallback"] >= 1
 
 
 def test_admin_debug_fallback_stats_endpoint_and_auth_counter(monkeypatch, tmp_path: Path) -> None:
@@ -174,7 +161,10 @@ def test_admin_debug_fallback_stats_endpoint_and_auth_counter(monkeypatch, tmp_p
     assert readiness_resp.status_code == 200
     readiness_items = readiness_resp.json()["items"]
     assert any(item["name"] == "auth.linked_farmer_id_returned" for item in readiness_items)
-    assert any(item["name"] == "profile.equipment_json_fallback" and item["default_behavior"] == "fallback_disabled" for item in readiness_items)
+    assert all(item["name"] != "profile.equipment_json_fallback" for item in readiness_items)
+    assert all(item["name"] != "base.risk_tags_json_fallback" for item in readiness_items)
+    assert all(item["name"] != "base.risk_items_json_fallback" for item in readiness_items)
+    assert all(item["name"] != "base.risk_item_structured_fallback" for item in readiness_items)
 
     readiness_forbidden = client.get(
         "/api/admin/debug/fallback-readiness",
@@ -233,13 +223,10 @@ def test_save_profile_payload_stops_writing_redundant_compat_fields(monkeypatch,
         base_row = session.query(FarmBaseORM).filter(FarmBaseORM.base_id == "B1001").one()
         risk_item_rows = session.query(FarmBaseRiskItemORM).filter(FarmBaseRiskItemORM.base_id == "B1001").all()
 
-    assert profile_row.equipment_json in (None, [])
     assert profile_row.constraints_json in (None, {})
     assert not (profile_row.meta_json or {}).get("owner_user_id")
     assert not (profile_row.meta_json or {}).get("role_type")
 
-    assert base_row.risk_tags_json in (None, [])
-    assert base_row.risk_items_json in (None, [])
     assert (base_row.extra_json or {}).get("lat") is None
     assert (base_row.extra_json or {}).get("lon") is None
     assert (base_row.extra_json or {}).get("temperature_2m") is None
@@ -247,146 +234,4 @@ def test_save_profile_payload_stops_writing_redundant_compat_fields(monkeypatch,
     assert (base_row.extra_json or {}).get("weather_refreshed_at") is None
 
     assert risk_item_rows
-    assert all(row.risk_code is None and row.risk_level is None and row.risk_message is None for row in risk_item_rows)
-
-
-def test_default_profile_equipment_json_fallback_is_disabled(monkeypatch, tmp_path: Path) -> None:
-    reset_fallback_stats()
-    engine, session_scope = _make_session_scope(tmp_path, "profile_disable_equipment_fallback.db")
-    FarmerProfileORM.__table__.create(bind=engine, checkfirst=True)
-    FarmBaseORM.__table__.create(bind=engine, checkfirst=True)
-    FarmerProfileEquipmentORM.__table__.create(bind=engine, checkfirst=True)
-    FarmerProfileBannedIngredientORM.__table__.create(bind=engine, checkfirst=True)
-    FarmBaseRiskTagORM.__table__.create(bind=engine, checkfirst=True)
-    FarmBaseRiskItemORM.__table__.create(bind=engine, checkfirst=True)
-    monkeypatch.setattr(profile_repo_mysql, "get_db_session", session_scope)
-    with session_scope() as session:
-        session.add(
-            FarmerProfileORM(
-                farmer_id="F2001",
-                owner_user_id="F2001",
-                role_type="FARMER",
-                name="农户2",
-                equipment_json=["LEGACY_TOOL"],
-                constraints_json={"banned_ingredients": []},
-            )
-        )
-        session.commit()
-
-    payload = profile_repo_mysql.get_profile("F2001")
-    assert payload is not None
-    assert payload["equipment"] == []
-    stats = get_fallback_stats()
-    assert stats.get("profile.equipment_json_fallback", 0) == 0
-
-
-def test_enable_profile_equipment_json_fallback_restores_compat_read(monkeypatch, tmp_path: Path) -> None:
-    reset_fallback_stats()
-    engine, session_scope = _make_session_scope(tmp_path, "profile_enable_equipment_fallback.db")
-    FarmerProfileORM.__table__.create(bind=engine, checkfirst=True)
-    FarmBaseORM.__table__.create(bind=engine, checkfirst=True)
-    FarmerProfileEquipmentORM.__table__.create(bind=engine, checkfirst=True)
-    FarmerProfileBannedIngredientORM.__table__.create(bind=engine, checkfirst=True)
-    FarmBaseRiskTagORM.__table__.create(bind=engine, checkfirst=True)
-    FarmBaseRiskItemORM.__table__.create(bind=engine, checkfirst=True)
-    monkeypatch.setattr(profile_repo_mysql, "get_db_session", session_scope)
-    monkeypatch.setenv("ENABLE_PROFILE_EQUIPMENT_JSON_FALLBACK", "true")
-
-    with session_scope() as session:
-        session.add(
-            FarmerProfileORM(
-                farmer_id="F2001E",
-                owner_user_id="F2001E",
-                role_type="FARMER",
-                name="农户2E",
-                equipment_json=["LEGACY_TOOL"],
-                constraints_json={"banned_ingredients": []},
-            )
-        )
-        session.commit()
-
-    payload = profile_repo_mysql.get_profile("F2001E")
-    assert payload is not None
-    assert payload["equipment"] == ["LEGACY_TOOL"]
-    stats = get_fallback_stats()
-    assert stats.get("profile.equipment_json_fallback", 0) >= 1
-
-
-def test_default_base_risk_json_fallback_is_disabled(monkeypatch, tmp_path: Path) -> None:
-    reset_fallback_stats()
-    engine, session_scope = _make_session_scope(tmp_path, "profile_disable_base_risk_fallback.db")
-    FarmerProfileORM.__table__.create(bind=engine, checkfirst=True)
-    FarmBaseORM.__table__.create(bind=engine, checkfirst=True)
-    FarmerProfileEquipmentORM.__table__.create(bind=engine, checkfirst=True)
-    FarmerProfileBannedIngredientORM.__table__.create(bind=engine, checkfirst=True)
-    FarmBaseRiskTagORM.__table__.create(bind=engine, checkfirst=True)
-    FarmBaseRiskItemORM.__table__.create(bind=engine, checkfirst=True)
-    monkeypatch.setattr(profile_repo_mysql, "get_db_session", session_scope)
-    with session_scope() as session:
-        session.add(
-            FarmerProfileORM(
-                farmer_id="F2002",
-                owner_user_id="F2002",
-                role_type="FARMER",
-                name="农户3",
-            )
-        )
-        session.add(
-            FarmBaseORM(
-                farmer_id="F2002",
-                base_id="B2002",
-                risk_tags_json=["HIGH_HUMIDITY"],
-                risk_items_json=[{"code": "HIGH_HUMIDITY", "label": "高湿", "reason": "历史风险"}],
-            )
-        )
-        session.commit()
-
-    payload = profile_repo_mysql.get_profile("F2002")
-    assert payload is not None
-    base = payload["bases"]["B2002"]
-    assert base["risk_tags"] == []
-    assert base["risk_items"] == []
-    stats = get_fallback_stats()
-    assert stats.get("base.risk_tags_json_fallback", 0) == 0
-    assert stats.get("base.risk_items_json_fallback", 0) == 0
-
-
-def test_enable_base_risk_json_fallback_restores_compat_read(monkeypatch, tmp_path: Path) -> None:
-    reset_fallback_stats()
-    engine, session_scope = _make_session_scope(tmp_path, "profile_enable_base_risk_fallback.db")
-    FarmerProfileORM.__table__.create(bind=engine, checkfirst=True)
-    FarmBaseORM.__table__.create(bind=engine, checkfirst=True)
-    FarmerProfileEquipmentORM.__table__.create(bind=engine, checkfirst=True)
-    FarmerProfileBannedIngredientORM.__table__.create(bind=engine, checkfirst=True)
-    FarmBaseRiskTagORM.__table__.create(bind=engine, checkfirst=True)
-    FarmBaseRiskItemORM.__table__.create(bind=engine, checkfirst=True)
-    monkeypatch.setattr(profile_repo_mysql, "get_db_session", session_scope)
-    monkeypatch.setenv("ENABLE_BASE_RISK_JSON_FALLBACK", "true")
-
-    with session_scope() as session:
-        session.add(
-            FarmerProfileORM(
-                farmer_id="F2002E",
-                owner_user_id="F2002E",
-                role_type="FARMER",
-                name="农户3E",
-            )
-        )
-        session.add(
-            FarmBaseORM(
-                farmer_id="F2002E",
-                base_id="B2002E",
-                risk_tags_json=["HIGH_HUMIDITY"],
-                risk_items_json=[{"code": "HIGH_HUMIDITY", "label": "高湿", "reason": "历史风险"}],
-            )
-        )
-        session.commit()
-
-    payload = profile_repo_mysql.get_profile("F2002E")
-    assert payload is not None
-    base = payload["bases"]["B2002E"]
-    assert base["risk_tags"] == ["HIGH_HUMIDITY"]
-    assert [item["code"] for item in base["risk_items"]] == ["HIGH_HUMIDITY"]
-    stats = get_fallback_stats()
-    assert stats.get("base.risk_tags_json_fallback", 0) >= 1
-    assert stats.get("base.risk_items_json_fallback", 0) >= 1
+    assert all(row.payload_json for row in risk_item_rows)
