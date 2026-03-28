@@ -1,6 +1,8 @@
 import { Component, useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Navbar } from './components/Navbar';
+import { Button } from './components/ui/button';
+import { Input } from './components/ui/input';
 import { DiagnosePage } from './pages/DiagnosePage';
 import { DashboardPage } from './pages/DashboardPage';
 import { ProfilesPage } from './pages/ProfilesPage';
@@ -14,6 +16,7 @@ import {
   getAllowedPages,
   getDefaultPage,
   loadAuthUser,
+  normalizeAuthUserFromPayload,
   PAGE_TO_PATH,
   pathToPage,
   saveAuthUser,
@@ -91,8 +94,17 @@ class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
 
 function App() {
   const [authUser, setAuthUser] = useState<AuthUser | null>(() => loadAuthUser());
+  const [authChecking, setAuthChecking] = useState<boolean>(() => Boolean(loadAuthUser()));
+  const [authNotice, setAuthNotice] = useState('');
   const [currentPage, setCurrentPage] = useState<AppPage>(() => pathToPage(window.location.pathname));
   const [kbDiseaseName, setKbDiseaseName] = useState<string>(() => getKbDiseaseFromPath(window.location.pathname));
+  const [passwordPanelOpen, setPasswordPanelOpen] = useState(false);
+  const [oldPassword, setOldPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [passwordSaving, setPasswordSaving] = useState(false);
+  const [passwordMessage, setPasswordMessage] = useState('');
+  const [passwordError, setPasswordError] = useState('');
 
   const allowedPages = useMemo(() => (authUser ? getAllowedPages(authUser.role) : []), [authUser]);
 
@@ -140,9 +152,50 @@ function App() {
     };
   }, [authUser]);
 
+  useEffect(() => {
+    if (!authUser) {
+      setAuthChecking(false);
+      return;
+    }
+    let cancelled = false;
+    const verifyAuth = async () => {
+      setAuthChecking(true);
+      try {
+        const resp = await fetch('/api/auth/me', withAuthHeaders(undefined, authUser));
+        const data = await resp.json().catch(() => null);
+        if (cancelled) return;
+        if (!resp.ok) {
+          if (resp.status === 401 || resp.status === 403) {
+            clearAuthUser();
+            setAuthUser(null);
+            setAuthNotice('登录状态已失效，请重新登录');
+            setPasswordPanelOpen(false);
+            return;
+          }
+          throw new Error(String((data as Record<string, unknown> | null)?.detail || '登录状态校验失败'));
+        }
+        const nextUser = normalizeAuthUserFromPayload(data, authUser);
+        if (nextUser) {
+          setAuthUser(nextUser);
+          saveAuthUser(nextUser);
+        }
+      } catch (error) {
+        if (cancelled) return;
+        setAuthNotice(error instanceof Error ? error.message : '登录状态校验失败');
+      } finally {
+        if (!cancelled) setAuthChecking(false);
+      }
+    };
+    void verifyAuth();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const handleLogin = (user: AuthUser) => {
     setAuthUser(user);
     saveAuthUser(user);
+    setAuthNotice('');
     const defaultPage = getDefaultPage(user.role);
     setCurrentPage(defaultPage);
     window.history.replaceState(null, '', PAGE_TO_PATH[defaultPage]);
@@ -151,6 +204,42 @@ function App() {
   const handleLogout = () => {
     clearAuthUser();
     setAuthUser(null);
+    setPasswordPanelOpen(false);
+  };
+
+  const handleChangePassword = async () => {
+    if (!oldPassword || !newPassword || !confirmPassword) {
+      setPasswordError('请完整填写当前密码、新密码和确认密码');
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setPasswordError('两次输入的新密码不一致');
+      return;
+    }
+    setPasswordSaving(true);
+    setPasswordError('');
+    setPasswordMessage('');
+    try {
+      const resp = await fetch('/api/auth/change-password', withAuthHeaders({
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          old_password: oldPassword,
+          new_password: newPassword,
+          confirm_password: confirmPassword,
+        }),
+      }, authUser));
+      const data = await resp.json().catch(() => null);
+      if (!resp.ok) throw new Error(String((data as Record<string, unknown> | null)?.detail || '修改密码失败'));
+      setOldPassword('');
+      setNewPassword('');
+      setConfirmPassword('');
+      setPasswordMessage('密码修改成功');
+    } catch (error) {
+      setPasswordError(error instanceof Error ? error.message : '修改密码失败');
+    } finally {
+      setPasswordSaving(false);
+    }
   };
 
   const renderPage = () => {
@@ -179,7 +268,20 @@ function App() {
   if (!authUser) {
     return (
       <ErrorBoundary>
-        <LoginPage onLogin={handleLogin} />
+        <div className="space-y-3">
+          {authNotice ? <div className="max-w-md mx-auto mt-6 px-4 py-3 rounded-lg border border-amber-300/40 bg-amber-300/10 text-amber-200 text-sm">{authNotice}</div> : null}
+          <LoginPage onLogin={handleLogin} />
+        </div>
+      </ErrorBoundary>
+    );
+  }
+
+  if (authChecking) {
+    return (
+      <ErrorBoundary>
+        <div className="min-h-screen bg-black text-white flex items-center justify-center">
+          <div className="text-sm text-white/70">正在校验登录状态...</div>
+        </div>
       </ErrorBoundary>
     );
   }
@@ -192,9 +294,54 @@ function App() {
           availablePages={allowedPages}
           onPageChange={setCurrentPage}
           authUser={authUser}
+          onOpenChangePassword={() => {
+            setPasswordPanelOpen((prev) => !prev);
+            setPasswordError('');
+            setPasswordMessage('');
+          }}
           onLogout={handleLogout}
         />
         <main className="pt-20 pb-8 px-4 sm:px-6 lg:px-8 max-w-7xl mx-auto">
+          {passwordPanelOpen ? (
+            <div className="mb-4 rounded-xl border border-white/10 bg-white/5 p-4">
+              <h3 className="text-[#c8f7c5] font-medium mb-3">修改密码</h3>
+              <div className="grid md:grid-cols-3 gap-3">
+                <Input
+                  type="password"
+                  value={oldPassword}
+                  onChange={(e) => setOldPassword(e.target.value)}
+                  placeholder="当前密码"
+                  className="bg-black/20 border-white/20 text-white"
+                />
+                <Input
+                  type="password"
+                  value={newPassword}
+                  onChange={(e) => setNewPassword(e.target.value)}
+                  placeholder="新密码（至少 6 位）"
+                  className="bg-black/20 border-white/20 text-white"
+                />
+                <Input
+                  type="password"
+                  value={confirmPassword}
+                  onChange={(e) => setConfirmPassword(e.target.value)}
+                  placeholder="确认新密码"
+                  className="bg-black/20 border-white/20 text-white"
+                />
+              </div>
+              <div className="mt-3 flex items-center gap-3">
+                <Button
+                  type="button"
+                  onClick={() => { void handleChangePassword(); }}
+                  disabled={passwordSaving}
+                  className="bg-[#c8f7c5] text-black hover:bg-[#b8e7b5] disabled:opacity-60"
+                >
+                  {passwordSaving ? '提交中...' : '提交修改'}
+                </Button>
+                {passwordError ? <span className="text-sm text-red-300">{passwordError}</span> : null}
+                {passwordMessage ? <span className="text-sm text-emerald-300">{passwordMessage}</span> : null}
+              </div>
+            </div>
+          ) : null}
           {renderPage()}
         </main>
       </div>
