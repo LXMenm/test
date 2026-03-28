@@ -39,7 +39,7 @@ def _make_session_scope(tmp_path: Path, name: str) -> tuple[Any, Callable[[], An
 
 def test_profile_repo_fallback_stats_hits_are_recorded(monkeypatch, tmp_path: Path) -> None:
     reset_fallback_stats()
-    monkeypatch.setenv("ENABLE_PROFILE_CONSTRAINTS_JSON_FALLBACK", "true")
+    monkeypatch.setenv("ENABLE_PROFILE_META_JSON_FALLBACK", "true")
     monkeypatch.setenv("ENABLE_BASE_EXTRA_LEGACY_FALLBACK", "true")
     engine, session_scope = _make_session_scope(tmp_path, "profile_fallback_stats.db")
     FarmerProfileORM.__table__.create(bind=engine, checkfirst=True)
@@ -57,12 +57,16 @@ def test_profile_repo_fallback_stats_hits_are_recorded(monkeypatch, tmp_path: Pa
                 owner_user_id="",
                 role_type="",
                 name="农户1",
-                constraints_json={
-                    "prefer_organic": True,
-                    "harvest_window_days": 9,
-                    "banned_ingredients": ["LEGACY_BANNED"],
-                },
+                prefer_organic=True,
+                harvest_window_days=9,
                 meta_json={"owner_user_id": "F_META", "role_type": "ADMIN", "display_name": "测试档案"},
+            )
+        )
+        session.add(
+            FarmerProfileBannedIngredientORM(
+                farmer_id="F0001",
+                ingredient_name="LEGACY_BANNED",
+                seq=1,
             )
         )
         session.add(
@@ -97,7 +101,7 @@ def test_profile_repo_fallback_stats_hits_are_recorded(monkeypatch, tmp_path: Pa
     assert payload is not None
     stats = get_fallback_stats()
 
-    assert stats["profile.constraints_json_fallback"] >= 1
+    # constraints_json 已删除，不再测试该 fallback
     assert stats["profile.meta.owner_user_id_fallback"] >= 1
     assert stats["profile.meta.role_type_fallback"] >= 1
     assert stats["base.extra.latlon_fallback"] >= 1
@@ -223,7 +227,7 @@ def test_save_profile_payload_stops_writing_redundant_compat_fields(monkeypatch,
         base_row = session.query(FarmBaseORM).filter(FarmBaseORM.base_id == "B1001").one()
         risk_item_rows = session.query(FarmBaseRiskItemORM).filter(FarmBaseRiskItemORM.base_id == "B1001").all()
 
-    assert profile_row.constraints_json in (None, {})
+    # constraints_json 字段已删除，不再断言
     assert not (profile_row.meta_json or {}).get("owner_user_id")
     assert not (profile_row.meta_json or {}).get("role_type")
 
