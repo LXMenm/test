@@ -4,7 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Button } from '@/components/ui/button';
-import type { AuthUser } from '@/auth';
+import { normalizeAuthUserFromPayload, type AuthUser } from '@/auth';
 
 interface LoginPageProps {
   onLogin: (user: AuthUser) => void;
@@ -20,19 +20,37 @@ export function LoginPage({ onLogin }: LoginPageProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
+  const usernameHint = useMemo(() => {
+    const trimmed = username.trim();
+    if (!trimmed) return '';
+    if (trimmed.length < 3 || trimmed.length > 32) return '用户名长度建议为 3~32 位';
+    if (!/^[A-Za-z0-9_.-]+$/.test(trimmed)) return '用户名建议仅使用字母、数字、下划线、点、短横线';
+    return '用户名格式可用';
+  }, [username]);
+
   const disabled = useMemo(() => {
     if (loading) return true;
     if (mode === 'login') return !identifier.trim();
     return !username.trim() || !displayName.trim() || !password || !confirmPassword;
   }, [mode, loading, identifier, username, displayName, password, confirmPassword]);
 
+  const normalizeInputs = () => {
+    setIdentifier((prev) => prev.trim());
+    setUsername((prev) => prev.trim());
+    setDisplayName((prev) => prev.trim());
+  };
+
   const handleSubmit = async () => {
+    normalizeInputs();
     if (disabled) return;
     setLoading(true);
     setError('');
     try {
       if (mode === 'register' && password !== confirmPassword) {
         throw new Error('两次输入的密码不一致');
+      }
+      if (mode === 'register' && password.length < 6) {
+        throw new Error('密码长度不能少于 6 位');
       }
 
       const endpoint = mode === 'login' ? '/api/auth/login' : '/api/auth/register';
@@ -50,14 +68,14 @@ export function LoginPage({ onLogin }: LoginPageProps) {
       });
       const data = await resp.json();
       if (!resp.ok) throw new Error(String(data?.detail || (mode === 'login' ? '登录失败' : '注册失败')));
-      const resolvedUserId = String(data?.user_id || (mode === 'login' ? identifier : '')).trim();
-      const resolvedDisplayName = String(data?.display_name || (mode === 'login' ? identifier : displayName)).trim();
-      onLogin({
-        userId: resolvedUserId,
-        displayName: resolvedDisplayName,
-        role: String(data?.role || 'USER').toUpperCase() as AuthUser['role'],
-        linkedFarmerId: typeof data?.linked_farmer_id === 'string' ? data.linked_farmer_id : null,
+      const nextUser = normalizeAuthUserFromPayload(data, {
+        userId: identifier.trim(),
+        displayName: displayName.trim() || identifier.trim(),
+        role: 'USER',
+        linkedFarmerId: null,
       });
+      if (!nextUser) throw new Error(mode === 'login' ? '登录返回数据异常' : '注册返回数据异常');
+      onLogin(nextUser);
     } catch (err) {
       setError(err instanceof Error ? err.message : mode === 'login' ? '登录失败' : '注册失败');
     } finally {
@@ -103,6 +121,13 @@ export function LoginPage({ onLogin }: LoginPageProps) {
                 <Input
                   value={identifier}
                   onChange={(e) => setIdentifier(e.target.value)}
+                  onBlur={() => setIdentifier((prev) => prev.trim())}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      void handleSubmit();
+                    }
+                  }}
                   placeholder="例如：F0001 / f0001"
                   className="bg-white/5 border-white/20 text-white"
                 />
@@ -113,6 +138,12 @@ export function LoginPage({ onLogin }: LoginPageProps) {
                   type="password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      void handleSubmit();
+                    }
+                  }}
                   placeholder="请输入密码"
                   className="bg-white/5 border-white/20 text-white"
                 />
@@ -125,15 +156,30 @@ export function LoginPage({ onLogin }: LoginPageProps) {
                 <Input
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
+                  onBlur={() => setUsername((prev) => prev.trim())}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      void handleSubmit();
+                    }
+                  }}
                   placeholder="请输入用户名"
                   className="bg-white/5 border-white/20 text-white"
                 />
+                {usernameHint ? <p className={`text-xs ${usernameHint === '用户名格式可用' ? 'text-emerald-300' : 'text-amber-300'}`}>{usernameHint}</p> : null}
               </div>
               <div className="space-y-2">
                 <Label className="text-white/80">显示名</Label>
                 <Input
                   value={displayName}
                   onChange={(e) => setDisplayName(e.target.value)}
+                  onBlur={() => setDisplayName((prev) => prev.trim())}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      void handleSubmit();
+                    }
+                  }}
                   placeholder="请输入显示名"
                   className="bg-white/5 border-white/20 text-white"
                 />
@@ -144,9 +190,16 @@ export function LoginPage({ onLogin }: LoginPageProps) {
                   type="password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      void handleSubmit();
+                    }
+                  }}
                   placeholder="请输入密码"
                   className="bg-white/5 border-white/20 text-white"
                 />
+                {password && password.length < 6 ? <p className="text-xs text-amber-300">密码长度至少 6 位</p> : null}
               </div>
               <div className="space-y-2">
                 <Label className="text-white/80">确认密码</Label>
@@ -154,9 +207,16 @@ export function LoginPage({ onLogin }: LoginPageProps) {
                   type="password"
                   value={confirmPassword}
                   onChange={(e) => setConfirmPassword(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      void handleSubmit();
+                    }
+                  }}
                   placeholder="请再次输入密码"
                   className="bg-white/5 border-white/20 text-white"
                 />
+                {confirmPassword && confirmPassword !== password ? <p className="text-xs text-amber-300">两次输入的密码不一致</p> : null}
               </div>
             </>
           )}

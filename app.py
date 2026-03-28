@@ -540,6 +540,12 @@ class RegisterRequest(BaseModel):
     password: str
 
 
+class ChangePasswordRequest(BaseModel):
+    old_password: str
+    new_password: str
+    confirm_password: str
+
+
 class AdminCreateAccountRequest(BaseModel):
     username: str
     display_name: str
@@ -549,6 +555,10 @@ class AdminCreateAccountRequest(BaseModel):
 
 class AdminUpdateAccountRoleRequest(BaseModel):
     role: str
+
+
+class AdminUpdateAccountStatusRequest(BaseModel):
+    status: str
 
 
 class SPAStaticFiles(StaticFiles):
@@ -3086,6 +3096,36 @@ def login(payload: LoginRequest) -> dict[str, Any]:
         }
 
 
+@app.get("/api/auth/me")
+def auth_me(request: Request) -> dict[str, Any]:
+    actor = _get_request_actor(request)
+    user_id = str(actor.get("user_id") or "").strip()
+    if not user_id:
+        raise HTTPException(status_code=401, detail="未登录或登录状态已失效")
+    with get_db_session() as session:
+        account = session.execute(
+            select(UserAccountORM).where(
+                or_(
+                    UserAccountORM.user_id == identifier,
+                    UserAccountORM.username == identifier,
+                )
+            )
+        ).scalar_one_or_none()
+        if account is None:
+            raise HTTPException(status_code=401, detail="账号不存在")
+        if str(account.status or "").strip().upper() != "ACTIVE":
+            raise HTTPException(status_code=403, detail="账号已禁用")
+        record_fallback_hit("auth.linked_farmer_id_returned")
+        return {
+            "user_id": account.user_id,
+            "username": account.username,
+            "display_name": account.display_name,
+            "role": str(account.role or "USER").upper(),
+            "linked_farmer_id": account.linked_farmer_id,
+            "status": str(account.status or "ACTIVE").strip().upper(),
+        }
+
+
 @app.post("/api/auth/register")
 def register(payload: RegisterRequest) -> dict[str, Any]:
     with get_db_session() as session:
@@ -3106,6 +3146,34 @@ def register(payload: RegisterRequest) -> dict[str, Any]:
             "linked_farmer_id": account.linked_farmer_id,
             "status": account.status,
         }
+
+
+@app.post("/api/auth/change-password")
+def change_password(payload: ChangePasswordRequest, request: Request) -> dict[str, bool]:
+    actor = _get_request_actor(request)
+    user_id = str(actor.get("user_id") or "").strip()
+    if not user_id:
+        raise HTTPException(status_code=401, detail="未登录或登录状态已失效")
+    with get_db_session() as session:
+        account = session.execute(
+            select(UserAccountORM).where(UserAccountORM.user_id == user_id)
+        ).scalar_one_or_none()
+        if account is None:
+            raise HTTPException(status_code=401, detail="账号不存在")
+        if str(account.status or "").strip().upper() != "ACTIVE":
+            raise HTTPException(status_code=403, detail="账号已禁用")
+        old_password = str(payload.old_password or "")
+        if not _verify_password(old_password, account.password):
+            raise HTTPException(status_code=401, detail="旧密码错误")
+        new_password = _validate_password(payload.new_password)
+        confirm_password = str(payload.confirm_password or "")
+        if new_password != confirm_password:
+            raise HTTPException(status_code=400, detail="两次输入的新密码不一致")
+        if hmac.compare_digest(old_password, new_password):
+            raise HTTPException(status_code=400, detail="新密码不能与旧密码相同")
+        account.password = _hash_password(new_password)
+        session.commit()
+    return {"ok": True}
 
 
 @app.get("/api/admin/accounts")
@@ -3195,6 +3263,29 @@ def update_admin_account_role(user_id: str, request: Request, payload: AdminUpda
         account.role = normalized_role
         session.commit()
     return {"ok": True, "user_id": normalized_user_id, "role": normalized_role}
+
+
+@app.post("/api/admin/accounts/{user_id}/status")
+def update_admin_account_status(user_id: str, request: Request, payload: AdminUpdateAccountStatusRequest) -> dict[str, Any]:
+    actor = _get_request_actor(request)
+    _require_admin(actor)
+    normalized_user_id = str(user_id or "").strip()
+    if not normalized_user_id:
+        raise HTTPException(status_code=400, detail="user_id 不能为空")
+    normalized_status = str(payload.status or "").strip().upper()
+    if normalized_status not in {"ACTIVE", "DISABLED"}:
+        raise HTTPException(status_code=400, detail="非法账号状态")
+    if normalized_user_id == str(actor.get("user_id") or "").strip() and normalized_status == "DISABLED":
+        raise HTTPException(status_code=400, detail="不允许禁用当前登录管理员账号")
+    with get_db_session() as session:
+        account = session.execute(
+            select(UserAccountORM).where(UserAccountORM.user_id == normalized_user_id)
+        ).scalar_one_or_none()
+        if account is None:
+            raise HTTPException(status_code=404, detail="账号不存在")
+        account.status = normalized_status
+        session.commit()
+    return {"ok": True, "user_id": normalized_user_id, "status": normalized_status}
 
 
 @app.delete("/api/admin/accounts/{user_id}")
