@@ -48,20 +48,32 @@ const SELECTED_BRANCH_LABELS: Record<SelectedBranch, string> = {
 const GROWTH_STAGE_ALIASES: Record<string, string> = {
   SEEDLING: 'SEEDLING',
   苗期: 'SEEDLING',
+  VEGETATIVE: 'VEGETATIVE',
+  营养生长期: 'VEGETATIVE',
+  营养期: 'VEGETATIVE',
   FLOWERING: 'FLOWERING',
   开花期: 'FLOWERING',
   FLOWER: 'FLOWERING',
   FRUIT_SET: 'FRUIT_SET',
   坐果期: 'FRUIT_SET',
   结果期: 'FRUIT_SET',
+  FRUIT_EXPANSION: 'FRUIT_EXPANSION',
+  膨果期: 'FRUIT_EXPANSION',
+  果实膨大期: 'FRUIT_EXPANSION',
+  RIPENING: 'RIPENING',
+  转色成熟期: 'RIPENING',
+  成熟期: 'RIPENING',
   HARVEST: 'HARVEST',
   采收期: 'HARVEST',
 };
 
 export const TOMATO_GROWTH_STAGE_OPTIONS = [
   { value: 'SEEDLING', label: '苗期' },
+  { value: 'VEGETATIVE', label: '营养生长期' },
   { value: 'FLOWERING', label: '开花期' },
   { value: 'FRUIT_SET', label: '坐果期' },
+  { value: 'FRUIT_EXPANSION', label: '膨果期' },
+  { value: 'RIPENING', label: '转色成熟期' },
   { value: 'HARVEST', label: '采收期' },
 ] as const;
 

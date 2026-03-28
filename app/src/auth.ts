@@ -2,6 +2,7 @@ export type UserRole = 'USER' | 'EXPERT' | 'ADMIN';
 
 export interface AuthUser {
   userId: string;
+  username?: string | null;
   displayName: string;
   role: UserRole;
   linkedFarmerId?: string | null;
@@ -22,11 +23,12 @@ export function loadAuthUser(): AuthUser | null {
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Partial<AuthUser>;
     const userId = String(parsed.userId || '').trim();
+    const username = typeof parsed.username === 'string' ? parsed.username : null;
     const displayName = String(parsed.displayName || '').trim();
     const role = normalizeRole(parsed.role);
     const linkedFarmerId = typeof parsed.linkedFarmerId === 'string' ? parsed.linkedFarmerId : null;
     if (!userId || !displayName) return null;
-    return { userId, displayName, role, linkedFarmerId };
+    return { userId, username, displayName, role, linkedFarmerId };
   } catch {
     return null;
   }
@@ -35,6 +37,31 @@ export function loadAuthUser(): AuthUser | null {
 export function saveAuthUser(user: AuthUser): void {
   if (typeof window === 'undefined') return;
   window.localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(user));
+}
+
+export function normalizeAuthUserFromPayload(
+  payload: unknown,
+  fallbackUser?: AuthUser | null,
+): AuthUser | null {
+  const source = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {};
+  const fallback = fallbackUser || null;
+  const userId = String(source.user_id || fallback?.userId || '').trim();
+  const username = typeof source.username === 'string'
+    ? source.username
+    : (typeof fallback?.username === 'string' ? fallback.username : null);
+  const displayName = String(source.display_name || fallback?.displayName || '').trim();
+  const role = normalizeRole(source.role || fallback?.role);
+  const linkedFarmerId = typeof source.linked_farmer_id === 'string'
+    ? source.linked_farmer_id
+    : (fallback?.linkedFarmerId ?? null);
+  if (!userId || !displayName) return null;
+  return {
+    userId,
+    username,
+    displayName,
+    role,
+    linkedFarmerId,
+  };
 }
 
 export function clearAuthUser(): void {
@@ -104,4 +131,12 @@ export function withAuthHeaders(init: RequestInit | undefined, authUser: AuthUse
     ...(init || {}),
     headers,
   };
+}
+
+export function authFetch(
+  input: RequestInfo | URL,
+  init: RequestInit | undefined,
+  authUser: AuthUser | null,
+): Promise<Response> {
+  return window.fetch(input, withAuthHeaders(init, authUser));
 }

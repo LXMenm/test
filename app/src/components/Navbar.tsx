@@ -1,4 +1,4 @@
-import { Leaf, BarChart3, Users, BookOpen, Stethoscope, UserCheck, Shield, Settings, LogOut, ClipboardCheck } from 'lucide-react';
+import { Leaf, BarChart3, Users, BookOpen, Stethoscope, UserCheck, Shield, Settings, LogOut, ClipboardCheck, KeyRound } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { AppPage, AuthUser } from '@/auth';
 import { PAGE_TO_PATH } from '@/auth';
@@ -8,6 +8,7 @@ interface NavbarProps {
   availablePages: AppPage[];
   onPageChange: (page: AppPage) => void;
   authUser: AuthUser;
+  onOpenChangePassword: () => void;
   onLogout: () => void;
 }
 
@@ -22,7 +23,7 @@ const NAV_META: Record<AppPage, { label: string; icon: React.ElementType }> = {
   system_config: { label: '系统配置', icon: Settings },
 };
 
-export function Navbar({ currentPage, availablePages, onPageChange, authUser, onLogout }: NavbarProps) {
+export function Navbar({ currentPage, availablePages, onPageChange, authUser, onOpenChangePassword, onLogout }: NavbarProps) {
   const navItems = availablePages.map((page) => ({ id: page, ...NAV_META[page] }));
 
   const handlePageChange = (page: AppPage) => {
@@ -69,6 +70,9 @@ export function Navbar({ currentPage, availablePages, onPageChange, authUser, on
               <div className="font-semibold">{authUser.displayName}</div>
               <div className="opacity-70">{authUser.role} · {authUser.userId}</div>
             </div>
+            <button onClick={onOpenChangePassword} className="p-2 rounded-lg bg-black/10 text-black hover:bg-black/20" title="修改密码">
+              <KeyRound className="w-4 h-4" />
+            </button>
             <button onClick={onLogout} className="p-2 rounded-lg bg-black/10 text-black hover:bg-black/20" title="退出登录">
               <LogOut className="w-4 h-4" />
             </button>
