@@ -123,6 +123,20 @@ const toSafeNumber = (value: unknown): number | null => {
   return null;
 };
 
+const TOMATO_TOTAL_GROW_DAYS = 120;
+
+const estimateHarvestWindowDaysFromSowingDate = (sowingDate: string): number | null => {
+  const normalized = toSafeString(sowingDate).trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(normalized)) return null;
+  const sowDate = new Date(`${normalized}T00:00:00Z`);
+  if (Number.isNaN(sowDate.getTime())) return null;
+  const utcNow = new Date();
+  const todayUtc = Date.UTC(utcNow.getUTCFullYear(), utcNow.getUTCMonth(), utcNow.getUTCDate());
+  let passedDays = Math.floor((todayUtc - sowDate.getTime()) / (24 * 60 * 60 * 1000));
+  if (passedDays < 0) passedDays = 0;
+  return Math.max(TOMATO_TOTAL_GROW_DAYS - passedDays, 0);
+};
+
 
 
 const getProfileRoleLabel = (profile: Pick<FarmerProfile, 'account_role' | 'role_type'>): string => {
@@ -260,6 +274,21 @@ export function ProfilesPage() {
       return a.farmer_id.localeCompare(b.farmer_id);
     });
   }, [authUser?.userId, canManageAllProfiles, profiles]);
+
+  const activeBase = useMemo(() => {
+    if (!editedProfile) return null;
+    const activeBaseId = toSafeString(editedProfile.active_base_id).trim();
+    if (!activeBaseId) return null;
+    return editedProfile.bases.find((base) => toSafeString(base.base_id).trim() === activeBaseId) || null;
+  }, [editedProfile]);
+
+  const estimatedHarvestWindowDays = useMemo(() => {
+    if (!activeBase) return null;
+    return estimateHarvestWindowDaysFromSowingDate(activeBase.sowing_date);
+  }, [activeBase]);
+
+  const resolvedHarvestWindowDays = estimatedHarvestWindowDays ?? (editedProfile?.constraints.harvest_window_days ?? 0);
+  const harvestWindowSource = estimatedHarvestWindowDays != null ? 'sowing_date' : 'fallback';
 
   const parseJsonOrThrow = async (resp: Response) => {
     let payload: Record<string, unknown> | null = null;
@@ -659,7 +688,13 @@ export function ProfilesPage() {
                   <h3 className="text-[#c8f7c5] font-medium mb-4 flex items-center gap-2"><Ban className="w-4 h-4" />治疗约束</h3>
                   <div className="space-y-4">
                     <div className="flex items-center gap-2"><Checkbox checked={editedProfile.constraints.prefer_organic} onCheckedChange={(v) => setEditedProfile({ ...editedProfile, constraints: { ...editedProfile.constraints, prefer_organic: Boolean(v) } })} /><Label className="text-white/80">有机/低残留偏好</Label></div>
-                    <div className="space-y-2"><Label className="text-white/60">距离采收期（天）</Label><Input value={`${editedProfile.constraints.harvest_window_days ?? 0}`} readOnly className="bg-white/5 border-white/10 text-white/80" /></div>
+                    <div className="space-y-2">
+                      <Label className="text-white/60">距离采收期（天）</Label>
+                      <Input value={`${resolvedHarvestWindowDays}`} readOnly className="bg-white/5 border-white/10 text-white/80" />
+                      <p className="text-xs text-white/50">
+                        {harvestWindowSource === 'sowing_date' ? '根据播种日期自动估算' : '当前为档案保存值 / 回退值'}
+                      </p>
+                    </div>
                     <div className="space-y-2"><Label className="text-white/60">禁用成分关键词</Label><div className="flex gap-2"><Input value={newIngredient} onChange={(e) => setNewIngredient(e.target.value)} className="bg-white/5 border-white/20 text-white" /><Button onClick={addIngredient} variant="outline" className="border-white/20 text-white">添加</Button></div><div className="flex flex-wrap gap-2">{editedProfile.constraints.banned_ingredients.map((ing, idx) => <Badge key={`${ing}-${idx}`} variant="outline" className="border-red-400/50 text-red-400 cursor-pointer" onClick={() => removeIngredient(idx)}>{ing} ×</Badge>)}</div></div>
                   </div>
                 </div>
