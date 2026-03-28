@@ -136,12 +136,8 @@ def test_save_profile_payload_writes_main_and_farm_base_child_tables(monkeypatch
         ).scalars().all()
         risk_item_rows = session.execute(select(FarmBaseRiskItemORM).order_by(FarmBaseRiskItemORM.id.asc())).scalars().all()
 
-    assert base_row.risk_tags_json in (None, [])
-    assert base_row.risk_items_json in (None, [])
     assert [row.risk_tag for row in risk_tag_rows] == ["FLOWERING_FRUITING_SENSITIVE", "HIGH_HUMIDITY"]
-    assert [row.risk_code for row in risk_item_rows] == [None, None]
-    assert [row.risk_level for row in risk_item_rows] == [None, None]
-    assert [row.risk_message for row in risk_item_rows] == [None, None]
+    assert [row.payload_json.get("code") for row in risk_item_rows] == ["FLOWERING_FRUITING_SENSITIVE", "HIGH_HUMIDITY"]
 
 
 def test_get_profile_prefers_farm_base_child_tables_but_keeps_compatible_shape(monkeypatch, tmp_path: Path) -> None:
@@ -150,12 +146,6 @@ def test_get_profile_prefers_farm_base_child_tables_but_keeps_compatible_shape(m
     monkeypatch.setattr(profile_repo_mysql, "get_db_session", session_scope)
 
     profile_repo_mysql.save_profile_payload(_profile_payload())
-
-    with session_scope() as session:
-        base_row = session.execute(select(FarmBaseORM).where(FarmBaseORM.base_id == "B001")).scalar_one()
-        base_row.risk_tags_json = ["LEGACY_TAG"]
-        base_row.risk_items_json = [{"code": "LEGACY_ITEM", "label": "旧风险", "level": "low", "reason": "旧原因"}]
-        session.commit()
 
     loaded = profile_repo_mysql.get_profile("FBASE-NORMALIZED")
 
@@ -167,53 +157,6 @@ def test_get_profile_prefers_farm_base_child_tables_but_keeps_compatible_shape(m
         "HIGH_HUMIDITY",
     ]
     assert base_payload["risk_items"][0]["reason"] == "开花坐果阶段对药害与湿害更敏感"
-
-
-def test_get_profile_falls_back_to_legacy_farm_base_json_when_child_tables_are_empty(monkeypatch, tmp_path: Path) -> None:
-    engine, session_scope = _make_session_scope(tmp_path)
-    _create_profile_tables(engine)
-    monkeypatch.setattr(profile_repo_mysql, "get_db_session", session_scope)
-    monkeypatch.setenv("ENABLE_BASE_RISK_JSON_FALLBACK", "true")
-
-    payload = _profile_payload()
-    base_payload = payload["bases"]["B001"]
-    with session_scope() as session:
-        session.add(
-            FarmerProfileORM(
-                farmer_id=payload["farmer_id"],
-                name=payload["name"],
-                owner_user_id=payload["farmer_id"],
-                schema_version="1.2",
-                confirm_when_low_confidence=True,
-            )
-        )
-        session.add(
-            FarmBaseORM(
-                farmer_id=payload["farmer_id"],
-                base_id="B001",
-                internal_base_uid=base_payload["internal_base_uid"],
-                name=base_payload["name"],
-                location=base_payload["location"],
-                province=base_payload["province"],
-                facility=base_payload["facility"],
-                environment=base_payload["environment"],
-                growth_stage=base_payload["growth_stage"],
-                sowing_date=base_payload["sowing_date"],
-                risk_tags_json=base_payload["risk_tags"],
-                risk_reasons_json=base_payload["risk_reasons"],
-                risk_items_json=base_payload["risk_items"],
-            )
-        )
-        session.commit()
-
-    loaded = profile_repo_mysql.get_profile("FBASE-NORMALIZED")
-
-    assert loaded is not None
-    assert loaded["bases"]["B001"]["risk_tags"] == ["FLOWERING_FRUITING_SENSITIVE", "HIGH_HUMIDITY"]
-    assert [item["code"] for item in loaded["bases"]["B001"]["risk_items"]] == [
-        "FLOWERING_FRUITING_SENSITIVE",
-        "HIGH_HUMIDITY",
-    ]
 
 
 def test_resolve_profile_and_base_does_not_regress_with_normalized_farm_base_tables(monkeypatch, tmp_path: Path) -> None:
@@ -346,11 +289,25 @@ def test_migrate_farm_bases_normalized_script_is_idempotent(monkeypatch, tmp_pat
                 base_id="B001",
                 internal_base_uid=base_payload["internal_base_uid"],
                 name=base_payload["name"],
-                risk_tags_json=base_payload["risk_tags"],
                 risk_reasons_json=base_payload["risk_reasons"],
-                risk_items_json=base_payload["risk_items"],
             )
         )
+        for risk_tag in base_payload["risk_tags"]:
+            session.add(
+                FarmBaseRiskTagORM(
+                    farmer_id="FBASE-NORMALIZED",
+                    base_id="B001",
+                    risk_tag=risk_tag,
+                )
+            )
+        for risk_item in base_payload["risk_items"]:
+            session.add(
+                FarmBaseRiskItemORM(
+                    farmer_id="FBASE-NORMALIZED",
+                    base_id="B001",
+                    payload_json=risk_item,
+                )
+            )
         session.commit()
 
     monkeypatch.setattr(sys, "argv", ["migrate_farm_bases_normalized.py"])
