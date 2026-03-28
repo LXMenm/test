@@ -279,6 +279,63 @@ function App() {
     };
   }, [authUser, verifyCurrentAuth]);
 
+  const resetPasswordPanelState = useCallback(() => {
+    setOldPassword('');
+    setNewPassword('');
+    setConfirmPassword('');
+    setPasswordError('');
+    setPasswordMessage('');
+    setPasswordPanelKey((prev) => prev + 1);
+  }, []);
+
+  const verifyCurrentAuth = useCallback(async (options?: { silent?: boolean }) => {
+    if (!authUser) {
+      setAuthChecking(false);
+      return;
+    }
+    const silent = Boolean(options?.silent);
+    if (!silent) setAuthChecking(true);
+    try {
+      const resp = await fetch('/api/auth/me', withAuthHeaders(undefined, authUser));
+      const data = await resp.json().catch(() => null);
+      if (!resp.ok) {
+        if (resp.status === 401 || resp.status === 403) {
+          clearAuthUser();
+          setAuthUser(null);
+          setAuthNotice('登录状态已失效，请重新登录');
+          setPasswordPanelOpen(false);
+          resetPasswordPanelState();
+          return;
+        }
+        throw new Error(String((data as Record<string, unknown> | null)?.detail || '登录状态校验失败'));
+      }
+      const nextUser = normalizeAuthUserFromPayload(data, authUser);
+      if (nextUser) {
+        setAuthUser(nextUser);
+        saveAuthUser(nextUser);
+      }
+    } catch (error) {
+      setAuthNotice(error instanceof Error ? error.message : '登录状态校验失败');
+    } finally {
+      if (!silent) setAuthChecking(false);
+    }
+  }, [authUser, resetPasswordPanelState]);
+
+  useEffect(() => {
+    void verifyCurrentAuth();
+  }, [verifyCurrentAuth]);
+
+  useEffect(() => {
+    const handleFocus = () => {
+      if (!authUser) return;
+      void verifyCurrentAuth({ silent: true });
+    };
+    window.addEventListener('focus', handleFocus);
+    return () => {
+      window.removeEventListener('focus', handleFocus);
+    };
+  }, [authUser, verifyCurrentAuth]);
+
   const handleLogin = (user: AuthUser) => {
     applyAuthUser(user);
     setAuthNotice('');
