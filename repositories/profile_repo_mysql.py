@@ -5,6 +5,7 @@ MySQL 农户档案仓储层
 
 from __future__ import annotations
 
+import os
 from datetime import datetime
 from typing import Any, Dict, Iterable, Optional
 
@@ -19,6 +20,23 @@ from mysql_models import (
     FarmerProfileEquipmentORM,
     FarmerProfileORM,
 )
+from runtime_fallback_stats import record_fallback_hit
+
+
+def _env_flag(name: str) -> bool:
+    return str(os.getenv(name, "false")).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _legacy_fallback_enabled(*, enable_var: str, legacy_disable_var: str) -> bool:
+    """
+    第四轮语义：默认停读，仅在 ENABLE_*_FALLBACK=true 时恢复兼容读取。
+    兼容旧变量 DISABLE_*（若设置）：其语义与历史版本一致。
+    """
+    if enable_var in os.environ:
+        return _env_flag(enable_var)
+    if legacy_disable_var in os.environ:
+        return not _env_flag(legacy_disable_var)
+    return False
 
 
 def _datetime_to_iso(value: Any) -> Optional[str]:
@@ -134,7 +152,19 @@ def _build_constraints_payload(
             "banned_ingredients": ingredient_values,
         }
 
+    constraints_json_fallback_enabled = _legacy_fallback_enabled(
+        enable_var="ENABLE_PROFILE_CONSTRAINTS_JSON_FALLBACK",
+        legacy_disable_var="DISABLE_PROFILE_CONSTRAINTS_JSON_FALLBACK",
+    )
+    if not constraints_json_fallback_enabled:
+        return {
+            "prefer_organic": bool(profile_row.prefer_organic),
+            "harvest_window_days": profile_row.harvest_window_days,
+            "banned_ingredients": [],
+        }
+
     legacy = _safe_dict(profile_row.constraints_json)
+    record_fallback_hit("profile.constraints_json_fallback")
     return {
         "prefer_organic": _safe_bool(legacy.get("prefer_organic")),
         "harvest_window_days": _safe_int(legacy.get("harvest_window_days")),
@@ -157,19 +187,40 @@ def _build_equipment_payload(
     ]
     if equipment_values:
         return equipment_values
+    equipment_json_fallback_enabled = _legacy_fallback_enabled(
+        enable_var="ENABLE_PROFILE_EQUIPMENT_JSON_FALLBACK",
+        legacy_disable_var="DISABLE_PROFILE_EQUIPMENT_JSON_FALLBACK",
+    )
+    if not equipment_json_fallback_enabled:
+        return []
+    record_fallback_hit("profile.equipment_json_fallback")
     return [str(item).strip() for item in _safe_list(profile_row.equipment_json) if str(item).strip()]
 
 
 def _risk_item_row_to_dict(row: FarmBaseRiskItemORM) -> dict[str, Any]:
     payload = _safe_dict(row.payload_json)
-    code = str(payload.get("code") or row.risk_code or payload.get("label") or "").strip()
-    label = str(payload.get("label") or row.risk_code or row.risk_message or "风险项").strip()
-    reason = str(payload.get("reason") or row.risk_message or label).strip()
+    structured_fallback_enabled = _legacy_fallback_enabled(
+        enable_var="ENABLE_BASE_RISK_ITEM_STRUCTURED_FALLBACK",
+        legacy_disable_var="DISABLE_BASE_RISK_ITEM_STRUCTURED_FALLBACK",
+    )
+    code_from_structured = not payload.get("code") and bool(str(row.risk_code or "").strip())
+    level_from_structured = not payload.get("level") and bool(str(row.risk_level or "").strip())
+    reason_from_structured = not payload.get("reason") and bool(str(row.risk_message or "").strip())
+
+    structured_code = row.risk_code if structured_fallback_enabled else None
+    structured_level = row.risk_level if structured_fallback_enabled else None
+    structured_message = row.risk_message if structured_fallback_enabled else None
+
+    code = str(payload.get("code") or structured_code or payload.get("label") or "").strip()
+    label = str(payload.get("label") or structured_code or structured_message or "风险项").strip()
+    reason = str(payload.get("reason") or structured_message or label).strip()
     normalized = dict(payload)
     normalized["code"] = code or label or "RISK_ITEM"
     normalized["label"] = label or normalized["code"]
-    normalized["level"] = str(payload.get("level") or row.risk_level or "low").strip() or "low"
+    normalized["level"] = str(payload.get("level") or structured_level or "low").strip() or "low"
     normalized["reason"] = reason or normalized["label"]
+    if structured_fallback_enabled and (code_from_structured or level_from_structured or reason_from_structured):
+        record_fallback_hit("base.risk_item_structured_fallback")
     return normalized
 
 
@@ -179,6 +230,14 @@ def _base_row_to_dict(
     risk_item_rows: Iterable[FarmBaseRiskItemORM] | None = None,
 ) -> dict[str, Any]:
     extra_json = _safe_dict(base_row.extra_json)
+    base_risk_json_fallback_enabled = _legacy_fallback_enabled(
+        enable_var="ENABLE_BASE_RISK_JSON_FALLBACK",
+        legacy_disable_var="DISABLE_BASE_RISK_JSON_FALLBACK",
+    )
+    base_extra_legacy_fallback_enabled = _legacy_fallback_enabled(
+        enable_var="ENABLE_BASE_EXTRA_LEGACY_FALLBACK",
+        legacy_disable_var="DISABLE_BASE_EXTRA_LEGACY_FALLBACK",
+    )
     relative_humidity = base_row.relative_humidity_2m
     if relative_humidity is None:
         relative_humidity = extra_json.get("relative_humidity_2m")
@@ -189,14 +248,20 @@ def _base_row_to_dict(
     if rain_risk is None:
         rain_risk = extra_json.get("rain_risk")
     weather_temperature_2m = extra_json.get("weather_temperature_2m")
-    if weather_temperature_2m is None:
+    if weather_temperature_2m is None and base_extra_legacy_fallback_enabled:
         weather_temperature_2m = extra_json.get("temperature_2m")
+        if weather_temperature_2m is not None:
+            record_fallback_hit("base.extra.weather_legacy_key_fallback")
     weather_wind_speed_10m = extra_json.get("weather_wind_speed_10m")
-    if weather_wind_speed_10m is None:
+    if weather_wind_speed_10m is None and base_extra_legacy_fallback_enabled:
         weather_wind_speed_10m = extra_json.get("wind_speed_10m")
+        if weather_wind_speed_10m is not None:
+            record_fallback_hit("base.extra.weather_legacy_key_fallback")
     last_weather_refresh_at = extra_json.get("last_weather_refresh_at")
-    if last_weather_refresh_at in (None, ""):
+    if last_weather_refresh_at in (None, "") and base_extra_legacy_fallback_enabled:
         last_weather_refresh_at = extra_json.get("weather_refreshed_at")
+        if last_weather_refresh_at not in (None, ""):
+            record_fallback_hit("base.extra.weather_legacy_key_fallback")
     normalized_risk_tags = [
         str(row.risk_tag).strip()
         for row in sorted(risk_tag_rows or [], key=lambda item: (item.risk_tag or "", item.id or 0))
@@ -209,14 +274,23 @@ def _base_row_to_dict(
     latitude = base_row.latitude
     if latitude is None:
         latitude = extra_json.get("latitude")
-    if latitude is None:
+    if latitude is None and base_extra_legacy_fallback_enabled:
         latitude = extra_json.get("lat")
+        if latitude is not None:
+            record_fallback_hit("base.extra.latlon_fallback")
 
     longitude = base_row.longitude
     if longitude is None:
         longitude = extra_json.get("longitude")
-    if longitude is None:
+    if longitude is None and base_extra_legacy_fallback_enabled:
         longitude = extra_json.get("lon")
+        if longitude is not None:
+            record_fallback_hit("base.extra.latlon_fallback")
+
+    if base_risk_json_fallback_enabled and (not normalized_risk_tags) and _normalize_risk_tags(base_row.risk_tags_json):
+        record_fallback_hit("base.risk_tags_json_fallback")
+    if base_risk_json_fallback_enabled and (not normalized_risk_items) and _normalize_risk_items(base_row.risk_items_json):
+        record_fallback_hit("base.risk_items_json_fallback")
 
     return {
         "base_id": base_row.base_id,
@@ -239,9 +313,9 @@ def _base_row_to_dict(
         "relative_humidity_2m": relative_humidity,
         "precipitation": precipitation,
         "rain_risk": rain_risk,
-        "risk_tags": normalized_risk_tags or _normalize_risk_tags(base_row.risk_tags_json),
+        "risk_tags": (normalized_risk_tags or _normalize_risk_tags(base_row.risk_tags_json)) if base_risk_json_fallback_enabled else normalized_risk_tags,
         "risk_reasons": _safe_list(base_row.risk_reasons_json),
-        "risk_items": normalized_risk_items or _normalize_risk_items(base_row.risk_items_json),
+        "risk_items": (normalized_risk_items or _normalize_risk_items(base_row.risk_items_json)) if base_risk_json_fallback_enabled else normalized_risk_items,
         "risk_updated_at": _datetime_to_iso(base_row.risk_updated_at),
         "notes": base_row.notes,
     }
@@ -272,13 +346,23 @@ def _profile_row_to_dict(
         if base_row.base_id
     }
     meta_json = _safe_dict(profile_row.meta_json)
-    owner_user_id = str(profile_row.owner_user_id or "").strip() or str(meta_json.get("owner_user_id") or "").strip() or profile_row.farmer_id
+    raw_owner_user_id = str(profile_row.owner_user_id or "").strip()
+    fallback_owner_user_id = str(meta_json.get("owner_user_id") or "").strip()
+    owner_user_id = raw_owner_user_id or fallback_owner_user_id or profile_row.farmer_id
+    if not raw_owner_user_id and fallback_owner_user_id:
+        record_fallback_hit("profile.meta.owner_user_id_fallback")
+
+    raw_role_type = str(profile_row.role_type or "").strip().upper()
+    fallback_role_type = str(meta_json.get("role_type") or "").strip().upper()
+    role_type = raw_role_type or fallback_role_type or "FARMER"
+    if not raw_role_type and fallback_role_type:
+        record_fallback_hit("profile.meta.role_type_fallback")
     return {
         "farmer_id": profile_row.farmer_id,
         "name": profile_row.name,
         "display_name": meta_json.get("display_name") or profile_row.name,
         # 兼容返回字段：role_type 已废弃，不再承载身份语义。
-        "role_type": str(profile_row.role_type or meta_json.get("role_type") or "FARMER").strip().upper() or "FARMER",
+        "role_type": role_type,
         "owner_user_id": owner_user_id,
         "schema_version": profile_row.schema_version,
         "updated_at": _datetime_to_iso(profile_row.profile_updated_at),
@@ -389,9 +473,11 @@ def _replace_base_risk_children(
             FarmBaseRiskItemORM(
                 farmer_id=farmer_id,
                 base_id=base_id,
-                risk_code=str(payload.get("code") or "").strip() or None,
-                risk_level=str(payload.get("level") or "").strip() or None,
-                risk_message=str(payload.get("reason") or payload.get("label") or "").strip() or None,
+                # 冗余结构化列进入“停写不删读”阶段：新写入只保留 payload_json，
+                # 读取侧仍保留对 risk_code/risk_level/risk_message 的兼容回退。
+                risk_code=None,
+                risk_level=None,
+                risk_message=None,
                 payload_json=payload,
             )
         )
@@ -431,7 +517,7 @@ def save_profile_payload(payload: dict[str, Any]) -> dict[str, Any]:
             )
             profile_row.farm_scale = payload.get("farm_scale")
             profile_row.pesticide_access_level = payload.get("pesticide_access_level")
-            profile_row.equipment_json = equipment_payload
+            # 冗余列停写：equipment_json 仅保留历史兼容读取，不再同步新值。
             profile_row.cultivation_mode = payload.get("cultivation_mode")
             profile_row.experience_level = payload.get("experience_level")
             profile_row.risk_preference = payload.get("risk_preference")
@@ -442,14 +528,9 @@ def save_profile_payload(payload: dict[str, Any]) -> dict[str, Any]:
             owner_user_id = str(payload.get("owner_user_id") or farmer_id).strip() or farmer_id
             profile_row.role_type = role_type
             profile_row.owner_user_id = owner_user_id
-            meta_json["role_type"] = role_type
-            meta_json["owner_user_id"] = owner_user_id
+            # 冗余键停写：meta_json.role_type / owner_user_id 仅保留历史兼容读取。
             profile_row.meta_json = meta_json
-            profile_row.constraints_json = {
-                "prefer_organic": constraints_payload["prefer_organic"],
-                "harvest_window_days": constraints_payload["harvest_window_days"],
-                "banned_ingredients": list(constraints_payload["banned_ingredients"]),
-            }
+            # 冗余列停写：constraints_json 仅保留历史兼容读取，不再同步新值。
             profile_row.prefer_organic = constraints_payload["prefer_organic"]
             profile_row.harvest_window_days = constraints_payload["harvest_window_days"]
 
@@ -490,6 +571,9 @@ def save_profile_payload(payload: dict[str, Any]) -> dict[str, Any]:
                 normalized_risk_tags = _normalize_risk_tags(base_payload.get("risk_tags"))
                 normalized_risk_items = _normalize_risk_items(base_payload.get("risk_items"))
                 extra_json = _safe_dict(base_payload.get("extra_json"))
+                # legacy 兼容键停写：仍保留读取回退，但新写入不再落盘旧键。
+                for legacy_key in ("lat", "lon", "temperature_2m", "wind_speed_10m", "weather_refreshed_at"):
+                    extra_json.pop(legacy_key, None)
                 extra_json["last_weather_refresh_at"] = _datetime_to_iso(
                     _parse_datetime(base_payload.get("last_weather_refresh_at"))
                 )
@@ -515,9 +599,10 @@ def save_profile_payload(payload: dict[str, Any]) -> dict[str, Any]:
                         relative_humidity_2m=base_payload.get("relative_humidity_2m"),
                         precipitation=base_payload.get("precipitation"),
                         rain_risk=base_payload.get("rain_risk"),
-                        risk_tags_json=normalized_risk_tags,
+                        # 冗余结果 JSON 列停写：新写入仅维护归一化子表。
+                        risk_tags_json=None,
                         risk_reasons_json=_safe_list(base_payload.get("risk_reasons")),
-                        risk_items_json=normalized_risk_items,
+                        risk_items_json=None,
                         risk_updated_at=_parse_datetime(base_payload.get("risk_updated_at")),
                         notes=base_payload.get("notes"),
                         extra_json=extra_json,

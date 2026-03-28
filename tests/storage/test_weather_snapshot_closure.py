@@ -264,6 +264,7 @@ def test_profile_repo_reads_weather_fields_from_explicit_columns_first_with_extr
     FarmBaseRiskTagORM.__table__.create(bind=engine, checkfirst=True)
     FarmBaseRiskItemORM.__table__.create(bind=engine, checkfirst=True)
     monkeypatch.setattr(profile_repo_mysql, "get_db_session", session_scope)
+    monkeypatch.setenv("ENABLE_BASE_EXTRA_LEGACY_FALLBACK", "true")
 
     with session_scope() as session:
         session.add(

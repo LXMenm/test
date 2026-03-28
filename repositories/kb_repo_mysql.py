@@ -124,7 +124,6 @@ def _replace_treatment_children(
                         action_section=action_section,
                         seq=idx,
                         action_text=action_text,
-                        payload_json=None,
                     )
                 )
                 action_count += 1
@@ -135,8 +134,6 @@ def _replace_treatment_children(
                     disease_name=disease_key,
                     seq=idx,
                     ingredient_name=ingredient_name,
-                    ingredient_type=None,
-                    payload_json=None,
                 )
             )
             ingredient_count += 1
