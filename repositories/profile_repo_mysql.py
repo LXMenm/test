@@ -185,42 +185,19 @@ def _build_equipment_payload(
         for row in sorted(equipment_rows, key=lambda item: (item.seq or 0, item.id or 0))
         if str(row.equipment_code or "").strip()
     ]
-    if equipment_values:
-        return equipment_values
-    equipment_json_fallback_enabled = _legacy_fallback_enabled(
-        enable_var="ENABLE_PROFILE_EQUIPMENT_JSON_FALLBACK",
-        legacy_disable_var="DISABLE_PROFILE_EQUIPMENT_JSON_FALLBACK",
-    )
-    if not equipment_json_fallback_enabled:
-        return []
-    record_fallback_hit("profile.equipment_json_fallback")
-    return [str(item).strip() for item in _safe_list(profile_row.equipment_json) if str(item).strip()]
+    return equipment_values
 
 
 def _risk_item_row_to_dict(row: FarmBaseRiskItemORM) -> dict[str, Any]:
     payload = _safe_dict(row.payload_json)
-    structured_fallback_enabled = _legacy_fallback_enabled(
-        enable_var="ENABLE_BASE_RISK_ITEM_STRUCTURED_FALLBACK",
-        legacy_disable_var="DISABLE_BASE_RISK_ITEM_STRUCTURED_FALLBACK",
-    )
-    code_from_structured = not payload.get("code") and bool(str(row.risk_code or "").strip())
-    level_from_structured = not payload.get("level") and bool(str(row.risk_level or "").strip())
-    reason_from_structured = not payload.get("reason") and bool(str(row.risk_message or "").strip())
-
-    structured_code = row.risk_code if structured_fallback_enabled else None
-    structured_level = row.risk_level if structured_fallback_enabled else None
-    structured_message = row.risk_message if structured_fallback_enabled else None
-
-    code = str(payload.get("code") or structured_code or payload.get("label") or "").strip()
-    label = str(payload.get("label") or structured_code or structured_message or "风险项").strip()
-    reason = str(payload.get("reason") or structured_message or label).strip()
+    code = str(payload.get("code") or payload.get("label") or "").strip()
+    label = str(payload.get("label") or "风险项").strip()
+    reason = str(payload.get("reason") or label).strip()
     normalized = dict(payload)
     normalized["code"] = code or label or "RISK_ITEM"
     normalized["label"] = label or normalized["code"]
-    normalized["level"] = str(payload.get("level") or structured_level or "low").strip() or "low"
+    normalized["level"] = str(payload.get("level") or "low").strip() or "low"
     normalized["reason"] = reason or normalized["label"]
-    if structured_fallback_enabled and (code_from_structured or level_from_structured or reason_from_structured):
-        record_fallback_hit("base.risk_item_structured_fallback")
     return normalized
 
 
@@ -230,10 +207,6 @@ def _base_row_to_dict(
     risk_item_rows: Iterable[FarmBaseRiskItemORM] | None = None,
 ) -> dict[str, Any]:
     extra_json = _safe_dict(base_row.extra_json)
-    base_risk_json_fallback_enabled = _legacy_fallback_enabled(
-        enable_var="ENABLE_BASE_RISK_JSON_FALLBACK",
-        legacy_disable_var="DISABLE_BASE_RISK_JSON_FALLBACK",
-    )
     base_extra_legacy_fallback_enabled = _legacy_fallback_enabled(
         enable_var="ENABLE_BASE_EXTRA_LEGACY_FALLBACK",
         legacy_disable_var="DISABLE_BASE_EXTRA_LEGACY_FALLBACK",
@@ -287,11 +260,6 @@ def _base_row_to_dict(
         if longitude is not None:
             record_fallback_hit("base.extra.latlon_fallback")
 
-    if base_risk_json_fallback_enabled and (not normalized_risk_tags) and _normalize_risk_tags(base_row.risk_tags_json):
-        record_fallback_hit("base.risk_tags_json_fallback")
-    if base_risk_json_fallback_enabled and (not normalized_risk_items) and _normalize_risk_items(base_row.risk_items_json):
-        record_fallback_hit("base.risk_items_json_fallback")
-
     return {
         "base_id": base_row.base_id,
         "internal_base_uid": base_row.internal_base_uid,
@@ -313,9 +281,9 @@ def _base_row_to_dict(
         "relative_humidity_2m": relative_humidity,
         "precipitation": precipitation,
         "rain_risk": rain_risk,
-        "risk_tags": (normalized_risk_tags or _normalize_risk_tags(base_row.risk_tags_json)) if base_risk_json_fallback_enabled else normalized_risk_tags,
+        "risk_tags": normalized_risk_tags,
         "risk_reasons": _safe_list(base_row.risk_reasons_json),
-        "risk_items": (normalized_risk_items or _normalize_risk_items(base_row.risk_items_json)) if base_risk_json_fallback_enabled else normalized_risk_items,
+        "risk_items": normalized_risk_items,
         "risk_updated_at": _datetime_to_iso(base_row.risk_updated_at),
         "notes": base_row.notes,
     }
@@ -473,11 +441,6 @@ def _replace_base_risk_children(
             FarmBaseRiskItemORM(
                 farmer_id=farmer_id,
                 base_id=base_id,
-                # 冗余结构化列进入“停写不删读”阶段：新写入只保留 payload_json，
-                # 读取侧仍保留对 risk_code/risk_level/risk_message 的兼容回退。
-                risk_code=None,
-                risk_level=None,
-                risk_message=None,
                 payload_json=payload,
             )
         )
@@ -517,7 +480,6 @@ def save_profile_payload(payload: dict[str, Any]) -> dict[str, Any]:
             )
             profile_row.farm_scale = payload.get("farm_scale")
             profile_row.pesticide_access_level = payload.get("pesticide_access_level")
-            # 冗余列停写：equipment_json 仅保留历史兼容读取，不再同步新值。
             profile_row.cultivation_mode = payload.get("cultivation_mode")
             profile_row.experience_level = payload.get("experience_level")
             profile_row.risk_preference = payload.get("risk_preference")
@@ -599,10 +561,7 @@ def save_profile_payload(payload: dict[str, Any]) -> dict[str, Any]:
                         relative_humidity_2m=base_payload.get("relative_humidity_2m"),
                         precipitation=base_payload.get("precipitation"),
                         rain_risk=base_payload.get("rain_risk"),
-                        # 冗余结果 JSON 列停写：新写入仅维护归一化子表。
-                        risk_tags_json=None,
                         risk_reasons_json=_safe_list(base_payload.get("risk_reasons")),
-                        risk_items_json=None,
                         risk_updated_at=_parse_datetime(base_payload.get("risk_updated_at")),
                         notes=base_payload.get("notes"),
                         extra_json=extra_json,
@@ -655,27 +614,12 @@ def backfill_farm_bases_normalized_mysql() -> dict[str, int]:
             base_rows = session.execute(
                 select(FarmBaseORM).order_by(FarmBaseORM.farmer_id.asc(), FarmBaseORM.base_id.asc())
             ).scalars().all()
-            session.execute(delete(FarmBaseRiskTagORM))
-            session.execute(delete(FarmBaseRiskItemORM))
-
-            risk_tag_count = 0
-            risk_item_count = 0
-            for base_row in base_rows:
-                one_tag_count, one_item_count = _replace_base_risk_children(
-                    session=session,
-                    farmer_id=str(base_row.farmer_id or "").strip(),
-                    base_id=str(base_row.base_id or "").strip(),
-                    risk_tags=_normalize_risk_tags(base_row.risk_tags_json),
-                    risk_items=_normalize_risk_items(base_row.risk_items_json),
-                )
-                risk_tag_count += one_tag_count
-                risk_item_count += one_item_count
-
-            session.commit()
+            risk_tag_count = session.execute(select(FarmBaseRiskTagORM)).scalars().all()
+            risk_item_count = session.execute(select(FarmBaseRiskItemORM)).scalars().all()
             return {
                 "base_count": len(base_rows),
-                "risk_tag_count": risk_tag_count,
-                "risk_item_count": risk_item_count,
+                "risk_tag_count": len(risk_tag_count),
+                "risk_item_count": len(risk_item_count),
             }
         except Exception:
             session.rollback()

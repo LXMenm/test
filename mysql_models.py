@@ -56,8 +56,6 @@ class FarmerProfileORM(TimestampMixin, Base):
 
     farm_scale = Column(String(32), nullable=True)
     pesticide_access_level = Column(String(32), nullable=True)
-    equipment_json = Column(JSON, nullable=True)
-
     cultivation_mode = Column(String(32), nullable=True)
     experience_level = Column(String(32), nullable=True)
     risk_preference = Column(String(32), nullable=True)
@@ -130,9 +128,7 @@ class FarmBaseORM(TimestampMixin, Base):
     precipitation = Column(Float, nullable=True)
     rain_risk = Column(Float, nullable=True)
 
-    risk_tags_json = Column(JSON, nullable=True)
     risk_reasons_json = Column(JSON, nullable=True)
-    risk_items_json = Column(JSON, nullable=True)
     risk_updated_at = Column(DateTime, nullable=True)
 
     notes = Column(Text, nullable=True)
@@ -165,9 +161,6 @@ class FarmBaseRiskItemORM(TimestampMixin, Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     farmer_id = Column(String(64), nullable=False, index=True)
     base_id = Column(String(64), nullable=False, index=True)
-    risk_code = Column(String(64), nullable=True)
-    risk_level = Column(String(32), nullable=True)
-    risk_message = Column(Text, nullable=True)
     payload_json = Column(JSON, nullable=True)
 
     __table_args__ = (

@@ -102,7 +102,6 @@ def test_save_profile_payload_writes_main_and_normalized_child_tables(monkeypatc
 
     assert profile_row.prefer_organic is True
     assert profile_row.harvest_window_days == 9
-    assert profile_row.equipment_json in (None, [])
     assert profile_row.constraints_json in (None, {})
     assert not (profile_row.meta_json or {}).get("owner_user_id")
     assert not (profile_row.meta_json or {}).get("role_type")
@@ -120,7 +119,6 @@ def test_load_profile_prefers_normalized_children_but_keeps_payload_shape(monkey
 
     with session_scope() as session:
         profile_row = session.execute(select(FarmerProfileORM)).scalar_one()
-        profile_row.equipment_json = ['LEGACY_TOOL']
         profile_row.constraints_json = {
             'prefer_organic': False,
             'harvest_window_days': 3,
@@ -140,11 +138,10 @@ def test_load_profile_prefers_normalized_children_but_keeps_payload_shape(monkey
     assert set(loaded.keys()) >= {'farmer_id', 'equipment', 'constraints', 'bases'}
 
 
-def test_load_profile_falls_back_to_legacy_json_when_children_are_empty(monkeypatch, tmp_path: Path) -> None:
+def test_load_profile_falls_back_to_legacy_constraints_json_when_children_are_empty(monkeypatch, tmp_path: Path) -> None:
     engine, session_scope, _ = _make_session_scope(tmp_path)
     _create_profile_tables(engine)
     monkeypatch.setattr(profile_repo_mysql, 'get_db_session', session_scope)
-    monkeypatch.setenv("ENABLE_PROFILE_EQUIPMENT_JSON_FALLBACK", "true")
     monkeypatch.setenv("ENABLE_PROFILE_CONSTRAINTS_JSON_FALLBACK", "true")
 
     payload = _profile_payload()
@@ -156,7 +153,6 @@ def test_load_profile_falls_back_to_legacy_json_when_children_are_empty(monkeypa
                 owner_user_id=payload['farmer_id'],
                 schema_version='1.2',
                 confirm_when_low_confidence=True,
-                equipment_json=payload['equipment'],
                 prefer_organic=True,
                 harvest_window_days=9,
                 constraints_json=payload['constraints'],
@@ -167,7 +163,7 @@ def test_load_profile_falls_back_to_legacy_json_when_children_are_empty(monkeypa
     loaded = profile_repo_mysql.get_profile('FMYSQL-NORMALIZED')
 
     assert loaded is not None
-    assert loaded['equipment'] == ['BACKPACK_SPRAYER', 'DRONE']
+    assert loaded['equipment'] == []
     assert loaded['constraints']['banned_ingredients'] == ['百菌清', '代森锰锌']
 
 
@@ -176,7 +172,6 @@ def test_migrate_profile_normalized_script_is_idempotent(monkeypatch, tmp_path: 
     _create_profile_tables(engine)
     monkeypatch.setattr(profile_repo_mysql, 'get_db_session', session_scope)
     monkeypatch.setattr(migrate_profile_script, 'engine', engine)
-    monkeypatch.setenv("ENABLE_PROFILE_EQUIPMENT_JSON_FALLBACK", "true")
     monkeypatch.setenv("ENABLE_PROFILE_CONSTRAINTS_JSON_FALLBACK", "true")
 
     payload = _profile_payload()
@@ -188,7 +183,6 @@ def test_migrate_profile_normalized_script_is_idempotent(monkeypatch, tmp_path: 
                 owner_user_id=payload['farmer_id'],
                 schema_version='1.2',
                 confirm_when_low_confidence=True,
-                equipment_json=payload['equipment'],
                 prefer_organic=True,
                 harvest_window_days=9,
                 constraints_json=payload['constraints'],
@@ -224,7 +218,7 @@ def test_migrate_profile_normalized_script_is_idempotent(monkeypatch, tmp_path: 
         equipment_rows_second = session.execute(select(FarmerProfileEquipmentORM)).scalars().all()
         ingredient_rows_second = session.execute(select(FarmerProfileBannedIngredientORM)).scalars().all()
 
-    assert len(equipment_rows_first) == len(equipment_rows_second) == 2
+    assert len(equipment_rows_first) == len(equipment_rows_second) == 0
     assert len(ingredient_rows_first) == len(ingredient_rows_second) == 2
     assert '[profile-normalize] profiles=1' in first_stdout.getvalue()
     assert '[profile-normalize] banned_ingredient_rows=2' in second_stdout.getvalue()
