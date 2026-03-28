@@ -173,6 +173,7 @@ def test_get_profile_falls_back_to_legacy_farm_base_json_when_child_tables_are_e
     engine, session_scope = _make_session_scope(tmp_path)
     _create_profile_tables(engine)
     monkeypatch.setattr(profile_repo_mysql, "get_db_session", session_scope)
+    monkeypatch.setenv("ENABLE_BASE_RISK_JSON_FALLBACK", "true")
 
     payload = _profile_payload()
     base_payload = payload["bases"]["B001"]

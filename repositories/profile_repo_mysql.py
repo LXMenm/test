@@ -27,6 +27,18 @@ def _env_flag(name: str) -> bool:
     return str(os.getenv(name, "false")).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _legacy_fallback_enabled(*, enable_var: str, legacy_disable_var: str) -> bool:
+    """
+    第四轮语义：默认停读，仅在 ENABLE_*_FALLBACK=true 时恢复兼容读取。
+    兼容旧变量 DISABLE_*（若设置）：其语义与历史版本一致。
+    """
+    if enable_var in os.environ:
+        return _env_flag(enable_var)
+    if legacy_disable_var in os.environ:
+        return not _env_flag(legacy_disable_var)
+    return False
+
+
 def _datetime_to_iso(value: Any) -> Optional[str]:
     if value is None:
         return None
@@ -140,7 +152,11 @@ def _build_constraints_payload(
             "banned_ingredients": ingredient_values,
         }
 
-    if _env_flag("DISABLE_PROFILE_CONSTRAINTS_JSON_FALLBACK"):
+    constraints_json_fallback_enabled = _legacy_fallback_enabled(
+        enable_var="ENABLE_PROFILE_CONSTRAINTS_JSON_FALLBACK",
+        legacy_disable_var="DISABLE_PROFILE_CONSTRAINTS_JSON_FALLBACK",
+    )
+    if not constraints_json_fallback_enabled:
         return {
             "prefer_organic": bool(profile_row.prefer_organic),
             "harvest_window_days": profile_row.harvest_window_days,
@@ -171,7 +187,11 @@ def _build_equipment_payload(
     ]
     if equipment_values:
         return equipment_values
-    if _env_flag("DISABLE_PROFILE_EQUIPMENT_JSON_FALLBACK"):
+    equipment_json_fallback_enabled = _legacy_fallback_enabled(
+        enable_var="ENABLE_PROFILE_EQUIPMENT_JSON_FALLBACK",
+        legacy_disable_var="DISABLE_PROFILE_EQUIPMENT_JSON_FALLBACK",
+    )
+    if not equipment_json_fallback_enabled:
         return []
     record_fallback_hit("profile.equipment_json_fallback")
     return [str(item).strip() for item in _safe_list(profile_row.equipment_json) if str(item).strip()]
@@ -179,14 +199,17 @@ def _build_equipment_payload(
 
 def _risk_item_row_to_dict(row: FarmBaseRiskItemORM) -> dict[str, Any]:
     payload = _safe_dict(row.payload_json)
-    disable_structured_fallback = _env_flag("DISABLE_BASE_RISK_ITEM_STRUCTURED_FALLBACK")
+    structured_fallback_enabled = _legacy_fallback_enabled(
+        enable_var="ENABLE_BASE_RISK_ITEM_STRUCTURED_FALLBACK",
+        legacy_disable_var="DISABLE_BASE_RISK_ITEM_STRUCTURED_FALLBACK",
+    )
     code_from_structured = not payload.get("code") and bool(str(row.risk_code or "").strip())
     level_from_structured = not payload.get("level") and bool(str(row.risk_level or "").strip())
     reason_from_structured = not payload.get("reason") and bool(str(row.risk_message or "").strip())
 
-    structured_code = None if disable_structured_fallback else row.risk_code
-    structured_level = None if disable_structured_fallback else row.risk_level
-    structured_message = None if disable_structured_fallback else row.risk_message
+    structured_code = row.risk_code if structured_fallback_enabled else None
+    structured_level = row.risk_level if structured_fallback_enabled else None
+    structured_message = row.risk_message if structured_fallback_enabled else None
 
     code = str(payload.get("code") or structured_code or payload.get("label") or "").strip()
     label = str(payload.get("label") or structured_code or structured_message or "风险项").strip()
@@ -196,7 +219,7 @@ def _risk_item_row_to_dict(row: FarmBaseRiskItemORM) -> dict[str, Any]:
     normalized["label"] = label or normalized["code"]
     normalized["level"] = str(payload.get("level") or structured_level or "low").strip() or "low"
     normalized["reason"] = reason or normalized["label"]
-    if (not disable_structured_fallback) and (code_from_structured or level_from_structured or reason_from_structured):
+    if structured_fallback_enabled and (code_from_structured or level_from_structured or reason_from_structured):
         record_fallback_hit("base.risk_item_structured_fallback")
     return normalized
 
@@ -207,8 +230,14 @@ def _base_row_to_dict(
     risk_item_rows: Iterable[FarmBaseRiskItemORM] | None = None,
 ) -> dict[str, Any]:
     extra_json = _safe_dict(base_row.extra_json)
-    disable_base_risk_json_fallback = _env_flag("DISABLE_BASE_RISK_JSON_FALLBACK")
-    disable_base_extra_legacy_fallback = _env_flag("DISABLE_BASE_EXTRA_LEGACY_FALLBACK")
+    base_risk_json_fallback_enabled = _legacy_fallback_enabled(
+        enable_var="ENABLE_BASE_RISK_JSON_FALLBACK",
+        legacy_disable_var="DISABLE_BASE_RISK_JSON_FALLBACK",
+    )
+    base_extra_legacy_fallback_enabled = _legacy_fallback_enabled(
+        enable_var="ENABLE_BASE_EXTRA_LEGACY_FALLBACK",
+        legacy_disable_var="DISABLE_BASE_EXTRA_LEGACY_FALLBACK",
+    )
     relative_humidity = base_row.relative_humidity_2m
     if relative_humidity is None:
         relative_humidity = extra_json.get("relative_humidity_2m")
@@ -219,17 +248,17 @@ def _base_row_to_dict(
     if rain_risk is None:
         rain_risk = extra_json.get("rain_risk")
     weather_temperature_2m = extra_json.get("weather_temperature_2m")
-    if weather_temperature_2m is None and not disable_base_extra_legacy_fallback:
+    if weather_temperature_2m is None and base_extra_legacy_fallback_enabled:
         weather_temperature_2m = extra_json.get("temperature_2m")
         if weather_temperature_2m is not None:
             record_fallback_hit("base.extra.weather_legacy_key_fallback")
     weather_wind_speed_10m = extra_json.get("weather_wind_speed_10m")
-    if weather_wind_speed_10m is None and not disable_base_extra_legacy_fallback:
+    if weather_wind_speed_10m is None and base_extra_legacy_fallback_enabled:
         weather_wind_speed_10m = extra_json.get("wind_speed_10m")
         if weather_wind_speed_10m is not None:
             record_fallback_hit("base.extra.weather_legacy_key_fallback")
     last_weather_refresh_at = extra_json.get("last_weather_refresh_at")
-    if last_weather_refresh_at in (None, "") and not disable_base_extra_legacy_fallback:
+    if last_weather_refresh_at in (None, "") and base_extra_legacy_fallback_enabled:
         last_weather_refresh_at = extra_json.get("weather_refreshed_at")
         if last_weather_refresh_at not in (None, ""):
             record_fallback_hit("base.extra.weather_legacy_key_fallback")
@@ -245,7 +274,7 @@ def _base_row_to_dict(
     latitude = base_row.latitude
     if latitude is None:
         latitude = extra_json.get("latitude")
-    if latitude is None and not disable_base_extra_legacy_fallback:
+    if latitude is None and base_extra_legacy_fallback_enabled:
         latitude = extra_json.get("lat")
         if latitude is not None:
             record_fallback_hit("base.extra.latlon_fallback")
@@ -253,14 +282,14 @@ def _base_row_to_dict(
     longitude = base_row.longitude
     if longitude is None:
         longitude = extra_json.get("longitude")
-    if longitude is None and not disable_base_extra_legacy_fallback:
+    if longitude is None and base_extra_legacy_fallback_enabled:
         longitude = extra_json.get("lon")
         if longitude is not None:
             record_fallback_hit("base.extra.latlon_fallback")
 
-    if (not disable_base_risk_json_fallback) and (not normalized_risk_tags) and _normalize_risk_tags(base_row.risk_tags_json):
+    if base_risk_json_fallback_enabled and (not normalized_risk_tags) and _normalize_risk_tags(base_row.risk_tags_json):
         record_fallback_hit("base.risk_tags_json_fallback")
-    if (not disable_base_risk_json_fallback) and (not normalized_risk_items) and _normalize_risk_items(base_row.risk_items_json):
+    if base_risk_json_fallback_enabled and (not normalized_risk_items) and _normalize_risk_items(base_row.risk_items_json):
         record_fallback_hit("base.risk_items_json_fallback")
 
     return {
@@ -284,9 +313,9 @@ def _base_row_to_dict(
         "relative_humidity_2m": relative_humidity,
         "precipitation": precipitation,
         "rain_risk": rain_risk,
-        "risk_tags": normalized_risk_tags if disable_base_risk_json_fallback else (normalized_risk_tags or _normalize_risk_tags(base_row.risk_tags_json)),
+        "risk_tags": (normalized_risk_tags or _normalize_risk_tags(base_row.risk_tags_json)) if base_risk_json_fallback_enabled else normalized_risk_tags,
         "risk_reasons": _safe_list(base_row.risk_reasons_json),
-        "risk_items": normalized_risk_items if disable_base_risk_json_fallback else (normalized_risk_items or _normalize_risk_items(base_row.risk_items_json)),
+        "risk_items": (normalized_risk_items or _normalize_risk_items(base_row.risk_items_json)) if base_risk_json_fallback_enabled else normalized_risk_items,
         "risk_updated_at": _datetime_to_iso(base_row.risk_updated_at),
         "notes": base_row.notes,
     }

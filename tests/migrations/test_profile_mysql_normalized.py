@@ -144,6 +144,8 @@ def test_load_profile_falls_back_to_legacy_json_when_children_are_empty(monkeypa
     engine, session_scope, _ = _make_session_scope(tmp_path)
     _create_profile_tables(engine)
     monkeypatch.setattr(profile_repo_mysql, 'get_db_session', session_scope)
+    monkeypatch.setenv("ENABLE_PROFILE_EQUIPMENT_JSON_FALLBACK", "true")
+    monkeypatch.setenv("ENABLE_PROFILE_CONSTRAINTS_JSON_FALLBACK", "true")
 
     payload = _profile_payload()
     with session_scope() as session:
@@ -174,6 +176,8 @@ def test_migrate_profile_normalized_script_is_idempotent(monkeypatch, tmp_path: 
     _create_profile_tables(engine)
     monkeypatch.setattr(profile_repo_mysql, 'get_db_session', session_scope)
     monkeypatch.setattr(migrate_profile_script, 'engine', engine)
+    monkeypatch.setenv("ENABLE_PROFILE_EQUIPMENT_JSON_FALLBACK", "true")
+    monkeypatch.setenv("ENABLE_PROFILE_CONSTRAINTS_JSON_FALLBACK", "true")
 
     payload = _profile_payload()
     with session_scope() as session:
