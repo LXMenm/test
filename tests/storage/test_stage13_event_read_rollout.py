@@ -121,7 +121,7 @@ def _event_payload(*, event_id: str, trace_id: str, disease: str, ts: str, farme
         "final_disease": disease,
         "final_confidence": 0.81,
         "final_source": "fusion",
-        "status": "done",
+        "status": "completed",
         "filtered": bool(filtered_reasons),
         "filtered_reasons": filtered_reasons,
         "workflow_degraded": False,

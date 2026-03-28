@@ -5,7 +5,7 @@ from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import and_, func, select
 
 from db import get_db_session
 from mysql_models import DiagnosisEventORM
@@ -50,6 +50,19 @@ def _parse_dt(value: Any) -> Optional[datetime]:
 def _parse_date_value(value: Any) -> Optional[date]:
     dt = _parse_dt(value)
     return dt.date() if dt else None
+
+
+def _build_date_filter(start: Any = None, end: Any = None):
+    start_date = _parse_date_value(start)
+    end_date = _parse_date_value(end)
+    conditions = []
+    if start_date:
+        start_dt = datetime.combine(start_date, datetime.min.time())
+        conditions.append(DiagnosisEventORM.ts >= start_dt)
+    if end_date:
+        end_dt = datetime.combine(end_date, datetime.max.time())
+        conditions.append(DiagnosisEventORM.ts <= end_dt)
+    return and_(*conditions) if conditions else None
 
 
 def _in_date_range(ts: datetime, start: Any = None, end: Any = None) -> bool:
@@ -248,11 +261,13 @@ def _row_to_event_payload(row: DiagnosisEventORM) -> dict[str, Any]:
 def _list_rows(start: Any = None, end: Any = None, limit: Optional[int] = None) -> list[DiagnosisEventORM]:
     with get_db_session() as session:
         query = select(DiagnosisEventORM).order_by(DiagnosisEventORM.ts.desc())
-        rows = session.execute(query).scalars().all()
-        filtered = [row for row in rows if row.ts and _in_date_range(row.ts, start, end)]
+        date_filter = _build_date_filter(start, end)
+        if date_filter is not None:
+            query = query.where(date_filter)
         if limit is not None:
-            filtered = filtered[:limit]
-        return filtered
+            query = query.limit(limit)
+        rows = session.execute(query).scalars().all()
+        return list(rows)
 
 
 def append_event_mysql(event: dict[str, Any]) -> dict[str, Any]:
@@ -301,13 +316,21 @@ def list_events_range_mysql(
 
 
 def stats_by_disease_mysql(start: Any = None, end: Any = None) -> Dict[str, int]:
-    counts: Dict[str, int] = {}
-    for row in _list_rows(start=start, end=end):
-        disease = str(row.final_disease or "").strip()
-        if not disease:
-            continue
-        counts[disease] = counts.get(disease, 0) + 1
-    return counts
+    with get_db_session() as session:
+        query = (
+            select(
+                DiagnosisEventORM.final_disease,
+                func.count().label("cnt")
+            )
+            .where(DiagnosisEventORM.final_disease.isnot(None))
+            .where(DiagnosisEventORM.final_disease != "")
+            .group_by(DiagnosisEventORM.final_disease)
+        )
+        date_filter = _build_date_filter(start, end)
+        if date_filter is not None:
+            query = query.where(date_filter)
+        results = session.execute(query).all()
+        return {str(row.final_disease or ""): int(row.cnt) for row in results if row.final_disease}
 
 
 def stats_by_disease_range_mysql(start: Any = None, end: Any = None) -> Dict[str, int]:
@@ -315,13 +338,22 @@ def stats_by_disease_range_mysql(start: Any = None, end: Any = None) -> Dict[str
 
 
 def timeseries_mysql(start: Any = None, end: Any = None) -> List[Dict[str, Any]]:
-    counts: Dict[str, int] = {}
-    for row in _list_rows(start=start, end=end):
-        if row.ts is None:
-            continue
-        date_key = row.ts.date().isoformat()
-        counts[date_key] = counts.get(date_key, 0) + 1
-    return [{"date": day, "count": counts[day]} for day in sorted(counts.keys())]
+    with get_db_session() as session:
+        date_expr = func.date(DiagnosisEventORM.ts)
+        query = (
+            select(
+                date_expr.label("day"),
+                func.count().label("cnt")
+            )
+            .where(DiagnosisEventORM.ts.isnot(None))
+            .group_by(date_expr)
+            .order_by(date_expr.asc())
+        )
+        date_filter = _build_date_filter(start, end)
+        if date_filter is not None:
+            query = query.where(date_filter)
+        results = session.execute(query).all()
+        return [{"date": str(row.day), "count": int(row.cnt)} for row in results if row.day]
 
 
 def timeseries_range_mysql(start: Any = None, end: Any = None) -> List[Dict[str, Any]]:
@@ -329,29 +361,39 @@ def timeseries_range_mysql(start: Any = None, end: Any = None) -> List[Dict[str,
 
 
 def geo_points_mysql(start: Any = None, end: Any = None) -> List[Dict[str, Any]]:
-    points: List[Dict[str, Any]] = []
-    for row in _list_rows(start=start, end=end):
-        lat = row.lat
-        lon = row.lon
-        if lat is None or lon is None:
-            continue
-        payload = _row_to_event_payload(row)
-        points.append(
-            {
-                "event_id": row.event_id,
-                "lat": lat,
-                "lon": lon,
-                "disease": row.final_disease,
-                "trace_id": row.trace_id,
-                "farmer_id": row.farmer_id,
-                "base_id": row.base_id,
-                "ts": payload.get("ts"),
-                "image_url": payload.get("image_url"),
-                "confidence_pct": _get_confidence_pct(payload),
-            }
+    with get_db_session() as session:
+        query = (
+            select(DiagnosisEventORM)
+            .where(DiagnosisEventORM.lat.isnot(None))
+            .where(DiagnosisEventORM.lon.isnot(None))
+            .order_by(DiagnosisEventORM.ts.desc())
         )
-    points.sort(key=lambda item: _parse_dt(item.get("ts")) or datetime.min, reverse=True)
-    return points
+        date_filter = _build_date_filter(start, end)
+        if date_filter is not None:
+            query = query.where(date_filter)
+        rows = session.execute(query).scalars().all()
+        points: List[Dict[str, Any]] = []
+        for row in rows:
+            lat = row.lat
+            lon = row.lon
+            if lat is None or lon is None:
+                continue
+            payload = _row_to_event_payload(row)
+            points.append(
+                {
+                    "event_id": row.event_id,
+                    "lat": lat,
+                    "lon": lon,
+                    "disease": row.final_disease,
+                    "trace_id": row.trace_id,
+                    "farmer_id": row.farmer_id,
+                    "base_id": row.base_id,
+                    "ts": payload.get("ts"),
+                    "image_url": payload.get("image_url"),
+                    "confidence_pct": _get_confidence_pct(payload),
+                }
+            )
+        return points
 
 
 def geo_points_range_mysql(start: Any = None, end: Any = None) -> List[Dict[str, Any]]:
@@ -359,15 +401,24 @@ def geo_points_range_mysql(start: Any = None, end: Any = None) -> List[Dict[str,
 
 
 def model_usage_mysql(start: Any = None, end: Any = None) -> Dict[str, int]:
-    counts: Dict[str, int] = {}
-    for row in _list_rows(start=start, end=end):
-        label = (
-            str(row.model_display_name or "").strip()
-            or str(row.model_id or "").strip()
-            or "未知模型"
+    with get_db_session() as session:
+        model_label = func.coalesce(
+            func.nullif(DiagnosisEventORM.model_display_name, ""),
+            func.nullif(DiagnosisEventORM.model_id, ""),
+            "未知模型"
         )
-        counts[label] = counts.get(label, 0) + 1
-    return counts
+        query = (
+            select(
+                model_label.label("label"),
+                func.count().label("cnt")
+            )
+            .group_by(model_label)
+        )
+        date_filter = _build_date_filter(start, end)
+        if date_filter is not None:
+            query = query.where(date_filter)
+        results = session.execute(query).all()
+        return {str(row.label): int(row.cnt) for row in results}
 
 
 def model_usage_range_mysql(start: Any = None, end: Any = None) -> Dict[str, int]:
