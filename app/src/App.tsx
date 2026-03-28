@@ -13,6 +13,7 @@ import { ExpertReviewPage } from './pages/ExpertReviewPage';
 import { AdminPage } from './pages/AdminPage';
 import { AccountManagementPage } from './pages/AccountManagementPage';
 import {
+  authFetch,
   clearAuthUser,
   getAllowedPages,
   getDefaultPage,
@@ -21,7 +22,6 @@ import {
   PAGE_TO_PATH,
   pathToPage,
   saveAuthUser,
-  withAuthHeaders,
   type AppPage,
   type AuthUser,
 } from './auth';
@@ -215,13 +215,69 @@ function App() {
     };
   }, [allowedPages, authUser]);
 
+  const resetPasswordPanelState = useCallback(() => {
+    setOldPassword('');
+    setNewPassword('');
+    setConfirmPassword('');
+    setPasswordError('');
+    setPasswordMessage('');
+    setPasswordPanelKey((prev) => prev + 1);
+  }, []);
+
+  const applyAuthUser = useCallback((nextUser: AuthUser | null) => {
+    if (!nextUser) return;
+    setAuthUser(nextUser);
+    saveAuthUser(nextUser);
+  }, []);
+
+  const clearCurrentSession = useCallback((reason?: string) => {
+    clearAuthUser();
+    setAuthUser(null);
+    setPasswordPanelOpen(false);
+    resetPasswordPanelState();
+    if (reason) setAuthNotice(reason);
+  }, [resetPasswordPanelState]);
+
+  const verifyCurrentAuth = useCallback(async (options?: { silent?: boolean }) => {
+    if (!authUser) {
+      setAuthChecking(false);
+      return;
+    }
+    const silent = Boolean(options?.silent);
+    if (!silent) setAuthChecking(true);
+    try {
+      const resp = await authFetch('/api/auth/me', undefined, authUser);
+      const data = await resp.json().catch(() => null);
+      if (!resp.ok) {
+        if (resp.status === 401 || resp.status === 403) {
+          clearCurrentSession('登录状态已失效，请重新登录');
+          return;
+        }
+        throw new Error(String((data as Record<string, unknown> | null)?.detail || '登录状态校验失败'));
+      }
+      const nextUser = normalizeAuthUserFromPayload(data, authUser);
+      applyAuthUser(nextUser);
+    } catch (error) {
+      setAuthNotice(error instanceof Error ? error.message : '登录状态校验失败');
+    } finally {
+      if (!silent) setAuthChecking(false);
+    }
+  }, [applyAuthUser, authUser, clearCurrentSession]);
+
   useEffect(() => {
-    const originalFetch = window.fetch.bind(window);
-    window.fetch = (input: RequestInfo | URL, init?: RequestInit) => originalFetch(input, withAuthHeaders(init, authUser));
-    return () => {
-      window.fetch = originalFetch;
+    void verifyCurrentAuth();
+  }, [verifyCurrentAuth]);
+
+  useEffect(() => {
+    const handleFocus = () => {
+      if (!authUser) return;
+      void verifyCurrentAuth({ silent: true });
     };
-  }, [authUser]);
+    window.addEventListener('focus', handleFocus);
+    return () => {
+      window.removeEventListener('focus', handleFocus);
+    };
+  }, [authUser, verifyCurrentAuth]);
 
   const resetPasswordPanelState = useCallback(() => {
     setOldPassword('');
@@ -281,8 +337,7 @@ function App() {
   }, [authUser, verifyCurrentAuth]);
 
   const handleLogin = (user: AuthUser) => {
-    setAuthUser(user);
-    saveAuthUser(user);
+    applyAuthUser(user);
     setAuthNotice('');
     const defaultPage = getDefaultPage(user.role);
     setCurrentPage(defaultPage);
@@ -290,10 +345,7 @@ function App() {
   };
 
   const handleLogout = () => {
-    clearAuthUser();
-    setAuthUser(null);
-    setPasswordPanelOpen(false);
-    resetPasswordPanelState();
+    clearCurrentSession();
   };
 
   const handleChangePassword = async () => {
@@ -309,7 +361,7 @@ function App() {
     setPasswordError('');
     setPasswordMessage('');
     try {
-      const resp = await fetch('/api/auth/change-password', withAuthHeaders({
+      const resp = await authFetch('/api/auth/change-password', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -317,7 +369,7 @@ function App() {
           new_password: newPassword,
           confirm_password: confirmPassword,
         }),
-      }, authUser));
+      }, authUser);
       const data = await resp.json().catch(() => null);
       if (!resp.ok) throw new Error(String((data as Record<string, unknown> | null)?.detail || '修改密码失败'));
       setOldPassword('');

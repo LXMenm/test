@@ -155,6 +155,7 @@ export function LoginPage({ onLogin }: LoginPageProps) {
       if (!resp.ok) throw new Error(String(data?.detail || (mode === 'login' ? '登录失败' : '注册失败')));
       const nextUser = normalizeAuthUserFromPayload(data, {
         userId: normalizedIdentifier,
+        username: mode === 'login' ? normalizedIdentifier : normalizedUsername,
         displayName: normalizedDisplayName || normalizedIdentifier,
         role: 'USER',
         linkedFarmerId: null,
