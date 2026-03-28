@@ -62,7 +62,6 @@ class FarmerProfileORM(TimestampMixin, Base):
 
     prefer_organic = Column(Boolean, nullable=False, default=False)
     harvest_window_days = Column(Integer, nullable=True)
-    constraints_json = Column(JSON, nullable=True)
     meta_json = Column(JSON, nullable=True)
 
     __table_args__ = (

@@ -145,34 +145,10 @@ def _build_constraints_payload(
         for row in sorted(ingredient_rows, key=lambda item: (item.seq or 0, item.id or 0))
         if str(row.ingredient_name or "").strip()
     ]
-    if ingredient_values:
-        return {
-            "prefer_organic": bool(profile_row.prefer_organic),
-            "harvest_window_days": profile_row.harvest_window_days,
-            "banned_ingredients": ingredient_values,
-        }
-
-    constraints_json_fallback_enabled = _legacy_fallback_enabled(
-        enable_var="ENABLE_PROFILE_CONSTRAINTS_JSON_FALLBACK",
-        legacy_disable_var="DISABLE_PROFILE_CONSTRAINTS_JSON_FALLBACK",
-    )
-    if not constraints_json_fallback_enabled:
-        return {
-            "prefer_organic": bool(profile_row.prefer_organic),
-            "harvest_window_days": profile_row.harvest_window_days,
-            "banned_ingredients": [],
-        }
-
-    legacy = _safe_dict(profile_row.constraints_json)
-    record_fallback_hit("profile.constraints_json_fallback")
     return {
-        "prefer_organic": _safe_bool(legacy.get("prefer_organic")),
-        "harvest_window_days": _safe_int(legacy.get("harvest_window_days")),
-        "banned_ingredients": [
-            str(item).strip()
-            for item in _safe_list(legacy.get("banned_ingredients"))
-            if str(item).strip()
-        ],
+        "prefer_organic": bool(profile_row.prefer_organic),
+        "harvest_window_days": profile_row.harvest_window_days,
+        "banned_ingredients": ingredient_values or [],
     }
 
 
