@@ -318,7 +318,6 @@ class KBTreatmentActionORM(TimestampMixin, Base):
     action_section = Column(String(64), nullable=False, index=True)
     seq = Column(Integer, nullable=False)
     action_text = Column(Text, nullable=False)
-    payload_json = Column(JSON, nullable=True)
 
     __table_args__ = (
         UniqueConstraint("disease_name", "action_section", "seq", name="uq_kb_treatment_action_section_seq"),
@@ -334,8 +333,6 @@ class KBTreatmentIngredientORM(TimestampMixin, Base):
     disease_name = Column(String(128), nullable=False, index=True)
     seq = Column(Integer, nullable=False)
     ingredient_name = Column(String(128), nullable=False, index=True)
-    ingredient_type = Column(String(64), nullable=True)
-    payload_json = Column(JSON, nullable=True)
 
     __table_args__ = (
         UniqueConstraint("disease_name", "ingredient_name", "seq", name="uq_kb_treatment_ingredient_name_seq"),

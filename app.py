@@ -71,6 +71,7 @@ from model_registry import list_models, resolve_model
 from workflow import build_graph
 from trace_catalog import AGENTS_CATALOG, NODE_TO_AGENT
 from runtime_settings import get_admin_llm_runtime_snapshot, get_runtime_thresholds, load_admin_runtime_config, save_admin_runtime_config
+from runtime_fallback_stats import get_fallback_readiness, get_fallback_stats, record_fallback_hit
 from db import engine as db_engine, get_db_session
 from mysql_models import FarmerProfileORM, UserAccountORM
 
@@ -300,6 +301,7 @@ def _create_account_with_profile(
 
 
 def _serialize_account_sync(account: UserAccountORM) -> dict[str, Any]:
+    record_fallback_hit("auth.linked_farmer_id_returned")
     return {
         "user_id": account.user_id,
         "role": str(account.role or "USER").upper(),
@@ -2980,6 +2982,7 @@ def login(payload: LoginRequest) -> dict[str, Any]:
     stored_password = str(account.password or "").strip()
     if stored_password and stored_password != incoming_password:
         raise HTTPException(status_code=401, detail="密码错误")
+    record_fallback_hit("auth.linked_farmer_id_returned")
     return {
         "user_id": account.user_id,
         "display_name": account.display_name,
@@ -3004,6 +3007,7 @@ def list_admin_accounts(request: Request) -> dict[str, Any]:
         }
     items = []
     for row in rows:
+        record_fallback_hit("auth.linked_farmer_id_returned")
         user_id = str(row.user_id or "").strip()
         items.append(
             {
@@ -3018,6 +3022,20 @@ def list_admin_accounts(request: Request) -> dict[str, Any]:
             }
         )
     return {"items": items}
+
+
+@app.get("/api/admin/debug/fallback-stats")
+def get_admin_fallback_stats(request: Request) -> dict[str, Any]:
+    actor = _get_request_actor(request)
+    _require_admin(actor)
+    return {"stats": get_fallback_stats()}
+
+
+@app.get("/api/admin/debug/fallback-readiness")
+def get_admin_fallback_readiness(request: Request) -> dict[str, Any]:
+    actor = _get_request_actor(request)
+    _require_admin(actor)
+    return get_fallback_readiness()
 
 
 @app.post("/api/admin/accounts")
