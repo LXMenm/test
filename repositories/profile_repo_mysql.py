@@ -423,9 +423,11 @@ def _replace_base_risk_children(
             FarmBaseRiskItemORM(
                 farmer_id=farmer_id,
                 base_id=base_id,
-                risk_code=str(payload.get("code") or "").strip() or None,
-                risk_level=str(payload.get("level") or "").strip() or None,
-                risk_message=str(payload.get("reason") or payload.get("label") or "").strip() or None,
+                # 冗余结构化列进入“停写不删读”阶段：新写入只保留 payload_json，
+                # 读取侧仍保留对 risk_code/risk_level/risk_message 的兼容回退。
+                risk_code=None,
+                risk_level=None,
+                risk_message=None,
                 payload_json=payload,
             )
         )
@@ -465,7 +467,7 @@ def save_profile_payload(payload: dict[str, Any]) -> dict[str, Any]:
             )
             profile_row.farm_scale = payload.get("farm_scale")
             profile_row.pesticide_access_level = payload.get("pesticide_access_level")
-            profile_row.equipment_json = equipment_payload
+            # 冗余列停写：equipment_json 仅保留历史兼容读取，不再同步新值。
             profile_row.cultivation_mode = payload.get("cultivation_mode")
             profile_row.experience_level = payload.get("experience_level")
             profile_row.risk_preference = payload.get("risk_preference")
@@ -476,14 +478,9 @@ def save_profile_payload(payload: dict[str, Any]) -> dict[str, Any]:
             owner_user_id = str(payload.get("owner_user_id") or farmer_id).strip() or farmer_id
             profile_row.role_type = role_type
             profile_row.owner_user_id = owner_user_id
-            meta_json["role_type"] = role_type
-            meta_json["owner_user_id"] = owner_user_id
+            # 冗余键停写：meta_json.role_type / owner_user_id 仅保留历史兼容读取。
             profile_row.meta_json = meta_json
-            profile_row.constraints_json = {
-                "prefer_organic": constraints_payload["prefer_organic"],
-                "harvest_window_days": constraints_payload["harvest_window_days"],
-                "banned_ingredients": list(constraints_payload["banned_ingredients"]),
-            }
+            # 冗余列停写：constraints_json 仅保留历史兼容读取，不再同步新值。
             profile_row.prefer_organic = constraints_payload["prefer_organic"]
             profile_row.harvest_window_days = constraints_payload["harvest_window_days"]
 
@@ -524,6 +521,9 @@ def save_profile_payload(payload: dict[str, Any]) -> dict[str, Any]:
                 normalized_risk_tags = _normalize_risk_tags(base_payload.get("risk_tags"))
                 normalized_risk_items = _normalize_risk_items(base_payload.get("risk_items"))
                 extra_json = _safe_dict(base_payload.get("extra_json"))
+                # legacy 兼容键停写：仍保留读取回退，但新写入不再落盘旧键。
+                for legacy_key in ("lat", "lon", "temperature_2m", "wind_speed_10m", "weather_refreshed_at"):
+                    extra_json.pop(legacy_key, None)
                 extra_json["last_weather_refresh_at"] = _datetime_to_iso(
                     _parse_datetime(base_payload.get("last_weather_refresh_at"))
                 )
@@ -549,9 +549,10 @@ def save_profile_payload(payload: dict[str, Any]) -> dict[str, Any]:
                         relative_humidity_2m=base_payload.get("relative_humidity_2m"),
                         precipitation=base_payload.get("precipitation"),
                         rain_risk=base_payload.get("rain_risk"),
-                        risk_tags_json=normalized_risk_tags,
+                        # 冗余结果 JSON 列停写：新写入仅维护归一化子表。
+                        risk_tags_json=None,
                         risk_reasons_json=_safe_list(base_payload.get("risk_reasons")),
-                        risk_items_json=normalized_risk_items,
+                        risk_items_json=None,
                         risk_updated_at=_parse_datetime(base_payload.get("risk_updated_at")),
                         notes=base_payload.get("notes"),
                         extra_json=extra_json,

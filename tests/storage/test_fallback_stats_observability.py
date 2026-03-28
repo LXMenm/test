@@ -161,3 +161,70 @@ def test_admin_debug_fallback_stats_endpoint_and_auth_counter(monkeypatch, tmp_p
     assert admin_resp.status_code == 200
     stats = admin_resp.json()["stats"]
     assert stats["auth.linked_farmer_id_returned"] >= 1
+
+
+def test_save_profile_payload_stops_writing_redundant_compat_fields(monkeypatch, tmp_path: Path) -> None:
+    reset_fallback_stats()
+    engine, session_scope = _make_session_scope(tmp_path, "profile_stop_write.db")
+    FarmerProfileORM.__table__.create(bind=engine, checkfirst=True)
+    FarmBaseORM.__table__.create(bind=engine, checkfirst=True)
+    FarmerProfileEquipmentORM.__table__.create(bind=engine, checkfirst=True)
+    FarmerProfileBannedIngredientORM.__table__.create(bind=engine, checkfirst=True)
+    FarmBaseRiskTagORM.__table__.create(bind=engine, checkfirst=True)
+    FarmBaseRiskItemORM.__table__.create(bind=engine, checkfirst=True)
+    monkeypatch.setattr(profile_repo_mysql, "get_db_session", session_scope)
+
+    payload = {
+        "farmer_id": "F1001",
+        "name": "停写测试",
+        "owner_user_id": "F1001",
+        "display_name": "停写测试显示名",
+        "equipment": ["DRONE"],
+        "constraints": {
+            "prefer_organic": True,
+            "harvest_window_days": 6,
+            "banned_ingredients": ["LEGACY_ING"],
+        },
+        "bases": {
+            "B1001": {
+                "base_id": "B1001",
+                "risk_tags": ["HIGH_HUMIDITY"],
+                "risk_reasons": ["湿度高"],
+                "risk_items": [
+                    {"code": "HIGH_HUMIDITY", "label": "高湿", "level": "medium", "reason": "湿度高"}
+                ],
+                "extra_json": {
+                    "lat": 31.2,
+                    "lon": 121.5,
+                    "temperature_2m": 27.8,
+                    "wind_speed_10m": 8.6,
+                    "weather_refreshed_at": "2026-03-20T00:00:00Z",
+                },
+                "weather_temperature_2m": 27.8,
+                "weather_wind_speed_10m": 8.6,
+                "last_weather_refresh_at": "2026-03-20T00:00:00Z",
+            }
+        },
+    }
+    profile_repo_mysql.save_profile_payload(payload)
+
+    with session_scope() as session:
+        profile_row = session.query(FarmerProfileORM).filter(FarmerProfileORM.farmer_id == "F1001").one()
+        base_row = session.query(FarmBaseORM).filter(FarmBaseORM.base_id == "B1001").one()
+        risk_item_rows = session.query(FarmBaseRiskItemORM).filter(FarmBaseRiskItemORM.base_id == "B1001").all()
+
+    assert profile_row.equipment_json in (None, [])
+    assert profile_row.constraints_json in (None, {})
+    assert not (profile_row.meta_json or {}).get("owner_user_id")
+    assert not (profile_row.meta_json or {}).get("role_type")
+
+    assert base_row.risk_tags_json in (None, [])
+    assert base_row.risk_items_json in (None, [])
+    assert (base_row.extra_json or {}).get("lat") is None
+    assert (base_row.extra_json or {}).get("lon") is None
+    assert (base_row.extra_json or {}).get("temperature_2m") is None
+    assert (base_row.extra_json or {}).get("wind_speed_10m") is None
+    assert (base_row.extra_json or {}).get("weather_refreshed_at") is None
+
+    assert risk_item_rows
+    assert all(row.risk_code is None and row.risk_level is None and row.risk_message is None for row in risk_item_rows)
