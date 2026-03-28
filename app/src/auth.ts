@@ -37,6 +37,27 @@ export function saveAuthUser(user: AuthUser): void {
   window.localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(user));
 }
 
+export function normalizeAuthUserFromPayload(
+  payload: unknown,
+  fallbackUser?: AuthUser | null,
+): AuthUser | null {
+  const source = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {};
+  const fallback = fallbackUser || null;
+  const userId = String(source.user_id || fallback?.userId || '').trim();
+  const displayName = String(source.display_name || fallback?.displayName || '').trim();
+  const role = normalizeRole(source.role || fallback?.role);
+  const linkedFarmerId = typeof source.linked_farmer_id === 'string'
+    ? source.linked_farmer_id
+    : (fallback?.linkedFarmerId ?? null);
+  if (!userId || !displayName) return null;
+  return {
+    userId,
+    displayName,
+    role,
+    linkedFarmerId,
+  };
+}
+
 export function clearAuthUser(): void {
   if (typeof window === 'undefined') return;
   window.localStorage.removeItem(AUTH_STORAGE_KEY);
