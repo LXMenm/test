@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -55,8 +56,173 @@ def test_create_account_with_profile_defaults():
         assert account.role == "USER"
         assert account.status == "ACTIVE"
         assert account.linked_farmer_id == "F0001"
+        assert account.password != "123456"
+        assert app_module._verify_password("123456", account.password) is True
         assert profile.farmer_id == "F0001"
         assert profile.owner_user_id == "F0001"
+
+
+def test_register_success():
+    SessionLocal = _build_session_factory()
+    _seed_admin(SessionLocal)
+
+    @contextmanager
+    def _session_override():
+        session = SessionLocal()
+        try:
+            yield session
+        finally:
+            session.close()
+
+    original_get_db_session = app_module.get_db_session
+    original_seed = app_module.ensure_user_accounts_seeded
+    app_module.get_db_session = _session_override
+    app_module.ensure_user_accounts_seeded = lambda: None
+    client = TestClient(app_module.app)
+    try:
+        resp = client.post(
+            "/api/auth/register",
+            json={"username": "newuser01", "display_name": "新用户", "password": "123456"},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["role"] == "USER"
+        assert body["user_id"]
+        assert body["linked_farmer_id"] == body["user_id"]
+    finally:
+        app_module.get_db_session = original_get_db_session
+        app_module.ensure_user_accounts_seeded = original_seed
+
+
+def test_registered_user_can_login_by_username():
+    SessionLocal = _build_session_factory()
+    _seed_admin(SessionLocal)
+
+    @contextmanager
+    def _session_override():
+        session = SessionLocal()
+        try:
+            yield session
+        finally:
+            session.close()
+
+    original_get_db_session = app_module.get_db_session
+    original_seed = app_module.ensure_user_accounts_seeded
+    app_module.get_db_session = _session_override
+    app_module.ensure_user_accounts_seeded = lambda: None
+    client = TestClient(app_module.app)
+    try:
+        register_resp = client.post(
+            "/api/auth/register",
+            json={"username": "newuser02", "display_name": "新用户二", "password": "123456"},
+        )
+        assert register_resp.status_code == 200
+
+        login_resp = client.post(
+            "/api/auth/login",
+            json={"username": "newuser02", "password": "123456"},
+        )
+        assert login_resp.status_code == 200
+        body = login_resp.json()
+        assert body["username"] == "newuser02"
+        assert body["display_name"] == "新用户二"
+    finally:
+        app_module.get_db_session = original_get_db_session
+        app_module.ensure_user_accounts_seeded = original_seed
+
+
+def test_plaintext_password_login_and_upgrade():
+    SessionLocal = _build_session_factory()
+    _seed_admin(SessionLocal)
+
+    with SessionLocal() as session:
+        session.add(
+            UserAccountORM(
+                user_id="F0100",
+                username="legacy100",
+                display_name="旧账号",
+                role="USER",
+                password="123456",
+                linked_farmer_id="F0100",
+                status="ACTIVE",
+            )
+        )
+        session.add(
+            FarmerProfileORM(
+                farmer_id="F0100",
+                owner_user_id="F0100",
+                display_name="旧账号",
+                name="旧账号",
+                role_type="FARMER",
+            )
+        )
+        session.commit()
+
+    @contextmanager
+    def _session_override():
+        session = SessionLocal()
+        try:
+            yield session
+        finally:
+            session.close()
+
+    original_get_db_session = app_module.get_db_session
+    original_seed = app_module.ensure_user_accounts_seeded
+    app_module.get_db_session = _session_override
+    app_module.ensure_user_accounts_seeded = lambda: None
+    client = TestClient(app_module.app)
+    try:
+        login_resp = client.post(
+            "/api/auth/login",
+            json={"user_id": "F0100", "password": "123456"},
+        )
+        assert login_resp.status_code == 200
+
+        with SessionLocal() as session:
+            upgraded = session.execute(
+                select(UserAccountORM).where(UserAccountORM.user_id == "F0100")
+            ).scalar_one_or_none()
+            assert upgraded is not None
+            assert upgraded.password != "123456"
+            assert app_module._verify_password("123456", upgraded.password) is True
+    finally:
+        app_module.get_db_session = original_get_db_session
+        app_module.ensure_user_accounts_seeded = original_seed
+
+
+def test_register_duplicate_username_failed():
+    SessionLocal = _build_session_factory()
+    _seed_admin(SessionLocal)
+
+    @contextmanager
+    def _session_override():
+        session = SessionLocal()
+        try:
+            yield session
+        finally:
+            session.close()
+
+    original_get_db_session = app_module.get_db_session
+    original_seed = app_module.ensure_user_accounts_seeded
+    app_module.get_db_session = _session_override
+    app_module.ensure_user_accounts_seeded = lambda: None
+    client = TestClient(app_module.app)
+    try:
+        first = client.post(
+            "/api/auth/register",
+            json={"username": "dupuser", "display_name": "重复用户", "password": "123456"},
+        )
+        assert first.status_code == 200
+
+        second = client.post(
+            "/api/auth/register",
+            json={"username": "dupuser", "display_name": "重复用户2", "password": "123456"},
+        )
+        assert second.status_code == 400
+        assert "用户名已存在" in str(second.json().get("detail", ""))
+    finally:
+        app_module.get_db_session = original_get_db_session
+        app_module.ensure_user_accounts_seeded = original_seed
 
 
 def test_admin_accounts_endpoints():
