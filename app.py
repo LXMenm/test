@@ -2,9 +2,13 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 import asyncio
+import base64
+import hashlib
+import hmac
 import json
 import os
 import re
+import secrets
 import subprocess
 import time
 import traceback
@@ -22,7 +26,7 @@ from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Res
 from fastapi.staticfiles import StaticFiles
 from PIL import Image
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from config import DIAGNOSIS_ALLOW_TORCH, PROFILE_STORE_MODE, log_resolved_storage_config
 from diagnosis_model import get_diagnosis_engine
@@ -90,6 +94,8 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Tomato Diagnosis API", version="1.0.0", lifespan=lifespan)
 
 SUPPORTED_ROLES = {"USER", "EXPERT", "ADMIN"}
+PASSWORD_HASH_ALGORITHM = "pbkdf2_sha256"
+PASSWORD_HASH_ITERATIONS = 260000
 DEFAULT_DEMO_ACCOUNTS = [
     {"user_id": "F0001", "username": "f0001", "display_name": "农户 F0001", "role": "USER", "password": "123456", "linked_farmer_id": "F0001"},
     {"user_id": "F0002", "username": "f0002", "display_name": "农户 F0002", "role": "USER", "password": "123456", "linked_farmer_id": "F0002"},
@@ -97,6 +103,21 @@ DEFAULT_DEMO_ACCOUNTS = [
     {"user_id": "E0002", "username": "e0002", "display_name": "专家 E0002", "role": "EXPERT", "password": "123456", "linked_farmer_id": None},
     {"user_id": "A0001", "username": "a0001", "display_name": "管理员 A0001", "role": "ADMIN", "password": "123456", "linked_farmer_id": None},
 ]
+
+AUTH_ERROR_INVALID_CREDENTIALS = "用户名或密码错误"
+AUTH_ERROR_DISABLED = "账号已禁用"
+RATE_LIMIT_LOGIN_FAILURES_LIMIT = 10
+RATE_LIMIT_LOGIN_FAILURES_WINDOW_SECONDS = 60
+RATE_LIMIT_REGISTER_LIMIT = 5
+RATE_LIMIT_REGISTER_WINDOW_SECONDS = 600
+RATE_LIMIT_CHANGE_PASSWORD_LIMIT = 10
+RATE_LIMIT_CHANGE_PASSWORD_WINDOW_SECONDS = 300
+_RATE_LIMIT_BUCKETS: dict[str, dict[str, list[float]]] = {
+    "login_failures": {},
+    "register_requests": {},
+    "change_password_requests": {},
+}
+
 # linked_farmer_id 为兼容字段：一账号一档案阶段默认应与 user_id 相同，不再用于切换他人档案。
 
 
@@ -130,7 +151,9 @@ def ensure_user_accounts_seeded() -> None:
             for account in DEFAULT_DEMO_ACCOUNTS:
                 if account["user_id"] in existing:
                     continue
-                session.add(UserAccountORM(**account, status="ACTIVE"))
+                seeded_account = dict(account)
+                seeded_account["password"] = _hash_password(str(account.get("password") or ""))
+                session.add(UserAccountORM(**seeded_account, status="ACTIVE"))
                 changed = True
             if changed:
                 session.commit()
@@ -243,6 +266,135 @@ def _next_generated_user_id(session) -> str:
     return f"F{next_no:04d}"
 
 
+def _is_password_hashed(value: str | None) -> bool:
+    normalized_value = str(value or "").strip()
+    if not normalized_value:
+        return False
+    parts = normalized_value.split("$")
+    return len(parts) == 4 and parts[0] == PASSWORD_HASH_ALGORITHM and parts[1].isdigit()
+
+
+def _hash_password(password: str) -> str:
+    normalized_password = str(password or "")
+    salt = secrets.token_bytes(16)
+    digest = hashlib.pbkdf2_hmac(
+        "sha256",
+        normalized_password.encode("utf-8"),
+        salt,
+        PASSWORD_HASH_ITERATIONS,
+    )
+    encoded_salt = base64.b64encode(salt).decode("utf-8")
+    encoded_digest = base64.b64encode(digest).decode("utf-8")
+    return f"{PASSWORD_HASH_ALGORITHM}${PASSWORD_HASH_ITERATIONS}${encoded_salt}${encoded_digest}"
+
+
+def _verify_password(password: str, stored_password: str) -> bool:
+    incoming_password = str(password or "")
+    normalized_stored_password = str(stored_password or "")
+    if _is_password_hashed(normalized_stored_password):
+        try:
+            algorithm, iterations_raw, encoded_salt, encoded_digest = normalized_stored_password.split("$", 3)
+            if algorithm != PASSWORD_HASH_ALGORITHM:
+                return False
+            iterations = int(iterations_raw)
+            salt = base64.b64decode(encoded_salt.encode("utf-8"))
+            expected_digest = base64.b64decode(encoded_digest.encode("utf-8"))
+            computed_digest = hashlib.pbkdf2_hmac(
+                "sha256",
+                incoming_password.encode("utf-8"),
+                salt,
+                iterations,
+            )
+            return hmac.compare_digest(computed_digest, expected_digest)
+        except Exception:
+            return False
+    return hmac.compare_digest(incoming_password, normalized_stored_password)
+
+
+def _upgrade_password_hash_if_needed(session, account: UserAccountORM, password: str) -> None:
+    if _is_password_hashed(account.password):
+        return
+    account.password = _hash_password(password)
+    session.commit()
+
+
+def _validate_username(username: str) -> str:
+    normalized_username = str(username or "").strip()
+    if not normalized_username:
+        raise HTTPException(status_code=400, detail="用户名不能为空")
+    if len(normalized_username) < 3 or len(normalized_username) > 32:
+        raise HTTPException(status_code=400, detail="用户名长度需在 3 到 32 位之间")
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+", normalized_username):
+        raise HTTPException(status_code=400, detail="用户名仅支持字母、数字、下划线、点和短横线")
+    if normalized_username.endswith(".") or normalized_username.endswith("-"):
+        raise HTTPException(status_code=400, detail="用户名不能以点或短横线结尾")
+    if not any(ch.isalnum() for ch in normalized_username):
+        raise HTTPException(status_code=400, detail="用户名必须包含至少一个字母或数字")
+    return normalized_username
+
+
+def _validate_password(password: str) -> str:
+    normalized_password = str(password or "")
+    if not normalized_password:
+        raise HTTPException(status_code=400, detail="password 不能为空")
+    if len(normalized_password) < 6:
+        raise HTTPException(status_code=400, detail="密码长度不能少于 6 位")
+    return normalized_password
+
+
+def _validate_display_name(display_name: str, *, max_length: int = 64) -> str:
+    normalized_display_name = str(display_name or "").strip()
+    if not normalized_display_name:
+        raise HTTPException(status_code=400, detail="显示名不能为空")
+    if len(normalized_display_name) > max_length:
+        raise HTTPException(status_code=400, detail=f"显示名长度不能超过 {max_length} 个字符")
+    return normalized_display_name
+
+
+def _get_request_client_ip(request: Request | None) -> str:
+    if request is None:
+        return "unknown"
+    forwarded_for = str(request.headers.get("X-Forwarded-For") or "").strip()
+    if forwarded_for:
+        first = forwarded_for.split(",", 1)[0].strip()
+        if first:
+            return first
+    if request.client and request.client.host:
+        return str(request.client.host).strip() or "unknown"
+    return "unknown"
+
+
+def _get_request_client_key(request: Request | None, extra: str | None = None) -> str:
+    parts = [_get_request_client_ip(request)]
+    normalized_extra = str(extra or "").strip()
+    if normalized_extra:
+        parts.append(normalized_extra.lower())
+    return "|".join(parts)
+
+
+def _consume_rate_limit(bucket: str, key: str, limit: int, window_seconds: int) -> None:
+    now = time.monotonic()
+    bucket_data = _RATE_LIMIT_BUCKETS.setdefault(bucket, {})
+    history = [ts for ts in bucket_data.get(key, []) if now - ts < window_seconds]
+    if len(history) >= limit:
+        bucket_data[key] = history
+        raise HTTPException(status_code=429, detail="请求过于频繁，请稍后重试")
+    history.append(now)
+    bucket_data[key] = history
+
+
+def _record_rate_limit_hit(bucket: str, key: str) -> None:
+    bucket_data = _RATE_LIMIT_BUCKETS.setdefault(bucket, {})
+    bucket_data.setdefault(key, []).append(time.monotonic())
+
+
+def _clear_rate_limit_bucket(bucket: str, key: str) -> None:
+    bucket_data = _RATE_LIMIT_BUCKETS.get(bucket)
+    if not bucket_data:
+        return
+    bucket_data.pop(key, None)
+
+
 def _create_account_with_profile(
     session,
     *,
@@ -251,17 +403,11 @@ def _create_account_with_profile(
     password: str,
     role: str | None = "USER",
 ) -> tuple[UserAccountORM, FarmerProfileORM]:
-    normalized_username = str(username or "").strip()
-    normalized_display_name = str(display_name or "").strip()
-    normalized_password = str(password or "").strip()
+    normalized_username = _validate_username(username)
+    normalized_display_name = _validate_display_name(display_name)
+    normalized_password = _validate_password(password)
     normalized_role = str(role or "USER").strip().upper() or "USER"
 
-    if not normalized_username:
-        raise HTTPException(status_code=400, detail="username 不能为空")
-    if not normalized_display_name:
-        raise HTTPException(status_code=400, detail="display_name 不能为空")
-    if not normalized_password:
-        raise HTTPException(status_code=400, detail="password 不能为空")
     if normalized_role not in SUPPORTED_ROLES:
         raise HTTPException(status_code=400, detail="非法角色类型")
 
@@ -283,7 +429,7 @@ def _create_account_with_profile(
         username=normalized_username,
         display_name=normalized_display_name,
         role=normalized_role,
-        password=normalized_password,
+        password=_hash_password(normalized_password),
         linked_farmer_id=user_id,
         status="ACTIVE",
     )
@@ -452,8 +598,22 @@ class DiagnoseResponse(BaseModel):
 
 
 class LoginRequest(BaseModel):
-    user_id: str
+    user_id: str | None = None
+    username: str | None = None
+    identifier: str | None = None
     password: str | None = None
+
+
+class RegisterRequest(BaseModel):
+    username: str
+    display_name: str
+    password: str
+
+
+class ChangePasswordRequest(BaseModel):
+    old_password: str
+    new_password: str
+    confirm_password: str
 
 
 class AdminCreateAccountRequest(BaseModel):
@@ -465,6 +625,10 @@ class AdminCreateAccountRequest(BaseModel):
 
 class AdminUpdateAccountRoleRequest(BaseModel):
     role: str
+
+
+class AdminUpdateAccountStatusRequest(BaseModel):
+    status: str
 
 
 class SPAStaticFiles(StaticFiles):
@@ -2966,30 +3130,125 @@ def get_events(
 
 
 @app.post("/api/auth/login")
-def login(payload: LoginRequest) -> dict[str, Any]:
-    user_id = str(payload.user_id or "").strip()
+def login(payload: LoginRequest, request: Request) -> dict[str, Any]:
+    identifier = str(payload.identifier or payload.username or payload.user_id or "").strip()
+    if not identifier:
+        raise HTTPException(status_code=400, detail="用户名或账户 ID 不能为空")
+    incoming_password = str(payload.password or "")
+    if not incoming_password:
+        raise HTTPException(status_code=400, detail="password 不能为空")
+
+    login_key = _get_request_client_key(request, identifier)
+    with get_db_session() as session:
+        account = session.execute(
+            select(UserAccountORM).where(
+                or_(
+                    UserAccountORM.user_id == identifier,
+                    UserAccountORM.username == identifier,
+                )
+            )
+        ).scalar_one_or_none()
+        if not account:
+            _consume_rate_limit("login_failures", login_key, RATE_LIMIT_LOGIN_FAILURES_LIMIT, RATE_LIMIT_LOGIN_FAILURES_WINDOW_SECONDS)
+            raise HTTPException(status_code=401, detail=AUTH_ERROR_INVALID_CREDENTIALS)
+        if str(account.status or "").upper() != "ACTIVE":
+            _consume_rate_limit("login_failures", login_key, RATE_LIMIT_LOGIN_FAILURES_LIMIT, RATE_LIMIT_LOGIN_FAILURES_WINDOW_SECONDS)
+            raise HTTPException(status_code=403, detail=AUTH_ERROR_DISABLED)
+        if not _verify_password(incoming_password, account.password):
+            _consume_rate_limit("login_failures", login_key, RATE_LIMIT_LOGIN_FAILURES_LIMIT, RATE_LIMIT_LOGIN_FAILURES_WINDOW_SECONDS)
+            raise HTTPException(status_code=401, detail=AUTH_ERROR_INVALID_CREDENTIALS)
+        _upgrade_password_hash_if_needed(session, account, incoming_password)
+        _clear_rate_limit_bucket("login_failures", login_key)
+
+        record_fallback_hit("auth.linked_farmer_id_returned")
+        return {
+            "user_id": account.user_id,
+            "username": account.username,
+            "display_name": account.display_name,
+            "role": str(account.role or "USER").upper(),
+            "linked_farmer_id": account.linked_farmer_id,
+            "status": account.status,
+        }
+
+
+@app.get("/api/auth/me")
+def auth_me(request: Request) -> dict[str, Any]:
+    actor = _get_request_actor(request)
+    user_id = str(actor.get("user_id") or "").strip()
     if not user_id:
-        raise HTTPException(status_code=400, detail="user_id 不能为空")
+        raise HTTPException(status_code=401, detail="未登录或登录状态已失效")
     with get_db_session() as session:
         account = session.execute(
             select(UserAccountORM).where(UserAccountORM.user_id == user_id)
         ).scalar_one_or_none()
-    if not account:
-        raise HTTPException(status_code=401, detail="账号不存在")
-    if str(account.status or "").upper() != "ACTIVE":
-        raise HTTPException(status_code=403, detail="账号已禁用")
-    incoming_password = str(payload.password or "").strip()
-    stored_password = str(account.password or "").strip()
-    if stored_password and stored_password != incoming_password:
-        raise HTTPException(status_code=401, detail="密码错误")
-    record_fallback_hit("auth.linked_farmer_id_returned")
-    return {
-        "user_id": account.user_id,
-        "display_name": account.display_name,
-        "role": str(account.role or "USER").upper(),
-        "linked_farmer_id": account.linked_farmer_id,
-        "status": account.status,
-    }
+        if account is None:
+            raise HTTPException(status_code=401, detail="账号不存在")
+        if str(account.status or "").strip().upper() != "ACTIVE":
+            raise HTTPException(status_code=403, detail=AUTH_ERROR_DISABLED)
+        record_fallback_hit("auth.linked_farmer_id_returned")
+        return {
+            "user_id": account.user_id,
+            "username": account.username,
+            "display_name": account.display_name,
+            "role": str(account.role or "USER").upper(),
+            "linked_farmer_id": account.linked_farmer_id,
+            "status": str(account.status or "ACTIVE").strip().upper(),
+        }
+
+
+@app.post("/api/auth/register")
+def register(payload: RegisterRequest, request: Request) -> dict[str, Any]:
+    register_key = _get_request_client_key(request, payload.username)
+    _consume_rate_limit("register_requests", register_key, RATE_LIMIT_REGISTER_LIMIT, RATE_LIMIT_REGISTER_WINDOW_SECONDS)
+    with get_db_session() as session:
+        account, _ = _create_account_with_profile(
+            session,
+            username=payload.username,
+            display_name=payload.display_name,
+            password=payload.password,
+            role="USER",
+        )
+        session.commit()
+        record_fallback_hit("auth.linked_farmer_id_returned")
+        return {
+            "user_id": account.user_id,
+            "username": account.username,
+            "display_name": account.display_name,
+            "role": str(account.role or "USER").upper(),
+            "linked_farmer_id": account.linked_farmer_id,
+            "status": account.status,
+        }
+
+
+@app.post("/api/auth/change-password")
+def change_password(payload: ChangePasswordRequest, request: Request) -> dict[str, bool]:
+    actor = _get_request_actor(request)
+    user_id = str(actor.get("user_id") or "").strip()
+    if not user_id:
+        raise HTTPException(status_code=401, detail="未登录或登录状态已失效")
+    rate_limit_key = _get_request_client_key(request, user_id)
+    _consume_rate_limit("change_password_requests", rate_limit_key, RATE_LIMIT_CHANGE_PASSWORD_LIMIT, RATE_LIMIT_CHANGE_PASSWORD_WINDOW_SECONDS)
+    with get_db_session() as session:
+        account = session.execute(
+            select(UserAccountORM).where(UserAccountORM.user_id == user_id)
+        ).scalar_one_or_none()
+        if account is None:
+            raise HTTPException(status_code=401, detail="账号不存在")
+        if str(account.status or "").strip().upper() != "ACTIVE":
+            raise HTTPException(status_code=403, detail=AUTH_ERROR_DISABLED)
+        old_password = str(payload.old_password or "")
+        if not _verify_password(old_password, account.password):
+            raise HTTPException(status_code=401, detail="当前密码错误")
+        new_password = _validate_password(payload.new_password)
+        confirm_password = str(payload.confirm_password or "")
+        if new_password != confirm_password:
+            raise HTTPException(status_code=400, detail="两次输入的新密码不一致")
+        if hmac.compare_digest(old_password, new_password):
+            raise HTTPException(status_code=400, detail="新密码不能与当前密码相同")
+        account.password = _hash_password(new_password)
+        session.commit()
+    _clear_rate_limit_bucket("change_password_requests", rate_limit_key)
+    return {"ok": True}
 
 
 @app.get("/api/admin/accounts")
@@ -3079,6 +3338,29 @@ def update_admin_account_role(user_id: str, request: Request, payload: AdminUpda
         account.role = normalized_role
         session.commit()
     return {"ok": True, "user_id": normalized_user_id, "role": normalized_role}
+
+
+@app.post("/api/admin/accounts/{user_id}/status")
+def update_admin_account_status(user_id: str, request: Request, payload: AdminUpdateAccountStatusRequest) -> dict[str, Any]:
+    actor = _get_request_actor(request)
+    _require_admin(actor)
+    normalized_user_id = str(user_id or "").strip()
+    if not normalized_user_id:
+        raise HTTPException(status_code=400, detail="user_id 不能为空")
+    normalized_status = str(payload.status or "").strip().upper()
+    if normalized_status not in {"ACTIVE", "DISABLED"}:
+        raise HTTPException(status_code=400, detail="非法账号状态")
+    if normalized_user_id == str(actor.get("user_id") or "").strip() and normalized_status == "DISABLED":
+        raise HTTPException(status_code=400, detail="不允许禁用当前登录管理员账号")
+    with get_db_session() as session:
+        account = session.execute(
+            select(UserAccountORM).where(UserAccountORM.user_id == normalized_user_id)
+        ).scalar_one_or_none()
+        if account is None:
+            raise HTTPException(status_code=404, detail="账号不存在")
+        account.status = normalized_status
+        session.commit()
+    return {"ok": True, "user_id": normalized_user_id, "status": normalized_status}
 
 
 @app.delete("/api/admin/accounts/{user_id}")

@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -55,8 +56,630 @@ def test_create_account_with_profile_defaults():
         assert account.role == "USER"
         assert account.status == "ACTIVE"
         assert account.linked_farmer_id == "F0001"
+        assert account.password != "123456"
+        assert app_module._verify_password("123456", account.password) is True
         assert profile.farmer_id == "F0001"
         assert profile.owner_user_id == "F0001"
+
+
+def test_register_success():
+    SessionLocal = _build_session_factory()
+    _seed_admin(SessionLocal)
+
+    @contextmanager
+    def _session_override():
+        session = SessionLocal()
+        try:
+            yield session
+        finally:
+            session.close()
+
+    original_get_db_session = app_module.get_db_session
+    original_seed = app_module.ensure_user_accounts_seeded
+    app_module.get_db_session = _session_override
+    app_module.ensure_user_accounts_seeded = lambda: None
+    client = TestClient(app_module.app)
+    try:
+        resp = client.post(
+            "/api/auth/register",
+            json={"username": "newuser01", "display_name": "新用户", "password": "123456"},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["role"] == "USER"
+        assert body["user_id"]
+        assert body["linked_farmer_id"] == body["user_id"]
+    finally:
+        app_module.get_db_session = original_get_db_session
+        app_module.ensure_user_accounts_seeded = original_seed
+
+
+def test_registered_user_can_login_by_username():
+    SessionLocal = _build_session_factory()
+    _seed_admin(SessionLocal)
+
+    @contextmanager
+    def _session_override():
+        session = SessionLocal()
+        try:
+            yield session
+        finally:
+            session.close()
+
+    original_get_db_session = app_module.get_db_session
+    original_seed = app_module.ensure_user_accounts_seeded
+    app_module.get_db_session = _session_override
+    app_module.ensure_user_accounts_seeded = lambda: None
+    client = TestClient(app_module.app)
+    try:
+        register_resp = client.post(
+            "/api/auth/register",
+            json={"username": "newuser02", "display_name": "新用户二", "password": "123456"},
+        )
+        assert register_resp.status_code == 200
+
+        login_resp = client.post(
+            "/api/auth/login",
+            json={"username": "newuser02", "password": "123456"},
+        )
+        assert login_resp.status_code == 200
+        body = login_resp.json()
+        assert body["username"] == "newuser02"
+        assert body["display_name"] == "新用户二"
+    finally:
+        app_module.get_db_session = original_get_db_session
+        app_module.ensure_user_accounts_seeded = original_seed
+
+
+def test_plaintext_password_login_and_upgrade():
+    SessionLocal = _build_session_factory()
+    _seed_admin(SessionLocal)
+
+    with SessionLocal() as session:
+        session.add(
+            UserAccountORM(
+                user_id="F0100",
+                username="legacy100",
+                display_name="旧账号",
+                role="USER",
+                password="123456",
+                linked_farmer_id="F0100",
+                status="ACTIVE",
+            )
+        )
+        session.add(
+            FarmerProfileORM(
+                farmer_id="F0100",
+                owner_user_id="F0100",
+                display_name="旧账号",
+                name="旧账号",
+                role_type="FARMER",
+            )
+        )
+        session.commit()
+
+    @contextmanager
+    def _session_override():
+        session = SessionLocal()
+        try:
+            yield session
+        finally:
+            session.close()
+
+    original_get_db_session = app_module.get_db_session
+    original_seed = app_module.ensure_user_accounts_seeded
+    app_module.get_db_session = _session_override
+    app_module.ensure_user_accounts_seeded = lambda: None
+    client = TestClient(app_module.app)
+    try:
+        login_resp = client.post(
+            "/api/auth/login",
+            json={"user_id": "F0100", "password": "123456"},
+        )
+        assert login_resp.status_code == 200
+
+        with SessionLocal() as session:
+            upgraded = session.execute(
+                select(UserAccountORM).where(UserAccountORM.user_id == "F0100")
+            ).scalar_one_or_none()
+            assert upgraded is not None
+            assert upgraded.password != "123456"
+            assert app_module._verify_password("123456", upgraded.password) is True
+    finally:
+        app_module.get_db_session = original_get_db_session
+        app_module.ensure_user_accounts_seeded = original_seed
+
+
+def test_register_duplicate_username_failed():
+    SessionLocal = _build_session_factory()
+    _seed_admin(SessionLocal)
+
+    @contextmanager
+    def _session_override():
+        session = SessionLocal()
+        try:
+            yield session
+        finally:
+            session.close()
+
+    original_get_db_session = app_module.get_db_session
+    original_seed = app_module.ensure_user_accounts_seeded
+    app_module.get_db_session = _session_override
+    app_module.ensure_user_accounts_seeded = lambda: None
+    client = TestClient(app_module.app)
+    try:
+        first = client.post(
+            "/api/auth/register",
+            json={"username": "dupuser", "display_name": "重复用户", "password": "123456"},
+        )
+        assert first.status_code == 200
+
+        second = client.post(
+            "/api/auth/register",
+            json={"username": "dupuser", "display_name": "重复用户2", "password": "123456"},
+        )
+        assert second.status_code == 400
+        assert "用户名已存在" in str(second.json().get("detail", ""))
+    finally:
+        app_module.get_db_session = original_get_db_session
+        app_module.ensure_user_accounts_seeded = original_seed
+
+
+def test_auth_me_success():
+    SessionLocal = _build_session_factory()
+    _seed_admin(SessionLocal)
+
+    @contextmanager
+    def _session_override():
+        session = SessionLocal()
+        try:
+            yield session
+        finally:
+            session.close()
+
+    original_get_db_session = app_module.get_db_session
+    original_seed = app_module.ensure_user_accounts_seeded
+    app_module.get_db_session = _session_override
+    app_module.ensure_user_accounts_seeded = lambda: None
+    client = TestClient(app_module.app)
+    try:
+        resp = client.get(
+            "/api/auth/me",
+            headers={"X-User-Role": "ADMIN", "X-User-Id": "A0001", "X-Linked-Farmer-Id": "A0001"},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["user_id"] == "A0001"
+        assert body["username"] == "admin"
+        assert body["role"] == "ADMIN"
+    finally:
+        app_module.get_db_session = original_get_db_session
+        app_module.ensure_user_accounts_seeded = original_seed
+
+
+def test_auth_me_account_not_found():
+    SessionLocal = _build_session_factory()
+    _seed_admin(SessionLocal)
+
+    @contextmanager
+    def _session_override():
+        session = SessionLocal()
+        try:
+            yield session
+        finally:
+            session.close()
+
+    original_get_db_session = app_module.get_db_session
+    original_seed = app_module.ensure_user_accounts_seeded
+    app_module.get_db_session = _session_override
+    app_module.ensure_user_accounts_seeded = lambda: None
+    client = TestClient(app_module.app)
+    try:
+        resp = client.get(
+            "/api/auth/me",
+            headers={"X-User-Role": "USER", "X-User-Id": "F9999"},
+        )
+        assert resp.status_code == 401
+    finally:
+        app_module.get_db_session = original_get_db_session
+        app_module.ensure_user_accounts_seeded = original_seed
+
+
+def test_disabled_account_cannot_login():
+    SessionLocal = _build_session_factory()
+    _seed_admin(SessionLocal)
+
+    @contextmanager
+    def _session_override():
+        session = SessionLocal()
+        try:
+            yield session
+        finally:
+            session.close()
+
+    original_get_db_session = app_module.get_db_session
+    original_seed = app_module.ensure_user_accounts_seeded
+    app_module.get_db_session = _session_override
+    app_module.ensure_user_accounts_seeded = lambda: None
+    client = TestClient(app_module.app)
+    try:
+        created = client.post(
+            "/api/admin/accounts",
+            headers={"X-User-Role": "ADMIN", "X-User-Id": "A0001"},
+            json={"username": "disableme", "display_name": "待禁用", "password": "123456"},
+        )
+        assert created.status_code == 200
+        user_id = created.json()["user_id"]
+        disable_resp = client.post(
+            f"/api/admin/accounts/{user_id}/status",
+            headers={"X-User-Role": "ADMIN", "X-User-Id": "A0001"},
+            json={"status": "DISABLED"},
+        )
+        assert disable_resp.status_code == 200
+
+        login_resp = client.post(
+            "/api/auth/login",
+            json={"user_id": user_id, "password": "123456"},
+        )
+        assert login_resp.status_code == 403
+        assert login_resp.json().get("detail") == "账号已禁用"
+    finally:
+        app_module.get_db_session = original_get_db_session
+        app_module.ensure_user_accounts_seeded = original_seed
+
+
+def test_login_nonexistent_and_wrong_password_share_same_error():
+    SessionLocal = _build_session_factory()
+    _seed_admin(SessionLocal)
+
+    @contextmanager
+    def _session_override():
+        session = SessionLocal()
+        try:
+            yield session
+        finally:
+            session.close()
+
+    original_get_db_session = app_module.get_db_session
+    original_seed = app_module.ensure_user_accounts_seeded
+    app_module.get_db_session = _session_override
+    app_module.ensure_user_accounts_seeded = lambda: None
+    client = TestClient(app_module.app)
+    try:
+        missing_resp = client.post(
+            "/api/auth/login",
+            json={"username": "not-exists-user", "password": "123456"},
+        )
+        assert missing_resp.status_code == 401
+        assert missing_resp.json().get("detail") == "用户名或密码错误"
+
+        wrong_password_resp = client.post(
+            "/api/auth/login",
+            json={"user_id": "A0001", "password": "bad-password"},
+        )
+        assert wrong_password_resp.status_code == 401
+        assert wrong_password_resp.json().get("detail") == "用户名或密码错误"
+    finally:
+        app_module.get_db_session = original_get_db_session
+        app_module.ensure_user_accounts_seeded = original_seed
+
+
+def test_register_rejects_symbol_only_or_bad_suffix_usernames():
+    SessionLocal = _build_session_factory()
+    _seed_admin(SessionLocal)
+
+    @contextmanager
+    def _session_override():
+        session = SessionLocal()
+        try:
+            yield session
+        finally:
+            session.close()
+
+    original_get_db_session = app_module.get_db_session
+    original_seed = app_module.ensure_user_accounts_seeded
+    app_module.get_db_session = _session_override
+    app_module.ensure_user_accounts_seeded = lambda: None
+    client = TestClient(app_module.app)
+    try:
+        for bad_username in ["---", "...", "___", "abc-", "abc."]:
+            resp = client.post(
+                "/api/auth/register",
+                json={"username": bad_username, "display_name": "测试用户", "password": "123456"},
+            )
+            assert resp.status_code == 400, bad_username
+    finally:
+        app_module.get_db_session = original_get_db_session
+        app_module.ensure_user_accounts_seeded = original_seed
+
+
+def test_register_rejects_blank_or_too_long_display_name():
+    SessionLocal = _build_session_factory()
+    _seed_admin(SessionLocal)
+
+    @contextmanager
+    def _session_override():
+        session = SessionLocal()
+        try:
+            yield session
+        finally:
+            session.close()
+
+    original_get_db_session = app_module.get_db_session
+    original_seed = app_module.ensure_user_accounts_seeded
+    app_module.get_db_session = _session_override
+    app_module.ensure_user_accounts_seeded = lambda: None
+    client = TestClient(app_module.app)
+    try:
+        blank_name = client.post(
+            "/api/auth/register",
+            json={"username": "displaytest1", "display_name": "   ", "password": "123456"},
+        )
+        assert blank_name.status_code == 400
+
+        long_name = client.post(
+            "/api/auth/register",
+            json={"username": "displaytest2", "display_name": "a" * 65, "password": "123456"},
+        )
+        assert long_name.status_code == 400
+    finally:
+        app_module.get_db_session = original_get_db_session
+        app_module.ensure_user_accounts_seeded = original_seed
+
+
+def test_change_password_success():
+    SessionLocal = _build_session_factory()
+    _seed_admin(SessionLocal)
+
+    @contextmanager
+    def _session_override():
+        session = SessionLocal()
+        try:
+            yield session
+        finally:
+            session.close()
+
+    original_get_db_session = app_module.get_db_session
+    original_seed = app_module.ensure_user_accounts_seeded
+    app_module.get_db_session = _session_override
+    app_module.ensure_user_accounts_seeded = lambda: None
+    client = TestClient(app_module.app)
+    try:
+        resp = client.post(
+            "/api/auth/change-password",
+            headers={"X-User-Role": "ADMIN", "X-User-Id": "A0001"},
+            json={"old_password": "123456", "new_password": "654321", "confirm_password": "654321"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+
+        old_login = client.post("/api/auth/login", json={"user_id": "A0001", "password": "123456"})
+        assert old_login.status_code == 401
+        new_login = client.post("/api/auth/login", json={"user_id": "A0001", "password": "654321"})
+        assert new_login.status_code == 200
+    finally:
+        app_module.get_db_session = original_get_db_session
+        app_module.ensure_user_accounts_seeded = original_seed
+
+
+def test_change_password_wrong_old_password():
+    SessionLocal = _build_session_factory()
+    _seed_admin(SessionLocal)
+
+    @contextmanager
+    def _session_override():
+        session = SessionLocal()
+        try:
+            yield session
+        finally:
+            session.close()
+
+    original_get_db_session = app_module.get_db_session
+    original_seed = app_module.ensure_user_accounts_seeded
+    app_module.get_db_session = _session_override
+    app_module.ensure_user_accounts_seeded = lambda: None
+    client = TestClient(app_module.app)
+    try:
+        before_password = None
+        with SessionLocal() as session:
+            account = session.execute(select(UserAccountORM).where(UserAccountORM.user_id == "A0001")).scalar_one()
+            before_password = account.password
+
+        resp = client.post(
+            "/api/auth/change-password",
+            headers={"X-User-Role": "ADMIN", "X-User-Id": "A0001"},
+            json={"old_password": "bad-old", "new_password": "654321", "confirm_password": "654321"},
+        )
+        assert resp.status_code == 401
+        assert resp.json().get("detail") == "当前密码错误"
+
+        with SessionLocal() as session:
+            account = session.execute(select(UserAccountORM).where(UserAccountORM.user_id == "A0001")).scalar_one()
+            assert account.password == before_password
+    finally:
+        app_module.get_db_session = original_get_db_session
+        app_module.ensure_user_accounts_seeded = original_seed
+
+
+def test_change_password_reject_same_as_old():
+    SessionLocal = _build_session_factory()
+    _seed_admin(SessionLocal)
+
+    @contextmanager
+    def _session_override():
+        session = SessionLocal()
+        try:
+            yield session
+        finally:
+            session.close()
+
+    original_get_db_session = app_module.get_db_session
+    original_seed = app_module.ensure_user_accounts_seeded
+    app_module.get_db_session = _session_override
+    app_module.ensure_user_accounts_seeded = lambda: None
+    client = TestClient(app_module.app)
+    try:
+        resp = client.post(
+            "/api/auth/change-password",
+            headers={"X-User-Role": "ADMIN", "X-User-Id": "A0001"},
+            json={"old_password": "123456", "new_password": "123456", "confirm_password": "123456"},
+        )
+        assert resp.status_code == 400
+        assert resp.json().get("detail") == "新密码不能与当前密码相同"
+    finally:
+        app_module.get_db_session = original_get_db_session
+        app_module.ensure_user_accounts_seeded = original_seed
+
+
+def test_login_rate_limit_works_on_repeated_failures():
+    SessionLocal = _build_session_factory()
+    _seed_admin(SessionLocal)
+
+    @contextmanager
+    def _session_override():
+        session = SessionLocal()
+        try:
+            yield session
+        finally:
+            session.close()
+
+    original_get_db_session = app_module.get_db_session
+    original_seed = app_module.ensure_user_accounts_seeded
+    original_limit = app_module.RATE_LIMIT_LOGIN_FAILURES_LIMIT
+    original_window = app_module.RATE_LIMIT_LOGIN_FAILURES_WINDOW_SECONDS
+    app_module.get_db_session = _session_override
+    app_module.ensure_user_accounts_seeded = lambda: None
+    app_module.RATE_LIMIT_LOGIN_FAILURES_LIMIT = 2
+    app_module.RATE_LIMIT_LOGIN_FAILURES_WINDOW_SECONDS = 60
+    app_module._RATE_LIMIT_BUCKETS["login_failures"].clear()
+    client = TestClient(app_module.app)
+    try:
+        first = client.post("/api/auth/login", json={"user_id": "A0001", "password": "bad-password"})
+        second = client.post("/api/auth/login", json={"user_id": "A0001", "password": "bad-password"})
+        third = client.post("/api/auth/login", json={"user_id": "A0001", "password": "bad-password"})
+        assert first.status_code == 401
+        assert second.status_code == 401
+        assert third.status_code == 429
+    finally:
+        app_module.RATE_LIMIT_LOGIN_FAILURES_LIMIT = original_limit
+        app_module.RATE_LIMIT_LOGIN_FAILURES_WINDOW_SECONDS = original_window
+        app_module._RATE_LIMIT_BUCKETS["login_failures"].clear()
+        app_module.get_db_session = original_get_db_session
+        app_module.ensure_user_accounts_seeded = original_seed
+
+
+def test_login_success_clears_failure_rate_limit_bucket():
+    SessionLocal = _build_session_factory()
+    _seed_admin(SessionLocal)
+
+    @contextmanager
+    def _session_override():
+        session = SessionLocal()
+        try:
+            yield session
+        finally:
+            session.close()
+
+    original_get_db_session = app_module.get_db_session
+    original_seed = app_module.ensure_user_accounts_seeded
+    original_limit = app_module.RATE_LIMIT_LOGIN_FAILURES_LIMIT
+    original_window = app_module.RATE_LIMIT_LOGIN_FAILURES_WINDOW_SECONDS
+    app_module.get_db_session = _session_override
+    app_module.ensure_user_accounts_seeded = lambda: None
+    app_module.RATE_LIMIT_LOGIN_FAILURES_LIMIT = 2
+    app_module.RATE_LIMIT_LOGIN_FAILURES_WINDOW_SECONDS = 60
+    app_module._RATE_LIMIT_BUCKETS["login_failures"].clear()
+    client = TestClient(app_module.app)
+    try:
+        bad1 = client.post("/api/auth/login", json={"user_id": "A0001", "password": "bad-password"})
+        assert bad1.status_code == 401
+
+        ok = client.post("/api/auth/login", json={"user_id": "A0001", "password": "123456"})
+        assert ok.status_code == 200
+
+        bad2 = client.post("/api/auth/login", json={"user_id": "A0001", "password": "bad-password"})
+        assert bad2.status_code == 401
+    finally:
+        app_module.RATE_LIMIT_LOGIN_FAILURES_LIMIT = original_limit
+        app_module.RATE_LIMIT_LOGIN_FAILURES_WINDOW_SECONDS = original_window
+        app_module._RATE_LIMIT_BUCKETS["login_failures"].clear()
+        app_module.get_db_session = original_get_db_session
+        app_module.ensure_user_accounts_seeded = original_seed
+
+
+def test_admin_can_toggle_account_status():
+    SessionLocal = _build_session_factory()
+    _seed_admin(SessionLocal)
+
+    @contextmanager
+    def _session_override():
+        session = SessionLocal()
+        try:
+            yield session
+        finally:
+            session.close()
+
+    original_get_db_session = app_module.get_db_session
+    original_seed = app_module.ensure_user_accounts_seeded
+    app_module.get_db_session = _session_override
+    app_module.ensure_user_accounts_seeded = lambda: None
+    client = TestClient(app_module.app)
+    try:
+        created = client.post(
+            "/api/admin/accounts",
+            headers={"X-User-Role": "ADMIN", "X-User-Id": "A0001"},
+            json={"username": "statususer", "display_name": "状态用户", "password": "123456"},
+        )
+        assert created.status_code == 200
+        user_id = created.json()["user_id"]
+
+        disable_resp = client.post(
+            f"/api/admin/accounts/{user_id}/status",
+            headers={"X-User-Role": "ADMIN", "X-User-Id": "A0001"},
+            json={"status": "DISABLED"},
+        )
+        assert disable_resp.status_code == 200
+        assert disable_resp.json()["status"] == "DISABLED"
+
+        enable_resp = client.post(
+            f"/api/admin/accounts/{user_id}/status",
+            headers={"X-User-Role": "ADMIN", "X-User-Id": "A0001"},
+            json={"status": "ACTIVE"},
+        )
+        assert enable_resp.status_code == 200
+        assert enable_resp.json()["status"] == "ACTIVE"
+    finally:
+        app_module.get_db_session = original_get_db_session
+        app_module.ensure_user_accounts_seeded = original_seed
+
+
+def test_admin_cannot_disable_self():
+    SessionLocal = _build_session_factory()
+    _seed_admin(SessionLocal)
+
+    @contextmanager
+    def _session_override():
+        session = SessionLocal()
+        try:
+            yield session
+        finally:
+            session.close()
+
+    original_get_db_session = app_module.get_db_session
+    original_seed = app_module.ensure_user_accounts_seeded
+    app_module.get_db_session = _session_override
+    app_module.ensure_user_accounts_seeded = lambda: None
+    client = TestClient(app_module.app)
+    try:
+        resp = client.post(
+            "/api/admin/accounts/A0001/status",
+            headers={"X-User-Role": "ADMIN", "X-User-Id": "A0001"},
+            json={"status": "DISABLED"},
+        )
+        assert resp.status_code == 400
+    finally:
+        app_module.get_db_session = original_get_db_session
+        app_module.ensure_user_accounts_seeded = original_seed
 
 
 def test_admin_accounts_endpoints():
