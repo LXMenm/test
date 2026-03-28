@@ -71,7 +71,7 @@ from model_registry import list_models, resolve_model
 from workflow import build_graph
 from trace_catalog import AGENTS_CATALOG, NODE_TO_AGENT
 from runtime_settings import get_admin_llm_runtime_snapshot, get_runtime_thresholds, load_admin_runtime_config, save_admin_runtime_config
-from runtime_fallback_stats import get_fallback_stats, record_fallback_hit
+from runtime_fallback_stats import get_fallback_readiness, get_fallback_stats, record_fallback_hit
 from db import engine as db_engine, get_db_session
 from mysql_models import FarmerProfileORM, UserAccountORM
 
@@ -3029,6 +3029,13 @@ def get_admin_fallback_stats(request: Request) -> dict[str, Any]:
     actor = _get_request_actor(request)
     _require_admin(actor)
     return {"stats": get_fallback_stats()}
+
+
+@app.get("/api/admin/debug/fallback-readiness")
+def get_admin_fallback_readiness(request: Request) -> dict[str, Any]:
+    actor = _get_request_actor(request)
+    _require_admin(actor)
+    return get_fallback_readiness()
 
 
 @app.post("/api/admin/accounts")
