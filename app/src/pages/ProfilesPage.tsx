@@ -20,6 +20,7 @@ import {
   getRiskPreferenceLabel,
   getSelectedBranchLabel,
   normalizeGrowthStage,
+  TOMATO_GROWTH_STAGE_OPTIONS,
   type SelectedBranch,
 } from '@/lib/profileLabels';
 
@@ -674,6 +675,63 @@ export function ProfilesPage() {
                         <div className="flex items-center justify-between"><Badge className="bg-[#c8f7c5]/20 text-[#c8f7c5]">{base.base_id}</Badge><Button onClick={() => removeBase(idx)} variant="ghost" size="sm" className="text-red-400"><Trash2 className="w-4 h-4" /></Button></div>
                         <div className="space-y-4">
                           <div className="grid sm:grid-cols-2 gap-4">
+                            <div className="space-y-2">
+                              <Label className="text-white/60 text-sm">基地名称</Label>
+                              <Input
+                                value={base.name}
+                                onChange={(e) => {
+                                  updateBase(idx, (current) => ({ ...current, name: e.target.value }));
+                                }}
+                                className="bg-white/10 border-white/20 text-white"
+                                placeholder="请输入基地名称"
+                              />
+                            </div>
+                            <div className="space-y-2">
+                              <Label className="text-white/60 text-sm">设施类型</Label>
+                              <Input
+                                value={base.facility_type}
+                                onChange={(e) => {
+                                  updateBase(idx, (current) => ({ ...current, facility_type: e.target.value }));
+                                }}
+                                className="bg-white/10 border-white/20 text-white"
+                                placeholder="例如：露地 / 温室 / 大棚"
+                              />
+                            </div>
+                            <div className="space-y-2">
+                              <Label className="text-white/60 text-sm">生长阶段</Label>
+                              <Select
+                                value={base.growth_stage || '__EMPTY__'}
+                                onValueChange={(value) => {
+                                  updateBase(idx, (current) => ({
+                                    ...current,
+                                    growth_stage: value === '__EMPTY__' ? '' : value,
+                                  }));
+                                }}
+                              >
+                                <SelectTrigger className="bg-white/10 border-white/20 text-white">
+                                  <SelectValue placeholder="请选择生长阶段" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="__EMPTY__">未设置</SelectItem>
+                                  {TOMATO_GROWTH_STAGE_OPTIONS.map((stage) => (
+                                    <SelectItem key={stage.value} value={stage.value}>
+                                      {stage.label}
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                            </div>
+                            <div className="space-y-2">
+                              <Label className="text-white/60 text-sm">播种日期</Label>
+                              <Input
+                                type="date"
+                                value={base.sowing_date}
+                                onChange={(e) => {
+                                  updateBase(idx, (current) => ({ ...current, sowing_date: e.target.value }));
+                                }}
+                                className="bg-white/10 border-white/20 text-white"
+                              />
+                            </div>
                             <div className="space-y-2">
                               <Label className="text-white/60 text-sm">详细地址</Label>
                               <Input 
