@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Users, RefreshCw, Save, MapPin, Ban, Sprout, Trash2, Plus } from 'lucide-react';
+import { Users, RefreshCw, Save, MapPin, Ban, Sprout, Trash2, Plus, Cloud, Thermometer, Wind, Calendar, Droplets, AlertTriangle, Shield, CheckCircle2, Loader2, Home } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -646,11 +646,11 @@ export function ProfilesPage() {
     <div className="space-y-6 animate-fadeIn">
       <div>
         <h1 className="text-3xl font-bold text-white"><span className="text-[#c8f7c5]">档案管理</span></h1>
-        <p className="text-white/60 mt-1">仅用于编辑业务资料（基地、约束、种植参数）。账号新增/删除/改角色请在“账号管理”完成。</p>
+        <p className="text-white/60 mt-1">编辑业务资料（基地、约束、种植参数）</p>
       </div>
 
-      {errorMessage ? <Card className="border-red-500/30 bg-red-500/10"><CardContent className="pt-6 text-red-300 text-sm">{errorMessage}</CardContent></Card> : null}
-      {infoMessage ? <Card className="border-[#c8f7c5]/30 bg-[#c8f7c5]/10"><CardContent className="pt-6 text-[#c8f7c5] text-sm">{infoMessage}</CardContent></Card> : null}
+      {errorMessage ? <Card className="border-red-500/30 bg-red-500/10"><CardContent className="pt-6 text-red-300 text-sm flex items-center gap-2"><AlertTriangle className="w-4 h-4 flex-shrink-0" />{errorMessage}</CardContent></Card> : null}
+      {infoMessage ? <Card className="border-[#c8f7c5]/30 bg-[#c8f7c5]/10"><CardContent className="pt-6 text-[#c8f7c5] text-sm flex items-center gap-2"><CheckCircle2 className="w-4 h-4 flex-shrink-0" />{infoMessage}</CardContent></Card> : null}
 
       <div className={cn('grid gap-6', canManageAllProfiles ? 'lg:grid-cols-4' : 'lg:grid-cols-1')}>
         {canManageAllProfiles ? (
@@ -662,7 +662,17 @@ export function ProfilesPage() {
               </Button>
             </CardHeader>
             <CardContent className="space-y-2">
-              {sortedProfiles.map((profile) => {
+              {loading ? (
+                <div className="flex items-center justify-center py-8">
+                  <Loader2 className="w-6 h-6 animate-spin text-[#c8f7c5]" />
+                  <span className="ml-2 text-white/60 text-sm">加载中...</span>
+                </div>
+              ) : sortedProfiles.length === 0 ? (
+                <div className="text-center py-8">
+                  <Users className="w-12 h-12 text-white/30 mx-auto mb-2" />
+                  <p className="text-white/50 text-sm">暂无档案</p>
+                </div>
+              ) : sortedProfiles.map((profile) => {
                 const isMine = authUser?.userId && profile.owner_user_id === authUser.userId;
                 const roleLabel = getProfileRoleLabel(profile);
                 return (
@@ -671,17 +681,24 @@ export function ProfilesPage() {
                     key={profile.farmer_id}
                     onClick={() => { void fetchProfileDetail(profile.farmer_id); }}
                     className={cn(
-                      'w-full p-3 rounded-xl text-left transition-all border',
+                      'w-full p-3 rounded-xl text-left transition-all border group',
                       selectedProfile?.farmer_id === profile.farmer_id
-                        ? 'bg-[#c8f7c5]/20 border-[#c8f7c5]/50'
-                        : 'bg-white/5 border-transparent hover:bg-white/10',
+                        ? 'bg-gradient-to-r from-[#c8f7c5]/20 to-[#c8f7c5]/10 border-[#c8f7c5]/50 shadow-[0_0_20px_rgba(200,247,197,0.15)]'
+                        : 'bg-white/5 border-transparent hover:bg-white/10 hover:border-white/20',
                     )}
                   >
-                    <p className="text-white font-medium">{profile.display_name || profile.farmer_id}</p>
-                    <div className="flex items-center gap-2 mt-1">
-                      <p className="text-white/40 text-xs">{profile.farmer_id}</p>
-                      {roleLabel ? <Badge variant="outline" className="border-white/20 text-white/80 text-[10px]">{roleLabel}</Badge> : null}
-                      {isMine ? <Badge className="bg-[#c8f7c5] text-black text-[10px]">我的档案</Badge> : null}
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="flex-1 min-w-0">
+                        <p className="text-white font-medium truncate">{profile.display_name || profile.farmer_id}</p>
+                        <div className="flex items-center gap-2 mt-1.5 flex-wrap">
+                          <p className="text-white/40 text-xs font-mono">{profile.farmer_id}</p>
+                          {roleLabel ? <Badge variant="outline" className="border-white/20 text-white/80 text-[10px]">{roleLabel}</Badge> : null}
+                          {isMine ? <Badge className="bg-[#c8f7c5] text-black text-[10px]">我的档案</Badge> : null}
+                        </div>
+                      </div>
+                      {selectedProfile?.farmer_id === profile.farmer_id && (
+                        <div className="w-2 h-2 rounded-full bg-[#c8f7c5] animate-pulse mt-1.5 flex-shrink-0" />
+                      )}
                     </div>
                   </button>
                 );
@@ -701,58 +718,89 @@ export function ProfilesPage() {
           </CardHeader>
           <CardContent>
             {!editedProfile ? (
-              <div className="text-center py-16 text-white/40"><Sprout className="w-16 h-16 mx-auto mb-4 opacity-50" /><p>请选择档案查看详情</p></div>
+              <div className="text-center py-16">
+                <Sprout className="w-20 h-20 mx-auto mb-4 text-white/20" />
+                <p className="text-white/40 text-lg">请选择档案查看详情</p>
+              </div>
             ) : (
               <div className="space-y-6">
-                <div>
-                  <h3 className="text-[#c8f7c5] font-medium mb-4 flex items-center gap-2"><Users className="w-4 h-4" />档案基本信息</h3>
+                <div className="rounded-2xl border border-white/15 bg-gradient-to-br from-white/[0.08] to-white/[0.03] backdrop-blur-md p-5 space-y-5 shadow-[0_10px_32px_rgba(0,0,0,0.2)]">
+                  <h3 className="text-[#c8f7c5] font-semibold text-lg flex items-center gap-2"><Users className="w-5 h-5" />档案基本信息</h3>
                   <div className="grid sm:grid-cols-2 gap-4">
-                    <div className="space-y-2"><Label className="text-white/60">档案ID</Label><Input value={editedProfile.farmer_id} disabled className="bg-white/5 border-white/20 text-white/60" /></div>
-                    <div className="space-y-2"><Label className="text-white/60">绑定账号ID</Label><Input value={editedProfile.owner_user_id} disabled className="bg-white/5 border-white/20 text-white/60" /></div>
-                    <div className="space-y-2"><Label className="text-white/60">显示名</Label><Input value={editedProfile.display_name} onChange={(e) => setEditedProfile({ ...editedProfile, display_name: e.target.value, name: e.target.value })} className="bg-white/5 border-white/20 text-white" /></div>
-                    <div className="space-y-2"><Label className="text-white/60">当前基地</Label>
+                    <div className="space-y-2"><Label className="text-white/60 text-sm">档案ID</Label><Input value={editedProfile.farmer_id} disabled className="bg-white/5 border-white/20 text-white/60" /></div>
+                    <div className="space-y-2"><Label className="text-white/60 text-sm">绑定账号ID</Label><Input value={editedProfile.owner_user_id} disabled className="bg-white/5 border-white/20 text-white/60" /></div>
+                    <div className="space-y-2"><Label className="text-white/60 text-sm">显示名</Label><Input value={editedProfile.display_name} onChange={(e) => setEditedProfile({ ...editedProfile, display_name: e.target.value, name: e.target.value })} className="bg-white/10 border-white/20 text-white hover:bg-white/15 transition-colors" /></div>
+                    <div className="space-y-2"><Label className="text-white/60 text-sm">当前基地</Label>
                       <Select value={editedProfile.active_base_id || ''} onValueChange={(v) => setEditedProfile({ ...editedProfile, active_base_id: v })}>
-                        <SelectTrigger className="bg-white/5 border-white/20 text-white"><SelectValue /></SelectTrigger>
+                        <SelectTrigger className="bg-white/10 border-white/20 text-white hover:bg-white/15 transition-colors"><SelectValue /></SelectTrigger>
                         <SelectContent>{editedProfile.bases.map((base, idx) => <SelectItem key={`${base.base_id}-${idx}`} value={base.base_id}>{base.name || base.base_id}</SelectItem>)}</SelectContent>
                       </Select>
                     </div>
                     <div className="flex items-center gap-2"><Checkbox checked={editedProfile.confirm_when_low_confidence} onCheckedChange={(v) => setEditedProfile({ ...editedProfile, confirm_when_low_confidence: Boolean(v) })} /><Label className="text-white/80">低置信度需确认</Label></div>
-                    <div className="space-y-2"><Label className="text-white/60">种植规模</Label><Select value={editedProfile.farm_scale} onValueChange={(v) => setEditedProfile({ ...editedProfile, farm_scale: v as FarmerProfile['farm_scale'] })}><SelectTrigger className="bg-white/5 border-white/20 text-white"><SelectValue /></SelectTrigger><SelectContent>{FARM_SCALE_OPTIONS.map((v) => <SelectItem key={v} value={v}>{getFarmScaleLabel(v)}</SelectItem>)}</SelectContent></Select></div>
-                    <div className="space-y-2"><Label className="text-white/60">购药能力</Label><Select value={editedProfile.pesticide_access_level} onValueChange={(v) => setEditedProfile({ ...editedProfile, pesticide_access_level: v as FarmerProfile['pesticide_access_level'] })}><SelectTrigger className="bg-white/5 border-white/20 text-white"><SelectValue /></SelectTrigger><SelectContent>{PESTICIDE_ACCESS_OPTIONS.map((v) => <SelectItem key={v} value={v}>{getPesticideAccessLevelLabel(v)}</SelectItem>)}</SelectContent></Select></div>
-                    <div className="space-y-2"><Label className="text-white/60">栽培模式</Label><Select value={editedProfile.cultivation_mode} onValueChange={(v) => setEditedProfile({ ...editedProfile, cultivation_mode: v as FarmerProfile['cultivation_mode'] })}><SelectTrigger className="bg-white/5 border-white/20 text-white"><SelectValue /></SelectTrigger><SelectContent>{CULTIVATION_MODE_OPTIONS.map((v) => <SelectItem key={v} value={v}>{getCultivationModeLabel(v)}</SelectItem>)}</SelectContent></Select></div>
-                    <div className="space-y-2"><Label className="text-white/60">经验水平</Label><Select value={editedProfile.experience_level} onValueChange={(v) => setEditedProfile({ ...editedProfile, experience_level: v as FarmerProfile['experience_level'] })}><SelectTrigger className="bg-white/5 border-white/20 text-white"><SelectValue /></SelectTrigger><SelectContent>{EXPERIENCE_OPTIONS.map((v) => <SelectItem key={v} value={v}>{getExperienceLevelLabel(v)}</SelectItem>)}</SelectContent></Select></div>
-                    <div className="space-y-2"><Label className="text-white/60">风险偏好</Label><Select value={editedProfile.risk_preference} onValueChange={(v) => setEditedProfile({ ...editedProfile, risk_preference: v as FarmerProfile['risk_preference'] })}><SelectTrigger className="bg-white/5 border-white/20 text-white"><SelectValue /></SelectTrigger><SelectContent>{RISK_OPTIONS.map((v) => <SelectItem key={v} value={v}>{getRiskPreferenceLabel(v)}</SelectItem>)}</SelectContent></Select></div>
-                    <div className="space-y-2 sm:col-span-2"><Label className="text-white/60">可用设备（多选）</Label><div className="flex flex-wrap gap-2">{EQUIPMENT_OPTIONS.map((eq) => { const checked = editedProfile.equipment.includes(eq); return <label key={eq} className="inline-flex items-center gap-2 text-sm text-white/80 bg-white/5 border border-white/10 px-2 py-1 rounded"><Checkbox checked={checked} onCheckedChange={(v) => setEditedProfile({ ...editedProfile, equipment: v ? Array.from(new Set([...editedProfile.equipment, eq])) as FarmerProfile['equipment'] : editedProfile.equipment.filter((item) => item !== eq) })} /><span>{getEquipmentLabel(eq)}</span></label>; })}</div></div>
-                    <div className="space-y-2 sm:col-span-2"><Label className="text-white/60">系统预估方案档位</Label><Badge className="bg-emerald-900/50 border border-emerald-600/60 text-emerald-100">{getSelectedBranchLabel(predictBranch(editedProfile))}</Badge></div>
+                    <div className="space-y-2"><Label className="text-white/60 text-sm">种植规模</Label><Select value={editedProfile.farm_scale} onValueChange={(v) => setEditedProfile({ ...editedProfile, farm_scale: v as FarmerProfile['farm_scale'] })}><SelectTrigger className="bg-white/10 border-white/20 text-white hover:bg-white/15 transition-colors"><SelectValue /></SelectTrigger><SelectContent>{FARM_SCALE_OPTIONS.map((v) => <SelectItem key={v} value={v}>{getFarmScaleLabel(v)}</SelectItem>)}</SelectContent></Select></div>
+                    <div className="space-y-2"><Label className="text-white/60 text-sm">购药能力</Label><Select value={editedProfile.pesticide_access_level} onValueChange={(v) => setEditedProfile({ ...editedProfile, pesticide_access_level: v as FarmerProfile['pesticide_access_level'] })}><SelectTrigger className="bg-white/10 border-white/20 text-white hover:bg-white/15 transition-colors"><SelectValue /></SelectTrigger><SelectContent>{PESTICIDE_ACCESS_OPTIONS.map((v) => <SelectItem key={v} value={v}>{getPesticideAccessLevelLabel(v)}</SelectItem>)}</SelectContent></Select></div>
+                    <div className="space-y-2"><Label className="text-white/60 text-sm">栽培模式</Label><Select value={editedProfile.cultivation_mode} onValueChange={(v) => setEditedProfile({ ...editedProfile, cultivation_mode: v as FarmerProfile['cultivation_mode'] })}><SelectTrigger className="bg-white/10 border-white/20 text-white hover:bg-white/15 transition-colors"><SelectValue /></SelectTrigger><SelectContent>{CULTIVATION_MODE_OPTIONS.map((v) => <SelectItem key={v} value={v}>{getCultivationModeLabel(v)}</SelectItem>)}</SelectContent></Select></div>
+                    <div className="space-y-2"><Label className="text-white/60 text-sm">经验水平</Label><Select value={editedProfile.experience_level} onValueChange={(v) => setEditedProfile({ ...editedProfile, experience_level: v as FarmerProfile['experience_level'] })}><SelectTrigger className="bg-white/10 border-white/20 text-white hover:bg-white/15 transition-colors"><SelectValue /></SelectTrigger><SelectContent>{EXPERIENCE_OPTIONS.map((v) => <SelectItem key={v} value={v}>{getExperienceLevelLabel(v)}</SelectItem>)}</SelectContent></Select></div>
+                    <div className="space-y-2"><Label className="text-white/60 text-sm">风险偏好</Label><Select value={editedProfile.risk_preference} onValueChange={(v) => setEditedProfile({ ...editedProfile, risk_preference: v as FarmerProfile['risk_preference'] })}><SelectTrigger className="bg-white/10 border-white/20 text-white hover:bg-white/15 transition-colors"><SelectValue /></SelectTrigger><SelectContent>{RISK_OPTIONS.map((v) => <SelectItem key={v} value={v}>{getRiskPreferenceLabel(v)}</SelectItem>)}</SelectContent></Select></div>
+                    <div className="space-y-2 sm:col-span-2"><Label className="text-white/60 text-sm">可用设备（多选）</Label><div className="flex flex-wrap gap-2">{EQUIPMENT_OPTIONS.map((eq) => { const checked = editedProfile.equipment.includes(eq); return <label key={eq} className={cn('inline-flex items-center gap-2 text-sm bg-white/10 border px-2.5 py-1.5 rounded-lg cursor-pointer transition-all', checked ? 'border-[#c8f7c5]/50 text-[#c8f7c5] hover:bg-[#c8f7c5]/10' : 'border-white/20 text-white/80 hover:bg-white/15')}><Checkbox checked={checked} onCheckedChange={(v) => setEditedProfile({ ...editedProfile, equipment: v ? Array.from(new Set([...editedProfile.equipment, eq])) as FarmerProfile['equipment'] : editedProfile.equipment.filter((item) => item !== eq) })} /><span>{getEquipmentLabel(eq)}</span></label>; })}</div></div>
+                    <div className="space-y-2 sm:col-span-2"><Label className="text-white/60 text-sm">系统预估方案档位</Label><Badge className="bg-gradient-to-r from-emerald-900/50 to-emerald-800/50 border border-emerald-600/60 text-emerald-100 px-3 py-1.5 text-sm">{getSelectedBranchLabel(predictBranch(editedProfile))}</Badge></div>
                   </div>
                 </div>
 
                 <Separator className="bg-white/10" />
 
-                <div>
-                  <h3 className="text-[#c8f7c5] font-medium mb-4 flex items-center gap-2"><Ban className="w-4 h-4" />治疗约束</h3>
+                <div className="rounded-2xl border border-white/15 bg-gradient-to-br from-white/[0.08] to-white/[0.03] backdrop-blur-md p-5 space-y-5 shadow-[0_10px_32px_rgba(0,0,0,0.2)]">
+                  <h3 className="text-[#c8f7c5] font-semibold text-lg flex items-center gap-2"><Ban className="w-5 h-5" />治疗约束</h3>
                   <div className="space-y-4">
-                    <div className="flex items-center gap-2"><Checkbox checked={editedProfile.constraints.prefer_organic} onCheckedChange={(v) => setEditedProfile({ ...editedProfile, constraints: { ...editedProfile.constraints, prefer_organic: Boolean(v) } })} /><Label className="text-white/80">有机/低残留偏好</Label></div>
+                    <div className="flex items-center gap-3 p-3 rounded-xl bg-white/5 border border-white/10">
+                      <Checkbox checked={editedProfile.constraints.prefer_organic} onCheckedChange={(v) => setEditedProfile({ ...editedProfile, constraints: { ...editedProfile.constraints, prefer_organic: Boolean(v) } })} />
+                      <Label className="text-white/80 cursor-pointer">有机/低残留偏好</Label>
+                    </div>
                     <div className="space-y-2">
-                      <Label className="text-white/60">距离采收期（天）</Label>
+                      <Label className="text-white/60 text-sm">距离采收期（天）</Label>
                       <Input value={`${resolvedHarvestWindowDays}`} readOnly className="bg-white/5 border-white/10 text-white/80" />
-                      <p className="text-xs text-white/50">
+                      <p className="text-xs text-white/50 flex items-center gap-1.5">
+                        <Calendar className="w-3 h-3" />
                         {harvestWindowSource === 'sowing_date' ? '根据播种日期自动估算' : '当前为档案保存值 / 回退值'}
                       </p>
                     </div>
-                    <div className="space-y-2"><Label className="text-white/60">禁用成分关键词</Label><div className="flex gap-2"><Input value={newIngredient} onChange={(e) => setNewIngredient(e.target.value)} className="bg-white/5 border-white/20 text-white" /><Button onClick={addIngredient} variant="outline" className="border-white/20 text-white">添加</Button></div><div className="flex flex-wrap gap-2">{editedProfile.constraints.banned_ingredients.map((ing, idx) => <Badge key={`${ing}-${idx}`} variant="outline" className="border-red-400/50 text-red-400 cursor-pointer" onClick={() => removeIngredient(idx)}>{ing} ×</Badge>)}</div></div>
+                    <div className="space-y-2">
+                      <Label className="text-white/60 text-sm">禁用成分关键词</Label>
+                      <div className="flex gap-2">
+                        <Input value={newIngredient} onChange={(e) => setNewIngredient(e.target.value)} className="bg-white/10 border-white/20 text-white hover:bg-white/15 transition-colors" placeholder="输入成分关键词" />
+                        <Button onClick={addIngredient} variant="outline" className="border-[#c8f7c5]/50 text-[#c8f7c5] hover:bg-[#c8f7c5]/10 transition-all">
+                          <Plus className="w-4 h-4 mr-1" />添加
+                        </Button>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        {editedProfile.constraints.banned_ingredients.map((ing, idx) => (
+                          <Badge key={`${ing}-${idx}`} variant="outline" className="border-red-400/50 text-red-400 cursor-pointer hover:bg-red-500/10 transition-all" onClick={() => removeIngredient(idx)}>
+                            {ing} <span className="ml-1">×</span>
+                          </Badge>
+                        ))}
+                      </div>
+                    </div>
                   </div>
                 </div>
 
                 <Separator className="bg-white/10" />
 
-                <div>
-                  <h3 className="text-[#c8f7c5] font-medium mb-4 flex items-center gap-2"><MapPin className="w-4 h-4" />基地信息</h3>
-                  <div className="mb-3"><Button onClick={addBase} variant="outline" size="sm" className="border-[#c8f7c5]/50 text-[#c8f7c5]"><Plus className="w-4 h-4 mr-1" />新增基地</Button></div>
+                <div className="rounded-2xl border border-white/15 bg-gradient-to-br from-white/[0.08] to-white/[0.03] backdrop-blur-md p-5 space-y-5 shadow-[0_10px_32px_rgba(0,0,0,0.2)]">
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-[#c8f7c5] font-semibold text-lg flex items-center gap-2"><Home className="w-5 h-5" />基地信息</h3>
+                    <Button onClick={addBase} variant="outline" size="sm" className="border-[#c8f7c5]/50 text-[#c8f7c5] hover:bg-[#c8f7c5]/10 transition-all">
+                      <Plus className="w-4 h-4 mr-1" />新增基地
+                    </Button>
+                  </div>
                   <div className="space-y-4">
                     {editedProfile.bases.map((base, idx) => (
-                      <div key={`${base.base_id}-${idx}`} className="bg-white/5 rounded-xl p-4 space-y-3">
-                        <div className="flex items-center justify-between"><Badge className="bg-[#c8f7c5]/20 text-[#c8f7c5]">{base.base_id}</Badge><Button onClick={() => removeBase(idx)} variant="ghost" size="sm" className="text-red-400"><Trash2 className="w-4 h-4" /></Button></div>
+                      <div key={`${base.base_id}-${idx}`} className="rounded-2xl border border-white/15 bg-gradient-to-br from-white/[0.08] to-white/[0.03] backdrop-blur-md p-5 space-y-4 shadow-[0_10px_32px_rgba(0,0,0,0.2)]">
+                        <div className="flex items-center justify-between">
+                          <Badge className="bg-gradient-to-r from-[#c8f7c5]/20 to-[#c8f7c5]/10 border-[#c8f7c5]/50 text-[#c8f7c5] px-3 py-1.5 text-sm font-medium">{base.base_id}</Badge>
+                          <Button onClick={() => removeBase(idx)} variant="ghost" size="sm" className="text-red-400 hover:text-red-300 hover:bg-red-500/10 transition-all">
+                            <Trash2 className="w-4 h-4" />
+                          </Button>
+                        </div>
                         <div className="space-y-4">
                           <div className="grid sm:grid-cols-2 gap-4">
                             <div className="space-y-2">
@@ -762,7 +810,7 @@ export function ProfilesPage() {
                                 onChange={(e) => {
                                   updateBase(idx, (current) => ({ ...current, name: e.target.value }));
                                 }}
-                                className="bg-white/10 border-white/20 text-white"
+                                className="bg-white/10 border-white/20 text-white hover:bg-white/15 transition-colors"
                                 placeholder="请输入基地名称"
                               />
                             </div>
@@ -773,8 +821,8 @@ export function ProfilesPage() {
                                 onChange={(e) => {
                                   updateBase(idx, (current) => ({ ...current, facility_type: e.target.value }));
                                 }}
-                                className="bg-white/10 border-white/20 text-white"
-                                placeholder="例如：露地 / 温室 / 大棚"
+                                className="bg-white/10 border-white/20 text-white hover:bg-white/15 transition-colors"
+                                placeholder="例如：露地 / 温室 / 大棚 /阳台"
                               />
                             </div>
                             <div className="space-y-2">
@@ -788,7 +836,7 @@ export function ProfilesPage() {
                                   }));
                                 }}
                               >
-                                <SelectTrigger className="bg-white/10 border-white/20 text-white">
+                                <SelectTrigger className="bg-white/10 border-white/20 text-white hover:bg-white/15 transition-colors">
                                   <SelectValue placeholder="请选择生长阶段" />
                                 </SelectTrigger>
                                 <SelectContent>
@@ -809,7 +857,7 @@ export function ProfilesPage() {
                                 onChange={(e) => {
                                   updateBase(idx, (current) => ({ ...current, sowing_date: e.target.value }));
                                 }}
-                                className="bg-white/10 border-white/20 text-white"
+                                className="bg-white/10 border-white/20 text-white hover:bg-white/15 transition-colors"
                               />
                             </div>
                             <div className="space-y-2">
@@ -821,7 +869,7 @@ export function ProfilesPage() {
                                   next[idx].location = e.target.value; 
                                   setEditedProfile({ ...editedProfile, bases: next }); 
                                 }} 
-                                className="bg-white/10 border-white/20 text-white"
+                                className="bg-white/10 border-white/20 text-white hover:bg-white/15 transition-colors"
                                 placeholder="请输入详细地址"
                               />
                             </div>
@@ -834,7 +882,7 @@ export function ProfilesPage() {
                                   next[idx].province = e.target.value; 
                                   setEditedProfile({ ...editedProfile, bases: next }); 
                                 }} 
-                                className="bg-white/10 border-white/20 text-white"
+                                className="bg-white/10 border-white/20 text-white hover:bg-white/15 transition-colors"
                                 placeholder="请输入省份"
                               />
                             </div>
@@ -864,18 +912,21 @@ export function ProfilesPage() {
                             </Button>
                           </div>
                           {(base.weather_snapshot || base.last_weather_refresh_at) && (
-                            <div className="rounded-lg bg-white/10 border border-white/10 p-4 space-y-2">
-                              <p className="text-sm text-[#c8f7c5] font-medium">当前天气</p>
+                            <div className="rounded-xl border border-white/15 bg-gradient-to-br from-white/[0.08] to-white/[0.03] backdrop-blur-md p-4 space-y-3">
+                              <div className="flex items-center gap-2">
+                                <Cloud className="w-4 h-4 text-[#c8f7c5]" />
+                                <p className="text-sm text-[#c8f7c5] font-medium">当前天气</p>
+                              </div>
                               <p className="text-sm text-white/80">{base.weather_snapshot || '暂无'}</p>
                               <div className="flex flex-wrap items-center gap-4 mt-2 text-xs text-white/60">
-                                <span>最近刷新：{base.last_weather_refresh_at || '未刷新'}</span>
-                                {base.weather_temperature_2m && <span>温度：{base.weather_temperature_2m}℃</span>}
-                                {base.relative_humidity_2m && <span>湿度：{base.relative_humidity_2m}%</span>}
-                                {base.rain_risk && <span>雨风险：{base.rain_risk}</span>}
+                                <span className="flex items-center gap-1"><Calendar className="w-3 h-3" />最近刷新：{base.last_weather_refresh_at || '未刷新'}</span>
+                                {base.weather_temperature_2m && <span className="flex items-center gap-1"><Thermometer className="w-3 h-3" />温度：{base.weather_temperature_2m}℃</span>}
+                                {base.relative_humidity_2m && <span className="flex items-center gap-1"><Droplets className="w-3 h-3" />湿度：{base.relative_humidity_2m}%</span>}
+                                {base.rain_risk && <span className="flex items-center gap-1"><Wind className="w-3 h-3" />雨风险：{base.rain_risk}</span>}
                               </div>
                             </div>
                           )}
-                          <div className="rounded-2xl border border-white/15 bg-white/[0.07] backdrop-blur-md p-4 md:p-5 space-y-4 shadow-[0_10px_32px_rgba(0,0,0,0.2)]">
+                          <div className="rounded-2xl border border-white/15 bg-gradient-to-br from-white/[0.08] to-white/[0.03] backdrop-blur-md p-4 md:p-5 space-y-4 shadow-[0_10px_32px_rgba(0,0,0,0.2)]">
                             {(() => {
                               const hasMissingContext = base.risk_tags.some((tag) => isMissingContextRisk(tag))
                                 || base.risk_items.some((item) => isMissingContextRisk(item.code));
@@ -899,6 +950,7 @@ export function ProfilesPage() {
                                 <>
                                   <div className="flex flex-wrap items-start justify-between gap-2">
                                     <div className="flex items-center gap-2">
+                                      <Shield className="w-4 h-4 text-[#c8f7c5]" />
                                       <p className="text-sm font-semibold tracking-wide text-[#d9f8d7]">风险总览</p>
                                       {hasMissingContext ? (
                                         <Badge variant="outline" className="border-sky-300/60 bg-sky-500/10 text-sky-100 text-[11px]">
@@ -906,7 +958,7 @@ export function ProfilesPage() {
                                         </Badge>
                                       ) : null}
                                     </div>
-                                    <p className="text-[11px] text-white/60">最近更新 {formatRiskUpdatedAt(base.risk_updated_at)}</p>
+                                    <p className="text-[11px] text-white/60 flex items-center gap-1"><AlertTriangle className="w-3 h-3" />最近更新 {formatRiskUpdatedAt(base.risk_updated_at)}</p>
                                   </div>
 
                                   {hasRiskData ? (
@@ -919,7 +971,7 @@ export function ProfilesPage() {
                                               key={`${base.base_id}-${tag}`}
                                               variant="outline"
                                               className={cn(
-                                                'px-2.5 py-1 text-[11px] leading-none font-medium rounded-full',
+                                                'px-2.5 py-1 text-[11px] leading-none font-medium rounded-full transition-all hover:scale-105',
                                                 getRiskTagToneClass(tag),
                                               )}
                                             >
@@ -938,7 +990,7 @@ export function ProfilesPage() {
                                             <div
                                               key={`${base.base_id}-risk-${itemIdx}`}
                                               className={cn(
-                                                'rounded-xl border px-3 py-2.5 text-xs space-y-1.5 bg-black/10',
+                                                'rounded-xl border px-3 py-2.5 text-xs space-y-1.5 bg-black/10 transition-all hover:bg-black/15',
                                                 isMissingContextRisk(item.code)
                                                   ? 'border-sky-300/40'
                                                   : 'border-white/10',
@@ -952,7 +1004,7 @@ export function ProfilesPage() {
                                               </div>
                                               <p className="text-white/70 leading-relaxed">{toSafeString(item.reason) || '请关注风险变化。'}</p>
                                               {isMissingContextRisk(item.code) ? (
-                                                <p className="text-sky-200">该项表示档案信息不完整，建议补全基地上下文。</p>
+                                                <p className="text-sky-200 flex items-center gap-1"><AlertTriangle className="w-3 h-3" />该项表示档案信息不完整，建议补全基地上下文。</p>
                                               ) : null}
                                             </div>
                                           ))}
@@ -960,15 +1012,30 @@ export function ProfilesPage() {
                                       </div>
                                     </>
                                   ) : (
-                                    <p className="text-sm text-white/65 leading-relaxed">
-                                      当前未识别到明显风险，请继续补充天气、基地和生长阶段信息。
-                                    </p>
+                                    <div className="text-center py-6">
+                                      <Shield className="w-12 h-12 text-white/20 mx-auto mb-2" />
+                                      <p className="text-sm text-white/65 leading-relaxed">
+                                        当前未识别到明显风险，请继续补充天气、基地和生长阶段信息。
+                                      </p>
+                                    </div>
                                   )}
                                 </>
                               );
                             })()}
                           </div>
-                          <div className="space-y-1 sm:col-span-2"><Label className="text-white/60 text-xs">备注</Label><Textarea value={base.notes} onChange={(e) => { const next = [...editedProfile.bases]; next[idx].notes = e.target.value; setEditedProfile({ ...editedProfile, bases: next }); }} className="bg-white/10 border-white/20 text-white text-sm" /></div>
+                          <div className="space-y-2 sm:col-span-2">
+                            <Label className="text-white/60 text-sm">备注</Label>
+                            <Textarea 
+                              value={base.notes} 
+                              onChange={(e) => { 
+                                const next = [...editedProfile.bases]; 
+                                next[idx].notes = e.target.value; 
+                                setEditedProfile({ ...editedProfile, bases: next }); 
+                              }} 
+                              className="bg-white/10 border-white/20 text-white text-sm hover:bg-white/15 transition-colors min-h-[80px]" 
+                              placeholder="请输入备注信息"
+                            />
+                          </div>
                         </div>
                       </div>
                     ))}
