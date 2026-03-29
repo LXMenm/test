@@ -40,6 +40,27 @@ def _seed_admin(SessionLocal):
         session.commit()
 
 
+@contextmanager
+def _override_app_db(SessionLocal):
+    @contextmanager
+    def _session_override():
+        session = SessionLocal()
+        try:
+            yield session
+        finally:
+            session.close()
+
+    original_get_db_session = app_module.get_db_session
+    original_seed = app_module.ensure_user_accounts_seeded
+    app_module.get_db_session = _session_override
+    app_module.ensure_user_accounts_seeded = lambda: None
+    try:
+        yield
+    finally:
+        app_module.get_db_session = original_get_db_session
+        app_module.ensure_user_accounts_seeded = original_seed
+
+
 def test_create_account_with_profile_defaults():
     SessionLocal = _build_session_factory()
     _seed_admin(SessionLocal)
@@ -763,3 +784,135 @@ def test_admin_accounts_endpoints():
     finally:
         app_module.get_db_session = original_get_db_session
         app_module.ensure_user_accounts_seeded = original_seed
+
+
+def test_admin_can_reset_other_account_password_success():
+    SessionLocal = _build_session_factory()
+    _seed_admin(SessionLocal)
+    with _override_app_db(SessionLocal):
+        client = TestClient(app_module.app)
+        created = client.post(
+            "/api/admin/accounts",
+            headers={"X-User-Role": "ADMIN", "X-User-Id": "A0001"},
+            json={"username": "resetuser1", "display_name": "待重置用户1", "password": "123456"},
+        )
+        assert created.status_code == 200
+        user_id = created.json()["user_id"]
+
+        with SessionLocal() as session:
+            before = session.execute(select(UserAccountORM).where(UserAccountORM.user_id == user_id)).scalar_one()
+            before_password = before.password
+
+        reset_resp = client.post(
+            f"/api/admin/accounts/{user_id}/reset-password",
+            headers={"X-User-Role": "ADMIN", "X-User-Id": "A0001"},
+            json={"password": "abcdef", "confirm_password": "abcdef"},
+        )
+        assert reset_resp.status_code == 200
+        assert reset_resp.json() == {"ok": True, "user_id": user_id}
+
+        with SessionLocal() as session:
+            updated = session.execute(select(UserAccountORM).where(UserAccountORM.user_id == user_id)).scalar_one()
+            assert updated.password != before_password
+            assert updated.password != "abcdef"
+            assert app_module._is_password_hashed(updated.password) is True
+
+        new_login_resp = client.post("/api/auth/login", json={"user_id": user_id, "password": "abcdef"})
+        assert new_login_resp.status_code == 200
+
+
+def test_admin_reset_password_invalidates_old_password():
+    SessionLocal = _build_session_factory()
+    _seed_admin(SessionLocal)
+    with _override_app_db(SessionLocal):
+        client = TestClient(app_module.app)
+        created = client.post(
+            "/api/admin/accounts",
+            headers={"X-User-Role": "ADMIN", "X-User-Id": "A0001"},
+            json={"username": "resetuser2", "display_name": "待重置用户2", "password": "123456"},
+        )
+        assert created.status_code == 200
+        user_id = created.json()["user_id"]
+
+        reset_resp = client.post(
+            f"/api/admin/accounts/{user_id}/reset-password",
+            headers={"X-User-Role": "ADMIN", "X-User-Id": "A0001"},
+            json={"password": "abcdef", "confirm_password": "abcdef"},
+        )
+        assert reset_resp.status_code == 200
+
+        old_login_resp = client.post("/api/auth/login", json={"user_id": user_id, "password": "123456"})
+        assert old_login_resp.status_code == 401
+
+        new_login_resp = client.post("/api/auth/login", json={"user_id": user_id, "password": "abcdef"})
+        assert new_login_resp.status_code == 200
+
+
+def test_non_admin_cannot_reset_password():
+    SessionLocal = _build_session_factory()
+    _seed_admin(SessionLocal)
+    with _override_app_db(SessionLocal):
+        client = TestClient(app_module.app)
+        created = client.post(
+            "/api/admin/accounts",
+            headers={"X-User-Role": "ADMIN", "X-User-Id": "A0001"},
+            json={"username": "resetuser3", "display_name": "待重置用户3", "password": "123456"},
+        )
+        assert created.status_code == 200
+        user_id = created.json()["user_id"]
+
+        resp = client.post(
+            f"/api/admin/accounts/{user_id}/reset-password",
+            headers={"X-User-Role": "USER", "X-User-Id": user_id},
+            json={"password": "abcdef", "confirm_password": "abcdef"},
+        )
+        assert resp.status_code == 403
+
+
+def test_admin_cannot_reset_own_password_by_admin_endpoint():
+    SessionLocal = _build_session_factory()
+    _seed_admin(SessionLocal)
+    with _override_app_db(SessionLocal):
+        client = TestClient(app_module.app)
+        resp = client.post(
+            "/api/admin/accounts/A0001/reset-password",
+            headers={"X-User-Role": "ADMIN", "X-User-Id": "A0001"},
+            json={"password": "abcdef", "confirm_password": "abcdef"},
+        )
+        assert resp.status_code == 400
+        assert resp.json().get("detail") == "请使用修改密码功能更新当前登录账号密码"
+
+
+def test_admin_reset_password_rejects_mismatch():
+    SessionLocal = _build_session_factory()
+    _seed_admin(SessionLocal)
+    with _override_app_db(SessionLocal):
+        client = TestClient(app_module.app)
+        created = client.post(
+            "/api/admin/accounts",
+            headers={"X-User-Role": "ADMIN", "X-User-Id": "A0001"},
+            json={"username": "resetuser4", "display_name": "待重置用户4", "password": "123456"},
+        )
+        assert created.status_code == 200
+        user_id = created.json()["user_id"]
+
+        resp = client.post(
+            f"/api/admin/accounts/{user_id}/reset-password",
+            headers={"X-User-Role": "ADMIN", "X-User-Id": "A0001"},
+            json={"password": "abcdef", "confirm_password": "abcdeg"},
+        )
+        assert resp.status_code == 400
+        assert resp.json().get("detail") == "两次输入的新密码不一致"
+
+
+def test_admin_reset_password_target_not_found():
+    SessionLocal = _build_session_factory()
+    _seed_admin(SessionLocal)
+    with _override_app_db(SessionLocal):
+        client = TestClient(app_module.app)
+        resp = client.post(
+            "/api/admin/accounts/F9999/reset-password",
+            headers={"X-User-Role": "ADMIN", "X-User-Id": "A0001"},
+            json={"password": "abcdef", "confirm_password": "abcdef"},
+        )
+        assert resp.status_code == 404
