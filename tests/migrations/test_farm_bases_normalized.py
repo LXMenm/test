@@ -128,6 +128,7 @@ def test_save_profile_payload_writes_main_and_farm_base_child_tables(monkeypatch
 
     assert saved["bases"]["B001"]["risk_tags"] == ["FLOWERING_FRUITING_SENSITIVE", "HIGH_HUMIDITY"]
     assert len(saved["bases"]["B001"]["risk_items"]) == 2
+    assert saved["bases"]["B001"]["risk_reasons"] == ["花果期敏感", "近期湿度高"]
 
     with session_scope() as session:
         base_row = session.execute(select(FarmBaseORM).where(FarmBaseORM.base_id == "B001")).scalar_one()
@@ -157,6 +158,8 @@ def test_get_profile_prefers_farm_base_child_tables_but_keeps_compatible_shape(m
         "HIGH_HUMIDITY",
     ]
     assert base_payload["risk_items"][0]["reason"] == "开花坐果阶段对药害与湿害更敏感"
+    assert base_payload["risk_reasons"] == ["花果期敏感", "近期湿度高"]
+    assert "risk_updated_at" in base_payload
 
 
 def test_resolve_profile_and_base_does_not_regress_with_normalized_farm_base_tables(monkeypatch, tmp_path: Path) -> None:
