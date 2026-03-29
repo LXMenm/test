@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { Fragment, useEffect, useState } from 'react';
 import { Loader2, RefreshCcw, Trash2, UserPlus, Users } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -29,11 +29,21 @@ interface NewAccountForm {
   role: AccountRole;
 }
 
+interface ResetPasswordForm {
+  password: string;
+  confirmPassword: string;
+}
+
 const DEFAULT_FORM: NewAccountForm = {
   username: '',
   display_name: '',
   password: '',
   role: 'USER',
+};
+
+const DEFAULT_RESET_FORM: ResetPasswordForm = {
+  password: '',
+  confirmPassword: '',
 };
 
 export function AccountManagementPage() {
@@ -44,6 +54,9 @@ export function AccountManagementPage() {
   const [tip, setTip] = useState('');
   const [createOpen, setCreateOpen] = useState(false);
   const [form, setForm] = useState<NewAccountForm>(DEFAULT_FORM);
+  const [resetTargetUserId, setResetTargetUserId] = useState('');
+  const [resetForm, setResetForm] = useState<ResetPasswordForm>(DEFAULT_RESET_FORM);
+  const [resetSubmitting, setResetSubmitting] = useState(false);
 
   const loadAccounts = async () => {
     setLoading(true);
@@ -154,6 +167,53 @@ export function AccountManagementPage() {
     }
   };
 
+  const toggleResetPassword = (userId: string) => {
+    if (resetTargetUserId === userId) {
+      setResetTargetUserId('');
+      setResetForm(DEFAULT_RESET_FORM);
+      return;
+    }
+    setResetTargetUserId(userId);
+    setResetForm(DEFAULT_RESET_FORM);
+    setTip('');
+  };
+
+  const submitResetPassword = async (userId: string) => {
+    const password = resetForm.password;
+    const confirm_password = resetForm.confirmPassword;
+    if (!password || !confirm_password) {
+      setTip('请填写新密码和确认新密码。');
+      return;
+    }
+    if (password.length < 6) {
+      setTip('新密码长度不能少于 6 位。');
+      return;
+    }
+    if (password !== confirm_password) {
+      setTip('两次输入的新密码不一致。');
+      return;
+    }
+    setResetSubmitting(true);
+    setTip('');
+    try {
+      const resp = await fetch(`/api/admin/accounts/${encodeURIComponent(userId)}/reset-password`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password, confirm_password }),
+      });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(String(data?.detail || '重置密码失败'));
+      setTip(`账号 ${userId} 密码已重置。`);
+      setResetTargetUserId('');
+      setResetForm(DEFAULT_RESET_FORM);
+    } catch (error) {
+      console.error(error);
+      setTip(error instanceof Error ? error.message : '重置密码失败，请稍后重试。');
+    } finally {
+      setResetSubmitting(false);
+    }
+  };
+
   return (
     <div className="space-y-6 animate-fadeIn">
       <div>
@@ -261,66 +321,123 @@ export function AccountManagementPage() {
                   </tr>
                 ) : null}
                 {!loading ? items.map((item) => (
-                  <tr key={item.user_id} className="border-t border-white/10 hover:bg-white/5 transition-colors">
-                    <td className="px-4 py-3 font-mono text-white/90">{item.user_id}</td>
-                    <td className="px-4 py-3 text-white">{item.username}</td>
-                    <td className="px-4 py-3 text-white">{item.display_name}</td>
-                    <td className="px-4 py-3">
-                      <Select value={item.role} onValueChange={(value) => { void updateRole(item.user_id, value as AccountRole); }}>
-                        <SelectTrigger className="w-[132px] bg-white/10 border-white/20 text-white h-8">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {ROLE_OPTIONS.map((role) => <SelectItem key={role} value={role}>{role}</SelectItem>)}
-                        </SelectContent>
-                      </Select>
-                    </td>
-                    <td className="px-4 py-3">
-                      <Badge 
-                        variant={item.status === 'ACTIVE' ? 'outline' : 'secondary'}
-                        className={cn(
-                          item.status === 'ACTIVE' 
-                            ? 'border-emerald-400/50 text-emerald-300 bg-emerald-900/20' 
-                            : 'border-red-400/50 text-red-300 bg-red-900/20'
-                        )}
-                      >
-                        {item.status === 'ACTIVE' ? '正常' : '禁用'}
-                      </Badge>
-                    </td>
-                    <td className="px-4 py-3 text-right">
-                      <div className="flex justify-end gap-2">
-                        {item.status === 'ACTIVE' ? (
-                          item.user_id === authUser?.userId ? null : (
+                  <Fragment key={item.user_id}>
+                    <tr className="border-t border-white/10 hover:bg-white/5 transition-colors">
+                      <td className="px-4 py-3 font-mono text-white/90">{item.user_id}</td>
+                      <td className="px-4 py-3 text-white">{item.username}</td>
+                      <td className="px-4 py-3 text-white">{item.display_name}</td>
+                      <td className="px-4 py-3">
+                        <Select value={item.role} onValueChange={(value) => { void updateRole(item.user_id, value as AccountRole); }}>
+                          <SelectTrigger className="w-[132px] bg-white/10 border-white/20 text-white h-8">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {ROLE_OPTIONS.map((role) => <SelectItem key={role} value={role}>{role}</SelectItem>)}
+                          </SelectContent>
+                        </Select>
+                      </td>
+                      <td className="px-4 py-3">
+                        <Badge
+                          variant={item.status === 'ACTIVE' ? 'outline' : 'secondary'}
+                          className={cn(
+                            item.status === 'ACTIVE'
+                              ? 'border-emerald-400/50 text-emerald-300 bg-emerald-900/20'
+                              : 'border-red-400/50 text-red-300 bg-red-900/20'
+                          )}
+                        >
+                          {item.status === 'ACTIVE' ? '正常' : '禁用'}
+                        </Badge>
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        <div className="flex justify-end gap-2">
+                          {item.user_id === authUser?.userId ? null : (
                             <Button
                               variant="outline"
                               size="sm"
-                              onClick={() => { void updateStatus(item.user_id, 'DISABLED'); }}
-                              className="border-amber-500/40 text-amber-300 hover:bg-amber-500/10 transition-all"
+                              onClick={() => toggleResetPassword(item.user_id)}
+                              className="border-sky-500/40 text-sky-300 hover:bg-sky-500/10 transition-all"
                             >
-                              禁用
+                              重置密码
                             </Button>
-                          )
-                        ) : (
+                          )}
+                          {item.status === 'ACTIVE' ? (
+                            item.user_id === authUser?.userId ? null : (
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => { void updateStatus(item.user_id, 'DISABLED'); }}
+                                className="border-amber-500/40 text-amber-300 hover:bg-amber-500/10 transition-all"
+                              >
+                                禁用
+                              </Button>
+                            )
+                          ) : (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => { void updateStatus(item.user_id, 'ACTIVE'); }}
+                              className="border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/10 transition-all"
+                            >
+                              启用
+                            </Button>
+                          )}
                           <Button
                             variant="outline"
                             size="sm"
-                            onClick={() => { void updateStatus(item.user_id, 'ACTIVE'); }}
-                            className="border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/10 transition-all"
+                            onClick={() => { void deleteAccount(item.user_id); }}
+                            className="border-red-500/40 text-red-300 hover:bg-red-500/10 transition-all"
                           >
-                            启用
+                            <Trash2 className="w-4 h-4 mr-1" />删除
                           </Button>
-                        )}
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => { void deleteAccount(item.user_id); }}
-                          className="border-red-500/40 text-red-300 hover:bg-red-500/10 transition-all"
-                        >
-                          <Trash2 className="w-4 h-4 mr-1" />删除
-                        </Button>
-                      </div>
-                    </td>
-                  </tr>
+                        </div>
+                      </td>
+                    </tr>
+                    {resetTargetUserId === item.user_id ? (
+                      <tr className="border-t border-white/10 bg-white/[0.03]">
+                        <td colSpan={6} className="px-4 py-4">
+                          <div className="grid md:grid-cols-3 gap-3 items-end">
+                            <div className="space-y-2">
+                              <Label className="text-white/60 text-sm">新密码（至少 6 位）</Label>
+                              <Input
+                                type="password"
+                                value={resetForm.password}
+                                onChange={(e) => setResetForm((prev) => ({ ...prev, password: e.target.value }))}
+                                className="bg-white/10 border-white/20 text-white"
+                              />
+                            </div>
+                            <div className="space-y-2">
+                              <Label className="text-white/60 text-sm">确认新密码</Label>
+                              <Input
+                                type="password"
+                                value={resetForm.confirmPassword}
+                                onChange={(e) => setResetForm((prev) => ({ ...prev, confirmPassword: e.target.value }))}
+                                className="bg-white/10 border-white/20 text-white"
+                              />
+                            </div>
+                            <div className="flex justify-end gap-2">
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => toggleResetPassword(item.user_id)}
+                                className="border-white/20 text-white hover:bg-white/10"
+                                disabled={resetSubmitting}
+                              >
+                                取消
+                              </Button>
+                              <Button
+                                size="sm"
+                                className="bg-sky-300 text-black hover:bg-sky-200"
+                                onClick={() => { void submitResetPassword(item.user_id); }}
+                                disabled={resetSubmitting}
+                              >
+                                {resetSubmitting ? '提交中...' : '确认重置'}
+                              </Button>
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
+                    ) : null}
+                  </Fragment>
                 )) : null}
               </tbody>
             </table>
