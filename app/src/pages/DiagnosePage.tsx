@@ -77,6 +77,11 @@ interface DiagnosisResult {
   text_reliable?: boolean;
   reliability_issue_types?: string[];
   supplement_mode?: "none" | "text_only" | "image_only" | "image_and_text" | string;
+  confirm_reason_code?: string;
+  confirm_reason_text?: string;
+  recommended_action?: string;
+  confirm_ui_mode?: "image" | "text" | "image_and_text" | string;
+  confirm_fields?: string[];
 }
 
 interface ProfileListItem {
@@ -316,17 +321,6 @@ export function DiagnosePage() {
     return mapped.sort((a, b) => b.probPct - a.probPct).slice(0, 3);
   };
 
-  const getCandidateSymptomHint = (disease: string): string => {
-    const name = (disease || '').trim();
-    if (!name) return '建议补充叶片/茎秆/果实的可见症状。';
-    if (name.includes('叶斑')) return '常见症状：叶片出现褐色斑点、边缘黄化。';
-    if (name.includes('靶斑')) return '常见症状：同心轮纹斑，斑点中心灰白。';
-    if (name.includes('蜘蛛螨')) return '常见症状：叶片失绿发黄、背面可见细小螨虫和丝网。';
-    if (name.includes('晚疫') || name.includes('疫病')) return '常见症状：水渍状病斑迅速扩展，湿度高时更明显。';
-    if (name.includes('白粉')) return '常见症状：叶面有白色粉状霉层。';
-    return '建议补充病斑形态、颜色变化、扩散速度等症状。';
-  };
-
   const deriveNeedConfirm = (
     payloadLike: unknown,
     candidates: Top3Candidate[],
@@ -469,6 +463,11 @@ export function DiagnosePage() {
       text_reliable: typeof payload.text_reliable === 'boolean' ? payload.text_reliable : undefined,
       reliability_issue_types: Array.isArray(payload.reliability_issue_types) ? payload.reliability_issue_types.map((item) => String(item)) : [],
       supplement_mode: typeof payload.supplement_mode === 'string' ? payload.supplement_mode : undefined,
+      confirm_reason_code: typeof payload.confirm_reason_code === 'string' ? payload.confirm_reason_code : undefined,
+      confirm_reason_text: typeof payload.confirm_reason_text === 'string' ? payload.confirm_reason_text : undefined,
+      recommended_action: typeof payload.recommended_action === 'string' ? payload.recommended_action : undefined,
+      confirm_ui_mode: typeof payload.confirm_ui_mode === 'string' ? payload.confirm_ui_mode : undefined,
+      confirm_fields: Array.isArray(payload.confirm_fields) ? payload.confirm_fields.map((item) => String(item)) : [],
     };
   };
 
@@ -698,7 +697,8 @@ export function DiagnosePage() {
   };
 
   const handleResubmitWithNewImage = async () => {
-    if (!resubmitFile || !selectedFarmerId) return;
+    if (!selectedFarmerId || !traceId || !imageId) return;
+    if (usesImageSupplement && !resubmitFile) return;
     setResubmitSubmitting(true);
     setConfirmMode(false);
     setConfirmChoice('other');
@@ -711,16 +711,19 @@ export function DiagnosePage() {
     setWorkflowRefreshToken((prev) => prev + 1);
     try {
       const fd = new FormData();
-      fd.append('file', resubmitFile);
+      fd.append('trace_id', traceId);
+      fd.append('previous_trace_id', traceId);
+      fd.append('image_id', imageId);
       fd.append('crop_type', cropType || '番茄');
-      const symptomsForDiagnose = symptoms.trim() || confirmSymptoms.trim();
-      if (symptomsForDiagnose) fd.append('symptoms', symptomsForDiagnose);
+      if (usesImageSupplement && resubmitFile) fd.append('file', resubmitFile);
+      if (usesTextSupplement && confirmSymptoms.trim()) fd.append('symptoms', confirmSymptoms.trim());
       if (growthStage.trim()) fd.append('growth_stage', growthStage.trim());
       if (modelId) fd.append('model_id', modelId);
+      fd.append('choice', (confirmChoice && confirmChoice !== 'other') ? confirmChoice : 'other');
       fd.append('farmer_id', selectedFarmerId);
       if (selectedBaseId) fd.append('base_id', selectedBaseId);
 
-      const resp = await fetch('/api/diagnose-image', {
+      const resp = await fetch('/api/diagnose-retry', {
         method: 'POST',
         body: fd,
       });
@@ -783,6 +786,10 @@ export function DiagnosePage() {
 
   const handleConfirmSubmit = async (expertReviewDecision?: 'accept' | 'decline') => {
     if (!traceId || !imageId) return;
+    if (!expertReviewDecision) {
+      await handleResubmitWithNewImage();
+      return;
+    }
     setPhase2StartTime(Date.now());
     setConfirmSubmitting(true);
     try {
@@ -893,15 +900,20 @@ export function DiagnosePage() {
 
   const renderTreatment = (t: unknown): JSX.Element | null => renderRichValue(t);
   const candidates = parseTop3Candidates(latestPayload ?? result ?? {}, result);
-  const supplementMode = (() => {
-    if (typeof result?.supplement_mode === 'string' && result.supplement_mode.trim()) {
-      return result.supplement_mode;
+  const confirmUiMode = (() => {
+    if (typeof result?.confirm_ui_mode === 'string' && result.confirm_ui_mode.trim()) {
+      return result.confirm_ui_mode;
     }
-    return confirmMode ? 'text_only' : 'none';
+    if (typeof result?.supplement_mode === 'string') {
+      if (result.supplement_mode === 'image_only') return 'image';
+      if (result.supplement_mode === 'image_and_text') return 'image_and_text';
+      if (result.supplement_mode === 'text_only') return 'text';
+    }
+    return confirmMode ? 'text' : 'none';
   })();
-  const usesTextSupplement = supplementMode === 'text_only' || supplementMode === 'image_and_text';
-  const usesImageSupplement = supplementMode === 'image_only' || supplementMode === 'image_and_text';
-  const shouldShowSupplementSection = result?.status === 'waiting_for_supplement' && supplementMode !== 'none';
+  const usesTextSupplement = confirmUiMode === 'text' || confirmUiMode === 'image_and_text';
+  const usesImageSupplement = confirmUiMode === 'image' || confirmUiMode === 'image_and_text';
+  const shouldShowSupplementSection = result?.status === 'waiting_for_supplement' && confirmUiMode !== 'none';
   const expertReviewRecommended = result?.expert_review_recommended === true;
   const expertReviewPending = result?.status === 'pending_expert_review' || result?.expert_review_status === 'PENDING';
   const expertReviewCompleted = result?.expert_review_status === 'COMPLETED';
@@ -924,6 +936,17 @@ export function DiagnosePage() {
     return [] as string[];
   })();
   const shouldHideTreatment = shouldShowSupplementSection || shouldShowExpertReviewDecision || expertReviewPending;
+  const confirmCopy = (() => {
+    const code = result?.confirm_reason_code;
+    const mapping: Record<string, { title: string; body: string; cta: string }> = {
+      IMAGE_QUALITY_LOW: { title: '图片不够清晰', body: '当前图片证据不足，无法稳定识别病斑特征', cta: '重新上传图片并复诊' },
+      SYMPTOM_TEXT_INSUFFICIENT: { title: '症状描述不够完整', body: '请补充病斑颜色、边缘、霉层、水渍状等信息', cta: '补充症状并复诊' },
+      IMAGE_TEXT_CONFLICT: { title: '图片与描述不一致', body: '请确认上传的是当前病株图片，并补充更准确症状', cta: '重新上传并补充信息' },
+      BOTH_IMAGE_AND_TEXT_WEAK: { title: '图片和描述都不足', body: '请重新上传清晰图片，并补充病斑颜色、边缘、霉层等症状', cta: '补充信息并复诊' },
+      LOW_DISCRIMINATION_NEED_KEY_FEATURES: { title: '候选病害过于接近', body: '请补充最能区分候选病害的特征', cta: '补充关键特征并复诊' },
+    };
+    return mapping[code || ''] || { title: '请补充诊断信息', body: result?.confirm_reason_text || '当前信息不足，请补充后继续复诊', cta: '提交补充信息' };
+  })();
   const baseOptions: BaseOption[] = selectedProfile?.bases && typeof selectedProfile.bases === 'object'
     ? Object.entries(selectedProfile.bases).map(([baseId, base]) => ({
       id: baseId,
@@ -1387,52 +1410,26 @@ export function DiagnosePage() {
 
                   {shouldShowSupplementSection ? (
                     <div className="bg-[#c8f7c5]/10 border border-[#c8f7c5]/30 rounded-xl p-4 space-y-4">
-                      <h4 className="text-[#c8f7c5] font-medium">补充诊断 / 候选确认</h4>
-                      <p className="text-xs text-white/70">补充模式：{supplementMode}</p>
+                      <h4 className="text-[#c8f7c5] font-medium">{confirmCopy.title}</h4>
+                      <p className="text-sm text-white/80">{result?.confirm_reason_text || confirmCopy.body}</p>
+                      <p className="text-xs text-white/70">{result?.confirm_message || confirmCopy.body}</p>
 
                       {usesTextSupplement && (
                         <>
-                          <p className="text-xs text-white/70">当前候选数量：{candidates.length}</p>
                           <div className="space-y-2">
-                            <Label className="text-white/80">候选病害选择</Label>
-                            {candidates.map((item) => (
-                              <label key={item.disease} className="flex items-center gap-2 text-sm text-white/80 cursor-pointer">
-                                <input
-                                  type="radio"
-                                  name="confirmDisease"
-                                  value={item.disease}
-                                  checked={confirmChoice === item.disease}
-                                  onChange={(e) => setConfirmChoice(e.target.value)}
-                                />
-                                <span>{item.disease} ({item.probPct.toFixed(2)}%) · {getCandidateSymptomHint(item.disease)}</span>
-                              </label>
-                            ))}
-                            <label className="flex items-center gap-2 text-sm text-white/80 cursor-pointer">
-                              <input
-                                type="radio"
-                                name="confirmDisease"
-                                value="other"
-                                checked={confirmChoice === 'other'}
-                                onChange={(e) => setConfirmChoice(e.target.value)}
-                              />
-                              <span>继续补充症状 / 其他</span>
-                            </label>
+                            <Label className="text-white/80">补充症状（逗号分隔）</Label>
+                            <Input
+                              value={confirmSymptoms}
+                              onChange={(e) => setConfirmSymptoms(e.target.value)}
+                              placeholder="例如：病斑边缘褐色, 叶背有霉层, 水渍状扩展"
+                              className="bg-white/5 border-white/20 text-white placeholder:text-white/40"
+                            />
                           </div>
-
-                          {confirmChoice === 'other' ? (
-                            <div className="space-y-2">
-                              <Label className="text-white/80">补充症状（必填建议，逗号分隔）</Label>
-                              <Input
-                                value={confirmSymptoms}
-                                onChange={(e) => setConfirmSymptoms(e.target.value)}
-                                placeholder="例如：叶片卷曲, 发黄, 斑点扩大"
-                                className="bg-white/5 border-white/20 text-white placeholder:text-white/40"
-                              />
-                              <p className="text-xs text-white/60">已选择“继续补充症状 / 其他”，建议填写症状帮助模型继续判别。</p>
-                            </div>
-                          ) : (
-                            <p className="text-xs text-white/60">已选择具体病害，可直接提交确认；若仍不确定请切换到“继续补充症状 / 其他”并补充症状。</p>
-                          )}
+                          {Array.isArray(result?.follow_up_questions) && result.follow_up_questions.length > 0 ? (
+                            <ul className="list-disc pl-5 text-xs text-white/70 space-y-1">
+                              {result.follow_up_questions.map((q, idx) => <li key={`${q}-${idx}`}>{q}</li>)}
+                            </ul>
+                          ) : null}
                         </>
                       )}
 
@@ -1450,25 +1447,13 @@ export function DiagnosePage() {
                       )}
 
                       <div className="flex flex-col sm:flex-row gap-3">
-                        {usesTextSupplement && (
-                          <Button
-                            onClick={() => handleConfirmSubmit()}
-                            disabled={confirmSubmitting || !traceId || !imageId}
-                            className="bg-[#c8f7c5] text-black hover:bg-[#b8e7b5]"
-                          >
-                            {confirmSubmitting ? '提交中...' : '提交补充诊断'}
-                          </Button>
-                        )}
-                        {usesImageSupplement && (
-                          <Button
-                            onClick={handleResubmitWithNewImage}
-                            disabled={!resubmitFile || !selectedFarmerId || resubmitSubmitting || loading}
-                            variant="outline"
-                            className="border-[#c8f7c5]/60 text-[#c8f7c5] hover:bg-[#c8f7c5]/10"
-                          >
-                            {resubmitSubmitting ? '重新诊断中...' : '重新上传图片并重新诊断'}
-                          </Button>
-                        )}
+                        <Button
+                          onClick={() => handleConfirmSubmit()}
+                          disabled={confirmSubmitting || resubmitSubmitting || !traceId || !imageId || (usesImageSupplement && !resubmitFile)}
+                          className="bg-[#c8f7c5] text-black hover:bg-[#b8e7b5]"
+                        >
+                          {(confirmSubmitting || resubmitSubmitting) ? '提交中...' : confirmCopy.cta}
+                        </Button>
                       </div>
                     </div>
                   ) : shouldShowExpertReviewDecision ? (
