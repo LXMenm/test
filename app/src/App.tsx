@@ -4,6 +4,7 @@ import { Eye, EyeOff } from 'lucide-react';
 import { Navbar } from './components/Navbar';
 import { Button } from './components/ui/button';
 import { Input } from './components/ui/input';
+import { Label } from './components/ui/label';
 import { DiagnosePage } from './pages/DiagnosePage';
 import { DashboardPage } from './pages/DashboardPage';
 import { ProfilesPage } from './pages/ProfilesPage';
