@@ -875,54 +875,98 @@ export function ProfilesPage() {
                               </div>
                             </div>
                           )}
-                          <div className="rounded-lg bg-white/10 border border-white/10 p-3 space-y-2">
-                            <p className="text-xs text-[#c8f7c5]">风险标签概览</p>
-                            <div className="flex flex-wrap gap-2">
-                              {base.risk_tags.length > 0 ? base.risk_tags.map((tag) => (
-                                <Badge
-                                  key={`${base.base_id}-${tag}`}
-                                  variant="outline"
-                                  className={cn(
-                                    isMissingContextRisk(tag)
-                                      ? 'border-sky-300/60 text-sky-100 bg-sky-500/10'
-                                      : 'border-amber-300/50 text-amber-200',
-                                  )}
-                                >
-                                  {getRiskTagLabel(tag)}
-                                </Badge>
-                              )) : <p className="text-xs text-white/60">当前未识别到明显风险标签</p>}
-                            </div>
-                            <p className="text-xs text-white/60">风险更新时间：{formatRiskUpdatedAt(base.risk_updated_at)}</p>
-                            {base.risk_tags.some((tag) => isMissingContextRisk(tag)) ? (
-                              <p className="text-xs text-sky-200">提示：存在“信息不完整”标签，当前风险判断可能受限。</p>
-                            ) : null}
-                          </div>
-                          <div className="rounded-lg bg-white/10 border border-white/10 p-3 space-y-2">
-                            <p className="text-xs text-[#c8f7c5]">风险项明细</p>
-                            {base.risk_items.length > 0 ? (
-                              <div className="space-y-1">
-                                {base.risk_items.map((item, itemIdx) => (
-                                  <div
-                                    key={`${base.base_id}-risk-${itemIdx}`}
-                                    className={cn(
-                                      'rounded-md border p-2 text-xs space-y-1',
-                                      isMissingContextRisk(item.code)
-                                        ? 'border-sky-300/50 bg-sky-500/10'
-                                        : 'border-white/15 bg-black/10',
-                                    )}
-                                  >
+                          <div className="rounded-2xl border border-white/15 bg-white/[0.07] backdrop-blur-md p-4 md:p-5 space-y-4 shadow-[0_10px_32px_rgba(0,0,0,0.2)]">
+                            {(() => {
+                              const hasMissingContext = base.risk_tags.some((tag) => isMissingContextRisk(tag))
+                                || base.risk_items.some((item) => isMissingContextRisk(item.code));
+                              const hasRiskData = base.risk_tags.length > 0 || base.risk_items.length > 0;
+                              const riskLevelByCode = base.risk_items.reduce<Record<string, string>>((acc, item) => {
+                                const code = toSafeString(item.code).trim().toUpperCase();
+                                if (code && !acc[code]) acc[code] = toSafeString(item.level).trim().toLowerCase();
+                                return acc;
+                              }, {});
+                              const getRiskTagToneClass = (tag: string): string => {
+                                if (isMissingContextRisk(tag)) return 'border-sky-300/60 bg-sky-500/15 text-sky-100';
+                                const level = riskLevelByCode[toSafeString(tag).trim().toUpperCase()];
+                                if (level === 'high') return 'border-red-400/60 bg-red-500/15 text-red-100';
+                                if (level === 'warning') return 'border-orange-300/60 bg-orange-500/15 text-orange-100';
+                                if (level === 'medium') return 'border-amber-300/60 bg-amber-500/15 text-amber-100';
+                                if (level === 'low') return 'border-emerald-300/60 bg-emerald-500/15 text-emerald-100';
+                                return 'border-amber-300/60 bg-amber-500/10 text-amber-100';
+                              };
+
+                              return (
+                                <>
+                                  <div className="flex flex-wrap items-start justify-between gap-2">
                                     <div className="flex items-center gap-2">
-                                      <span className="text-white/90">{getRiskItemLabel(item)}</span>
-                                      <Badge variant="outline" className={cn('text-[10px] px-1.5 py-0', getRiskLevelClass(item.level))}>
-                                        {getRiskLevelLabel(item.level)}
-                                      </Badge>
+                                      <p className="text-sm font-semibold tracking-wide text-[#d9f8d7]">风险总览</p>
+                                      {hasMissingContext ? (
+                                        <Badge variant="outline" className="border-sky-300/60 bg-sky-500/10 text-sky-100 text-[11px]">
+                                          信息待补全
+                                        </Badge>
+                                      ) : null}
                                     </div>
-                                    <p className="text-white/70">{toSafeString(item.reason) || '请关注风险变化。'}</p>
-                                    {isMissingContextRisk(item.code) ? <p className="text-sky-200">该项表示档案信息不完整，需补全上下文。</p> : null}
+                                    <p className="text-[11px] text-white/60">最近更新 {formatRiskUpdatedAt(base.risk_updated_at)}</p>
                                   </div>
-                                ))}
-                              </div>
-                            ) : <p className="text-xs text-white/60">暂无风险项明细</p>}
+
+                                  {hasRiskData ? (
+                                    <>
+                                      <div className="space-y-2">
+                                        <p className="text-[11px] uppercase tracking-wider text-white/45">风险标签</p>
+                                        <div className="flex flex-wrap gap-2.5">
+                                          {base.risk_tags.map((tag) => (
+                                            <Badge
+                                              key={`${base.base_id}-${tag}`}
+                                              variant="outline"
+                                              className={cn(
+                                                'px-2.5 py-1 text-[11px] leading-none font-medium rounded-full',
+                                                getRiskTagToneClass(tag),
+                                              )}
+                                            >
+                                              {getRiskTagLabel(tag)}
+                                            </Badge>
+                                          ))}
+                                        </div>
+                                      </div>
+
+                                      <div className="h-px w-full bg-gradient-to-r from-transparent via-white/15 to-transparent" />
+
+                                      <div className="space-y-2">
+                                        <p className="text-[11px] uppercase tracking-wider text-white/45">风险明细</p>
+                                        <div className="space-y-2">
+                                          {base.risk_items.map((item, itemIdx) => (
+                                            <div
+                                              key={`${base.base_id}-risk-${itemIdx}`}
+                                              className={cn(
+                                                'rounded-xl border px-3 py-2.5 text-xs space-y-1.5 bg-black/10',
+                                                isMissingContextRisk(item.code)
+                                                  ? 'border-sky-300/40'
+                                                  : 'border-white/10',
+                                              )}
+                                            >
+                                              <div className="flex flex-wrap items-center gap-2">
+                                                <span className="text-white/90 font-medium">{getRiskItemLabel(item)}</span>
+                                                <Badge variant="outline" className={cn('text-[10px] px-1.5 py-0', getRiskLevelClass(item.level))}>
+                                                  {getRiskLevelLabel(item.level)}
+                                                </Badge>
+                                              </div>
+                                              <p className="text-white/70 leading-relaxed">{toSafeString(item.reason) || '请关注风险变化。'}</p>
+                                              {isMissingContextRisk(item.code) ? (
+                                                <p className="text-sky-200">该项表示档案信息不完整，建议补全基地上下文。</p>
+                                              ) : null}
+                                            </div>
+                                          ))}
+                                        </div>
+                                      </div>
+                                    </>
+                                  ) : (
+                                    <p className="text-sm text-white/65 leading-relaxed">
+                                      当前未识别到明显风险，请继续补充天气、基地和生长阶段信息。
+                                    </p>
+                                  )}
+                                </>
+                              );
+                            })()}
                           </div>
                           <div className="space-y-1 sm:col-span-2"><Label className="text-white/60 text-xs">备注</Label><Textarea value={base.notes} onChange={(e) => { const next = [...editedProfile.bases]; next[idx].notes = e.target.value; setEditedProfile({ ...editedProfile, bases: next }); }} className="bg-white/10 border-white/20 text-white text-sm" /></div>
                         </div>
