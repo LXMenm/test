@@ -75,3 +75,38 @@ def test_sample_5_fruiting_with_sowing_estimate_near_harvest():
 
     assert "NEAR_HARVEST" in tags
     assert "SEEDLING_VULNERABLE" not in tags
+
+
+def test_typical_risk_tags_keep_semantics_for_weather_stage_and_context():
+    near_harvest_sowing = (date.today() - timedelta(days=116)).isoformat()
+    base = BaseProfile(
+        base_id="B2",
+        facility="温室",
+        growth_stage="FLOWERING",
+        sowing_date=near_harvest_sowing,
+        weather_snapshot="通风差，近期有持续降雨",
+        relative_humidity_2m=86,
+        rain_risk=78,
+        precipitation=12,
+        notes="测试典型风险标签组合",
+    )
+    result = build_base_risk_tags(base)
+    tags = _tags(result)
+
+    assert "HIGH_HUMIDITY" in tags
+    assert "RAIN_RISK" in tags
+    assert "NEAR_HARVEST" in tags
+    assert "FLOWERING_FRUITING_SENSITIVE" in tags
+
+
+def test_missing_context_and_context_conflict_tags_are_still_generated():
+    base = BaseProfile(
+        base_id="B3",
+        growth_stage="SEEDLING",
+        sowing_date=None,
+    )
+    result = build_base_risk_tags(base, harvest_window_days=2)
+    tags = _tags(result)
+
+    assert "MISSING_CONTEXT" in tags
+    assert "CONTEXT_CONFLICT" in tags
