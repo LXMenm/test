@@ -631,6 +631,11 @@ class AdminUpdateAccountStatusRequest(BaseModel):
     status: str
 
 
+class AdminResetPasswordRequest(BaseModel):
+    password: str
+    confirm_password: str
+
+
 class SPAStaticFiles(StaticFiles):
     async def get_response(self, path: str, scope):
         response = await super().get_response(path, scope)
@@ -3361,6 +3366,33 @@ def update_admin_account_status(user_id: str, request: Request, payload: AdminUp
         account.status = normalized_status
         session.commit()
     return {"ok": True, "user_id": normalized_user_id, "status": normalized_status}
+
+
+@app.post("/api/admin/accounts/{user_id}/reset-password")
+def admin_reset_account_password(user_id: str, request: Request, payload: AdminResetPasswordRequest) -> dict[str, Any]:
+    actor = _get_request_actor(request)
+    _require_admin(actor)
+    normalized_user_id = str(user_id or "").strip()
+    if not normalized_user_id:
+        raise HTTPException(status_code=400, detail="user_id 不能为空")
+    actor_user_id = str(actor.get("user_id") or "").strip()
+    if normalized_user_id == actor_user_id:
+        raise HTTPException(status_code=400, detail="请使用修改密码功能更新当前登录账号密码")
+    password = _validate_password(payload.password)
+    confirm_password = str(payload.confirm_password or "")
+    if not confirm_password:
+        raise HTTPException(status_code=400, detail="confirm_password 不能为空")
+    if password != confirm_password:
+        raise HTTPException(status_code=400, detail="两次输入的新密码不一致")
+    with get_db_session() as session:
+        account = session.execute(
+            select(UserAccountORM).where(UserAccountORM.user_id == normalized_user_id)
+        ).scalar_one_or_none()
+        if account is None:
+            raise HTTPException(status_code=404, detail="账号不存在")
+        account.password = _hash_password(password)
+        session.commit()
+    return {"ok": True, "user_id": normalized_user_id}
 
 
 @app.delete("/api/admin/accounts/{user_id}")

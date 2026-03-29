@@ -1,9 +1,10 @@
-import { Component, useCallback, useEffect, useMemo, useState } from 'react';
+import { Component, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Eye, EyeOff } from 'lucide-react';
 import { Navbar } from './components/Navbar';
 import { Button } from './components/ui/button';
 import { Input } from './components/ui/input';
+import { Label } from './components/ui/label';
 import { DiagnosePage } from './pages/DiagnosePage';
 import { DashboardPage } from './pages/DashboardPage';
 import { ProfilesPage } from './pages/ProfilesPage';
@@ -106,6 +107,25 @@ interface InlinePasswordFieldProps {
   onEnter?: () => void;
 }
 
+function isSameAuthUser(a: AuthUser | null, b: AuthUser | null): boolean {
+  const normalize = (value: AuthUser | null) => ({
+    userId: String(value?.userId || '').trim(),
+    username: typeof value?.username === 'string' ? value.username : '',
+    displayName: String(value?.displayName || '').trim(),
+    role: String(value?.role || '').trim(),
+    linkedFarmerId: typeof value?.linkedFarmerId === 'string' ? value.linkedFarmerId : '',
+  });
+  const left = normalize(a);
+  const right = normalize(b);
+  return (
+    left.userId === right.userId
+    && left.username === right.username
+    && left.displayName === right.displayName
+    && left.role === right.role
+    && left.linkedFarmerId === right.linkedFarmerId
+  );
+}
+
 function InlinePasswordField({
   label,
   value,
@@ -176,8 +196,15 @@ function App() {
   const [passwordMessage, setPasswordMessage] = useState('');
   const [passwordError, setPasswordError] = useState('');
   const [passwordPanelKey, setPasswordPanelKey] = useState(0);
+  const authUserRef = useRef<AuthUser | null>(authUser);
+  const hasBootstrappedAuthCheckRef = useRef(false);
+  const initialAuthUserRef = useRef<AuthUser | null>(authUser);
 
   const allowedPages = useMemo(() => (authUser ? getAllowedPages(authUser.role) : []), [authUser]);
+
+  useEffect(() => {
+    authUserRef.current = authUser;
+  }, [authUser]);
 
   useEffect(() => {
     if (!authUser) return;
@@ -226,7 +253,7 @@ function App() {
 
   const applyAuthUser = useCallback((nextUser: AuthUser | null) => {
     if (!nextUser) return;
-    setAuthUser(nextUser);
+    setAuthUser((prev) => (isSameAuthUser(prev, nextUser) ? prev : nextUser));
     saveAuthUser(nextUser);
   }, []);
 
@@ -238,15 +265,15 @@ function App() {
     if (reason) setAuthNotice(reason);
   }, [resetPasswordPanelState]);
 
-  const verifyCurrentAuth = useCallback(async (options?: { silent?: boolean }) => {
-    if (!authUser) {
-      setAuthChecking(false);
+  const verifyCurrentAuth = useCallback(async (user: AuthUser | null, options?: { silent?: boolean }) => {
+    if (!user) {
+      if (!options?.silent) setAuthChecking(false);
       return;
     }
     const silent = Boolean(options?.silent);
     if (!silent) setAuthChecking(true);
     try {
-      const resp = await authFetch('/api/auth/me', undefined, authUser);
+      const resp = await authFetch('/api/auth/me', undefined, user);
       const data = await resp.json().catch(() => null);
       if (!resp.ok) {
         if (resp.status === 401 || resp.status === 403) {
@@ -255,29 +282,37 @@ function App() {
         }
         throw new Error(String((data as Record<string, unknown> | null)?.detail || '登录状态校验失败'));
       }
-      const nextUser = normalizeAuthUserFromPayload(data, authUser);
+      const nextUser = normalizeAuthUserFromPayload(data, user);
       applyAuthUser(nextUser);
     } catch (error) {
       setAuthNotice(error instanceof Error ? error.message : '登录状态校验失败');
     } finally {
       if (!silent) setAuthChecking(false);
     }
-  }, [applyAuthUser, authUser, clearCurrentSession]);
+  }, [applyAuthUser, clearCurrentSession]);
 
   useEffect(() => {
-    void verifyCurrentAuth();
+    if (hasBootstrappedAuthCheckRef.current) return;
+    hasBootstrappedAuthCheckRef.current = true;
+    const initialUser = initialAuthUserRef.current;
+    if (!initialUser) {
+      setAuthChecking(false);
+      return;
+    }
+    void verifyCurrentAuth(initialUser);
   }, [verifyCurrentAuth]);
 
   useEffect(() => {
     const handleFocus = () => {
-      if (!authUser) return;
-      void verifyCurrentAuth({ silent: true });
+      const latestUser = authUserRef.current;
+      if (!latestUser) return;
+      void verifyCurrentAuth(latestUser, { silent: true });
     };
     window.addEventListener('focus', handleFocus);
     return () => {
       window.removeEventListener('focus', handleFocus);
     };
-  }, [authUser, verifyCurrentAuth]);
+  }, [verifyCurrentAuth]);
 
   const handleLogin = (user: AuthUser) => {
     applyAuthUser(user);
