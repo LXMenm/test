@@ -2860,9 +2860,12 @@ def _normalize_profile_payload_for_save(farmer_id: str, payload: dict) -> Farmer
 
     profile = FarmerProfile.model_validate(normalized)
 
-    # 根据活跃基地播种日期自动估算采收窗口（旧字段兼容回退）。
+    # 采收窗口优先级：
+    # 1) manual 模式：使用手工值；
+    # 2) auto 模式：优先播种日期估算，估算不到再回退手工值（兼容旧档案）。
     active_base = profile.bases.get(profile.active_base_id or "") if profile.active_base_id else None
-    if active_base and active_base.sowing_date:
+    harvest_mode = str(getattr(profile.constraints, "harvest_window_mode", "auto") or "auto").strip().lower()
+    if harvest_mode != "manual" and active_base and active_base.sowing_date:
         estimated_days = estimate_harvest_window_days(active_base.sowing_date)
         if estimated_days is not None:
             profile.constraints.harvest_window_days = estimated_days

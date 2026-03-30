@@ -65,9 +65,12 @@ def _ensure_profile_compatibility(profile: FarmerProfile) -> FarmerProfile:
             # BaseProfile validator 会补 uid；这里显式触发确保存盘一致。
             profile.bases[base_id] = BaseProfile.model_validate(base.model_dump())
 
-    # 采收窗口优先由播种日期估算（按活跃基地）；旧值作为回退。
+    # 采收窗口优先级：
+    # 1) manual 模式：使用手工值；
+    # 2) auto 模式：优先播种日期估算，估算不到再回退手工值。
     active_base = profile.bases.get(profile.active_base_id or "") if profile.active_base_id else None
-    if active_base and active_base.sowing_date:
+    harvest_mode = str(getattr(profile.constraints, "harvest_window_mode", "auto") or "auto").strip().lower()
+    if harvest_mode != "manual" and active_base and active_base.sowing_date:
         estimated_days = estimate_harvest_window_days(active_base.sowing_date)
         if estimated_days is not None:
             profile.constraints.harvest_window_days = estimated_days

@@ -10,6 +10,7 @@ from config import (
     QWEN_API_KEY, QWEN_BASE_URL, QWEN_MODEL,
     WENXIN_API_KEY, WENXIN_SECRET_KEY, WENXIN_MODEL
 )
+from runtime_settings import get_admin_flag
 
 
 def call_llm(prompt: str, system_prompt: Optional[str] = None, temperature: float = 0.7) -> str:
@@ -24,6 +25,8 @@ def call_llm(prompt: str, system_prompt: Optional[str] = None, temperature: floa
     Returns:
         模型生成的回复文本
     """
+    if not bool(get_admin_flag("llm.enable_llm", True)):
+        raise RuntimeError("LLM_DISABLED_BY_ADMIN_CONFIG")
     if LLM_PROVIDER == "openai":
         return _call_openai(prompt, system_prompt, temperature)
     elif LLM_PROVIDER == "qwen":
@@ -189,4 +192,3 @@ def extract_json_from_response(response: str) -> Optional[Dict[str, Any]]:
                 pass
         
         return None
-
