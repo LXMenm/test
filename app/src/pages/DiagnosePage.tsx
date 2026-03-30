@@ -9,6 +9,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
 import { cn } from '@/lib/utils';
+import { deriveDiagnoseReviewViewFlags } from './diagnoseStatusView';
 import { AgentWorkflowPanel } from '@/components/AgentWorkflowPanel';
 import {
   getCultivationModeLabel,
@@ -914,10 +915,12 @@ export function DiagnosePage() {
   const usesTextSupplement = confirmUiMode === 'text' || confirmUiMode === 'image_and_text';
   const usesImageSupplement = confirmUiMode === 'image' || confirmUiMode === 'image_and_text';
   const shouldShowSupplementSection = result?.status === 'waiting_for_supplement' && confirmUiMode !== 'none';
-  const expertReviewRecommended = result?.expert_review_recommended === true;
-  const expertReviewPending = result?.status === 'pending_expert_review' || result?.expert_review_status === 'PENDING';
-  const expertReviewCompleted = result?.expert_review_status === 'COMPLETED';
-  const shouldShowExpertReviewDecision = result?.status === 'waiting_for_expert_decision' && expertReviewRecommended && !expertReviewPending;
+  const {
+    expertReviewPending,
+    expertReviewCompleted,
+    shouldShowExpertReviewDecision,
+    shouldHideTreatment,
+  } = deriveDiagnoseReviewViewFlags(result, shouldShowSupplementSection);
   const primaryRiskLabels = (() => {
     if (!result) return [] as string[];
     if (Array.isArray(result.risk_items) && result.risk_items.length > 0) {
@@ -935,7 +938,6 @@ export function DiagnosePage() {
     }
     return [] as string[];
   })();
-  const shouldHideTreatment = shouldShowSupplementSection || shouldShowExpertReviewDecision || expertReviewPending;
   const confirmCopy = (() => {
     const code = result?.confirm_reason_code;
     const mapping: Record<string, { title: string; body: string; cta: string }> = {
@@ -1484,8 +1486,10 @@ export function DiagnosePage() {
 
                   {expertReviewPending ? (
                     <div className="bg-blue-500/10 border border-blue-400/30 rounded-xl p-4 text-blue-100 text-sm space-y-2">
-                      <h4 className="font-medium">待专家复核</h4>
+                      <h4 className="font-medium">已转入专家复核</h4>
                       <p>{result?.confirm_message || '当前病例已进入待专家复核状态，后续将由专家确认病害并补充最终方案。'}</p>
+                      <p className="text-xs text-blue-200/90">expert_review_status：{result?.expert_review_status || 'PENDING'}</p>
+                      <p className="text-xs text-blue-200/90">当前不下发治疗方案，等待专家确认。</p>
                     </div>
                   ) : null}
 

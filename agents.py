@@ -1620,19 +1620,30 @@ def verification_agent(state: CropDiseaseState) -> CropDiseaseState:
 
     rule_issues = _rule_based_verification(payload)
 
+    llm_enabled = bool(get_admin_flag("llm.enable_llm", True))
     llm_result = None
-    try:
-        prompt = build_verification_prompt(payload)
-        response = call_llm(prompt, VERIFICATION_SYSTEM_PROMPT, temperature=0.1)
-        llm_result = extract_json_from_response(response)
-    except Exception as exc:
+    if llm_enabled:
+        try:
+            prompt = build_verification_prompt(payload)
+            response = call_llm(prompt, VERIFICATION_SYSTEM_PROMPT, temperature=0.1)
+            llm_result = extract_json_from_response(response)
+        except Exception as exc:
+            llm_result = {
+                "passed": False,
+                "risk_level": "high",
+                "issues": [f"verification_llm_error: {str(exc)}"],
+                "must_fix": ["请重新审查并重写方案"],
+                "suggested_rewrite_points": [],
+                "compliance_summary": "审查过程异常，不能直接下发方案。",
+            }
+    else:
         llm_result = {
-            "passed": False,
-            "risk_level": "high",
-            "issues": [f"verification_llm_error: {str(exc)}"],
-            "must_fix": ["请重新审查并重写方案"],
+            "passed": True,
+            "risk_level": "low",
+            "issues": [],
+            "must_fix": [],
             "suggested_rewrite_points": [],
-            "compliance_summary": "审查过程异常，不能直接下发方案。",
+            "compliance_summary": "LLM 已关闭，当前仅执行规则审查。",
         }
 
     review_result = _normalize_verification_result(llm_result)
@@ -1685,7 +1696,8 @@ def _deterministic_supervisor_decision(state: CropDiseaseState, flags: dict, mis
 
     if flags.get("need_confirm"):
         confirm_round_index = int(state.get("confirm_round_index") or 0)
-        confirm_round_limit = int(get_admin_flag("workflow.confirm_round_limit", 1) or 1)
+        raw_confirm_round_limit = get_admin_flag("workflow.confirm_round_limit", 1)
+        confirm_round_limit = int(1 if raw_confirm_round_limit is None else raw_confirm_round_limit)
         if confirm_round_index >= confirm_round_limit:
             return "manual_review", True, "番茄病害监督智能体：补充诊断后仍不确定，建议结束当前图并由用户决定是否转入专家复核", ["need_confirm_manual_review"]
         return "await_user_confirmation", True, "番茄病害监督智能体：需用户进入补充诊断，当前轮结束并返回追问问题", ["need_confirm_wait_user"]
@@ -1693,9 +1705,10 @@ def _deterministic_supervisor_decision(state: CropDiseaseState, flags: dict, mis
     if not state.get("kb_snapshot"):
         return "kb_retrieval", False, "番茄病害监督智能体：缺少知识快照，进入知识检索智能体", ["missing_kb_snapshot"]
 
-    enable_treatment_generation = bool(get_admin_flag("llm.enable_treatment_generation", True))
+    llm_enabled = bool(get_admin_flag("llm.enable_llm", True))
+    enable_treatment_generation = llm_enabled and bool(get_admin_flag("llm.enable_treatment_generation", True))
     enable_validator_agent = bool(get_admin_flag("workflow.enable_validator_agent", True))
-    enable_constraint_validation = bool(get_admin_flag("llm.enable_constraint_validation", True))
+    enable_constraint_validation = llm_enabled and bool(get_admin_flag("llm.enable_constraint_validation", True))
 
     treatment_plan = str(state.get("treatment_plan") or "").strip()
     prevention_advice = str(state.get("prevention_advice") or "").strip()
@@ -1714,7 +1727,8 @@ def _deterministic_supervisor_decision(state: CropDiseaseState, flags: dict, mis
         if not should_run_verification:
             return "end", True, "番茄病害监督智能体：合规审查关闭，忽略未通过结果", ["verification_disabled_skip_fail"]
         rewrite_count = int(state.get("rewrite_count") or 0)
-        rewrite_limit = int(get_admin_flag("workflow.validator_rewrite_limit", 1) or 1)
+        raw_rewrite_limit = get_admin_flag("workflow.validator_rewrite_limit", 1)
+        rewrite_limit = int(1 if raw_rewrite_limit is None else raw_rewrite_limit)
         if rewrite_count >= rewrite_limit:
             return "end", True, "番茄病害监督智能体：审查未通过且达到重写上限，建议后续转入专家复核", ["verification_failed_max_retry"]
 

@@ -66,7 +66,8 @@ interface FarmerProfile {
   risk_preference: 'CONSERVATIVE' | 'BALANCED' | 'AGGRESSIVE';
   constraints: {
     prefer_organic: boolean;
-    harvest_window_days: number;
+    harvest_window_days: number | null;
+    harvest_window_mode: 'auto' | 'manual';
     banned_ingredients: string[];
   };
   bases: FarmerBase[];
@@ -244,7 +245,15 @@ const normalizeProfile = (raw: unknown): FarmerProfile => {
     risk_preference: (RISK_OPTIONS.includes(toSafeString(rawObj.risk_preference) as never) ? toSafeString(rawObj.risk_preference) : 'BALANCED') as FarmerProfile['risk_preference'],
     constraints: {
       prefer_organic: Boolean((rawObj.constraints as Record<string, unknown> | undefined)?.prefer_organic),
-      harvest_window_days: Number((rawObj.constraints as Record<string, unknown> | undefined)?.harvest_window_days || 0),
+      harvest_window_days: (() => {
+        const value = (rawObj.constraints as Record<string, unknown> | undefined)?.harvest_window_days;
+        const parsed = Number(value);
+        return Number.isFinite(parsed) ? parsed : null;
+      })(),
+      harvest_window_mode: (() => {
+        const mode = toSafeString((rawObj.constraints as Record<string, unknown> | undefined)?.harvest_window_mode, 'auto').toLowerCase();
+        return mode === 'manual' ? 'manual' : 'auto';
+      })(),
       banned_ingredients: Array.isArray((rawObj.constraints as Record<string, unknown> | undefined)?.banned_ingredients)
         ? (((rawObj.constraints as Record<string, unknown>).banned_ingredients as unknown[]).map((item) => toSafeString(item)).filter(Boolean))
         : [],
@@ -325,8 +334,21 @@ export function ProfilesPage() {
     return estimateHarvestWindowDaysFromSowingDate(activeBase.sowing_date);
   }, [activeBase]);
 
-  const resolvedHarvestWindowDays = estimatedHarvestWindowDays ?? (editedProfile?.constraints.harvest_window_days ?? 0);
-  const harvestWindowSource = estimatedHarvestWindowDays != null ? 'sowing_date' : 'fallback';
+  const harvestWindowMode = editedProfile?.constraints.harvest_window_mode || 'auto';
+  const resolvedHarvestWindowDays = useMemo(() => {
+    if (!editedProfile) return null;
+    if (harvestWindowMode === 'manual') {
+      return editedProfile.constraints.harvest_window_days;
+    }
+    return estimatedHarvestWindowDays ?? editedProfile.constraints.harvest_window_days;
+  }, [editedProfile, harvestWindowMode, estimatedHarvestWindowDays]);
+  const harvestWindowSource = useMemo(() => {
+    if (!editedProfile) return 'none';
+    if (harvestWindowMode === 'manual') return 'manual';
+    if (estimatedHarvestWindowDays != null) return 'sowing_date';
+    if (editedProfile.constraints.harvest_window_days != null) return 'manual_fallback';
+    return 'none';
+  }, [editedProfile, harvestWindowMode, estimatedHarvestWindowDays]);
 
   const parseJsonOrThrow = async (resp: Response) => {
     let payload: Record<string, unknown> | null = null;
@@ -758,11 +780,68 @@ export function ProfilesPage() {
                     </div>
                     <div className="space-y-2">
                       <Label className="text-white/60 text-sm">距离采收期（天）</Label>
-                      <Input value={`${resolvedHarvestWindowDays}`} readOnly className="bg-white/5 border-white/10 text-white/80" />
+                      <div className="grid sm:grid-cols-2 gap-2">
+                        <Select
+                          value={editedProfile.constraints.harvest_window_mode}
+                          onValueChange={(v) => {
+                            const mode = v === 'manual' ? 'manual' : 'auto';
+                            setEditedProfile((prev) => {
+                              if (!prev) return prev;
+                              const nextHarvestDays = mode === 'manual'
+                                ? (prev.constraints.harvest_window_days ?? resolvedHarvestWindowDays ?? 0)
+                                : prev.constraints.harvest_window_days;
+                              return {
+                                ...prev,
+                                constraints: {
+                                  ...prev.constraints,
+                                  harvest_window_mode: mode,
+                                  harvest_window_days: nextHarvestDays,
+                                },
+                              };
+                            });
+                          }}
+                        >
+                          <SelectTrigger className="bg-white/10 border-white/20 text-white hover:bg-white/15 transition-colors">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="auto">自动估算</SelectItem>
+                            <SelectItem value="manual">手动覆盖</SelectItem>
+                          </SelectContent>
+                        </Select>
+                        <Input
+                          type="number"
+                          min={0}
+                          value={resolvedHarvestWindowDays ?? ''}
+                          readOnly={editedProfile.constraints.harvest_window_mode !== 'manual'}
+                          onChange={(e) => {
+                            const value = e.target.value.trim();
+                            const parsed = Number(value);
+                            setEditedProfile({
+                              ...editedProfile,
+                              constraints: {
+                                ...editedProfile.constraints,
+                                harvest_window_days: Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : null,
+                              },
+                            });
+                          }}
+                          className={cn(
+                            'border text-white/80',
+                            editedProfile.constraints.harvest_window_mode === 'manual'
+                              ? 'bg-white/10 border-white/20'
+                              : 'bg-white/5 border-white/10',
+                          )}
+                          placeholder={editedProfile.constraints.harvest_window_mode === 'manual' ? '请输入手动天数' : '自动估算中'}
+                        />
+                      </div>
                       <p className="text-xs text-white/50 flex items-center gap-1.5">
                         <Calendar className="w-3 h-3" />
-                        {harvestWindowSource === 'sowing_date' ? '根据播种日期自动估算' : '当前为档案保存值 / 回退值'}
+                        {harvestWindowSource === 'sowing_date' ? '自动估算：根据播种日期推算。' : null}
+                        {harvestWindowSource === 'manual' ? '手动覆盖：使用档案中录入的天数。' : null}
+                        {harvestWindowSource === 'manual_fallback' ? '自动模式下未找到播种日期，回退使用手动值。' : null}
+                        {harvestWindowSource === 'none' ? '尚未提供播种日期或手动值。' : null}
                       </p>
+                      <p className="text-[11px] text-white/40">手动覆盖用于修正系统估算不准，或播种日期缺失时作为唯一来源。</p>
                     </div>
                     <div className="space-y-2">
                       <Label className="text-white/60 text-sm">禁用成分关键词</Label>

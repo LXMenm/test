@@ -9,6 +9,24 @@ from .policy_engine import PersonalizationPolicy
 from .utils import dedupe_reasons
 
 
+def resolve_effective_harvest_window_days(
+    profile: Optional[FarmerProfile], base_profile: Optional[BaseProfile]
+) -> tuple[Optional[int], str]:
+    """解析生效的采收窗口与来源。"""
+    constraints = profile.constraints if profile else TreatmentConstraint()
+    mode = str(getattr(constraints, "harvest_window_mode", "auto") or "auto").strip().lower()
+    manual_value = constraints.harvest_window_days
+    estimated_value = estimate_harvest_window_days(base_profile.sowing_date) if base_profile else None
+
+    if mode == "manual":
+        return manual_value, "manual"
+    if estimated_value is not None:
+        return estimated_value, "auto"
+    if manual_value is not None:
+        return manual_value, "manual_fallback"
+    return None, "none"
+
+
 def build_personalization_context(
     profile: Optional[FarmerProfile], base_profile: Optional[BaseProfile]
 ) -> Optional[str]:
@@ -52,11 +70,14 @@ def build_personalization_context(
     parts.append(f"风险偏好: {profile.risk_preference}")
     if constraints.banned_ingredients:
         parts.append(f"禁用成分: {', '.join(constraints.banned_ingredients)}")
-    effective_harvest_days = estimate_harvest_window_days(base_profile.sowing_date) if base_profile else None
-    if effective_harvest_days is None:
-        effective_harvest_days = constraints.harvest_window_days
+    effective_harvest_days, harvest_source = resolve_effective_harvest_window_days(profile, base_profile)
     if effective_harvest_days is not None:
-        parts.append(f"距采收天数: {effective_harvest_days}天（规则估算）")
+        if harvest_source == "auto":
+            parts.append(f"距采收天数: {effective_harvest_days}天（播种日期自动估算）")
+        elif harvest_source == "manual":
+            parts.append(f"距采收天数: {effective_harvest_days}天（手动覆盖）")
+        else:
+            parts.append(f"距采收天数: {effective_harvest_days}天（手工值回退）")
     if constraints.prefer_organic:
         parts.append("偏好有机/低残留方案")
 
@@ -73,14 +94,13 @@ def build_personalization_flags(
         return {}
 
     constraints: TreatmentConstraint = profile.constraints
-    effective_harvest_days = estimate_harvest_window_days(base_profile.sowing_date) if base_profile else None
-    if effective_harvest_days is None:
-        effective_harvest_days = constraints.harvest_window_days
+    effective_harvest_days, harvest_source = resolve_effective_harvest_window_days(profile, base_profile)
 
     flags: Dict = {
         "confirm_when_low_confidence": profile.confirm_when_low_confidence,
         "banned_ingredients": constraints.banned_ingredients,
         "harvest_window_days": effective_harvest_days,
+        "harvest_window_source": harvest_source,
         "prefer_organic": constraints.prefer_organic,
         "profile_schema_version": profile.schema_version,
         "profile_updated_at": profile.updated_at,

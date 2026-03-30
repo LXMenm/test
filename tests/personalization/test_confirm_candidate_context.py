@@ -506,6 +506,13 @@ def test_supplement_low_confidence_decline_expert_review_returns_completed_with_
     assert body["expert_review_actions"] == ["use_current_result", "request_expert_review"]
     assert body["treatment_available"] is True
     assert (body.get("treatment") or {}).get("plan")
+    # 前端应隐藏“是否专家复核”二选一区（仅 waiting_for_expert_decision 才展示）
+    should_show_expert_review_decision = (
+        body["status"] == "waiting_for_expert_decision"
+        and body["expert_review_recommended"] is True
+        and body["expert_review_status"] != "PENDING"
+    )
+    assert should_show_expert_review_decision is False
 
 
 def test_supplement_low_confidence_accept_expert_review_returns_pending(monkeypatch, tmp_path):
@@ -538,3 +545,16 @@ def test_supplement_low_confidence_accept_expert_review_returns_pending(monkeypa
     assert body["expert_review_actions"] == ["use_current_result", "request_expert_review"]
     assert body["treatment_available"] is False
     assert body.get("treatment") is None
+    # 前端应进入“待专家复核”态：不再显示二选一区且隐藏治疗方案区块。
+    should_show_expert_review_decision = (
+        body["status"] == "waiting_for_expert_decision"
+        and body["expert_review_recommended"] is True
+        and body["expert_review_status"] != "PENDING"
+    )
+    should_hide_treatment = (
+        body["status"] == "pending_expert_review"
+        or should_show_expert_review_decision
+        or body["status"] == "waiting_for_supplement"
+    )
+    assert should_show_expert_review_decision is False
+    assert should_hide_treatment is True

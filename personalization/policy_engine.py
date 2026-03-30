@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 
 from .profile_models import BaseProfile, FarmerProfile
+from .profile_constants import estimate_harvest_window_days
 from .utils import dedupe_reasons
 
 
@@ -36,10 +37,16 @@ def _detail_level_from_experience(experience_level: str) -> str:
 def build_policy(profile: FarmerProfile, base: Optional[BaseProfile] = None) -> PersonalizationPolicy:
     constraints = profile.constraints
     equipment = [str(item) for item in (profile.equipment or [])]
+    harvest_mode = str(getattr(constraints, "harvest_window_mode", "auto") or "auto").strip().lower()
+    estimated_harvest_days = estimate_harvest_window_days(base.sowing_date) if base else None
+    if harvest_mode == "manual":
+        effective_harvest_days = constraints.harvest_window_days
+    else:
+        effective_harvest_days = estimated_harvest_days if estimated_harvest_days is not None else constraints.harvest_window_days
 
     hard_constraints: Dict[str, Any] = {
         "banned_ingredients": list(constraints.banned_ingredients or []),
-        "harvest_window_days": constraints.harvest_window_days,
+        "harvest_window_days": effective_harvest_days,
         "forbidden_equipment_flows": [],
         "forbid_professional_pesticides": False,
     }
@@ -92,7 +99,7 @@ def build_policy(profile: FarmerProfile, base: Optional[BaseProfile] = None) -> 
         explanations.append("有机偏好：优先非化学/生物/农艺措施，避免高风险化学成分。")
 
     # 6) 采收窗口
-    if constraints.harvest_window_days is not None and constraints.harvest_window_days <= 7:
+    if effective_harvest_days is not None and effective_harvest_days <= 7:
         explanations.append("临近采收：强调安全间隔与合规风险提示。")
 
     # 7) 经验水平
