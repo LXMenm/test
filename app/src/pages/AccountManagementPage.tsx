@@ -7,7 +7,7 @@ import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
-import { loadAuthUser } from '@/auth';
+import { loadAuthUser, withAuthHeaders } from '@/auth';
 
 const ROLE_OPTIONS = ['USER', 'EXPERT', 'ADMIN'] as const;
 
@@ -62,7 +62,7 @@ export function AccountManagementPage() {
     setLoading(true);
     setTip('');
     try {
-      const resp = await fetch('/api/admin/accounts');
+      const resp = await fetch('/api/admin/accounts', withAuthHeaders(undefined, authUser));
       const data = await resp.json();
       if (!resp.ok) throw new Error(String(data?.detail || '加载账号列表失败'));
       setItems(Array.isArray(data?.items) ? data.items : []);
@@ -92,11 +92,11 @@ export function AccountManagementPage() {
     setSubmitting(true);
     setTip('');
     try {
-      const resp = await fetch('/api/admin/accounts', {
+      const resp = await fetch('/api/admin/accounts', withAuthHeaders({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
-      });
+      }, authUser));
       const data = await resp.json();
       if (!resp.ok) throw new Error(String(data?.detail || '新增账号失败'));
       setTip('账号已创建，并自动生成对应空档案。');
@@ -114,11 +114,11 @@ export function AccountManagementPage() {
 
   const updateRole = async (userId: string, role: AccountRole) => {
     try {
-      const resp = await fetch(`/api/admin/accounts/${encodeURIComponent(userId)}/role`, {
+      const resp = await fetch(`/api/admin/accounts/${encodeURIComponent(userId)}/role`, withAuthHeaders({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ role }),
-      });
+      }, authUser));
       const data = await resp.json();
       if (!resp.ok) throw new Error(String(data?.detail || '更新角色失败'));
       setTip(`账号 ${userId} 角色已更新为 ${role}。`);
@@ -132,9 +132,9 @@ export function AccountManagementPage() {
   const deleteAccount = async (userId: string) => {
     if (!window.confirm(`确认删除账号 ${userId} 吗？这会同时删除对应档案。`)) return;
     try {
-      const resp = await fetch(`/api/admin/accounts/${encodeURIComponent(userId)}`, {
+      const resp = await fetch(`/api/admin/accounts/${encodeURIComponent(userId)}`, withAuthHeaders({
         method: 'DELETE',
-      });
+      }, authUser));
       const data = await resp.json();
       if (!resp.ok) throw new Error(String(data?.detail || '删除账号失败'));
       setTip(`账号 ${userId} 已删除，对应档案已同步删除。`);
@@ -152,11 +152,11 @@ export function AccountManagementPage() {
       return;
     }
     try {
-      const resp = await fetch(`/api/admin/accounts/${encodeURIComponent(userId)}/status`, {
+      const resp = await fetch(`/api/admin/accounts/${encodeURIComponent(userId)}/status`, withAuthHeaders({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status }),
-      });
+      }, authUser));
       const data = await resp.json();
       if (!resp.ok) throw new Error(String(data?.detail || '更新状态失败'));
       setTip(`账号 ${userId} 状态已更新为 ${status}。`);
@@ -196,11 +196,11 @@ export function AccountManagementPage() {
     setResetSubmitting(true);
     setTip('');
     try {
-      const resp = await fetch(`/api/admin/accounts/${encodeURIComponent(userId)}/reset-password`, {
+      const resp = await fetch(`/api/admin/accounts/${encodeURIComponent(userId)}/reset-password`, withAuthHeaders({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ password, confirm_password }),
-      });
+      }, authUser));
       const data = await resp.json();
       if (!resp.ok) throw new Error(String(data?.detail || '重置密码失败'));
       setTip(`账号 ${userId} 密码已重置。`);

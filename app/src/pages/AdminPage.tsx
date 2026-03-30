@@ -9,6 +9,7 @@ import { Switch } from '@/components/ui/switch';
 import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
+import { loadAuthUser, withAuthHeaders } from '@/auth';
 
 interface AdminConfig {
   workflow: {
@@ -199,6 +200,7 @@ function normalizeSystemConfig(raw: Record<string, unknown> | null | undefined):
 }
 
 export function AdminPage({ pageType }: { pageType: 'system' | 'review' }) {
+  const authUser = loadAuthUser();
   const [config, setConfig] = useState<AdminConfig>(DEFAULT_CONFIG);
   const [llmRuntimeSnapshot, setLlmRuntimeSnapshot] = useState<LlmRuntimeSnapshot>(DEFAULT_LLM_RUNTIME_SNAPSHOT);
   const [configLoading, setConfigLoading] = useState(false);
@@ -219,11 +221,15 @@ export function AdminPage({ pageType }: { pageType: 'system' | 'review' }) {
   const [updatingReview, setUpdatingReview] = useState(false);
   const [expertOptions, setExpertOptions] = useState<ExpertOption[]>([]);
 
+  const adminFetch = (input: RequestInfo | URL, init?: RequestInit) => {
+    return fetch(input, withAuthHeaders(init, authUser));
+  };
+
   const loadConfig = async () => {
     setConfigLoading(true);
     setConfigTip('');
     try {
-      const resp = await fetch('/api/admin/system-config');
+      const resp = await adminFetch('/api/admin/system-config');
       const data = await resp.json();
       if (!resp.ok) throw new Error(String(data?.detail || '加载配置失败'));
       const raw = (data?.config || DEFAULT_CONFIG) as Record<string, unknown>;
@@ -282,7 +288,7 @@ export function AdminPage({ pageType }: { pageType: 'system' | 'review' }) {
     setConfigSaving(true);
     setConfigTip('');
     try {
-      const resp = await fetch('/api/admin/system-config', {
+      const resp = await adminFetch('/api/admin/system-config', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(config),
@@ -309,7 +315,7 @@ export function AdminPage({ pageType }: { pageType: 'system' | 'review' }) {
     setReviewLoading(true);
     setReviewTip('');
     try {
-      const resp = await fetch(`/api/admin/reviews?status=${encodeURIComponent(statusFilter)}&limit=50`);
+      const resp = await adminFetch(`/api/admin/reviews?status=${encodeURIComponent(statusFilter)}&limit=50`);
       const data = await resp.json();
       if (!resp.ok) throw new Error(String(data?.detail || '加载复核列表失败'));
       const items = Array.isArray(data?.items) ? (data.items as ReviewItem[]) : [];
@@ -328,7 +334,7 @@ export function AdminPage({ pageType }: { pageType: 'system' | 'review' }) {
 
   const loadExperts = async () => {
     try {
-      const resp = await fetch('/api/admin/accounts/experts');
+      const resp = await adminFetch('/api/admin/accounts/experts');
       const data = await resp.json();
       if (!resp.ok) throw new Error(String(data?.detail || '加载专家列表失败'));
       const next = Array.isArray(data?.items) ? (data.items as ExpertOption[]) : [];
@@ -342,7 +348,7 @@ export function AdminPage({ pageType }: { pageType: 'system' | 'review' }) {
   const loadReviewDetail = async (traceId: string) => {
     setReviewTip('');
     try {
-      const resp = await fetch(`/api/admin/reviews/${encodeURIComponent(traceId)}`);
+      const resp = await adminFetch(`/api/admin/reviews/${encodeURIComponent(traceId)}`);
       const data = await resp.json();
       if (!resp.ok) throw new Error(String(data?.detail || '加载病例详情失败'));
       const item = (data?.item || null) as ReviewDetail | null;
@@ -363,7 +369,7 @@ export function AdminPage({ pageType }: { pageType: 'system' | 'review' }) {
     setUpdatingReview(true);
     setReviewTip('');
     try {
-      const resp = await fetch(`/api/admin/reviews/${encodeURIComponent(selected.trace_id)}/assign`, {
+      const resp = await adminFetch(`/api/admin/reviews/${encodeURIComponent(selected.trace_id)}/assign`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ assigned_expert_id: assignExpertId.trim(), admin_note: flowNote, review_flow_note: flowNote }),
@@ -386,7 +392,7 @@ export function AdminPage({ pageType }: { pageType: 'system' | 'review' }) {
     setUpdatingReview(true);
     setReviewTip('');
     try {
-      const resp = await fetch(`/api/admin/reviews/${encodeURIComponent(selected.trace_id)}/flow-status`, {
+      const resp = await adminFetch(`/api/admin/reviews/${encodeURIComponent(selected.trace_id)}/flow-status`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ admin_flag: flowStatus, admin_note: flowNote, review_flow_status: flowStatus, review_flow_note: flowNote }),
