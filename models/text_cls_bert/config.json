@@ -44,6 +44,7 @@
   "model_type": "bert",
   "num_attention_heads": 12,
   "num_hidden_layers": 12,
+  "output_past": true,
   "pad_token_id": 0,
   "pooler_fc_size": 768,
   "pooler_num_attention_heads": 12,
@@ -52,7 +53,7 @@
   "pooler_type": "first_token_transform",
   "problem_type": "single_label_classification",
   "tie_word_embeddings": true,
-  "transformers_version": "5.3.0",
+  "transformers_version": "5.4.0",
   "type_vocab_size": 2,
   "use_cache": false,
   "vocab_size": 21128
