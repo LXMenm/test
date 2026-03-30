@@ -19,6 +19,10 @@ class TreatmentConstraint(BaseModel):
     harvest_window_days: Optional[int] = Field(
         default=None, description="距离采收的预期天数，用于限制安全间隔期"
     )
+    harvest_window_mode: Literal["auto", "manual"] = Field(
+        default="auto",
+        description="采收窗口来源：auto=根据播种日期自动估算（无播种日期时回退手工值）；manual=始终使用手工输入",
+    )
     prefer_organic: bool = Field(default=False, description="是否偏好有机/低残留方案")
 
 
