@@ -2178,6 +2178,18 @@ def _diagnose_confirm_core(request: Request, payload: dict) -> dict:
     model_id = payload.get("model_id")
     choice = str(payload.get("choice") or "").strip()
     expert_review_decision = _normalize_expert_review_decision(payload.get("expert_review_decision"))
+    print(
+        "[DiagnoseConfirm] input",
+        json.dumps(
+            {
+                "trace_id": trace_id,
+                "image_id": image_id,
+                "expert_review_decision": expert_review_decision,
+                "choice": choice,
+            },
+            ensure_ascii=False,
+        ),
+    )
     farmer_id = payload.get("farmer_id")
     base_id = payload.get("base_id")
 
@@ -2412,6 +2424,19 @@ def _diagnose_confirm_core(request: Request, payload: dict) -> dict:
         manual_review_recommended = False
         confirm_status = "completed"
         manual_review_required_before_execution = False
+    print(
+        "[DiagnoseConfirm] branch",
+        json.dumps(
+            {
+                "trace_id": trace_id,
+                "terminal_action": terminal_action,
+                "confirm_status": confirm_status,
+                "expert_review_selected": expert_review_selected,
+                "expert_review_status": expert_review_status,
+            },
+            ensure_ascii=False,
+        ),
+    )
     flags = state.get("personalization_flags") or flags
     if confirm_status == "pending_expert_review":
         state["treatment_plan"] = None
@@ -2666,6 +2691,19 @@ def _diagnose_confirm_core(request: Request, payload: dict) -> dict:
         "events": events,
     }
     response_payload["previous_trace_id"] = previous_trace_id or trace_id
+    print(
+        "[DiagnoseConfirm] output",
+        json.dumps(
+            {
+                "trace_id": trace_id,
+                "status": response_payload.get("status"),
+                "expert_review_selected": response_payload.get("expert_review_selected"),
+                "expert_review_status": response_payload.get("expert_review_status"),
+                "treatment_available": response_payload.get("treatment_available"),
+            },
+            ensure_ascii=False,
+        ),
+    )
     return serialize_final_response(response_payload)
 
 
@@ -2860,9 +2898,12 @@ def _normalize_profile_payload_for_save(farmer_id: str, payload: dict) -> Farmer
 
     profile = FarmerProfile.model_validate(normalized)
 
-    # 根据活跃基地播种日期自动估算采收窗口（旧字段兼容回退）。
+    # 采收窗口优先级：
+    # 1) manual 模式：使用手工值；
+    # 2) auto 模式：优先播种日期估算，估算不到再回退手工值（兼容旧档案）。
     active_base = profile.bases.get(profile.active_base_id or "") if profile.active_base_id else None
-    if active_base and active_base.sowing_date:
+    harvest_mode = str(getattr(profile.constraints, "harvest_window_mode", "auto") or "auto").strip().lower()
+    if harvest_mode != "manual" and active_base and active_base.sowing_date:
         estimated_days = estimate_harvest_window_days(active_base.sowing_date)
         if estimated_days is not None:
             profile.constraints.harvest_window_days = estimated_days
