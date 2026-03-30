@@ -2178,6 +2178,18 @@ def _diagnose_confirm_core(request: Request, payload: dict) -> dict:
     model_id = payload.get("model_id")
     choice = str(payload.get("choice") or "").strip()
     expert_review_decision = _normalize_expert_review_decision(payload.get("expert_review_decision"))
+    print(
+        "[DiagnoseConfirm] input",
+        json.dumps(
+            {
+                "trace_id": trace_id,
+                "image_id": image_id,
+                "expert_review_decision": expert_review_decision,
+                "choice": choice,
+            },
+            ensure_ascii=False,
+        ),
+    )
     farmer_id = payload.get("farmer_id")
     base_id = payload.get("base_id")
 
@@ -2412,6 +2424,19 @@ def _diagnose_confirm_core(request: Request, payload: dict) -> dict:
         manual_review_recommended = False
         confirm_status = "completed"
         manual_review_required_before_execution = False
+    print(
+        "[DiagnoseConfirm] branch",
+        json.dumps(
+            {
+                "trace_id": trace_id,
+                "terminal_action": terminal_action,
+                "confirm_status": confirm_status,
+                "expert_review_selected": expert_review_selected,
+                "expert_review_status": expert_review_status,
+            },
+            ensure_ascii=False,
+        ),
+    )
     flags = state.get("personalization_flags") or flags
     if confirm_status == "pending_expert_review":
         state["treatment_plan"] = None
@@ -2666,6 +2691,19 @@ def _diagnose_confirm_core(request: Request, payload: dict) -> dict:
         "events": events,
     }
     response_payload["previous_trace_id"] = previous_trace_id or trace_id
+    print(
+        "[DiagnoseConfirm] output",
+        json.dumps(
+            {
+                "trace_id": trace_id,
+                "status": response_payload.get("status"),
+                "expert_review_selected": response_payload.get("expert_review_selected"),
+                "expert_review_status": response_payload.get("expert_review_status"),
+                "treatment_available": response_payload.get("treatment_available"),
+            },
+            ensure_ascii=False,
+        ),
+    )
     return serialize_final_response(response_payload)
 
 
