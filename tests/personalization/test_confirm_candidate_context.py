@@ -459,7 +459,7 @@ def test_supplement_low_confidence_requires_expert_decision_without_additional_s
     upload_dir = _seed_upload(tmp_path, "supplement-expert-decision.jpg")
     monkeypatch.setattr(app_module, "UPLOAD_DIR", upload_dir)
     _seed_previous_case("trace-expert-decision", "supplement-expert-decision.jpg")
-    _install_recommend_expert_review_agents(monkeypatch)
+    calls = _install_recommend_expert_review_agents(monkeypatch)
 
     client = TestClient(app_module.app)
     response = client.post(
@@ -492,7 +492,7 @@ def test_supplement_low_confidence_decline_expert_review_returns_completed_with_
     upload_dir = _seed_upload(tmp_path, "supplement-decline.jpg")
     monkeypatch.setattr(app_module, "UPLOAD_DIR", upload_dir)
     _seed_previous_case("trace-decline", "supplement-decline.jpg")
-    _install_recommend_expert_review_agents(monkeypatch)
+    calls = _install_recommend_expert_review_agents(monkeypatch)
 
     client = TestClient(app_module.app)
     pre_response = client.post(
@@ -508,20 +508,7 @@ def test_supplement_low_confidence_decline_expert_review_returns_completed_with_
     )
     pre_response.raise_for_status()
     assert pre_response.json()["status"] == "waiting_for_expert_decision"
-
-    response = client.post(
-        "/api/diagnose-confirm",
-        json={
-            "trace_id": "trace-decline",
-            "previous_trace_id": "trace-decline",
-            "image_id": "supplement-decline.jpg",
-            "crop_type": "番茄",
-            "symptoms": ["病斑扩大"],
-            "choice": "other",
-        },
-    )
-    pre_response.raise_for_status()
-    assert pre_response.json()["status"] == "waiting_for_expert_decision"
+    assert calls["diagnosis"] == 1
 
     response = client.post(
         "/api/diagnose-confirm",
@@ -536,6 +523,7 @@ def test_supplement_low_confidence_decline_expert_review_returns_completed_with_
     )
     response.raise_for_status()
     body = response.json()
+    assert calls["diagnosis"] == 1
 
     assert body["status"] == "completed"
     assert body["expert_review_recommended"] is True
@@ -558,7 +546,7 @@ def test_supplement_low_confidence_accept_expert_review_returns_pending(monkeypa
     upload_dir = _seed_upload(tmp_path, "supplement-accept.jpg")
     monkeypatch.setattr(app_module, "UPLOAD_DIR", upload_dir)
     _seed_previous_case("trace-accept", "supplement-accept.jpg")
-    _install_recommend_expert_review_agents(monkeypatch)
+    calls = _install_recommend_expert_review_agents(monkeypatch)
 
     client = TestClient(app_module.app)
     pre_response = client.post(
@@ -574,20 +562,7 @@ def test_supplement_low_confidence_accept_expert_review_returns_pending(monkeypa
     )
     pre_response.raise_for_status()
     assert pre_response.json()["status"] == "waiting_for_expert_decision"
-
-    response = client.post(
-        "/api/diagnose-confirm",
-        json={
-            "trace_id": "trace-accept",
-            "previous_trace_id": "trace-accept",
-            "image_id": "supplement-accept.jpg",
-            "crop_type": "番茄",
-            "symptoms": ["病斑扩大"],
-            "choice": "other",
-        },
-    )
-    pre_response.raise_for_status()
-    assert pre_response.json()["status"] == "waiting_for_expert_decision"
+    assert calls["diagnosis"] == 1
 
     response = client.post(
         "/api/diagnose-confirm",
@@ -602,6 +577,7 @@ def test_supplement_low_confidence_accept_expert_review_returns_pending(monkeypa
     )
     response.raise_for_status()
     body = response.json()
+    assert calls["diagnosis"] == 1
 
     assert body["status"] == "pending_expert_review"
     assert body["expert_review_recommended"] is True

@@ -853,10 +853,10 @@ export function DiagnosePage() {
       const symptomsForConfirm = additionalSymptoms;
       const isExpertDecisionStage = result?.status === 'waiting_for_expert_decision';
       const choiceForConfirm = isExpertDecisionStage
-        ? 'other'
+        ? null
         : ((confirmChoice && confirmChoice !== 'other') ? confirmChoice : 'other');
-      const expertReviewDecisionForConfirm = isExpertDecisionStage
-        ? (finalDecision === 'request_expert_review' ? 'accept' : 'decline')
+      const finalDecisionForConfirm = isExpertDecisionStage
+        ? finalDecision
         : null;
 
       const resp = await fetch('/api/diagnose-confirm', {
@@ -873,7 +873,7 @@ export function DiagnosePage() {
           notes: confirmSymptoms || null,
           farmer_id: selectedFarmerId || null,
           base_id: selectedBaseId || null,
-          expert_review_decision: expertReviewDecisionForConfirm,
+          final_decision: finalDecisionForConfirm,
         }),
       });
       const data = await resp.json();
