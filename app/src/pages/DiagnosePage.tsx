@@ -795,9 +795,9 @@ export function DiagnosePage() {
     }
   };
 
-  const handleConfirmSubmit = async (expertReviewDecision?: 'accept' | 'decline') => {
+  const handleConfirmSubmit = async (finalDecision?: 'use_current_result' | 'request_expert_review') => {
     if (!traceId || !imageId) return;
-    if (!expertReviewDecision) {
+    if (!finalDecision) {
       await handleResubmitWithNewImage();
       return;
     }
@@ -809,8 +809,9 @@ export function DiagnosePage() {
         .map((item) => item.trim())
         .filter(Boolean);
       const symptomsForConfirm = additionalSymptoms;
-      const choiceForConfirm = expertReviewDecision
-        ? (result?.final_disease || ((confirmChoice && confirmChoice !== 'other') ? confirmChoice : 'other'))
+      const isExpertDecisionStage = result?.status === 'waiting_for_expert_decision';
+      const choiceForConfirm = isExpertDecisionStage
+        ? null
         : ((confirmChoice && confirmChoice !== 'other') ? confirmChoice : 'other');
 
       const resp = await fetch('/api/diagnose-confirm', {
@@ -827,7 +828,7 @@ export function DiagnosePage() {
           notes: confirmSymptoms || null,
           farmer_id: selectedFarmerId || null,
           base_id: selectedBaseId || null,
-          expert_review_decision: expertReviewDecision ?? null,
+          final_decision: finalDecision ?? null,
         }),
       });
       const data = await resp.json();
@@ -1476,14 +1477,14 @@ export function DiagnosePage() {
                       </p>
                       <div className="flex flex-col sm:flex-row gap-3">
                         <Button
-                          onClick={() => handleConfirmSubmit('decline')}
+                          onClick={() => handleConfirmSubmit('use_current_result')}
                           disabled={confirmSubmitting || !traceId || !imageId}
                           className="bg-[#c8f7c5] text-black hover:bg-[#b8e7b5]"
                         >
                           {confirmSubmitting ? '提交中...' : '使用当前结果结束'}
                         </Button>
                         <Button
-                          onClick={() => handleConfirmSubmit('accept')}
+                          onClick={() => handleConfirmSubmit('request_expert_review')}
                           disabled={confirmSubmitting || !traceId || !imageId}
                           variant="outline"
                           className="border-amber-300/50 text-amber-100 hover:bg-amber-500/10"
