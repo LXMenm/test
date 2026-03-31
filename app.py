@@ -1480,7 +1480,7 @@ def _normalize_expert_review_decision(value: Any) -> str | None:
     normalized = alias_map.get(normalized, normalized)
     if normalized in {"accept", "decline"}:
         return normalized
-    raise HTTPException(status_code=400, detail="expert_review_decision 必须为 accept / decline / null")
+    raise HTTPException(status_code=400, detail="expert_review_decision 必须为 use_current_result / request_expert_review / null")
 
 
 def _ensure_follow_up_plan(state: dict[str, Any]) -> dict[str, Any]:
@@ -2436,7 +2436,7 @@ def _diagnose_confirm_core(request: Request, payload: dict) -> dict:
         manual_review_recommended = True
         expert_review_actions = ["use_current_result", "request_expert_review"]
         need_confirm = False
-        if expert_review_decision == "decline":
+        if expert_review_decision == "use_current_result":
             state = _ensure_follow_up_plan(state)
             final_confidence = state.get("final_confidence")
             final_source = state.get("final_source")
@@ -2457,7 +2457,7 @@ def _diagnose_confirm_core(request: Request, payload: dict) -> dict:
             expert_review_status = "DECLINED"
             confirm_status = "completed"
             manual_review_required_before_execution = False
-        elif expert_review_decision == "accept":
+        elif expert_review_decision == "request_expert_review":
             expert_review_selected = True
             expert_review_status = "PENDING"
             confirm_status = "pending_expert_review"

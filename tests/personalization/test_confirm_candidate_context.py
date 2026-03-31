@@ -518,7 +518,20 @@ def test_supplement_low_confidence_decline_expert_review_returns_completed_with_
             "crop_type": "番茄",
             "symptoms": ["病斑扩大"],
             "choice": "other",
-            "expert_review_decision": "decline",
+        },
+    )
+    pre_response.raise_for_status()
+    assert pre_response.json()["status"] == "waiting_for_expert_decision"
+
+    response = client.post(
+        "/api/diagnose-confirm",
+        json={
+            "trace_id": "trace-decline",
+            "previous_trace_id": "trace-decline",
+            "image_id": "supplement-decline.jpg",
+            "crop_type": "番茄",
+            "symptoms": ["病斑扩大"],
+            "final_decision": "use_current_result",
         },
     )
     response.raise_for_status()
@@ -571,7 +584,20 @@ def test_supplement_low_confidence_accept_expert_review_returns_pending(monkeypa
             "crop_type": "番茄",
             "symptoms": ["病斑扩大"],
             "choice": "other",
-            "expert_review_decision": "accept",
+        },
+    )
+    pre_response.raise_for_status()
+    assert pre_response.json()["status"] == "waiting_for_expert_decision"
+
+    response = client.post(
+        "/api/diagnose-confirm",
+        json={
+            "trace_id": "trace-accept",
+            "previous_trace_id": "trace-accept",
+            "image_id": "supplement-accept.jpg",
+            "crop_type": "番茄",
+            "symptoms": ["病斑扩大"],
+            "final_decision": "request_expert_review",
         },
     )
     response.raise_for_status()
