@@ -264,7 +264,7 @@ export function DiagnosePage() {
     return Boolean(reasonCode) && Boolean(uiMode);
   };
 
-  const parseTop3Candidates = (payloadLike: unknown, resultLike?: DiagnosisResult | null, sourceType: 'image' | 'text' | 'fusion' = 'image'): Top3Candidate[] => {
+  const parseTop3Candidates = (payloadLike: unknown, resultLike?: DiagnosisResult | null): Top3Candidate[] => {
     const payload = payloadLike && typeof payloadLike === 'object' ? payloadLike as Record<string, unknown> : {};
     const imageResult = payload.image_result && typeof payload.image_result === 'object'
       ? payload.image_result as Record<string, unknown>
@@ -853,8 +853,11 @@ export function DiagnosePage() {
       const symptomsForConfirm = additionalSymptoms;
       const isExpertDecisionStage = result?.status === 'waiting_for_expert_decision';
       const choiceForConfirm = isExpertDecisionStage
-        ? null
+        ? 'other'
         : ((confirmChoice && confirmChoice !== 'other') ? confirmChoice : 'other');
+      const expertReviewDecisionForConfirm = isExpertDecisionStage
+        ? (finalDecision === 'request_expert_review' ? 'accept' : 'decline')
+        : null;
 
       const resp = await fetch('/api/diagnose-confirm', {
         method: 'POST',
@@ -870,7 +873,7 @@ export function DiagnosePage() {
           notes: confirmSymptoms || null,
           farmer_id: selectedFarmerId || null,
           base_id: selectedBaseId || null,
-          final_decision: finalDecision ?? null,
+          expert_review_decision: expertReviewDecisionForConfirm,
         }),
       });
       const data = await resp.json();

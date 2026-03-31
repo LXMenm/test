@@ -517,6 +517,20 @@ def test_supplement_low_confidence_decline_expert_review_returns_completed_with_
             "image_id": "supplement-decline.jpg",
             "crop_type": "番茄",
             "symptoms": ["病斑扩大"],
+            "choice": "other",
+        },
+    )
+    pre_response.raise_for_status()
+    assert pre_response.json()["status"] == "waiting_for_expert_decision"
+
+    response = client.post(
+        "/api/diagnose-confirm",
+        json={
+            "trace_id": "trace-decline",
+            "previous_trace_id": "trace-decline",
+            "image_id": "supplement-decline.jpg",
+            "crop_type": "番茄",
+            "symptoms": ["病斑扩大"],
             "final_decision": "use_current_result",
         },
     )
@@ -548,6 +562,20 @@ def test_supplement_low_confidence_accept_expert_review_returns_pending(monkeypa
 
     client = TestClient(app_module.app)
     pre_response = client.post(
+        "/api/diagnose-confirm",
+        json={
+            "trace_id": "trace-accept",
+            "previous_trace_id": "trace-accept",
+            "image_id": "supplement-accept.jpg",
+            "crop_type": "番茄",
+            "symptoms": ["病斑扩大"],
+            "choice": "other",
+        },
+    )
+    pre_response.raise_for_status()
+    assert pre_response.json()["status"] == "waiting_for_expert_decision"
+
+    response = client.post(
         "/api/diagnose-confirm",
         json={
             "trace_id": "trace-accept",

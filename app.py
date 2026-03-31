@@ -1473,12 +1473,12 @@ def _normalize_expert_review_decision(value: Any) -> str | None:
     normalized = str(value or "").strip().lower()
     if not normalized:
         return None
-    legacy_map = {
-        "accept": "request_expert_review",
-        "decline": "use_current_result",
+    alias_map = {
+        "request_expert_review": "accept",
+        "use_current_result": "decline",
     }
-    normalized = legacy_map.get(normalized, normalized)
-    if normalized in {"use_current_result", "request_expert_review"}:
+    normalized = alias_map.get(normalized, normalized)
+    if normalized in {"accept", "decline"}:
         return normalized
     raise HTTPException(status_code=400, detail="expert_review_decision 必须为 use_current_result / request_expert_review / null")
 
