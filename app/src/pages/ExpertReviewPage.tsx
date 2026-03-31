@@ -8,6 +8,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { cn } from '@/lib/utils';
+import { authFetch, loadAuthUser } from '@/auth';
 
 interface PendingCaseItem {
   trace_id: string;
@@ -68,11 +69,14 @@ function formatTime(value?: string): string {
 }
 
 export function ExpertReviewPage() {
+  const authUser = useMemo(() => loadAuthUser(), []);
   const [loading, setLoading] = useState(false);
   const [items, setItems] = useState<PendingCaseItem[]>([]);
+  const [listError, setListError] = useState<string>('');
   const [selectedTraceId, setSelectedTraceId] = useState<string>('');
   const [detailLoading, setDetailLoading] = useState(false);
   const [detail, setDetail] = useState<ReviewCaseDetail | null>(null);
+  const [detailError, setDetailError] = useState<string>('');
   const [open, setOpen] = useState(false);
   const [submitLoading, setSubmitLoading] = useState(false);
   const [form, setForm] = useState({
@@ -85,16 +89,23 @@ export function ExpertReviewPage() {
 
   const loadPending = async () => {
     setLoading(true);
+    setListError('');
     try {
-      const resp = await fetch('/api/expert-reviews/pending?limit=30');
+      const resp = await authFetch('/api/expert-reviews/pending?limit=30', undefined, authUser);
       const data = await resp.json();
-      if (!resp.ok) throw new Error(String(data?.detail || '加载待复核列表失败'));
+      if (!resp.ok) {
+        if (resp.status === 403) {
+          throw new Error('当前请求未携带专家身份，或当前账号无专家权限');
+        }
+        throw new Error(String(data?.detail || '加载待复核列表失败'));
+      }
       const nextItems = Array.isArray(data?.items) ? data.items as PendingCaseItem[] : [];
       nextItems.sort((a, b) => new Date(b.submitted_at || 0).getTime() - new Date(a.submitted_at || 0).getTime());
       setItems(nextItems);
     } catch (error) {
       console.error(error);
       setItems([]);
+      setListError(error instanceof Error ? error.message : '加载待复核列表失败');
     } finally {
       setLoading(false);
     }
@@ -103,10 +114,16 @@ export function ExpertReviewPage() {
   const loadDetail = async (traceId: string) => {
     setSelectedTraceId(traceId);
     setDetailLoading(true);
+    setDetailError('');
     try {
-      const resp = await fetch(`/api/expert-reviews/${encodeURIComponent(traceId)}`);
+      const resp = await authFetch(`/api/expert-reviews/${encodeURIComponent(traceId)}`, undefined, authUser);
       const data = await resp.json();
-      if (!resp.ok) throw new Error(String(data?.detail || '加载病例详情失败'));
+      if (!resp.ok) {
+        if (resp.status === 403) {
+          throw new Error('当前请求未携带专家身份，或当前账号无专家权限');
+        }
+        throw new Error(String(data?.detail || '加载病例详情失败'));
+      }
       const item = (data?.item || null) as ReviewCaseDetail | null;
       setDetail(item);
       setForm({
@@ -118,6 +135,8 @@ export function ExpertReviewPage() {
     } catch (error) {
       console.error(error);
       setDetail(null);
+      setOpen(false);
+      setDetailError(error instanceof Error ? error.message : '加载病例详情失败');
     } finally {
       setDetailLoading(false);
     }
@@ -126,18 +145,25 @@ export function ExpertReviewPage() {
   const submitReview = async () => {
     if (!selectedTraceId || !form.expert_review_result.trim()) return;
     setSubmitLoading(true);
+    setDetailError('');
     try {
-      const resp = await fetch(`/api/expert-reviews/${encodeURIComponent(selectedTraceId)}/submit`, {
+      const resp = await authFetch(`/api/expert-reviews/${encodeURIComponent(selectedTraceId)}/submit`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(form),
-      });
+      }, authUser);
       const data = await resp.json();
-      if (!resp.ok) throw new Error(String(data?.detail || '提交复核失败'));
+      if (!resp.ok) {
+        if (resp.status === 403) {
+          throw new Error('当前请求未携带专家身份，或当前账号无专家权限');
+        }
+        throw new Error(String(data?.detail || '提交复核失败'));
+      }
       setOpen(false);
       await loadPending();
     } catch (error) {
       console.error(error);
+      setDetailError(error instanceof Error ? error.message : '提交复核失败');
     } finally {
       setSubmitLoading(false);
     }
@@ -161,6 +187,9 @@ export function ExpertReviewPage() {
         <h1 className="text-3xl font-bold text-white"><span className="text-[#c8f7c5]">专家复核</span></h1>
         <p className="text-white/60 mt-1">专家对系统诊断结果进行复核确认，确保诊断准确性</p>
       </div>
+      <div className="rounded-xl border border-white/15 bg-white/5 p-3 text-sm text-white/80">
+        当前身份：<span className="font-mono">{authUser?.userId || '-'}</span> · <span className="font-semibold">{authUser?.role || '-'}</span>
+      </div>
 
       <div className="grid lg:grid-cols-3 gap-6">
         <div className="lg:col-span-2">
@@ -181,6 +210,10 @@ export function ExpertReviewPage() {
                 <div className="flex items-center justify-center py-12">
                   <Loader2 className="w-8 h-8 animate-spin text-[#c8f7c5]" />
                   <span className="ml-3 text-white/70">加载中...</span>
+                </div>
+              ) : listError ? (
+                <div className="text-center py-12">
+                  <p className="text-red-300 text-base font-medium">{listError}</p>
                 </div>
               ) : items.length === 0 ? (
                 <div className="text-center py-16">
@@ -273,6 +306,11 @@ export function ExpertReviewPage() {
           </Card>
         </div>
       </div>
+      {detailError && !open ? (
+        <div className="rounded-xl border border-red-300/40 bg-red-500/10 px-4 py-3 text-red-200 text-sm">
+          {detailError}
+        </div>
+      ) : null}
 
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className={cn(
@@ -457,6 +495,11 @@ export function ExpertReviewPage() {
               </section>
 
               <section className="pt-4">
+                {detailError ? (
+                  <div className="rounded-xl border border-red-300/40 bg-red-500/10 px-4 py-3 text-red-200 text-sm">
+                    {detailError}
+                  </div>
+                ) : null}
                 <div className="flex justify-end">
                   <Button 
                     onClick={() => { void submitReview(); }} 
