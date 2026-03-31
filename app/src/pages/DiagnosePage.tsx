@@ -264,7 +264,7 @@ export function DiagnosePage() {
     return Boolean(reasonCode) && Boolean(uiMode);
   };
 
-  const parseTop3Candidates = (payloadLike: unknown, resultLike?: DiagnosisResult | null): Top3Candidate[] => {
+  const parseTop3Candidates = (payloadLike: unknown, resultLike?: DiagnosisResult | null, sourceType: 'image' | 'text' | 'fusion' = 'image'): Top3Candidate[] => {
     const payload = payloadLike && typeof payloadLike === 'object' ? payloadLike as Record<string, unknown> : {};
     const imageResult = payload.image_result && typeof payload.image_result === 'object'
       ? payload.image_result as Record<string, unknown>
