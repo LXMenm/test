@@ -1480,7 +1480,7 @@ def _normalize_expert_review_decision(value: Any) -> str | None:
     normalized = alias_map.get(normalized, normalized)
     if normalized in {"accept", "decline"}:
         return normalized
-    raise HTTPException(status_code=400, detail="expert_review_decision 必须为 accept / decline / null")
+    raise HTTPException(status_code=400, detail="expert_review_decision 必须为 use_current_result / request_expert_review / null")
 
 
 def _ensure_follow_up_plan(state: dict[str, Any]) -> dict[str, Any]:

@@ -31,6 +31,8 @@ interface DiagnosisResult {
   displayConfidencePct: number | null;
   model_display_name: string;
   top3: unknown;
+  text_top3?: unknown;
+  fusion_top3?: unknown;
   image_result?: unknown;
   treatment: unknown;
   prevention: unknown;
@@ -262,7 +264,7 @@ export function DiagnosePage() {
     return Boolean(reasonCode) && Boolean(uiMode);
   };
 
-  const parseTop3Candidates = (payloadLike: unknown, resultLike?: DiagnosisResult | null): Top3Candidate[] => {
+  const parseTop3Candidates = (payloadLike: unknown, resultLike?: DiagnosisResult | null, sourceType: 'image' | 'text' | 'fusion' = 'image'): Top3Candidate[] => {
     const payload = payloadLike && typeof payloadLike === 'object' ? payloadLike as Record<string, unknown> : {};
     const imageResult = payload.image_result && typeof payload.image_result === 'object'
       ? payload.image_result as Record<string, unknown>
@@ -286,19 +288,59 @@ export function DiagnosePage() {
         .find((top3) => Array.isArray(top3))
       : undefined;
 
-    const source = Array.isArray(imageResult?.top3)
-      ? imageResult.top3
-      : Array.isArray(imageDiagnosis?.top3)
-        ? imageDiagnosis.top3
-        : Array.isArray(eventCandidates)
-          ? eventCandidates
-          : Array.isArray(resultLike?.top3)
-            ? resultLike.top3
-            : Array.isArray((resultLike?.image_result && typeof resultLike.image_result === 'object')
-              ? (resultLike.image_result as Record<string, unknown>).top3
-              : undefined)
-              ? ((resultLike?.image_result as Record<string, unknown>).top3 as unknown[])
-              : [];
+    let source: unknown[] = [];
+    if (sourceType === 'text') {
+      // 优先使用text_top3字段
+      if (Array.isArray(payload.text_top3)) {
+        source = payload.text_top3;
+      } else if (Array.isArray(resultLike?.text_top3)) {
+        source = resultLike.text_top3;
+      } else {
+        // 回退到默认top3
+        source = Array.isArray(imageResult?.top3)
+          ? imageResult.top3
+          : Array.isArray(imageDiagnosis?.top3)
+            ? imageDiagnosis.top3
+            : Array.isArray(eventCandidates)
+              ? eventCandidates
+              : Array.isArray(resultLike?.top3)
+                ? resultLike.top3
+                : [];
+      }
+    } else if (sourceType === 'fusion') {
+      // 优先使用fusion_top3字段
+      if (Array.isArray(payload.fusion_top3)) {
+        source = payload.fusion_top3;
+      } else if (Array.isArray(resultLike?.fusion_top3)) {
+        source = resultLike.fusion_top3;
+      } else {
+        // 回退到默认top3
+        source = Array.isArray(imageResult?.top3)
+          ? imageResult.top3
+          : Array.isArray(imageDiagnosis?.top3)
+            ? imageDiagnosis.top3
+            : Array.isArray(eventCandidates)
+              ? eventCandidates
+              : Array.isArray(resultLike?.top3)
+                ? resultLike.top3
+                : [];
+      }
+    } else {
+      // 图像top3
+      source = Array.isArray(imageResult?.top3)
+        ? imageResult.top3
+        : Array.isArray(imageDiagnosis?.top3)
+          ? imageDiagnosis.top3
+          : Array.isArray(eventCandidates)
+            ? eventCandidates
+            : Array.isArray(resultLike?.top3)
+              ? resultLike.top3
+              : Array.isArray((resultLike?.image_result && typeof resultLike.image_result === 'object')
+                ? (resultLike.image_result as Record<string, unknown>).top3
+                : undefined)
+                ? ((resultLike?.image_result as Record<string, unknown>).top3 as unknown[])
+                : [];
+    }
 
     const mapped = source.map((item): Top3Candidate | null => {
       if (!item || typeof item !== 'object') {
@@ -1315,30 +1357,97 @@ export function DiagnosePage() {
                   </div>
 
                   {candidates.length > 0 ? (
-                    <div>
-                      <h4 className="text-white/80 font-medium mb-3">Top 3 识别结果</h4>
-                      <div className="space-y-2">
-                        {candidates.map((item, idx) => (
-                          <div key={idx} className="flex items-center gap-3">
-                            <Badge
-                              variant={idx === 0 ? 'default' : 'outline'}
-                              className={cn(
-                                'min-w-[3rem] text-center',
-                                idx === 0 ? 'bg-[#c8f7c5] text-black' : 'border-white/30 text-white',
-                              )}
-                            >
-                              #{idx + 1}
-                            </Badge>
-                            <button
-                              type="button"
-                              onClick={() => navigateToKbDisease(item.disease)}
-                              className="text-white flex-1 text-left hover:text-[#c8f7c5] hover:underline underline-offset-4"
-                            >
-                              {item.disease}
-                            </button>
-                            <span className="text-[#c8f7c5] font-mono">{item.probPct.toFixed(2)}%</span>
+                    <div className="bg-white/5 rounded-xl p-4">
+                      <div className="flex items-center justify-between mb-4">
+                        <h4 className="text-white/80 font-medium">病害诊治top3</h4>
+                        <div className="text-sm text-white/60">
+                          {result?.confirm_reason_code && (
+                            <span>原因码: {result.confirm_reason_code}</span>
+                          )}
+                          {result?.reliability_issue_types && result.reliability_issue_types.length > 0 && (
+                            <span className="ml-2">weights: {result.reliability_issue_types.join(', ')}</span>
+                          )}
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                        <div>
+                          <h5 className="text-white/60 text-sm mb-2">图像top3</h5>
+                          <div className="space-y-2">
+                            {parseTop3Candidates(latestPayload ?? result ?? {}, result, 'image').map((item, idx) => (
+                              <div key={idx} className="flex items-center gap-3">
+                                <Badge
+                                  variant={idx === 0 ? 'default' : 'outline'}
+                                  className={cn(
+                                    'min-w-[3rem] text-center',
+                                    idx === 0 ? 'bg-[#c8f7c5] text-black' : 'border-white/30 text-white',
+                                  )}
+                                >
+                                  #{idx + 1}
+                                </Badge>
+                                <button
+                                  type="button"
+                                  onClick={() => navigateToKbDisease(item.disease)}
+                                  className="text-white flex-1 text-left hover:text-[#c8f7c5] hover:underline underline-offset-4"
+                                >
+                                  {item.disease}
+                                </button>
+                                <span className="text-[#c8f7c5] font-mono">{item.probPct.toFixed(2)}%</span>
+                              </div>
+                            ))}
                           </div>
-                        ))}
+                        </div>
+                        <div>
+                          <h5 className="text-white/60 text-sm mb-2">文本top3</h5>
+                          <div className="space-y-2">
+                            {parseTop3Candidates(latestPayload ?? result ?? {}, result, 'text').map((item, idx) => (
+                              <div key={idx} className="flex items-center gap-3">
+                                <Badge
+                                  variant={idx === 0 ? 'default' : 'outline'}
+                                  className={cn(
+                                    'min-w-[3rem] text-center',
+                                    idx === 0 ? 'bg-[#c8f7c5] text-black' : 'border-white/30 text-white',
+                                  )}
+                                >
+                                  #{idx + 1}
+                                </Badge>
+                                <button
+                                  type="button"
+                                  onClick={() => navigateToKbDisease(item.disease)}
+                                  className="text-white flex-1 text-left hover:text-[#c8f7c5] hover:underline underline-offset-4"
+                                >
+                                  {item.disease}
+                                </button>
+                                <span className="text-[#c8f7c5] font-mono">{item.probPct.toFixed(2)}%</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                        <div>
+                          <h5 className="text-white/60 text-sm mb-2">融合top3</h5>
+                          <div className="space-y-2">
+                            {parseTop3Candidates(latestPayload ?? result ?? {}, result, 'fusion').map((item, idx) => (
+                              <div key={idx} className="flex items-center gap-3">
+                                <Badge
+                                  variant={idx === 0 ? 'default' : 'outline'}
+                                  className={cn(
+                                    'min-w-[3rem] text-center',
+                                    idx === 0 ? 'bg-[#c8f7c5] text-black' : 'border-white/30 text-white',
+                                  )}
+                                >
+                                  #{idx + 1}
+                                </Badge>
+                                <button
+                                  type="button"
+                                  onClick={() => navigateToKbDisease(item.disease)}
+                                  className="text-white flex-1 text-left hover:text-[#c8f7c5] hover:underline underline-offset-4"
+                                >
+                                  {item.disease}
+                                </button>
+                                <span className="text-[#c8f7c5] font-mono">{item.probPct.toFixed(2)}%</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
                       </div>
                     </div>
                   ) : null}
