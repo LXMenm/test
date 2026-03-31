@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useMemo } from 'react';
-import { Eye, Loader2, Stethoscope, CheckCircle2 } from 'lucide-react';
+import { Eye, Loader2, Stethoscope, CheckCircle2, ZoomIn, X, MapPin, Calendar } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -30,12 +30,14 @@ interface ReviewCaseDetail extends PendingCaseItem {
   growth_stage?: string;
   base_id?: string;
   base_name?: string;
+  location?: string;
   environment?: string;
   profile_summary?: {
     farm_scale?: string;
     pesticide_access_level?: string;
     equipment?: string[];
     cultivation_mode?: string;
+    harvest_window_days?: number | null;
   };
   model_outputs?: {
     image_top3?: [string, number][];
@@ -68,6 +70,25 @@ function formatTime(value?: string): string {
   return `${year}/${month}/${day}/${hours}:${minutes}:${seconds}`;
 }
 
+function formatGrowthStage(stage?: string): string {
+  if (!stage) return '-';
+  const stageMap: Record<string, string> = {
+    'seedling': '苗期',
+    'vegetative': '营养生长期',
+    'flowering': '花期',
+    'fruiting': '结果期',
+    'maturity': '成熟期',
+    'harvest': '采收期',
+    'seedling_stage': '苗期',
+    'vegetative_stage': '营养生长期',
+    'flowering_stage': '花期',
+    'fruiting_stage': '结果期',
+    'maturity_stage': '成熟期',
+    'harvest_stage': '采收期',
+  };
+  return stageMap[stage.toLowerCase()] || stage;
+}
+
 export function ExpertReviewPage() {
   const authUser = useMemo(() => loadAuthUser(), []);
   const [loading, setLoading] = useState(false);
@@ -79,6 +100,8 @@ export function ExpertReviewPage() {
   const [detailError, setDetailError] = useState<string>('');
   const [open, setOpen] = useState(false);
   const [submitLoading, setSubmitLoading] = useState(false);
+  const [imagePreviewOpen, setImagePreviewOpen] = useState(false);
+  const [previewImageUrl, setPreviewImageUrl] = useState<string>('');
   const [form, setForm] = useState({
     expert_review_result: '',
     expert_review_supplement_symptoms: '',
@@ -288,33 +311,70 @@ export function ExpertReviewPage() {
                   <div className="w-1 h-5 bg-[#c8f7c5] rounded-full" />
                   A. 用户输入
                 </h3>
-                <div className="space-y-3">
-                  {detail.image_url && (
-                    <div className="rounded-lg overflow-hidden border border-white/10 bg-black/40">
-                      <img 
-                        src={detail.image_url} 
-                        alt="病例图片" 
-                        className="w-full max-h-64 object-contain mx-auto" 
-                      />
-                    </div>
-                  )}
-                  <div className="space-y-1.5">
-                    <p className="text-white/40 text-[10px] uppercase tracking-wider">症状文本</p>
-                    <div className="bg-white/5 rounded-lg p-3 min-h-[72px]">
-                      <p className="text-white/90 break-words leading-relaxed text-sm">{detail.symptoms_text || '-'}</p>
-                    </div>
+                <div className="grid lg:grid-cols-3 gap-4">
+                  <div className="lg:col-span-1">
+                    {detail.image_url && (
+                      <div 
+                        className="rounded-lg overflow-hidden border border-white/10 bg-black/40 relative group cursor-pointer"
+                        onClick={() => {
+                          setPreviewImageUrl(detail.image_url || '');
+                          setImagePreviewOpen(true);
+                        }}
+                      >
+                        <img 
+                          src={detail.image_url} 
+                          alt="病例图片" 
+                          className="w-full max-h-48 object-contain mx-auto transition-transform duration-200 group-hover:scale-105" 
+                        />
+                        <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity duration-200 flex items-center justify-center">
+                          <div className="bg-white/20 backdrop-blur-sm rounded-full p-2">
+                            <ZoomIn className="w-5 h-5 text-white" />
+                          </div>
+                        </div>
+                      </div>
+                    )}
                   </div>
-                  <div className="grid md:grid-cols-2 gap-3">
+                  <div className="lg:col-span-2 space-y-3">
                     <div className="space-y-1.5">
-                      <p className="text-white/40 text-[10px] uppercase tracking-wider">基地 / 环境</p>
+                      <p className="text-white/40 text-[10px] uppercase tracking-wider">症状文本</p>
                       <div className="bg-white/5 rounded-lg p-3 min-h-[60px]">
-                        <p className="text-white/90 break-words leading-relaxed text-sm">{detail.base_name || detail.base_id || '-'} / {detail.environment || '-'}</p>
+                        <p className="text-white/90 break-words leading-relaxed text-sm">{detail.symptoms_text || '-'}</p>
                       </div>
                     </div>
-                    <div className="space-y-1.5">
-                      <p className="text-white/40 text-[10px] uppercase tracking-wider">生育期</p>
-                      <div className="bg-white/5 rounded-lg p-3 min-h-[60px]">
-                        <p className="text-white/90 text-sm">{detail.growth_stage || '-'}</p>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="space-y-1.5">
+                        <p className="text-white/40 text-[10px] uppercase tracking-wider flex items-center gap-1">
+                          <MapPin className="w-3 h-3" />位置
+                        </p>
+                        <div className="bg-white/5 rounded-lg p-3 min-h-[50px]">
+                          <p className="text-white/90 break-words leading-relaxed text-sm">{detail.location || detail.base_name || detail.base_id || '-'}</p>
+                        </div>
+                      </div>
+                      <div className="space-y-1.5">
+                        <p className="text-white/40 text-[10px] uppercase tracking-wider flex items-center gap-1">
+                          <Calendar className="w-3 h-3" />采收期
+                        </p>
+                        <div className="bg-white/5 rounded-lg p-3 min-h-[50px]">
+                          <p className="text-white/90 text-sm">
+                            {detail.profile_summary?.harvest_window_days != null 
+                              ? `距离采收还有 ${detail.profile_summary.harvest_window_days} 天` 
+                              : '-'}
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="space-y-1.5">
+                        <p className="text-white/40 text-[10px] uppercase tracking-wider">生育期</p>
+                        <div className="bg-white/5 rounded-lg p-3">
+                          <p className="text-white/90 text-sm">{formatGrowthStage(detail.growth_stage)}</p>
+                        </div>
+                      </div>
+                      <div className="space-y-1.5">
+                        <p className="text-white/40 text-[10px] uppercase tracking-wider">环境</p>
+                        <div className="bg-white/5 rounded-lg p-3">
+                          <p className="text-white/90 text-sm">{detail.environment || '-'}</p>
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -432,6 +492,24 @@ export function ExpertReviewPage() {
                 </div>
               </section>
             </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={imagePreviewOpen} onOpenChange={setImagePreviewOpen}>
+        <DialogContent className="!max-w-[95vw] !w-[95vw] max-h-[95vh] bg-black/95 border-white/10 flex items-center justify-center p-0">
+          <button
+            onClick={() => setImagePreviewOpen(false)}
+            className="absolute top-4 right-4 z-50 bg-white/10 hover:bg-white/20 rounded-full p-2 transition-colors"
+          >
+            <X className="w-6 h-6 text-white" />
+          </button>
+          {previewImageUrl && (
+            <img
+              src={previewImageUrl}
+              alt="图片预览"
+              className="max-w-full max-h-[90vh] object-contain"
+            />
           )}
         </DialogContent>
       </Dialog>
