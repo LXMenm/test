@@ -209,6 +209,10 @@ export function AdminPage({ pageType }: { pageType: 'system' | 'review' }) {
   const [configErrors, setConfigErrors] = useState<string[]>([]);
   const [basicExpanded, setBasicExpanded] = useState(true);
   const [advancedExpanded, setAdvancedExpanded] = useState(false);
+  const [runtimeSnapshotExpanded, setRuntimeSnapshotExpanded] = useState(false);
+  const [runtimeTemplateExpanded, setRuntimeTemplateExpanded] = useState(false);
+  const [runtimeConstraintExpanded, setRuntimeConstraintExpanded] = useState(false);
+  const [pathImpactExpanded, setPathImpactExpanded] = useState(true);
 
   const [statusFilter, setStatusFilter] = useState<(typeof REVIEW_STATUS_OPTIONS)[number]['value']>('pending');
   const [reviewLoading, setReviewLoading] = useState(false);
@@ -423,9 +427,7 @@ export function AdminPage({ pageType }: { pageType: 'system' | 'review' }) {
     }
   }, [pageType, statusFilter]);
 
-  const configSummary = useMemo(() => {
-    return `补充诊断轮次上限 ${config.workflow.confirm_round_limit} · 最大重写次数 ${config.workflow.validator_rewrite_limit} · 文本后端 ${config.model_fusion.text_backend}`;
-  }, [config]);
+  const configSummary = '基础配置影响模型参与与阈值判定，高级配置影响工作流与生成/校验链路。';
 
   const restoreBasicDefaults = () => {
     setConfig((prev) => ({
@@ -491,6 +493,7 @@ export function AdminPage({ pageType }: { pageType: 'system' | 'review' }) {
           <div>
             <CardTitle className="text-white">系统配置</CardTitle>
             <p className="text-xs text-white/60 mt-1">{configSummary}</p>
+            <p className="text-[11px] text-white/45 mt-1">“恢复默认配置”会重置整页；“恢复本组默认值”仅重置当前展开分组。</p>
           </div>
           <div className="flex gap-2">
             <Button variant="outline" size="sm" onClick={() => { void loadConfig(); }}>
@@ -521,13 +524,16 @@ export function AdminPage({ pageType }: { pageType: 'system' | 'review' }) {
             </div>
           ) : null}
 
-          <section className="rounded-xl border border-white/10 p-4 space-y-3">
+          <section className="rounded-xl border border-[#3ddc97]/30 p-4 space-y-3 bg-[#3ddc97]/[0.06]">
             <div className="flex flex-wrap gap-3 items-center justify-between">
               <button type="button" className="flex items-center gap-2 text-left" onClick={() => setBasicExpanded((v) => !v)}>
                 <h3 className="font-semibold text-[#c8f7c5] text-lg">基础配置（第一层）</h3>
                 {basicExpanded ? <ChevronUp className="w-4 h-4 text-white/70" /> : <ChevronDown className="w-4 h-4 text-white/70" />}
               </button>
               <Button variant="outline" size="sm" onClick={restoreBasicDefaults}>恢复本组默认值</Button>
+            </div>
+            <div className="rounded-lg border border-[#3ddc97]/30 bg-[#3ddc97]/10 p-3 text-xs text-[#d4ffe8]">
+              以下为可编辑运行时配置，保存后即时影响系统行为。
             </div>
             <p className="text-xs text-white/60">面向日常运营调优：修改后通常影响个性化开关、模型参与策略以及融合阈值判定。</p>
             {basicExpanded ? (
@@ -537,13 +543,13 @@ export function AdminPage({ pageType }: { pageType: 'system' | 'review' }) {
                     <Label>启用个性化智能体</Label>
                     <Switch checked={config.workflow.enable_personalization_agent} onCheckedChange={(v) => setConfig((prev) => ({ ...prev, workflow: { ...prev.workflow, enable_personalization_agent: v } }))} />
                   </div>
-                  <p className="text-xs text-white/50">控制是否注入农户画像与个性化约束。推荐：开启。影响模块：workflow.personalization。</p>
+                  <p className="text-xs text-white/50">开启：诊断阶段会注入农户画像、基地约束与个性化上下文；关闭：退化为非个性化诊断，不再补充个性化提示。当前实现是节点内逻辑降级，不是 LangGraph 图结构裁剪。</p>
                   <p className="text-[11px] text-white/40">默认值：{String(DEFAULT_CONFIG.workflow.enable_personalization_agent)}</p>
                 </div>
                 <div className="flex items-center justify-between rounded-lg border border-white/10 p-3 bg-white/5">
                   <div>
                     <Label>启用图像模型</Label>
-                    <p className="text-xs text-white/50 mt-1">控制图像分支参与融合。推荐：开启。影响模块：model_fusion.image。</p>
+                    <p className="text-xs text-white/50 mt-1">影响诊断证据来源与融合分支：关闭后图像证据不再参与融合决策，不是普通 UI 展示项。</p>
                     <p className="text-[11px] text-white/40">默认值：{String(DEFAULT_CONFIG.model_fusion.enable_image_model)}</p>
                   </div>
                   <Switch checked={config.model_fusion.enable_image_model} onCheckedChange={(v) => setConfig((prev) => ({ ...prev, model_fusion: { ...prev.model_fusion, enable_image_model: v } }))} />
@@ -551,7 +557,7 @@ export function AdminPage({ pageType }: { pageType: 'system' | 'review' }) {
                 <div className="flex items-center justify-between rounded-lg border border-white/10 p-3 bg-white/5">
                   <div>
                     <Label>启用文本模型</Label>
-                    <p className="text-xs text-white/50 mt-1">控制文本分支参与融合。推荐：开启。影响模块：model_fusion.text。</p>
+                    <p className="text-xs text-white/50 mt-1">影响症状文本证据来源与融合分支：关闭后文本证据不再参与融合决策，不是普通 UI 展示项。</p>
                     <p className="text-[11px] text-white/40">默认值：{String(DEFAULT_CONFIG.model_fusion.enable_text_model)}</p>
                   </div>
                   <Switch checked={config.model_fusion.enable_text_model} onCheckedChange={(v) => setConfig((prev) => ({ ...prev, model_fusion: { ...prev.model_fusion, enable_text_model: v } }))} />
@@ -622,17 +628,20 @@ export function AdminPage({ pageType }: { pageType: 'system' | 'review' }) {
             </div>
             {advancedExpanded ? (
               <>
+                <div className="rounded-lg border border-[#f8d25c]/40 bg-[#f8d25c]/10 p-3 text-xs text-[#fff2be]">
+                  以下为可编辑运行时配置，保存后即时影响系统行为。
+                </div>
                 <div className="grid md:grid-cols-2 gap-4">
                   <div>
                     <Label>补充诊断轮次上限</Label>
                     <Input type="number" min={WORKFLOW_LIMIT_MIN} max={WORKFLOW_LIMIT_MAX} value={config.workflow.confirm_round_limit} onChange={(e) => setConfig((prev) => ({ ...prev, workflow: { ...prev.workflow, confirm_round_limit: Number(e.target.value || 0) } }))} className="bg-white/5 border-white/20 text-white" />
-                    <p className="text-xs text-white/50 mt-1">控制补充诊断最多允许轮次。推荐：0~2。影响模块：workflow.confirm。</p>
+                    <p className="text-xs text-white/50 mt-1">控制补充诊断最多允许轮次（在确认输入流程中生效），达到上限后不再继续追问。</p>
                     <p className="text-[11px] text-white/40">默认值：{DEFAULT_CONFIG.workflow.confirm_round_limit}</p>
                   </div>
                   <div>
                     <Label>校验智能体最大重写次数</Label>
                     <Input type="number" min={WORKFLOW_LIMIT_MIN} max={WORKFLOW_LIMIT_MAX} value={config.workflow.validator_rewrite_limit} onChange={(e) => setConfig((prev) => ({ ...prev, workflow: { ...prev.workflow, validator_rewrite_limit: Number(e.target.value || 0) } }))} className="bg-white/5 border-white/20 text-white" />
-                    <p className="text-xs text-white/50 mt-1">校验不通过时允许回退重写的上限。推荐：0~2。影响模块：workflow.verification。</p>
+                    <p className="text-xs text-white/50 mt-1">约束校验不通过时，允许回退重写治疗建议的最大次数；仅在校验链路开启时生效。</p>
                     <p className="text-[11px] text-white/40">默认值：{DEFAULT_CONFIG.workflow.validator_rewrite_limit}</p>
                   </div>
                   <div className="rounded-lg border border-white/10 p-3 bg-white/5 space-y-2">
@@ -640,7 +649,7 @@ export function AdminPage({ pageType }: { pageType: 'system' | 'review' }) {
                       <Label>启用校验智能体</Label>
                       <Switch checked={config.workflow.enable_validator_agent} onCheckedChange={(v) => setConfig((prev) => ({ ...prev, workflow: { ...prev.workflow, enable_validator_agent: v } }))} />
                     </div>
-                    <p className="text-xs text-white/50">控制是否进入农业合规审查分支。推荐：开启。影响模块：workflow.verification。</p>
+                    <p className="text-xs text-white/50">控制是否进入约束/合规校验阶段的前置开关；关闭时将直接跳过该阶段。</p>
                     <p className="text-[11px] text-white/40">默认值：{String(DEFAULT_CONFIG.workflow.enable_validator_agent)}</p>
                   </div>
                   <div>
@@ -653,7 +662,7 @@ export function AdminPage({ pageType }: { pageType: 'system' | 'review' }) {
                         <SelectItem value="rule">规则匹配</SelectItem>
                       </SelectContent>
                     </Select>
-                    <p className="text-xs text-white/50 mt-1">切换文本诊断实现。推荐：auto。影响模块：diagnosis.text。</p>
+                    <p className="text-xs text-white/50 mt-1">切换症状文本诊断实现（auto/bert/rule），影响文本分支证据生成，而非主流程节点数量。</p>
                     <p className="text-[11px] text-white/40">默认值：{DEFAULT_CONFIG.model_fusion.text_backend}</p>
                   </div>
                 </div>
@@ -667,7 +676,7 @@ export function AdminPage({ pageType }: { pageType: 'system' | 'review' }) {
                     <div className="flex items-center justify-between rounded-lg border border-white/10 p-4 bg-white/5">
                       <div>
                         <Label className="text-white">启用大语言模型</Label>
-                        <p className="text-xs text-white/50 mt-1">全局 LLM 总开关。推荐：开启。影响模块：llm 全链路。</p>
+                        <p className="text-xs text-white/50 mt-1">运行时总开关：关闭后相关 LLM 调用会被直接禁用（抛出 LLM_DISABLED_BY_ADMIN_CONFIG），而不是仅“效果变差”。</p>
                         <p className="text-[11px] text-white/40 mt-1">默认值：{String(DEFAULT_CONFIG.llm.enable_llm)}</p>
                       </div>
                       <Switch checked={config.llm.enable_llm} onCheckedChange={(v) => setConfig((prev) => ({ ...prev, llm: { ...prev.llm, enable_llm: v } }))} />
@@ -675,7 +684,7 @@ export function AdminPage({ pageType }: { pageType: 'system' | 'review' }) {
                     <div className="flex items-center justify-between rounded-lg border border-white/10 p-4 bg-white/5">
                       <div>
                         <Label className="text-white">启用治疗建议生成</Label>
-                        <p className="text-xs text-white/50 mt-1">控制是否进入治疗建议生成。推荐：开启。影响模块：workflow.treatment。</p>
+                        <p className="text-xs text-white/50 mt-1">开启：系统可继续进入治疗建议生成阶段；关闭：将跳过该链路，可能提前结束，不再产出动态治疗建议。</p>
                         <p className="text-[11px] text-white/40 mt-1">默认值：{String(DEFAULT_CONFIG.llm.enable_treatment_generation)}</p>
                       </div>
                       <Switch checked={config.llm.enable_treatment_generation} onCheckedChange={(v) => setConfig((prev) => ({ ...prev, llm: { ...prev.llm, enable_treatment_generation: v } }))} />
@@ -683,30 +692,48 @@ export function AdminPage({ pageType }: { pageType: 'system' | 'review' }) {
                     <div className="flex items-center justify-between rounded-lg border border-white/10 p-4 bg-white/5">
                       <div>
                         <Label className="text-white">启用约束校验</Label>
-                        <p className="text-xs text-white/50 mt-1">控制是否执行约束审查阶段。推荐：开启。影响模块：workflow.verification。</p>
+                        <p className="text-xs text-white/50 mt-1">开启：系统可进入合规/约束审查阶段；关闭：跳过该阶段，不再执行约束校验审查。</p>
                         <p className="text-[11px] text-white/40 mt-1">默认值：{String(DEFAULT_CONFIG.llm.enable_constraint_validation)}</p>
                       </div>
                       <Switch checked={config.llm.enable_constraint_validation} onCheckedChange={(v) => setConfig((prev) => ({ ...prev, llm: { ...prev.llm, enable_constraint_validation: v } }))} />
                     </div>
                   </div>
-                  <div className="rounded-xl border border-white/10 p-4 bg-white/5">
-                    <h4 className="text-sm font-semibold text-[#c8f7c5] mb-2">运行时快照（只读）</h4>
-                    <p className="text-xs text-white/50">以下信息来自当前环境与运行时配置，仅用于观测，不可在此处直接编辑。</p>
+                  <div className="rounded-xl border border-dashed border-white/25 p-4 bg-white/[0.03]">
+                    <h4 className="text-sm font-semibold text-white mb-2">只读观测区</h4>
+                    <p className="text-xs text-white/60">以下为当前运行时观测信息，仅用于查看，不可直接编辑；不作为配置写入源。</p>
+                  </div>
+
+                  <div className="rounded-xl border border-white/15 p-4 bg-white/[0.03] space-y-3">
+                    <button type="button" className="w-full flex items-center justify-between text-left" onClick={() => setPathImpactExpanded((v) => !v)}>
+                      <h4 className="text-sm font-semibold text-[#f8d25c]">路径影响说明（当前实现）</h4>
+                      {pathImpactExpanded ? <ChevronUp className="w-4 h-4 text-white/70" /> : <ChevronDown className="w-4 h-4 text-white/70" />}
+                    </button>
+                    {pathImpactExpanded ? (
+                      <ul className="text-xs text-white/70 space-y-2 list-disc pl-5">
+                        {/* TODO(graph-shortcut): 后续可评估将 enable_personalization_agent 下沉为 route/graph shortcut，减少无效路径开销。 */}
+                        <li><code>enable_personalization_agent</code>：当前实现会清空个性化上下文与原因，属于节点内逻辑降级，LangGraph 编排结构不裁剪。</li>
+                        <li><code>enable_treatment_generation</code>：影响是否继续进入治疗建议生成阶段；关闭后不再产出动态治疗建议。</li>
+                        <li><code>enable_constraint_validation</code> + <code>enable_validator_agent</code>：共同决定是否进入约束校验阶段，任一关闭都会跳过该阶段。</li>
+                      </ul>
+                    ) : null}
                   </div>
                 </section>
               </>
             ) : null}
           </section>
 
-          {advancedExpanded ? <section className="rounded-xl border border-white/10 p-5 space-y-4">
+          {advancedExpanded ? <section className="rounded-xl border border-white/10 p-5 space-y-4 bg-white/[0.02]">
             <h3 className="font-semibold text-[#c8f7c5] text-lg flex items-center gap-2">
               <div className="w-1.5 h-6 bg-[#c8f7c5] rounded-full" />
               高级配置运行时信息（只读）
             </h3>
+            <div className="rounded-lg border border-dashed border-white/25 bg-white/[0.03] p-3 text-xs text-white/70">
+              以下为当前运行时观测信息，仅用于查看，不可直接编辑。
+            </div>
             <div className="rounded-xl border border-white/10 p-4 bg-gradient-to-br from-[#13221c] to-[#0f1a15]">
               <h4 className="text-sm font-semibold text-[#c8f7c5] mb-4 flex items-center gap-2">
                 <div className="w-1 h-5 bg-[#c8f7c5] rounded-full" />
-                当前大模型信息（只读）
+                当前大模型信息（只读摘要）
               </h4>
               <div className="grid md:grid-cols-3 gap-4">
                 <div>
@@ -725,50 +752,88 @@ export function AdminPage({ pageType }: { pageType: 'system' | 'review' }) {
             </div>
 
             <div className="rounded-xl border border-white/10 p-4 bg-gradient-to-br from-[#13221c] to-[#0f1a15]">
-              <h4 className="text-sm font-semibold text-[#c8f7c5] mb-4 flex items-center gap-2">
-                <div className="w-1 h-5 bg-[#c8f7c5] rounded-full" />
-                当前治疗建议模板信息（只读）
-              </h4>
-              <div className="grid md:grid-cols-3 gap-4">
-                <div>
-                  <Label className="text-white/50 text-xs mb-1 block">当前治疗建议模板</Label>
-                  <div className="bg-white/5 border border-white/10 rounded-lg p-3 text-white/90">{llmRuntimeSnapshot.template.name}</div>
+              <button type="button" className="w-full flex items-center justify-between text-left" onClick={() => setRuntimeSnapshotExpanded((v) => !v)}>
+                <h4 className="text-sm font-semibold text-[#c8f7c5] flex items-center gap-2">
+                  <div className="w-1 h-5 bg-[#c8f7c5] rounded-full" />
+                  运行时快照（只读）
+                </h4>
+                {runtimeSnapshotExpanded ? <ChevronUp className="w-4 h-4 text-white/70" /> : <ChevronDown className="w-4 h-4 text-white/70" />}
+              </button>
+              {runtimeSnapshotExpanded ? (
+                <div className="mt-4 grid md:grid-cols-3 gap-4">
+                  <div>
+                    <Label className="text-white/50 text-xs mb-1 block">约束模式</Label>
+                    <div className="bg-white/5 border border-white/10 rounded-lg p-3 text-white/90">{llmRuntimeSnapshot.constraint_validation.mode}</div>
+                  </div>
+                  <div>
+                    <Label className="text-white/50 text-xs mb-1 block">约束全局状态</Label>
+                    <div className="bg-white/5 border border-white/10 rounded-lg p-3 text-white/90">{llmRuntimeSnapshot.constraint_validation.global_enabled === false ? '禁用' : '启用'}</div>
+                  </div>
+                  <div>
+                    <Label className="text-white/50 text-xs mb-1 block">约束条目数</Label>
+                    <div className="bg-white/5 border border-white/10 rounded-lg p-3 text-white/90">{llmRuntimeSnapshot.constraint_validation.items.length}</div>
+                  </div>
                 </div>
-                <div className="md:col-span-2">
-                  <Label className="text-white/50 text-xs mb-1 block">模板适用场景</Label>
-                  <div className="bg-white/5 border border-white/10 rounded-lg p-3 text-white/90">{llmRuntimeSnapshot.template.scenes}</div>
-                </div>
-                <div className="md:col-span-3">
-                  <Label className="text-white/50 text-xs mb-1 block">模板用途说明</Label>
-                  <div className="bg-white/5 border border-white/10 rounded-lg p-4 text-white/80 text-sm">{llmRuntimeSnapshot.template.purpose}</div>
-                </div>
-              </div>
+              ) : null}
             </div>
 
             <div className="rounded-xl border border-white/10 p-4 bg-gradient-to-br from-[#13221c] to-[#0f1a15]">
-              <h4 className="text-sm font-semibold text-[#c8f7c5] mb-4 flex items-center gap-2">
-                <div className="w-1 h-5 bg-[#c8f7c5] rounded-full" />
-                约束校验信息（只读）
-              </h4>
-              <div className="rounded-lg border border-white/10 bg-white/5 p-3 mb-3">
-                <p className="text-xs text-white/50">全局开关状态</p>
-                <p className={`text-sm mt-1 ${llmRuntimeSnapshot.constraint_validation.global_enabled === false ? 'text-red-300' : 'text-[#c8f7c5]'}`}>
-                  {llmRuntimeSnapshot.constraint_validation.global_enabled === false ? '当前约束校验未启用' : '当前约束校验已启用'}
-                </p>
-              </div>
-              <div className="space-y-2">
-                {llmRuntimeSnapshot.constraint_validation.items.map((item) => (
-                  <div key={item.key} className="rounded-lg border border-white/10 bg-white/5 p-3">
-                    <div className="flex items-center justify-between">
-                      <p className="text-sm text-white">{item.label}</p>
-                      <span className={`text-xs px-2 py-1 rounded border ${item.enabled ? 'border-[#c8f7c5]/40 text-[#c8f7c5]' : 'border-white/20 text-white/60'}`}>
-                        {item.enabled ? '已启用' : '已关闭'}
-                      </span>
-                    </div>
-                    <p className="text-xs text-white/50 mt-1">{item.description}</p>
+              <button type="button" className="w-full flex items-center justify-between text-left" onClick={() => setRuntimeTemplateExpanded((v) => !v)}>
+                <h4 className="text-sm font-semibold text-[#c8f7c5] flex items-center gap-2">
+                  <div className="w-1 h-5 bg-[#c8f7c5] rounded-full" />
+                  当前治疗建议模板信息（只读）
+                </h4>
+                {runtimeTemplateExpanded ? <ChevronUp className="w-4 h-4 text-white/70" /> : <ChevronDown className="w-4 h-4 text-white/70" />}
+              </button>
+              {runtimeTemplateExpanded ? (
+                <div className="mt-4 grid md:grid-cols-3 gap-4">
+                  <div>
+                    <Label className="text-white/50 text-xs mb-1 block">当前治疗建议模板</Label>
+                    <div className="bg-white/5 border border-white/10 rounded-lg p-3 text-white/90">{llmRuntimeSnapshot.template.name}</div>
                   </div>
-                ))}
-              </div>
+                  <div className="md:col-span-2">
+                    <Label className="text-white/50 text-xs mb-1 block">模板适用场景</Label>
+                    <div className="bg-white/5 border border-white/10 rounded-lg p-3 text-white/90">{llmRuntimeSnapshot.template.scenes}</div>
+                  </div>
+                  <div className="md:col-span-3">
+                    <Label className="text-white/50 text-xs mb-1 block">模板用途说明</Label>
+                    <div className="bg-white/5 border border-white/10 rounded-lg p-4 text-white/80 text-sm">{llmRuntimeSnapshot.template.purpose}</div>
+                  </div>
+                </div>
+              ) : null}
+            </div>
+
+            <div className="rounded-xl border border-white/10 p-4 bg-gradient-to-br from-[#13221c] to-[#0f1a15]">
+              <button type="button" className="w-full flex items-center justify-between text-left" onClick={() => setRuntimeConstraintExpanded((v) => !v)}>
+                <h4 className="text-sm font-semibold text-[#c8f7c5] flex items-center gap-2">
+                  <div className="w-1 h-5 bg-[#c8f7c5] rounded-full" />
+                  约束校验信息（只读）
+                </h4>
+                {runtimeConstraintExpanded ? <ChevronUp className="w-4 h-4 text-white/70" /> : <ChevronDown className="w-4 h-4 text-white/70" />}
+              </button>
+              {runtimeConstraintExpanded ? (
+                <>
+                  <div className="rounded-lg border border-white/10 bg-white/5 p-3 mb-3 mt-4">
+                    <p className="text-xs text-white/50">全局开关状态</p>
+                    <p className={`text-sm mt-1 ${llmRuntimeSnapshot.constraint_validation.global_enabled === false ? 'text-red-300' : 'text-[#c8f7c5]'}`}>
+                      {llmRuntimeSnapshot.constraint_validation.global_enabled === false ? '当前约束校验未启用' : '当前约束校验已启用'}
+                    </p>
+                  </div>
+                  <div className="space-y-2">
+                    {llmRuntimeSnapshot.constraint_validation.items.map((item) => (
+                      <div key={item.key} className="rounded-lg border border-white/10 bg-white/5 p-3">
+                        <div className="flex items-center justify-between">
+                          <p className="text-sm text-white">{item.label}</p>
+                          <span className={`text-xs px-2 py-1 rounded border ${item.enabled ? 'border-[#c8f7c5]/40 text-[#c8f7c5]' : 'border-white/20 text-white/60'}`}>
+                            {item.enabled ? '已启用' : '已关闭'}
+                          </span>
+                        </div>
+                        <p className="text-xs text-white/50 mt-1">{item.description}</p>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              ) : null}
             </div>
           </section> : null}
         </CardContent>

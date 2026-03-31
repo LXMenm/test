@@ -934,7 +934,14 @@ def _reason_contains(reason_tokens: list[str], target: str) -> bool:
     return any(target_text in token for token in reason_tokens)
 
 
-def build_confirm_explanation(
+def _reason_equals(reason_tokens: list[str], target: str) -> bool:
+    target_text = str(target or "").strip().lower()
+    if not target_text:
+        return False
+    return any(token == target_text for token in reason_tokens)
+
+
+def build_confirm_explanation_v2(
     *,
     need_confirm: bool,
     fusion_case: Any,
@@ -961,11 +968,7 @@ def build_confirm_explanation(
     text_ok = text_reliable is True
     follow_ups = [str(item).strip() for item in (follow_up_questions or []) if str(item).strip()]
 
-    if (
-        _reason_contains(reason_tokens, "image_text_conflict")
-        or _reason_contains(reason_tokens, "weak_image_text_conflict")
-        or fusion_case_text == "conflict"
-    ):
+    if _reason_equals(reason_tokens, "image_text_conflict") or fusion_case_text == "conflict":
         reason_code = "IMAGE_TEXT_CONFLICT"
         reason_text = "图片识别结果与症状描述不一致"
         action = "reupload_image_and_verify_symptoms"
@@ -975,8 +978,15 @@ def build_confirm_explanation(
         reason_code = "LOW_DISCRIMINATION_NEED_KEY_FEATURES"
         reason_text = "当前最可能的几种病害区分度不足"
         action = "supplement_key_features"
-        ui_mode = "text"
-        fields = ["symptoms"]
+        if supplement_mode_text == "image_only":
+            ui_mode = "image"
+            fields = ["image"]
+        elif supplement_mode_text == "image_and_text":
+            ui_mode = "image_and_text"
+            fields = ["image", "symptoms"]
+        else:
+            ui_mode = "text"
+            fields = ["symptoms"]
     elif (
         _reason_contains(reason_tokens, "both_modalities_weak")
         or fusion_case_text == "both_weak"
@@ -1030,6 +1040,27 @@ def build_confirm_explanation(
         "confirm_fields": fields,
         "confirm_message": confirm_message,
     }
+
+
+def build_confirm_explanation(
+    *,
+    need_confirm: bool,
+    fusion_case: Any,
+    image_reliable: Any,
+    text_reliable: Any,
+    supplement_mode: Any,
+    fallback_reason: Any,
+    follow_up_questions: Any,
+) -> dict[str, Any]:
+    return build_confirm_explanation_v2(
+        need_confirm=need_confirm,
+        fusion_case=fusion_case,
+        image_reliable=image_reliable,
+        text_reliable=text_reliable,
+        supplement_mode=supplement_mode,
+        fallback_reason=fallback_reason,
+        follow_up_questions=follow_up_questions,
+    )
 
 
 def serialize_final_response(payload: dict[str, Any]) -> dict[str, Any]:
@@ -1438,13 +1469,23 @@ def _inherit_previous_diagnosis_context(
     }
 
 
-def _normalize_expert_review_decision(value: Any) -> str | None:
+def _normalize_final_decision(value: Any) -> str | None:
     normalized = str(value or "").strip().lower()
     if not normalized:
         return None
-    if normalized in {"accept", "decline"}:
+    alias_map = {
+        "request_expert_review": "request_expert_review",
+        "use_current_result": "use_current_result",
+        "accept": "request_expert_review",
+        "decline": "use_current_result",
+    }
+    normalized = alias_map.get(normalized, normalized)
+    if normalized in {"request_expert_review", "use_current_result"}:
         return normalized
-    raise HTTPException(status_code=400, detail="expert_review_decision 必须为 accept / decline / null")
+    raise HTTPException(
+        status_code=400,
+        detail="final_decision 非法，必须为 request_expert_review / use_current_result（兼容: accept / decline）",
+    )
 
 
 def _ensure_follow_up_plan(state: dict[str, Any]) -> dict[str, Any]:
@@ -1982,7 +2023,7 @@ async def diagnose_image(
         model_meta=model_meta,
         growth_stage=canonical_growth_stage,
     )
-    confirm_explanation = build_confirm_explanation(
+    confirm_explanation = build_confirm_explanation_v2(
         need_confirm=bool(need_confirm),
         fusion_case=(final_state or {}).get("fusion_case"),
         image_reliable=(final_state or {}).get("image_reliable"),
@@ -2177,14 +2218,18 @@ def _diagnose_confirm_core(request: Request, payload: dict) -> dict:
     growth_stage = payload.get("growth_stage")
     model_id = payload.get("model_id")
     choice = str(payload.get("choice") or "").strip()
-    expert_review_decision = _normalize_expert_review_decision(payload.get("expert_review_decision"))
+    final_decision_raw = payload.get("final_decision")
+    if final_decision_raw is None:
+        final_decision_raw = payload.get("expert_review_decision")
+    final_decision = _normalize_final_decision(final_decision_raw)
     print(
         "[DiagnoseConfirm] input",
         json.dumps(
             {
                 "trace_id": trace_id,
                 "image_id": image_id,
-                "expert_review_decision": expert_review_decision,
+                "raw_final_decision": final_decision_raw,
+                "final_decision": final_decision,
                 "choice": choice,
             },
             ensure_ascii=False,
@@ -2209,6 +2254,16 @@ def _diagnose_confirm_core(request: Request, payload: dict) -> dict:
     # 因此确认输入症状必须与上一轮症状做增量合并，避免覆盖。
     history_events = list_trace_events(trace_id)
     previous_case_event = _latest_case_event_by_trace(trace_id)
+    previous_status = str((previous_case_event or {}).get("status") or "").strip().lower() if isinstance(previous_case_event, dict) else ""
+    is_expert_decision_stage = previous_status == "waiting_for_expert_decision"
+    is_supplement_stage = previous_status == "waiting_for_supplement"
+    if is_expert_decision_stage:
+        if choice and choice != "other":
+            raise HTTPException(status_code=400, detail="waiting_for_expert_decision 阶段不允许通过 choice 确认候选病害")
+        if final_decision is None and not choice:
+            choice = "other"
+    elif final_decision is not None:
+        raise HTTPException(status_code=400, detail="final_decision 仅允许在 waiting_for_expert_decision 阶段提交")
     historical_symptoms: list[str] = []
     for event_like in reversed(history_events):
         if not isinstance(event_like, dict):
@@ -2266,18 +2321,45 @@ def _diagnose_confirm_core(request: Request, payload: dict) -> dict:
             confirm_round_index += 1
 
     state["step_count"] = previous_step_count
-    state = resume_from_confirm_input(
-        state,
-        crop_type=crop_type,
-        growth_stage=growth_stage,
-        model_id=model_id,
-        image_path=str(image_path),
-        merged_symptoms=merged_symptoms,
-    )
-    state["historical_symptoms"] = historical_symptoms
-    state["confirm_round_index"] = confirm_round_index
-    state["user_choice"] = choice or None
-    state["current_step"] = "confirm_input"
+    if is_expert_decision_stage:
+        state["trace_id"] = trace_id
+        state["crop_type"] = crop_type
+        state["crop_growth_stage"] = normalize_growth_stage_code(growth_stage)
+        state["image_path"] = str(image_path)
+        state["symptoms"] = merged_symptoms
+        state["historical_symptoms"] = historical_symptoms
+        state["confirm_round_index"] = confirm_round_index
+        state["user_choice"] = "other"
+        state["current_step"] = "confirm_input"
+        if isinstance(previous_case_event, dict):
+            inherited_disease = str(previous_case_event.get("final_disease") or "").strip()
+            if inherited_disease:
+                _inherit_previous_diagnosis_context(
+                    state,
+                    choice=inherited_disease,
+                    previous_case_event=previous_case_event,
+                )
+            treatment_obj = previous_case_event.get("treatment") if isinstance(previous_case_event.get("treatment"), dict) else {}
+            state["treatment_plan"] = treatment_obj.get("plan")
+            state["prevention_advice"] = treatment_obj.get("prevention")
+            state["verification_result"] = previous_case_event.get("verification_result")
+            state["verification_passed"] = previous_case_event.get("verification_passed")
+            state["verification_risk_level"] = previous_case_event.get("verification_risk_level")
+            state["verification_issues"] = list(previous_case_event.get("verification_issues") or [])
+            state["verification_summary"] = previous_case_event.get("verification_summary")
+    else:
+        state = resume_from_confirm_input(
+            state,
+            crop_type=crop_type,
+            growth_stage=growth_stage,
+            model_id=model_id,
+            image_path=str(image_path),
+            merged_symptoms=merged_symptoms,
+        )
+        state["historical_symptoms"] = historical_symptoms
+        state["confirm_round_index"] = confirm_round_index
+        state["user_choice"] = choice or None
+        state["current_step"] = "confirm_input"
 
     append_trace(
         state,
@@ -2292,14 +2374,15 @@ def _diagnose_confirm_core(request: Request, payload: dict) -> dict:
             "previous_trace_id": previous_trace_id or trace_id,
             "confirm_round_parent_trace_id": trace_id,
             "model_id": model_id,
-            "choice": choice,
+            "choice": choice or ("other" if is_expert_decision_stage else None),
+            "final_decision": final_decision,
             "farmer_id": farmer_id,
             "base_id": base_id,
             "confirm_round_index": confirm_round_index,
         },
         outputs={},
     )
-    if choice and choice != "other":
+    if (not is_expert_decision_stage) and choice and choice != "other":
         inherited_context = _inherit_previous_diagnosis_context(
             state,
             choice=choice,
@@ -2323,29 +2406,32 @@ def _diagnose_confirm_core(request: Request, payload: dict) -> dict:
 
     # 低置信度回退分支：由 supervisor 做统一路由决策，避免形成平行独立流程。
     terminal_action: str | None = None
-    for _ in range(10):
-        state = supervisor_agent(state)
-        next_action = str(state.get("next_action") or "")
-        if next_action == "diagnosis":
-            state = diagnosis_agent(state)
-        elif next_action == "kb_retrieval":
-            state = kb_retrieval_agent(state)
-        elif next_action == "treatment":
-            state = treatment_agent(state)
-        elif next_action == "verification":
-            state = verification_agent(state)
-        elif next_action == "await_user_confirmation":
-            terminal_action = "await_user_confirmation"
-            break
-        elif next_action == "manual_review":
-            terminal_action = "manual_review"
-            break
-        elif next_action == "end":
-            terminal_action = "end"
-            break
-        else:
-            terminal_action = next_action or "end"
-            break
+    if is_expert_decision_stage:
+        terminal_action = "expert_final_decision"
+    else:
+        for _ in range(10):
+            state = supervisor_agent(state)
+            next_action = str(state.get("next_action") or "")
+            if next_action == "diagnosis":
+                state = diagnosis_agent(state)
+            elif next_action == "kb_retrieval":
+                state = kb_retrieval_agent(state)
+            elif next_action == "treatment":
+                state = treatment_agent(state)
+            elif next_action == "verification":
+                state = verification_agent(state)
+            elif next_action == "await_user_confirmation":
+                terminal_action = "await_user_confirmation"
+                break
+            elif next_action == "manual_review":
+                terminal_action = "manual_review"
+                break
+            elif next_action == "end":
+                terminal_action = "end"
+                break
+            else:
+                terminal_action = next_action or "end"
+                break
 
     final_confidence = state.get("final_confidence")
     final_source = state.get("final_source")
@@ -2378,16 +2464,24 @@ def _diagnose_confirm_core(request: Request, payload: dict) -> dict:
     expert_review_selected = False
     expert_review_status = "NONE"
     expert_review_actions: list[str] = []
-    if terminal_action == "await_user_confirmation":
-        manual_review_recommended = False
-        need_confirm = True
-        confirm_status = "waiting_for_supplement"
-    elif terminal_action == "manual_review":
+    if terminal_action == "expert_final_decision":
         expert_review_recommended = True
         manual_review_recommended = True
         expert_review_actions = ["use_current_result", "request_expert_review"]
         need_confirm = False
-        if expert_review_decision == "decline":
+        if final_decision == "request_expert_review":
+            expert_review_selected = True
+            expert_review_status = "PENDING"
+            confirm_status = "pending_expert_review"
+            manual_review_required_before_execution = True
+            state["treatment_plan"] = None
+            state["prevention_advice"] = None
+            state["verification_result"] = None
+            state["verification_passed"] = None
+            state["verification_risk_level"] = None
+            state["verification_issues"] = []
+            state["verification_summary"] = None
+        elif final_decision == "use_current_result":
             state = _ensure_follow_up_plan(state)
             final_confidence = state.get("final_confidence")
             final_source = state.get("final_source")
@@ -2408,7 +2502,42 @@ def _diagnose_confirm_core(request: Request, payload: dict) -> dict:
             expert_review_status = "DECLINED"
             confirm_status = "completed"
             manual_review_required_before_execution = False
-        elif expert_review_decision == "accept":
+        else:
+            expert_review_selected = False
+            expert_review_status = "NONE"
+            confirm_status = "waiting_for_expert_decision"
+            manual_review_required_before_execution = False
+    elif terminal_action == "await_user_confirmation":
+        manual_review_recommended = False
+        need_confirm = True
+        confirm_status = "waiting_for_supplement"
+    elif terminal_action == "manual_review":
+        expert_review_recommended = True
+        manual_review_recommended = True
+        expert_review_actions = ["use_current_result", "request_expert_review"]
+        need_confirm = False
+        if final_decision == "use_current_result":
+            state = _ensure_follow_up_plan(state)
+            final_confidence = state.get("final_confidence")
+            final_source = state.get("final_source")
+            image_confidence = state.get("image_confidence")
+            text_confidence = state.get("text_confidence")
+            text_top3 = list(state.get("text_top3") or [])
+            fusion_top3 = list(state.get("fusion_top3") or [])
+            modality_conflict_flag = state.get("modality_conflict_flag")
+            diagnosis_evidence = state.get("diagnosis_evidence")
+            image_reliable = state.get("image_reliable")
+            text_reliable = state.get("text_reliable")
+            reliability_issue_types = list(state.get("reliability_issue_types") or [])
+            supplement_mode = str(state.get("supplement_mode") or "none")
+            image_diagnosis = state.get("image_diagnosis") or {}
+            image_top1 = image_diagnosis.get("top1") or {}
+            top3 = image_diagnosis.get("top3") or []
+            expert_review_selected = False
+            expert_review_status = "DECLINED"
+            confirm_status = "completed"
+            manual_review_required_before_execution = False
+        elif final_decision == "request_expert_review":
             expert_review_selected = True
             expert_review_status = "PENDING"
             confirm_status = "pending_expert_review"
@@ -2430,6 +2559,7 @@ def _diagnose_confirm_core(request: Request, payload: dict) -> dict:
             {
                 "trace_id": trace_id,
                 "terminal_action": terminal_action,
+                "final_decision": final_decision,
                 "confirm_status": confirm_status,
                 "expert_review_selected": expert_review_selected,
                 "expert_review_status": expert_review_status,
@@ -2466,7 +2596,7 @@ def _diagnose_confirm_core(request: Request, payload: dict) -> dict:
     )
     flags["follow_up_questions"] = follow_up_questions
     missing_profile_fields = sorted({str(item).strip() for item in (flags.get("missing_profile_fields") or []) if str(item).strip()})
-    confirm_explanation = build_confirm_explanation(
+    confirm_explanation = build_confirm_explanation_v2(
         need_confirm=bool(need_confirm),
         fusion_case=state.get("fusion_case"),
         image_reliable=image_reliable,
@@ -2727,6 +2857,7 @@ async def diagnose_retry(
     farmer_id: str | None = Form(None),
     base_id: str | None = Form(None),
     expert_review_decision: str | None = Form(None),
+    final_decision: str | None = Form(None),
 ) -> dict:
     resolved_image_id = str(image_id or "").strip()
     if file is not None and file.filename:
@@ -2760,6 +2891,7 @@ async def diagnose_retry(
         "farmer_id": farmer_id,
         "base_id": base_id,
         "expert_review_decision": expert_review_decision,
+        "final_decision": final_decision,
     }
     return _diagnose_confirm_core(request, payload)
 
