@@ -31,6 +31,14 @@ interface ReviewCaseDetail extends PendingCaseItem {
   base_id?: string;
   base_name?: string;
   environment?: string;
+  location?: string;
+  province?: string;
+  city?: string;
+  district?: string;
+  latitude?: number;
+  longitude?: number;
+  weather_snapshot?: string;
+  harvest_window_days?: number | null;
   profile_summary?: {
     farm_scale?: string;
     pesticide_access_level?: string;
@@ -66,6 +74,11 @@ function formatTime(value?: string): string {
   const minutes = String(date.getMinutes()).padStart(2, '0');
   const seconds = String(date.getSeconds()).padStart(2, '0');
   return `${year}/${month}/${day}/${hours}:${minutes}:${seconds}`;
+}
+
+function formatCoordinate(value?: number): string {
+  if (typeof value !== 'number' || Number.isNaN(value)) return '';
+  return value.toFixed(6);
 }
 
 export function ExpertReviewPage() {
@@ -283,67 +296,88 @@ export function ExpertReviewPage() {
             </div>
           ) : (
             <div className="space-y-4 py-4 px-3">
+              {(() => {
+                const regionText = [detail.province, detail.city, detail.district]
+                  .map((item) => (item || '').trim())
+                  .filter(Boolean)
+                  .join('');
+                const coordinateText = formatCoordinate(detail.latitude) && formatCoordinate(detail.longitude)
+                  ? `${formatCoordinate(detail.latitude)}, ${formatCoordinate(detail.longitude)}`
+                  : '';
+                const locationText = (detail.location || '').trim()
+                  || regionText
+                  || coordinateText
+                  || (detail.base_name || '').trim()
+                  || '-';
+                const weatherText = (detail.weather_snapshot || '').trim()
+                  || (detail.environment || '').trim()
+                  || '-';
+                const harvestWindowText = typeof detail.harvest_window_days === 'number'
+                  ? `${detail.harvest_window_days} 天`
+                  : '-';
+                return (
               <section className="rounded-xl border border-[#86b89d]/20 bg-gradient-to-br from-[#13221c] to-[#0f1a15] p-5 space-y-4">
                 <h3 className="text-[#c8f7c5] font-semibold text-lg flex items-center gap-2">
                   <div className="w-1 h-5 bg-[#c8f7c5] rounded-full" />
                   A. 用户输入
                 </h3>
-                <div className="grid lg:grid-cols-2 gap-5">
-                  <div>
-                    {detail.image_url && (
-                      <div className="rounded-lg overflow-hidden border border-white/10 bg-black/40">
-                        <img 
-                          src={detail.image_url} 
-                          alt="病例图片" 
-                          className="w-full max-h-64 object-contain mx-auto" 
-                        />
-                      </div>
-                    )}
-                  </div>
-                  <div className="space-y-3">
-                    <div className="grid grid-cols-2 gap-3">
-                      <div className="space-y-1.5">
-                        <p className="text-white/40 text-[10px] uppercase tracking-wider">症状文本</p>
-                        <div className="bg-white/5 rounded-lg p-3 min-h-[60px]">
-                          <p className="text-white/90 break-words leading-relaxed text-sm">{detail.symptoms_text || '-'}</p>
+                <div className="space-y-4">
+                  <div className="grid lg:grid-cols-2 gap-4">
+                    <div>
+                      {detail.image_url && (
+                        <div className="rounded-lg overflow-hidden border border-white/10 bg-black/40">
+                          <img 
+                            src={detail.image_url} 
+                            alt="病例图片" 
+                            className="w-full max-h-64 object-contain mx-auto" 
+                          />
                         </div>
-                      </div>
-                      <div className="space-y-1.5">
-                        <p className="text-white/40 text-[10px] uppercase tracking-wider">基地 / 环境</p>
-                        <div className="bg-white/5 rounded-lg p-3 min-h-[60px]">
-                          <p className="text-white/90 break-words leading-relaxed text-sm">{detail.base_name || detail.base_id || '-'} / {detail.environment || '-'}</p>
-                        </div>
+                      )}
+                    </div>
+                    <div className="space-y-1.5">
+                      <p className="text-white/40 text-[10px] uppercase tracking-wider">症状文本</p>
+                      <div className="bg-white/5 rounded-lg p-3 min-h-[112px]">
+                        <p className="text-white/90 break-words whitespace-pre-wrap leading-relaxed text-sm">{detail.symptoms_text || '-'}</p>
                       </div>
                     </div>
-                    <div className="grid grid-cols-3 gap-3">
-                      <div className="space-y-1.5">
-                        <p className="text-white/40 text-[10px] uppercase tracking-wider">生育期</p>
-                        <div className="bg-white/5 rounded-lg p-3">
-                          <p className="text-white/90 text-sm">{detail.growth_stage || '-'}</p>
-                        </div>
-                      </div>
-                      <div className="space-y-1.5">
-                        <p className="text-white/40 text-[10px] uppercase tracking-wider">规模</p>
-                        <div className="bg-white/5 rounded-lg p-3">
-                          <p className="text-white/90 text-sm">{detail.profile_summary?.farm_scale || '-'}</p>
-                        </div>
-                      </div>
-                      <div className="space-y-1.5">
-                        <p className="text-white/40 text-[10px] uppercase tracking-wider">购药能力</p>
-                        <div className="bg-white/5 rounded-lg p-3">
-                          <p className="text-white/90 text-sm">{detail.profile_summary?.pesticide_access_level || '-'}</p>
-                        </div>
+                  </div>
+
+                  <div className="grid md:grid-cols-2 gap-3">
+                    <div className="space-y-1.5">
+                      <p className="text-white/40 text-[10px] uppercase tracking-wider">位置</p>
+                      <div className="bg-white/5 rounded-lg p-3 min-h-[72px]">
+                        <p className="text-white/90 break-words whitespace-pre-wrap leading-relaxed text-sm">{locationText}</p>
+                        {detail.base_id ? (
+                          <p className="text-white/45 text-[11px] mt-2">基地ID：{detail.base_id}</p>
+                        ) : null}
                       </div>
                     </div>
                     <div className="space-y-1.5">
-                      <p className="text-white/40 text-[10px] uppercase tracking-wider">设备</p>
-                      <div className="bg-white/5 rounded-lg p-3">
-                        <p className="text-white/90 text-sm">{(detail.profile_summary?.equipment || []).join('、') || '-'}</p>
+                      <p className="text-white/40 text-[10px] uppercase tracking-wider">生育期</p>
+                      <div className="bg-white/5 rounded-lg p-3 min-h-[60px]">
+                        <p className="text-white/90 text-sm">{detail.growth_stage || '-'}</p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="grid md:grid-cols-3 gap-3">
+                    <div className="space-y-1.5">
+                      <p className="text-white/40 text-[10px] uppercase tracking-wider">距离采收天数</p>
+                      <div className="bg-white/5 rounded-lg p-3 min-h-[60px]">
+                        <p className="text-white/90 text-sm">{harvestWindowText}</p>
+                      </div>
+                    </div>
+                    <div className="space-y-1.5 md:col-span-2">
+                      <p className="text-white/40 text-[10px] uppercase tracking-wider">天气</p>
+                      <div className="bg-white/5 rounded-lg p-3 min-h-[60px]">
+                        <p className="text-white/90 break-words whitespace-pre-wrap leading-relaxed text-sm">{weatherText}</p>
                       </div>
                     </div>
                   </div>
                 </div>
               </section>
+                );
+              })()}
 
               <section className="rounded-xl border border-[#86b89d]/20 bg-gradient-to-br from-[#13221c] to-[#0f1a15] p-5 space-y-4">
                 <h3 className="text-[#c8f7c5] font-semibold text-lg flex items-center gap-2">
@@ -413,33 +447,22 @@ export function ExpertReviewPage() {
                   <div className="w-1 h-5 bg-[#c8f7c5] rounded-full" />
                   C. 专家填写
                 </h3>
-                <div className="grid lg:grid-cols-2 gap-5">
-                  <div className="space-y-3">
-                    <div>
-                      <Label className="text-white/70 mb-2 block text-xs uppercase tracking-wider">最终确认病害</Label>
-                      <Input
-                        value={form.expert_review_result}
-                        onChange={(e) => setForm((prev) => ({ ...prev, expert_review_result: e.target.value }))}
-                        className="bg-white/5 border-white/20 text-white focus:border-[#c8f7c5] focus:ring-[#c8f7c5]/20 h-11 text-base"
-                        placeholder="请输入最终确认的病害名称"
-                      />
-                    </div>
-                    <div>
-                      <Label className="text-white/70 mb-2 block text-xs uppercase tracking-wider">补充症状</Label>
-                      <Input
-                        value={form.expert_review_supplement_symptoms}
-                        onChange={(e) => setForm((prev) => ({ ...prev, expert_review_supplement_symptoms: e.target.value }))}
-                        className="bg-white/5 border-white/20 text-white focus:border-[#c8f7c5] focus:ring-[#c8f7c5]/20 h-11 text-base"
-                        placeholder="请输入补充的症状"
-                      />
-                    </div>
+                <div className="space-y-3">
+                  <div>
+                    <Label className="text-white/70 mb-2 block text-xs uppercase tracking-wider">最终确认病害</Label>
+                    <Input
+                      value={form.expert_review_result}
+                      onChange={(e) => setForm((prev) => ({ ...prev, expert_review_result: e.target.value }))}
+                      className="bg-white/5 border-white/20 text-white focus:border-[#c8f7c5] focus:ring-[#c8f7c5]/20 h-11 text-base"
+                      placeholder="请输入最终确认的病害名称"
+                    />
                   </div>
                   <div>
                     <Label className="text-white/70 mb-2 block text-xs uppercase tracking-wider">复核备注</Label>
                     <Textarea
                       value={form.expert_review_notes}
                       onChange={(e) => setForm((prev) => ({ ...prev, expert_review_notes: e.target.value }))}
-                      className="bg-white/5 border-white/20 text-white focus:border-[#c8f7c5] focus:ring-[#c8f7c5]/20 min-h-[100px] text-base resize-none"
+                      className="bg-white/5 border-white/20 text-white focus:border-[#c8f7c5] focus:ring-[#c8f7c5]/20 min-h-[110px] text-base resize-none"
                       placeholder="请输入复核备注"
                     />
                   </div>

@@ -6,6 +6,7 @@ from typing import Any
 from fastapi.testclient import TestClient
 
 import app as app_module
+from personalization.profile_models import BaseProfile, FarmerProfile, TreatmentConstraint
 
 
 class _InMemoryCaseRepo:
@@ -400,3 +401,101 @@ def test_review_tabs_only_include_true_review_tasks(monkeypatch) -> None:
     completed_ids = {item["trace_id"] for item in completed_resp.json()["items"]}
     assert completed_ids == {"review-completed"}
     assert completed_resp.json()["items"][0]["review_task_status"] == "COMPLETED"
+
+
+def test_expert_detail_includes_location_weather_and_profile_harvest_days(monkeypatch) -> None:
+    now = datetime.now(timezone.utc).isoformat()
+    repo = _InMemoryCaseRepo(
+        [
+            _event(
+                trace_id="trace-location-rich",
+                status="pending_expert_review",
+                disease="晚疫病",
+                assigned_expert_id="E5001",
+                expert_review_status="PENDING",
+                ts=now,
+            )
+        ]
+    )
+    _install_repo(monkeypatch, repo)
+
+    profile = FarmerProfile(
+        farmer_id="F0001",
+        active_base_id="B01",
+        bases={
+            "B01": BaseProfile(
+                base_id="B01",
+                location="山东省青岛市即墨区蓝村街道",
+                province="山东省",
+                city="青岛市",
+                district="即墨区",
+                latitude=36.390123,
+                longitude=120.456789,
+                weather_snapshot="多云，18-24°C，东南风2级",
+                growth_stage="开花期",
+            )
+        },
+        constraints=TreatmentConstraint(harvest_window_days=1),
+    )
+    monkeypatch.setattr(app_module, "load_profile", lambda _farmer_id: profile)
+
+    client = TestClient(app_module.app)
+    resp = client.get("/api/expert-reviews/trace-location-rich", headers=_headers(role="EXPERT", user_id="E5001"))
+    assert resp.status_code == 200
+    item = resp.json()["item"]
+    assert item["location"] == "山东省青岛市即墨区蓝村街道"
+    assert item["province"] == "山东省"
+    assert item["city"] == "青岛市"
+    assert item["district"] == "即墨区"
+    assert item["latitude"] == 36.390123
+    assert item["longitude"] == 120.456789
+    assert item["weather_snapshot"] == "多云，18-24°C，东南风2级"
+    assert item["harvest_window_days"] == 1
+    assert item["growth_stage"] == "FLOWERING"
+
+
+def test_expert_detail_prefers_profile_constraints_days_without_estimation(monkeypatch) -> None:
+    now = datetime.now(timezone.utc).isoformat()
+    event = _event(
+        trace_id="trace-location-fallback",
+        status="pending_expert_review",
+        disease="灰霉病",
+        assigned_expert_id="E5002",
+        expert_review_status="PENDING",
+        ts=now,
+    )
+    event["meta"] = {
+        "farmer_id": "F0001",
+        "base_id": "B01",
+        "farmer_name": "农户1",
+        "province": "浙江省",
+        "city": "杭州市",
+        "district": "余杭区",
+        "latitude": "30.274100",
+        "longitude": "120.155100",
+    }
+    repo = _InMemoryCaseRepo([event])
+    _install_repo(monkeypatch, repo)
+
+    profile = FarmerProfile(
+        farmer_id="F0001",
+        active_base_id="B01",
+        bases={"B01": BaseProfile(base_id="B01", sowing_date="2026-03-01", weather_snapshot="阵雨")},
+        constraints=TreatmentConstraint(harvest_window_days=None, harvest_window_mode="auto"),
+    )
+    monkeypatch.setattr(app_module, "load_profile", lambda _farmer_id: profile)
+
+    client = TestClient(app_module.app)
+    resp = client.get("/api/expert-reviews/trace-location-fallback", headers=_headers(role="EXPERT", user_id="E5002"))
+    assert resp.status_code == 200
+    item = resp.json()["item"]
+    # location 缺失时，前端将走 province/city/district 或经纬度 fallback
+    assert item["location"] is None
+    assert item["province"] == "浙江省"
+    assert item["city"] == "杭州市"
+    assert item["district"] == "余杭区"
+    assert item["latitude"] == 30.2741
+    assert item["longitude"] == 120.1551
+    assert item["weather_snapshot"] == "阵雨"
+    # 仅返回档案 constraints 值，不在详情接口重新估算
+    assert item["harvest_window_days"] is None

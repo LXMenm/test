@@ -4298,21 +4298,114 @@ def _serialize_admin_review_detail(event: dict[str, Any]) -> dict[str, Any]:
 
 def _build_expert_review_detail(event: dict[str, Any]) -> dict[str, Any]:
     meta = _safe_record(event.get("meta"))
+    meta_base = _safe_record(meta.get("base"))
+    meta_base_profile = _safe_record(meta.get("base_profile"))
+    event_base = _safe_record(event.get("base"))
+    event_base_profile = _safe_record(event.get("base_profile"))
     image_result = _safe_record(event.get("image_result"))
     image_top3 = _normalize_top3_candidates(image_result.get("top3"))
     text_top3 = _normalize_top3_candidates(event.get("text_top3"))
     fusion_top3 = _normalize_top3_candidates(event.get("fusion_top3"))
     diagnosis_evidence = _safe_record(event.get("diagnosis_evidence"))
+    farmer_id = _event_farmer_id(event)
+    event_base_id = str(meta.get("base_id") or event.get("base_id") or "").strip() or None
+    profile, base_profile, resolved_base_id = _resolve_profile_and_base(farmer_id, event_base_id)
+
+    def _pick_text(*values: Any) -> str | None:
+        for value in values:
+            if value is None:
+                continue
+            text = str(value).strip()
+            if text:
+                return text
+        return None
+
+    location = _pick_text(
+        meta.get("location"),
+        meta_base.get("location"),
+        meta_base_profile.get("location"),
+        event.get("location"),
+        event_base.get("location"),
+        event_base_profile.get("location"),
+        getattr(base_profile, "location", None),
+    )
+    province = _pick_text(
+        meta.get("province"),
+        meta_base.get("province"),
+        meta_base_profile.get("province"),
+        event.get("province"),
+        event_base.get("province"),
+        event_base_profile.get("province"),
+        getattr(base_profile, "province", None),
+    )
+    city = _pick_text(
+        meta.get("city"),
+        meta_base.get("city"),
+        meta_base_profile.get("city"),
+        event.get("city"),
+        event_base.get("city"),
+        event_base_profile.get("city"),
+        getattr(base_profile, "city", None),
+    )
+    district = _pick_text(
+        meta.get("district"),
+        meta_base.get("district"),
+        meta_base_profile.get("district"),
+        event.get("district"),
+        event_base.get("district"),
+        event_base_profile.get("district"),
+        getattr(base_profile, "district", None),
+    )
+    latitude = _safe_float(
+        _pick_text(
+            meta.get("latitude"),
+            meta_base.get("latitude"),
+            meta_base_profile.get("latitude"),
+            event.get("latitude"),
+            event_base.get("latitude"),
+            event_base_profile.get("latitude"),
+            getattr(base_profile, "latitude", None),
+        )
+    )
+    longitude = _safe_float(
+        _pick_text(
+            meta.get("longitude"),
+            meta_base.get("longitude"),
+            meta_base_profile.get("longitude"),
+            event.get("longitude"),
+            event_base.get("longitude"),
+            event_base_profile.get("longitude"),
+            getattr(base_profile, "longitude", None),
+        )
+    )
+    weather_snapshot = _pick_text(
+        meta.get("weather_snapshot"),
+        meta_base.get("weather_snapshot"),
+        meta_base_profile.get("weather_snapshot"),
+        event.get("weather_snapshot"),
+        event_base.get("weather_snapshot"),
+        event_base_profile.get("weather_snapshot"),
+        getattr(base_profile, "weather_snapshot", None),
+    )
+    harvest_window_days = getattr(getattr(profile, "constraints", None), "harvest_window_days", None)
     return {
         **_build_expert_review_list_item(event),
         "image_url": event.get("image_url") or (f"/uploads/{event.get('image_id')}" if event.get("image_id") else None),
         "symptoms": event.get("symptoms") if isinstance(event.get("symptoms"), list) else [],
         "symptoms_text": "，".join([str(item).strip() for item in _as_clean_list(event.get("symptoms")) if str(item).strip()]),
         "crop_type": event.get("crop_type"),
-        "growth_stage": meta.get("growth_stage") or event.get("growth_stage"),
-        "base_id": meta.get("base_id") or event.get("base_id"),
+        "growth_stage": meta.get("growth_stage") or event.get("growth_stage") or getattr(base_profile, "growth_stage", None),
+        "base_id": meta.get("base_id") or event.get("base_id") or resolved_base_id,
         "base_name": meta.get("base_name") or event.get("base_name"),
         "environment": meta.get("environment"),
+        "location": location,
+        "province": province,
+        "city": city,
+        "district": district,
+        "latitude": latitude,
+        "longitude": longitude,
+        "weather_snapshot": weather_snapshot,
+        "harvest_window_days": harvest_window_days,
         "profile_summary": {
             "farm_scale": meta.get("farm_scale"),
             "pesticide_access_level": meta.get("pesticide_access_level"),
