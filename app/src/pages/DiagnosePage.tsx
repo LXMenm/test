@@ -1370,9 +1370,9 @@ export function DiagnosePage() {
                         </div>
                       </div>
                       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                        <div>
+                        <div className="flex flex-col">
                           <h5 className="text-white/60 text-sm mb-2">图像top3</h5>
-                          <div className="space-y-2">
+                          <div className="space-y-2 flex-1">
                             {parseTop3Candidates(latestPayload ?? result ?? {}, result, 'image').map((item, idx) => (
                               <div key={idx} className="flex items-center gap-3">
                                 <Badge
@@ -1394,11 +1394,14 @@ export function DiagnosePage() {
                                 <span className="text-[#c8f7c5] font-mono">{item.probPct.toFixed(2)}%</span>
                               </div>
                             ))}
+                            {parseTop3Candidates(latestPayload ?? result ?? {}, result, 'image').length === 0 && (
+                              <div className="text-white/40 text-sm">无数据</div>
+                            )}
                           </div>
                         </div>
-                        <div>
+                        <div className="flex flex-col">
                           <h5 className="text-white/60 text-sm mb-2">文本top3</h5>
-                          <div className="space-y-2">
+                          <div className="space-y-2 flex-1">
                             {parseTop3Candidates(latestPayload ?? result ?? {}, result, 'text').map((item, idx) => (
                               <div key={idx} className="flex items-center gap-3">
                                 <Badge
@@ -1420,11 +1423,14 @@ export function DiagnosePage() {
                                 <span className="text-[#c8f7c5] font-mono">{item.probPct.toFixed(2)}%</span>
                               </div>
                             ))}
+                            {parseTop3Candidates(latestPayload ?? result ?? {}, result, 'text').length === 0 && (
+                              <div className="text-white/40 text-sm">无数据</div>
+                            )}
                           </div>
                         </div>
-                        <div>
+                        <div className="flex flex-col">
                           <h5 className="text-white/60 text-sm mb-2">融合top3</h5>
-                          <div className="space-y-2">
+                          <div className="space-y-2 flex-1">
                             {parseTop3Candidates(latestPayload ?? result ?? {}, result, 'fusion').map((item, idx) => (
                               <div key={idx} className="flex items-center gap-3">
                                 <Badge
@@ -1446,6 +1452,9 @@ export function DiagnosePage() {
                                 <span className="text-[#c8f7c5] font-mono">{item.probPct.toFixed(2)}%</span>
                               </div>
                             ))}
+                            {parseTop3Candidates(latestPayload ?? result ?? {}, result, 'fusion').length === 0 && (
+                              <div className="text-white/40 text-sm">无数据</div>
+                            )}
                           </div>
                         </div>
                       </div>
