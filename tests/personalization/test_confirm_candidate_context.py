@@ -636,3 +636,118 @@ def test_waiting_for_expert_decision_rejects_choice_confirmation(monkeypatch, tm
     )
     assert bad_response.status_code == 400
     assert "waiting_for_expert_decision" in str((bad_response.json() or {}).get("detail"))
+
+
+def test_waiting_for_expert_decision_accept_alias_maps_to_request_expert_review(monkeypatch, tmp_path):
+    _setup_event_dirs(monkeypatch, tmp_path)
+    upload_dir = _seed_upload(tmp_path, "supplement-accept-alias.jpg")
+    monkeypatch.setattr(app_module, "UPLOAD_DIR", upload_dir)
+    _seed_previous_case("trace-accept-alias", "supplement-accept-alias.jpg")
+    _install_recommend_expert_review_agents(monkeypatch)
+
+    client = TestClient(app_module.app)
+    pre = client.post(
+        "/api/diagnose-confirm",
+        json={
+            "trace_id": "trace-accept-alias",
+            "previous_trace_id": "trace-accept-alias",
+            "image_id": "supplement-accept-alias.jpg",
+            "crop_type": "番茄",
+            "symptoms": ["病斑扩大"],
+            "choice": "other",
+        },
+    )
+    pre.raise_for_status()
+    assert pre.json()["status"] == "waiting_for_expert_decision"
+
+    resp = client.post(
+        "/api/diagnose-confirm",
+        json={
+            "trace_id": "trace-accept-alias",
+            "previous_trace_id": "trace-accept-alias",
+            "image_id": "supplement-accept-alias.jpg",
+            "crop_type": "番茄",
+            "symptoms": ["病斑扩大"],
+            "final_decision": "accept",
+        },
+    )
+    resp.raise_for_status()
+    body = resp.json()
+    assert body["status"] == "pending_expert_review"
+    assert body["expert_review_status"] == "PENDING"
+
+
+def test_waiting_for_expert_decision_decline_alias_maps_to_use_current_result(monkeypatch, tmp_path):
+    _setup_event_dirs(monkeypatch, tmp_path)
+    upload_dir = _seed_upload(tmp_path, "supplement-decline-alias.jpg")
+    monkeypatch.setattr(app_module, "UPLOAD_DIR", upload_dir)
+    _seed_previous_case("trace-decline-alias", "supplement-decline-alias.jpg")
+    _install_recommend_expert_review_agents(monkeypatch)
+
+    client = TestClient(app_module.app)
+    pre = client.post(
+        "/api/diagnose-confirm",
+        json={
+            "trace_id": "trace-decline-alias",
+            "previous_trace_id": "trace-decline-alias",
+            "image_id": "supplement-decline-alias.jpg",
+            "crop_type": "番茄",
+            "symptoms": ["病斑扩大"],
+            "choice": "other",
+        },
+    )
+    pre.raise_for_status()
+    assert pre.json()["status"] == "waiting_for_expert_decision"
+
+    resp = client.post(
+        "/api/diagnose-confirm",
+        json={
+            "trace_id": "trace-decline-alias",
+            "previous_trace_id": "trace-decline-alias",
+            "image_id": "supplement-decline-alias.jpg",
+            "crop_type": "番茄",
+            "symptoms": ["病斑扩大"],
+            "final_decision": "decline",
+        },
+    )
+    resp.raise_for_status()
+    body = resp.json()
+    assert body["status"] == "completed"
+    assert body["expert_review_status"] == "DECLINED"
+
+
+def test_waiting_for_expert_decision_rejects_invalid_final_decision(monkeypatch, tmp_path):
+    _setup_event_dirs(monkeypatch, tmp_path)
+    upload_dir = _seed_upload(tmp_path, "supplement-invalid-final.jpg")
+    monkeypatch.setattr(app_module, "UPLOAD_DIR", upload_dir)
+    _seed_previous_case("trace-invalid-final", "supplement-invalid-final.jpg")
+    _install_recommend_expert_review_agents(monkeypatch)
+
+    client = TestClient(app_module.app)
+    pre = client.post(
+        "/api/diagnose-confirm",
+        json={
+            "trace_id": "trace-invalid-final",
+            "previous_trace_id": "trace-invalid-final",
+            "image_id": "supplement-invalid-final.jpg",
+            "crop_type": "番茄",
+            "symptoms": ["病斑扩大"],
+            "choice": "other",
+        },
+    )
+    pre.raise_for_status()
+    assert pre.json()["status"] == "waiting_for_expert_decision"
+
+    bad = client.post(
+        "/api/diagnose-confirm",
+        json={
+            "trace_id": "trace-invalid-final",
+            "previous_trace_id": "trace-invalid-final",
+            "image_id": "supplement-invalid-final.jpg",
+            "crop_type": "番茄",
+            "symptoms": ["病斑扩大"],
+            "final_decision": "maybe_later",
+        },
+    )
+    assert bad.status_code == 400
+    assert "final_decision" in str((bad.json() or {}).get("detail"))

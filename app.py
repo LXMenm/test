@@ -1469,18 +1469,23 @@ def _inherit_previous_diagnosis_context(
     }
 
 
-def _normalize_expert_review_decision(value: Any) -> str | None:
+def _normalize_final_decision(value: Any) -> str | None:
     normalized = str(value or "").strip().lower()
     if not normalized:
         return None
     alias_map = {
-        "request_expert_review": "accept",
-        "use_current_result": "decline",
+        "request_expert_review": "request_expert_review",
+        "use_current_result": "use_current_result",
+        "accept": "request_expert_review",
+        "decline": "use_current_result",
     }
     normalized = alias_map.get(normalized, normalized)
-    if normalized in {"accept", "decline"}:
+    if normalized in {"request_expert_review", "use_current_result"}:
         return normalized
-    raise HTTPException(status_code=400, detail="expert_review_decision 必须为 use_current_result / request_expert_review / null")
+    raise HTTPException(
+        status_code=400,
+        detail="final_decision 非法，必须为 request_expert_review / use_current_result（兼容: accept / decline）",
+    )
 
 
 def _ensure_follow_up_plan(state: dict[str, Any]) -> dict[str, Any]:
@@ -2216,13 +2221,14 @@ def _diagnose_confirm_core(request: Request, payload: dict) -> dict:
     final_decision_raw = payload.get("final_decision")
     if final_decision_raw is None:
         final_decision_raw = payload.get("expert_review_decision")
-    final_decision = _normalize_expert_review_decision(final_decision_raw)
+    final_decision = _normalize_final_decision(final_decision_raw)
     print(
         "[DiagnoseConfirm] input",
         json.dumps(
             {
                 "trace_id": trace_id,
                 "image_id": image_id,
+                "raw_final_decision": final_decision_raw,
                 "final_decision": final_decision,
                 "choice": choice,
             },
@@ -2553,6 +2559,7 @@ def _diagnose_confirm_core(request: Request, payload: dict) -> dict:
             {
                 "trace_id": trace_id,
                 "terminal_action": terminal_action,
+                "final_decision": final_decision,
                 "confirm_status": confirm_status,
                 "expert_review_selected": expert_review_selected,
                 "expert_review_status": expert_review_status,
