@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from 'react';
-import { Bell, Eye, Loader2, User, Stethoscope, CheckCircle2 } from 'lucide-react';
+import { useEffect, useState, useCallback, useMemo } from 'react';
+import { Eye, Loader2, Stethoscope, CheckCircle2 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -87,7 +87,7 @@ export function ExpertReviewPage() {
 
   const pendingCount = items.length;
 
-  const loadPending = async () => {
+  const loadPending = useCallback(async () => {
     setLoading(true);
     setListError('');
     try {
@@ -109,7 +109,7 @@ export function ExpertReviewPage() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [authUser]);
 
   const loadDetail = async (traceId: string) => {
     setSelectedTraceId(traceId);
@@ -171,9 +171,8 @@ export function ExpertReviewPage() {
 
   useEffect(() => {
     void loadPending();
-  }, []);
+  }, [loadPending]);
 
-  const recentPending = useMemo(() => items.slice(0, 5), [items]);
   const getReviewTag = (item: PendingCaseItem) => {
     if (item.expert_review_status === 'COMPLETED' || item.status === 'completed') {
       return <Badge className="bg-emerald-400 text-black">已复核</Badge>;
@@ -187,125 +186,77 @@ export function ExpertReviewPage() {
         <h1 className="text-3xl font-bold text-white"><span className="text-[#c8f7c5]">专家复核</span></h1>
         <p className="text-white/60 mt-1">专家对系统诊断结果进行复核确认，确保诊断准确性</p>
       </div>
-      <div className="rounded-xl border border-white/15 bg-white/5 p-3 text-sm text-white/80">
-        当前身份：<span className="font-mono">{authUser?.userId || '-'}</span> · <span className="font-semibold">{authUser?.role || '-'}</span>
-      </div>
 
-      <div className="grid lg:grid-cols-3 gap-6">
-        <div className="lg:col-span-2">
-          <Card className="glass-card">
-            <CardHeader className="flex flex-row items-center justify-between">
-              <CardTitle className="text-white flex items-center gap-2">
-                <Stethoscope className="w-5 h-5 text-[#c8f7c5]" />
-                待复核病例列表
-              </CardTitle>
-              {pendingCount > 0 && (
-                <Badge className="bg-orange-400/20 text-orange-300 border-orange-400/30 px-3 py-1">
-                  {pendingCount} 个待处理
-                </Badge>
-              )}
-            </CardHeader>
-            <CardContent>
-              {loading ? (
-                <div className="flex items-center justify-center py-12">
-                  <Loader2 className="w-8 h-8 animate-spin text-[#c8f7c5]" />
-                  <span className="ml-3 text-white/70">加载中...</span>
-                </div>
-              ) : listError ? (
-                <div className="text-center py-12">
-                  <p className="text-red-300 text-base font-medium">{listError}</p>
-                </div>
-              ) : items.length === 0 ? (
-                <div className="text-center py-16">
-                  <CheckCircle2 className="w-16 h-16 text-[#c8f7c5]/30 mx-auto mb-4" />
-                  <h3 className="text-xl text-white/80 mb-2">所有病例已复核完成</h3>
-                  <p className="text-white/50 text-sm">暂无待复核病例</p>
-                </div>
-              ) : (
-                <div className="space-y-3">
-                  {items.map((item) => (
-                    <div key={item.trace_id} className="group rounded-xl border border-white/10 bg-white/5 hover:bg-white/[0.08] p-4 transition-all duration-300 hover:border-[#c8f7c5]/30">
-                      <div className="grid grid-cols-1 md:grid-cols-12 gap-4 items-center">
-                        <div className="md:col-span-3">
-                          <p className="text-white/40 text-xs mb-1 font-mono">trace_id</p>
-                          <p className="text-white font-mono text-sm">{item.trace_id.slice(0, 16)}...</p>
-                        </div>
-                        <div className="md:col-span-2">
-                          <p className="text-white/40 text-xs mb-1">用户</p>
-                          <p className="text-white font-medium text-sm">{item.farmer_name || item.farmer_id || '-'}</p>
-                        </div>
-                        <div className="md:col-span-3">
-                          <p className="text-white/40 text-xs mb-1">提交时间</p>
-                          <p className="text-white text-sm">{formatTime(item.submitted_at)}</p>
-                        </div>
-                        <div className="md:col-span-2">
-                          <p className="text-white/40 text-xs mb-1">系统诊断</p>
-                          <p className="text-[#c8f7c5] font-medium text-sm">{item.top1_disease || '-'}</p>
-                        </div>
-                        <div className="md:col-span-1">
-                          {getReviewTag(item)}
-                        </div>
-                        <div className="md:col-span-1 flex justify-end">
-                          <Button 
-                            size="sm" 
-                            variant="outline" 
-                            className="border-[#c8f7c5]/30 text-[#c8f7c5] hover:bg-[#c8f7c5]/10 hover:border-[#c8f7c5] transition-all duration-200"
-                            onClick={() => { void loadDetail(item.trace_id); }}
-                          >
-                            <Eye className="w-4 h-4 mr-1" />
-                            详情
-                          </Button>
-                        </div>
-                      </div>
+      <Card className="glass-card">
+        <CardHeader className="flex flex-row items-center justify-between">
+          <CardTitle className="text-white flex items-center gap-2">
+            <Stethoscope className="w-5 h-5 text-[#c8f7c5]" />
+            待复核病例列表
+          </CardTitle>
+          {pendingCount > 0 && (
+            <Badge className="bg-orange-400/20 text-orange-300 border-orange-400/30 px-3 py-1">
+              {pendingCount} 个待处理
+            </Badge>
+          )}
+        </CardHeader>
+        <CardContent>
+          {loading ? (
+            <div className="flex items-center justify-center py-12">
+              <Loader2 className="w-8 h-8 animate-spin text-[#c8f7c5]" />
+              <span className="ml-3 text-white/70">加载中...</span>
+            </div>
+          ) : listError ? (
+            <div className="text-center py-12">
+              <p className="text-red-300 text-base font-medium">{listError}</p>
+            </div>
+          ) : items.length === 0 ? (
+            <div className="text-center py-16">
+              <CheckCircle2 className="w-16 h-16 text-[#c8f7c5]/30 mx-auto mb-4" />
+              <h3 className="text-xl text-white/80 mb-2">所有病例已复核完成</h3>
+              <p className="text-white/50 text-sm">暂无待复核病例</p>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {items.map((item) => (
+                <div key={item.trace_id} className="group rounded-xl border border-white/10 bg-white/5 hover:bg-white/[0.08] p-4 transition-all duration-300 hover:border-[#c8f7c5]/30">
+                  <div className="grid grid-cols-1 md:grid-cols-12 gap-4 items-center">
+                    <div className="md:col-span-3">
+                      <p className="text-white/40 text-xs mb-1 font-mono">trace_id</p>
+                      <p className="text-white font-mono text-sm">{item.trace_id.slice(0, 16)}...</p>
                     </div>
-                  ))}
-                </div>
-              )}
-            </CardContent>
-          </Card>
-        </div>
-
-        <div className="lg:col-span-1">
-          <Card className="glass-card">
-            <CardHeader className="pb-4">
-              <CardTitle className="text-white flex items-center gap-2">
-                <Bell className="w-5 h-5 text-[#c8f7c5]" />
-                待复核提醒
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="flex items-center justify-between mb-4">
-                <span className="text-white/60 text-sm">共 {pendingCount} 个病例</span>
-                <Badge className="bg-[#c8f7c5] text-black text-sm px-3 py-1">{pendingCount}</Badge>
-              </div>
-              <div className="space-y-2">
-                {recentPending.length === 0 ? (
-                  <div className="text-center py-6">
-                    <CheckCircle2 className="w-12 h-12 text-[#c8f7c5]/50 mx-auto mb-2" />
-                    <p className="text-white/60 text-sm">暂无待复核病例</p>
+                    <div className="md:col-span-2">
+                      <p className="text-white/40 text-xs mb-1">用户</p>
+                      <p className="text-white font-medium text-sm">{item.farmer_name || item.farmer_id || '-'}</p>
+                    </div>
+                    <div className="md:col-span-3">
+                      <p className="text-white/40 text-xs mb-1">提交时间</p>
+                      <p className="text-white text-sm">{formatTime(item.submitted_at)}</p>
+                    </div>
+                    <div className="md:col-span-2">
+                      <p className="text-white/40 text-xs mb-1">系统诊断</p>
+                      <p className="text-[#c8f7c5] font-medium text-sm">{item.top1_disease || '-'}</p>
+                    </div>
+                    <div className="md:col-span-1">
+                      {getReviewTag(item)}
+                    </div>
+                    <div className="md:col-span-1 flex justify-end">
+                      <Button 
+                        size="sm" 
+                        variant="outline" 
+                        className="border-[#c8f7c5]/30 text-[#c8f7c5] hover:bg-[#c8f7c5]/10 hover:border-[#c8f7c5] transition-all duration-200"
+                        onClick={() => { void loadDetail(item.trace_id); }}
+                      >
+                        <Eye className="w-4 h-4 mr-1" />
+                        详情
+                      </Button>
+                    </div>
                   </div>
-                ) : recentPending.map((item) => (
-                  <button
-                    key={item.trace_id}
-                    type="button"
-                    className="w-full text-left p-3 rounded-lg bg-white/5 hover:bg-white/10 transition-all duration-200 border border-white/5 hover:border-[#c8f7c5]/30"
-                    onClick={() => { void loadDetail(item.trace_id); }}
-                  >
-                    <div className="flex items-center justify-between mb-1">
-                      <span className="text-xs text-white/50 font-mono">{item.trace_id.slice(0, 12)}...</span>
-                      <span className="text-[#c8f7c5] text-xs">{item.top1_disease}</span>
-                    </div>
-                    <div className="flex items-center gap-2 text-xs text-white/70">
-                      <User className="w-3 h-3" />
-                      <span>{item.farmer_name || item.farmer_id || '未知用户'}</span>
-                    </div>
-                  </button>
-                ))}
-              </div>
-            </CardContent>
-          </Card>
-        </div>
-      </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
       {detailError && !open ? (
         <div className="rounded-xl border border-red-300/40 bg-red-500/10 px-4 py-3 text-red-200 text-sm">
           {detailError}
@@ -314,189 +265,190 @@ export function ExpertReviewPage() {
 
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className={cn(
-          "max-w-7xl max-h-[95vh] overflow-y-auto bg-gradient-to-b from-[#0f1614] to-[#0a120e] border-[#86b89d]/30 text-white shadow-2xl dashboard-scrollbar"
+          "!max-w-[85vw] !w-[1000px] max-h-[90vh] overflow-y-auto bg-gradient-to-b from-[#0f1614] to-[#0a120e] border-[#86b89d]/30 text-white shadow-2xl dashboard-scrollbar"
         )}>
-          <DialogHeader className="pb-4 border-b border-white/10">
-            <DialogTitle className="flex items-center gap-3 text-2xl">
-              <div className="p-2 rounded-lg bg-[#c8f7c5]/10">
-                <Stethoscope className="w-6 h-6 text-[#c8f7c5]" />
+          <DialogHeader className="pb-3 border-b border-white/10">
+            <DialogTitle className="flex items-center gap-2 text-xl">
+              <div className="p-1.5 rounded-lg bg-[#c8f7c5]/10">
+                <Stethoscope className="w-5 h-5 text-[#c8f7c5]" />
               </div>
               专家复核详情
               {detail ? getReviewTag(detail) : null}
             </DialogTitle>
           </DialogHeader>
           {!detail || detailLoading ? (
-            <div className="flex items-center justify-center py-20">
-              <Loader2 className="w-10 h-10 animate-spin text-[#c8f7c5]" />
-              <span className="ml-4 text-white/70 text-lg">加载中...</span>
+            <div className="flex items-center justify-center py-16">
+              <Loader2 className="w-8 h-8 animate-spin text-[#c8f7c5]" />
+              <span className="ml-3 text-white/70 text-base">加载中...</span>
             </div>
           ) : (
-            <div className="space-y-6 py-6 px-2">
-              <section className="rounded-2xl border border-[#86b89d]/20 bg-gradient-to-br from-[#13221c] to-[#0f1a15] p-6 space-y-5">
-                <h3 className="text-[#c8f7c5] font-semibold text-xl flex items-center gap-3">
-                  <div className="w-1.5 h-7 bg-[#c8f7c5] rounded-full" />
+            <div className="space-y-4 py-4 px-3">
+              <section className="rounded-xl border border-[#86b89d]/20 bg-gradient-to-br from-[#13221c] to-[#0f1a15] p-5 space-y-4">
+                <h3 className="text-[#c8f7c5] font-semibold text-lg flex items-center gap-2">
+                  <div className="w-1 h-5 bg-[#c8f7c5] rounded-full" />
                   A. 用户输入
                 </h3>
-                <div className="grid md:grid-cols-12 gap-5">
-                  <div className="md:col-span-5">
+                <div className="grid lg:grid-cols-2 gap-5">
+                  <div>
                     {detail.image_url && (
-                      <div className="rounded-xl overflow-hidden border border-white/10 bg-black/40">
+                      <div className="rounded-lg overflow-hidden border border-white/10 bg-black/40">
                         <img 
                           src={detail.image_url} 
                           alt="病例图片" 
-                          className="w-full max-h-80 object-contain mx-auto" 
+                          className="w-full max-h-64 object-contain mx-auto" 
                         />
                       </div>
                     )}
                   </div>
-                  <div className="md:col-span-7 space-y-4">
-                    <div className="grid grid-cols-2 gap-4">
-                      <div className="space-y-2">
-                        <p className="text-white/40 text-xs uppercase tracking-wider">症状文本</p>
-                        <div className="bg-white/5 rounded-lg p-4 min-h-[60px]">
-                          <p className="text-white/90 break-words">{detail.symptoms_text || '-'}</p>
+                  <div className="space-y-3">
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="space-y-1.5">
+                        <p className="text-white/40 text-[10px] uppercase tracking-wider">症状文本</p>
+                        <div className="bg-white/5 rounded-lg p-3 min-h-[60px]">
+                          <p className="text-white/90 break-words leading-relaxed text-sm">{detail.symptoms_text || '-'}</p>
                         </div>
                       </div>
-                      <div className="space-y-2">
-                        <p className="text-white/40 text-xs uppercase tracking-wider">基地 / 环境</p>
-                        <div className="bg-white/5 rounded-lg p-4 min-h-[60px]">
-                          <p className="text-white/90 break-words">{detail.base_name || detail.base_id || '-'} / {detail.environment || '-'}</p>
-                        </div>
-                      </div>
-                    </div>
-                    <div className="grid grid-cols-3 gap-4">
-                      <div className="space-y-2">
-                        <p className="text-white/40 text-xs uppercase tracking-wider">生育期</p>
-                        <div className="bg-white/5 rounded-lg p-4">
-                          <p className="text-white/90">{detail.growth_stage || '-'}</p>
-                        </div>
-                      </div>
-                      <div className="space-y-2">
-                        <p className="text-white/40 text-xs uppercase tracking-wider">规模</p>
-                        <div className="bg-white/5 rounded-lg p-4">
-                          <p className="text-white/90">{detail.profile_summary?.farm_scale || '-'}</p>
-                        </div>
-                      </div>
-                      <div className="space-y-2">
-                        <p className="text-white/40 text-xs uppercase tracking-wider">购药能力</p>
-                        <div className="bg-white/5 rounded-lg p-4">
-                          <p className="text-white/90">{detail.profile_summary?.pesticide_access_level || '-'}</p>
+                      <div className="space-y-1.5">
+                        <p className="text-white/40 text-[10px] uppercase tracking-wider">基地 / 环境</p>
+                        <div className="bg-white/5 rounded-lg p-3 min-h-[60px]">
+                          <p className="text-white/90 break-words leading-relaxed text-sm">{detail.base_name || detail.base_id || '-'} / {detail.environment || '-'}</p>
                         </div>
                       </div>
                     </div>
-                    <div className="space-y-2">
-                      <p className="text-white/40 text-xs uppercase tracking-wider">设备</p>
-                      <div className="bg-white/5 rounded-lg p-4">
-                        <p className="text-white/90">{(detail.profile_summary?.equipment || []).join('、') || '-'}</p>
+                    <div className="grid grid-cols-3 gap-3">
+                      <div className="space-y-1.5">
+                        <p className="text-white/40 text-[10px] uppercase tracking-wider">生育期</p>
+                        <div className="bg-white/5 rounded-lg p-3">
+                          <p className="text-white/90 text-sm">{detail.growth_stage || '-'}</p>
+                        </div>
+                      </div>
+                      <div className="space-y-1.5">
+                        <p className="text-white/40 text-[10px] uppercase tracking-wider">规模</p>
+                        <div className="bg-white/5 rounded-lg p-3">
+                          <p className="text-white/90 text-sm">{detail.profile_summary?.farm_scale || '-'}</p>
+                        </div>
+                      </div>
+                      <div className="space-y-1.5">
+                        <p className="text-white/40 text-[10px] uppercase tracking-wider">购药能力</p>
+                        <div className="bg-white/5 rounded-lg p-3">
+                          <p className="text-white/90 text-sm">{detail.profile_summary?.pesticide_access_level || '-'}</p>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="space-y-1.5">
+                      <p className="text-white/40 text-[10px] uppercase tracking-wider">设备</p>
+                      <div className="bg-white/5 rounded-lg p-3">
+                        <p className="text-white/90 text-sm">{(detail.profile_summary?.equipment || []).join('、') || '-'}</p>
                       </div>
                     </div>
                   </div>
                 </div>
               </section>
 
-              <section className="rounded-2xl border border-[#86b89d]/20 bg-gradient-to-br from-[#13221c] to-[#0f1a15] p-6 space-y-5">
-                <h3 className="text-[#c8f7c5] font-semibold text-xl flex items-center gap-3">
-                  <div className="w-1.5 h-7 bg-[#c8f7c5] rounded-full" />
+              <section className="rounded-xl border border-[#86b89d]/20 bg-gradient-to-br from-[#13221c] to-[#0f1a15] p-5 space-y-4">
+                <h3 className="text-[#c8f7c5] font-semibold text-lg flex items-center gap-2">
+                  <div className="w-1 h-5 bg-[#c8f7c5] rounded-full" />
                   B. 模型输出
                 </h3>
-                <div className="grid md:grid-cols-12 gap-5">
-                  <div className="md:col-span-4 space-y-4">
-                    <div className="bg-white/5 rounded-xl p-5 border border-white/5">
-                      <p className="text-white/40 text-xs uppercase tracking-wider mb-3">Image Top 3</p>
-                      <div className="space-y-2">
-                        {(detail.model_outputs?.image_top3 || []).map((it, idx) => (
-                          <div key={idx} className="flex justify-between items-center py-1.5">
-                            <span className="text-white/90 font-medium">{it[0]}</span>
-                            <span className="text-[#c8f7c5] font-mono text-lg">{formatProb(it[1])}</span>
-                          </div>
-                        )) || '-'}
-                      </div>
-                    </div>
-                    <div className="bg-white/5 rounded-xl p-5 border border-white/5">
-                      <p className="text-white/40 text-xs uppercase tracking-wider mb-3">Text Top 3</p>
-                      <div className="space-y-2">
-                        {(detail.model_outputs?.text_top3 || []).map((it, idx) => (
-                          <div key={idx} className="flex justify-between items-center py-1.5">
-                            <span className="text-white/90 font-medium">{it[0]}</span>
-                            <span className="text-[#c8f7c5] font-mono text-lg">{formatProb(it[1])}</span>
-                          </div>
-                        )) || '-'}
-                      </div>
+                <div className="grid lg:grid-cols-3 gap-4">
+                  <div className="bg-white/5 rounded-lg p-4 border border-white/5">
+                    <p className="text-white/40 text-[10px] uppercase tracking-wider mb-3">Image Top 3</p>
+                    <div className="space-y-2">
+                      {(detail.model_outputs?.image_top3 || []).map((it, idx) => (
+                        <div key={idx} className="flex justify-between items-center py-1.5 border-b border-white/5 last:border-0">
+                          <span className="text-white/90 font-medium text-sm">{it[0]}</span>
+                          <span className="text-[#c8f7c5] font-mono text-base">{formatProb(it[1])}</span>
+                        </div>
+                      ))}
+                      {(detail.model_outputs?.image_top3 || []).length === 0 && (
+                        <div className="text-white/40 text-xs py-3">无数据</div>
+                      )}
                     </div>
                   </div>
-                  <div className="md:col-span-8 space-y-4">
-                    <div className="grid grid-cols-2 gap-4">
-                      <div className="bg-white/5 rounded-xl p-5 border border-white/5">
-                        <p className="text-white/40 text-xs uppercase tracking-wider mb-3">Fusion Top 3</p>
-                        <div className="space-y-2">
-                          {(detail.model_outputs?.fusion_top3 || []).map((it, idx) => (
-                            <div key={idx} className="flex justify-between items-center py-1.5">
-                              <span className="text-white/90 font-medium">{it[0]}</span>
-                              <span className="text-[#c8f7c5] font-mono text-lg font-bold">{formatProb(it[1])}</span>
-                            </div>
-                          )) || '-'}
+                  <div className="bg-white/5 rounded-lg p-4 border border-white/5">
+                    <p className="text-white/40 text-[10px] uppercase tracking-wider mb-3">Text Top 3</p>
+                    <div className="space-y-2">
+                      {(detail.model_outputs?.text_top3 || []).map((it, idx) => (
+                        <div key={idx} className="flex justify-between items-center py-1.5 border-b border-white/5 last:border-0">
+                          <span className="text-white/90 font-medium text-sm">{it[0]}</span>
+                          <span className="text-[#c8f7c5] font-mono text-base">{formatProb(it[1])}</span>
                         </div>
-                      </div>
-                      <div className="grid grid-rows-2 gap-4">
-                        <div className="bg-white/5 rounded-xl p-5 border border-white/5 text-center">
-                          <p className="text-white/40 text-xs uppercase tracking-wider mb-2">最终置信度</p>
-                          <p className="text-4xl font-bold text-[#c8f7c5]">{formatProb(detail.model_outputs?.final_confidence)}</p>
-                        </div>
-                        <div className="bg-white/5 rounded-xl p-5 border border-white/5 text-center">
-                          <p className="text-white/40 text-xs uppercase tracking-wider mb-2">图文冲突</p>
-                          <p className={`text-3xl font-bold ${detail.model_outputs?.modality_conflict_flag ? 'text-orange-400' : 'text-emerald-400'}`}>
-                            {detail.model_outputs?.modality_conflict_flag ? '是' : '否'}
-                          </p>
-                        </div>
-                      </div>
+                      ))}
+                      {(detail.model_outputs?.text_top3 || []).length === 0 && (
+                        <div className="text-white/40 text-xs py-3">无数据</div>
+                      )}
                     </div>
+                  </div>
+                  <div className="bg-white/5 rounded-lg p-4 border border-white/5">
+                    <p className="text-white/40 text-[10px] uppercase tracking-wider mb-3">Fusion Top 3</p>
+                    <div className="space-y-2">
+                      {(detail.model_outputs?.fusion_top3 || []).map((it, idx) => (
+                        <div key={idx} className="flex justify-between items-center py-1.5 border-b border-white/5 last:border-0">
+                          <span className="text-white/90 font-medium text-sm">{it[0]}</span>
+                          <span className="text-[#c8f7c5] font-mono text-base font-bold">{formatProb(it[1])}</span>
+                        </div>
+                      ))}
+                      {(detail.model_outputs?.fusion_top3 || []).length === 0 && (
+                        <div className="text-white/40 text-xs py-3">无数据</div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="bg-white/5 rounded-lg p-4 border border-white/5 text-center">
+                    <p className="text-white/40 text-[10px] uppercase tracking-wider mb-2">最终置信度</p>
+                    <p className="text-3xl font-bold text-[#c8f7c5]">{formatProb(detail.model_outputs?.final_confidence)}</p>
+                  </div>
+                  <div className="bg-white/5 rounded-lg p-4 border border-white/5 text-center">
+                    <p className="text-white/40 text-[10px] uppercase tracking-wider mb-2">图文冲突</p>
+                    <p className={`text-2xl font-bold ${detail.model_outputs?.modality_conflict_flag ? 'text-orange-400' : 'text-emerald-400'}`}>
+                      {detail.model_outputs?.modality_conflict_flag ? '是' : '否'}
+                    </p>
                   </div>
                 </div>
               </section>
 
-              <section className="rounded-2xl border border-[#86b89d]/20 bg-gradient-to-br from-[#13221c] to-[#0f1a15] p-6 space-y-5">
-                <h3 className="text-[#c8f7c5] font-semibold text-xl flex items-center gap-3">
-                  <div className="w-1.5 h-7 bg-[#c8f7c5] rounded-full" />
+              <section className="rounded-xl border border-[#86b89d]/20 bg-gradient-to-br from-[#13221c] to-[#0f1a15] p-5 space-y-4">
+                <h3 className="text-[#c8f7c5] font-semibold text-lg flex items-center gap-2">
+                  <div className="w-1 h-5 bg-[#c8f7c5] rounded-full" />
                   C. 专家填写
                 </h3>
-                <div className="grid md:grid-cols-12 gap-5">
-                  <div className="md:col-span-6 space-y-4">
+                <div className="grid lg:grid-cols-2 gap-5">
+                  <div className="space-y-3">
                     <div>
-                      <Label className="text-white/70 mb-2 block text-sm uppercase tracking-wider">最终确认病害</Label>
+                      <Label className="text-white/70 mb-2 block text-xs uppercase tracking-wider">最终确认病害</Label>
                       <Input
                         value={form.expert_review_result}
                         onChange={(e) => setForm((prev) => ({ ...prev, expert_review_result: e.target.value }))}
-                        className="bg-white/5 border-white/20 text-white focus:border-[#c8f7c5] focus:ring-[#c8f7c5]/20 h-14 text-lg"
+                        className="bg-white/5 border-white/20 text-white focus:border-[#c8f7c5] focus:ring-[#c8f7c5]/20 h-11 text-base"
                         placeholder="请输入最终确认的病害名称"
                       />
                     </div>
                     <div>
-                      <Label className="text-white/70 mb-2 block text-sm uppercase tracking-wider">补充症状</Label>
+                      <Label className="text-white/70 mb-2 block text-xs uppercase tracking-wider">补充症状</Label>
                       <Input
                         value={form.expert_review_supplement_symptoms}
                         onChange={(e) => setForm((prev) => ({ ...prev, expert_review_supplement_symptoms: e.target.value }))}
-                        className="bg-white/5 border-white/20 text-white focus:border-[#c8f7c5] focus:ring-[#c8f7c5]/20 h-14 text-lg"
+                        className="bg-white/5 border-white/20 text-white focus:border-[#c8f7c5] focus:ring-[#c8f7c5]/20 h-11 text-base"
                         placeholder="请输入补充的症状"
                       />
                     </div>
                   </div>
-                  <div className="md:col-span-6">
-                    <div>
-                      <Label className="text-white/70 mb-2 block text-sm uppercase tracking-wider">复核备注</Label>
-                      <Textarea
-                        value={form.expert_review_notes}
-                        onChange={(e) => setForm((prev) => ({ ...prev, expert_review_notes: e.target.value }))}
-                        className="bg-white/5 border-white/20 text-white focus:border-[#c8f7c5] focus:ring-[#c8f7c5]/20 min-h-36 text-lg"
-                        placeholder="请输入复核备注"
-                      />
-                    </div>
+                  <div>
+                    <Label className="text-white/70 mb-2 block text-xs uppercase tracking-wider">复核备注</Label>
+                    <Textarea
+                      value={form.expert_review_notes}
+                      onChange={(e) => setForm((prev) => ({ ...prev, expert_review_notes: e.target.value }))}
+                      className="bg-white/5 border-white/20 text-white focus:border-[#c8f7c5] focus:ring-[#c8f7c5]/20 min-h-[100px] text-base resize-none"
+                      placeholder="请输入复核备注"
+                    />
                   </div>
                 </div>
               </section>
 
-              <section className="pt-4">
+              <section className="pt-3">
                 {detailError ? (
-                  <div className="rounded-xl border border-red-300/40 bg-red-500/10 px-4 py-3 text-red-200 text-sm">
+                  <div className="rounded-lg border border-red-300/40 bg-red-500/10 px-3 py-2 text-red-200 text-xs">
                     {detailError}
                   </div>
                 ) : null}
@@ -504,12 +456,12 @@ export function ExpertReviewPage() {
                   <Button 
                     onClick={() => { void submitReview(); }} 
                     disabled={submitLoading || !form.expert_review_result.trim()} 
-                    className="bg-gradient-to-r from-[#c8f7c5] to-[#9ed8bf] text-black hover:from-[#b8e7b5] hover:to-[#8ec8af] px-10 py-7 text-xl font-semibold shadow-xl shadow-[#c8f7c5]/25 transition-all duration-300 rounded-xl"
+                    className="bg-gradient-to-r from-[#c8f7c5] to-[#9ed8bf] text-black hover:from-[#b8e7b5] hover:to-[#8ec8af] px-6 py-5 text-base font-semibold shadow-lg shadow-[#c8f7c5]/25 transition-all duration-300 rounded-lg"
                   >
                     {submitLoading ? (
-                      <><Loader2 className="w-6 h-6 animate-spin mr-3" />提交中...</>
+                      <><Loader2 className="w-4 h-4 animate-spin mr-2" />提交中...</>
                     ) : (
-                      <><CheckCircle2 className="w-6 h-6 mr-3" />提交复核结果</>
+                      <><CheckCircle2 className="w-4 h-4 mr-2" />提交复核结果</>
                     )}
                   </Button>
                 </div>

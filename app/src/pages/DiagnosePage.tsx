@@ -23,7 +23,7 @@ import {
 import { resolveModelOptions } from '@/lib/modelOptions';
 import { fetchTraceEvents } from '@/lib/traceClient';
 import { calcTracePhaseTiming, formatDurationMs } from '@/components/agentWorkflowTiming';
-import { loadAuthUser } from '@/auth';
+import { authFetch, loadAuthUser } from '@/auth';
 
 interface DiagnosisResult {
   image_url: string;
@@ -591,7 +591,7 @@ export function DiagnosePage() {
   const fetchExpertPending = async () => {
     if (!canViewExpertInbox) return;
     try {
-      const resp = await fetch('/api/expert-reviews/pending?limit=5');
+      const resp = await authFetch('/api/expert-reviews/pending?limit=5', undefined, authUser);
       const data = await resp.json();
       if (!resp.ok) throw new Error(String(data?.detail || '加载专家复核提醒失败'));
       setExpertPendingCount(typeof data?.count === 'number' ? data.count : 0);
