@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useMemo } from 'react';
-import { Eye, Loader2, Stethoscope, CheckCircle2 } from 'lucide-react';
+import { Eye, Loader2, Stethoscope, CheckCircle2, ZoomIn, X, MapPin, Calendar } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -30,6 +30,7 @@ interface ReviewCaseDetail extends PendingCaseItem {
   growth_stage?: string;
   base_id?: string;
   base_name?: string;
+  location?: string;
   environment?: string;
   location?: string;
   province?: string;
@@ -44,6 +45,7 @@ interface ReviewCaseDetail extends PendingCaseItem {
     pesticide_access_level?: string;
     equipment?: string[];
     cultivation_mode?: string;
+    harvest_window_days?: number | null;
   };
   model_outputs?: {
     image_top3?: [string, number][];
@@ -92,6 +94,8 @@ export function ExpertReviewPage() {
   const [detailError, setDetailError] = useState<string>('');
   const [open, setOpen] = useState(false);
   const [submitLoading, setSubmitLoading] = useState(false);
+  const [imagePreviewOpen, setImagePreviewOpen] = useState(false);
+  const [previewImageUrl, setPreviewImageUrl] = useState<string>('');
   const [form, setForm] = useState({
     expert_review_result: '',
     expert_review_supplement_symptoms: '',
@@ -490,6 +494,24 @@ export function ExpertReviewPage() {
                 </div>
               </section>
             </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={imagePreviewOpen} onOpenChange={setImagePreviewOpen}>
+        <DialogContent className="!max-w-[95vw] !w-[95vw] max-h-[95vh] bg-black/95 border-white/10 flex items-center justify-center p-0">
+          <button
+            onClick={() => setImagePreviewOpen(false)}
+            className="absolute top-4 right-4 z-50 bg-white/10 hover:bg-white/20 rounded-full p-2 transition-colors"
+          >
+            <X className="w-6 h-6 text-white" />
+          </button>
+          {previewImageUrl && (
+            <img
+              src={previewImageUrl}
+              alt="图片预览"
+              className="max-w-full max-h-[90vh] object-contain"
+            />
           )}
         </DialogContent>
       </Dialog>
