@@ -27,11 +27,66 @@ class _StaticGraph:
 
 def test_build_confirm_explanation_mapping_cases() -> None:
     cases = [
-        ({"image_reliable": False, "text_reliable": True, "supplement_mode": "image_only", "fallback_reason": []}, "IMAGE_QUALITY_LOW", "reupload_image", "image", ["image"]),
-        ({"image_reliable": True, "text_reliable": False, "supplement_mode": "text_only", "fallback_reason": []}, "SYMPTOM_TEXT_INSUFFICIENT", "supplement_symptoms", "text", ["symptoms"]),
-        ({"fusion_case": "conflict", "fallback_reason": ["image_text_conflict"]}, "IMAGE_TEXT_CONFLICT", "reupload_image_and_verify_symptoms", "image_and_text", ["image", "symptoms"]),
-        ({"fusion_case": "both_weak", "fallback_reason": ["both_modalities_weak"]}, "BOTH_IMAGE_AND_TEXT_WEAK", "reupload_image_and_supplement_symptoms", "image_and_text", ["image", "symptoms"]),
-        ({"fallback_reason": ["low_margin"]}, "LOW_DISCRIMINATION_NEED_KEY_FEATURES", "supplement_key_features", "text", ["symptoms"]),
+        # 强冲突
+        (
+            {"fusion_case": "conflict", "image_reliable": True, "text_reliable": True, "fallback_reason": ["image_text_conflict"]},
+            "IMAGE_TEXT_CONFLICT",
+            "reupload_image_and_verify_symptoms",
+            "image_and_text",
+            ["image", "symptoms"],
+        ),
+        # 弱冲突 + image_only：不能升级成 IMAGE_TEXT_CONFLICT
+        (
+            {
+                "fusion_case": "image_weak_text_strong",
+                "image_reliable": False,
+                "text_reliable": True,
+                "supplement_mode": "image_only",
+                "fallback_reason": ["low_confidence", "weak_image_text_conflict"],
+            },
+            "IMAGE_QUALITY_LOW",
+            "reupload_image",
+            "image",
+            ["image"],
+        ),
+        # 文本弱
+        (
+            {"image_reliable": True, "text_reliable": False, "supplement_mode": "text_only", "fallback_reason": []},
+            "SYMPTOM_TEXT_INSUFFICIENT",
+            "supplement_symptoms",
+            "text",
+            ["symptoms"],
+        ),
+        # 双弱
+        (
+            {
+                "fusion_case": "both_weak",
+                "image_reliable": False,
+                "text_reliable": False,
+                "supplement_mode": "image_and_text",
+                "fallback_reason": ["both_modalities_weak"],
+            },
+            "BOTH_IMAGE_AND_TEXT_WEAK",
+            "reupload_image_and_supplement_symptoms",
+            "image_and_text",
+            ["image", "symptoms"],
+        ),
+        # low_margin + image_only
+        (
+            {"supplement_mode": "image_only", "fallback_reason": ["low_margin"]},
+            "LOW_DISCRIMINATION_NEED_KEY_FEATURES",
+            "supplement_key_features",
+            "image",
+            ["image"],
+        ),
+        # low_margin + text_only
+        (
+            {"supplement_mode": "text_only", "fallback_reason": ["low_margin"]},
+            "LOW_DISCRIMINATION_NEED_KEY_FEATURES",
+            "supplement_key_features",
+            "text",
+            ["symptoms"],
+        ),
     ]
     for overrides, code, action, ui_mode, fields in cases:
         payload = {
@@ -44,11 +99,23 @@ def test_build_confirm_explanation_mapping_cases() -> None:
             "follow_up_questions": [],
         }
         payload.update(overrides)
-        result = app_module.build_confirm_explanation(**payload)
+        result = app_module.build_confirm_explanation_v2(**payload)
         assert result["confirm_reason_code"] == code
         assert result["recommended_action"] == action
         assert result["confirm_ui_mode"] == ui_mode
         assert result["confirm_fields"] == fields
+
+    regression_payload = {
+        "need_confirm": True,
+        "fusion_case": "image_weak_text_strong",
+        "image_reliable": False,
+        "text_reliable": True,
+        "supplement_mode": "image_only",
+        "fallback_reason": ["low_confidence", "weak_image_text_conflict"],
+        "follow_up_questions": [],
+    }
+    regression_result = app_module.build_confirm_explanation_v2(**regression_payload)
+    assert regression_result["confirm_reason_code"] != "IMAGE_TEXT_CONFLICT"
 
 
 def test_diagnose_image_returns_explain_fields(monkeypatch):

@@ -255,6 +255,13 @@ export function DiagnosePage() {
     return Array.isArray(preferred) ? preferred.map((item) => String(item)) : [];
   };
 
+  const hasBackendExplain = (payloadLike: unknown): boolean => {
+    const payload = payloadLike && typeof payloadLike === 'object' ? payloadLike as Record<string, unknown> : {};
+    const reasonCode = typeof payload.confirm_reason_code === 'string' ? payload.confirm_reason_code.trim() : '';
+    const uiMode = typeof payload.confirm_ui_mode === 'string' ? payload.confirm_ui_mode.trim() : '';
+    return Boolean(reasonCode) && Boolean(uiMode);
+  };
+
   const parseTop3Candidates = (payloadLike: unknown, resultLike?: DiagnosisResult | null): Top3Candidate[] => {
     const payload = payloadLike && typeof payloadLike === 'object' ? payloadLike as Record<string, unknown> : {};
     const imageResult = payload.image_result && typeof payload.image_result === 'object'
@@ -328,6 +335,9 @@ export function DiagnosePage() {
     displayConfidencePct: number | null,
   ): boolean => {
     const payload = payloadLike && typeof payloadLike === 'object' ? payloadLike as Record<string, unknown> : {};
+    if (hasBackendExplain(payload)) {
+      return payload.need_confirm === true;
+    }
     if (payload.need_confirm === true) return true;
     if (hasLowConfidenceReason(getConfirmReasons(payload))) return true;
 
@@ -680,8 +690,8 @@ export function DiagnosePage() {
 
       const candidates = parseTop3Candidates(payloadRecord, normalizedResult);
       const needsConfirm = payload.status === 'waiting_for_supplement' && payload.expert_review_recommended !== true && (
-        typeof payload.need_confirm === 'boolean'
-          ? payload.need_confirm
+        hasBackendExplain(payloadRecord)
+          ? payload.need_confirm === true
           : deriveNeedConfirm(payloadRecord, candidates, normalizedResult.displayConfidencePct)
       );
       console.log('[confirm] candidates=', candidates);
@@ -769,8 +779,8 @@ export function DiagnosePage() {
 
       const candidates = parseTop3Candidates(payload, normalizedResult);
       const needsConfirm = payload.status === 'waiting_for_supplement' && payload.expert_review_recommended !== true && (
-        typeof payload.need_confirm === 'boolean'
-          ? payload.need_confirm
+        hasBackendExplain(payload)
+          ? payload.need_confirm === true
           : deriveNeedConfirm(payload, candidates, normalizedResult.displayConfidencePct)
       );
       setConfirmMode(needsConfirm);
@@ -785,9 +795,9 @@ export function DiagnosePage() {
     }
   };
 
-  const handleConfirmSubmit = async (expertReviewDecision?: 'accept' | 'decline') => {
+  const handleConfirmSubmit = async (finalDecision?: 'use_current_result' | 'request_expert_review') => {
     if (!traceId || !imageId) return;
-    if (!expertReviewDecision) {
+    if (!finalDecision) {
       await handleResubmitWithNewImage();
       return;
     }
@@ -799,9 +809,13 @@ export function DiagnosePage() {
         .map((item) => item.trim())
         .filter(Boolean);
       const symptomsForConfirm = additionalSymptoms;
-      const choiceForConfirm = expertReviewDecision
-        ? (result?.final_disease || ((confirmChoice && confirmChoice !== 'other') ? confirmChoice : 'other'))
+      const isExpertDecisionStage = result?.status === 'waiting_for_expert_decision';
+      const choiceForConfirm = isExpertDecisionStage
+        ? 'other'
         : ((confirmChoice && confirmChoice !== 'other') ? confirmChoice : 'other');
+      const expertReviewDecisionForConfirm = isExpertDecisionStage
+        ? (finalDecision === 'request_expert_review' ? 'accept' : 'decline')
+        : null;
 
       const resp = await fetch('/api/diagnose-confirm', {
         method: 'POST',
@@ -817,7 +831,7 @@ export function DiagnosePage() {
           notes: confirmSymptoms || null,
           farmer_id: selectedFarmerId || null,
           base_id: selectedBaseId || null,
-          expert_review_decision: expertReviewDecision ?? null,
+          expert_review_decision: expertReviewDecisionForConfirm,
         }),
       });
       const data = await resp.json();
@@ -850,8 +864,8 @@ export function DiagnosePage() {
       setLatestPayload(payloadRecord);
       const candidates = parseTop3Candidates(payloadRecord, nextResult);
       const needsConfirm = data?.status === 'waiting_for_supplement' && data?.expert_review_recommended !== true && (
-        typeof data?.need_confirm === 'boolean'
-          ? data.need_confirm
+        hasBackendExplain(payloadRecord)
+          ? data?.need_confirm === true
           : deriveNeedConfirm(payloadRecord, candidates, nextResult.displayConfidencePct)
       );
       console.log('[confirm] candidates=', candidates);
@@ -1466,14 +1480,14 @@ export function DiagnosePage() {
                       </p>
                       <div className="flex flex-col sm:flex-row gap-3">
                         <Button
-                          onClick={() => handleConfirmSubmit('decline')}
+                          onClick={() => handleConfirmSubmit('use_current_result')}
                           disabled={confirmSubmitting || !traceId || !imageId}
                           className="bg-[#c8f7c5] text-black hover:bg-[#b8e7b5]"
                         >
                           {confirmSubmitting ? '提交中...' : '使用当前结果结束'}
                         </Button>
                         <Button
-                          onClick={() => handleConfirmSubmit('accept')}
+                          onClick={() => handleConfirmSubmit('request_expert_review')}
                           disabled={confirmSubmitting || !traceId || !imageId}
                           variant="outline"
                           className="border-amber-300/50 text-amber-100 hover:bg-amber-500/10"

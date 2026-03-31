@@ -289,17 +289,28 @@ def _install_recommend_expert_review_agents(monkeypatch):
     return calls
 
 
-def _post_confirm(client: TestClient, *, trace_id: str, image_id: str, choice: str) -> dict:
+def _post_confirm(
+    client: TestClient,
+    *,
+    trace_id: str,
+    image_id: str,
+    choice: str | None = None,
+    final_decision: str | None = None,
+) -> dict:
+    payload = {
+        "trace_id": trace_id,
+        "previous_trace_id": trace_id,
+        "image_id": image_id,
+        "crop_type": "番茄",
+        "symptoms": ["叶片黄化"],
+    }
+    if choice is not None:
+        payload["choice"] = choice
+    if final_decision is not None:
+        payload["final_decision"] = final_decision
     response = client.post(
         "/api/diagnose-confirm",
-        json={
-            "trace_id": trace_id,
-            "previous_trace_id": trace_id,
-            "image_id": image_id,
-            "crop_type": "番茄",
-            "symptoms": ["叶片黄化"],
-            "choice": choice,
-        },
+        json=payload,
     )
     response.raise_for_status()
     return response.json()
@@ -484,6 +495,20 @@ def test_supplement_low_confidence_decline_expert_review_returns_completed_with_
     _install_recommend_expert_review_agents(monkeypatch)
 
     client = TestClient(app_module.app)
+    pre_response = client.post(
+        "/api/diagnose-confirm",
+        json={
+            "trace_id": "trace-decline",
+            "previous_trace_id": "trace-decline",
+            "image_id": "supplement-decline.jpg",
+            "crop_type": "番茄",
+            "symptoms": ["病斑扩大"],
+            "choice": "other",
+        },
+    )
+    pre_response.raise_for_status()
+    assert pre_response.json()["status"] == "waiting_for_expert_decision"
+
     response = client.post(
         "/api/diagnose-confirm",
         json={
@@ -523,6 +548,20 @@ def test_supplement_low_confidence_accept_expert_review_returns_pending(monkeypa
     _install_recommend_expert_review_agents(monkeypatch)
 
     client = TestClient(app_module.app)
+    pre_response = client.post(
+        "/api/diagnose-confirm",
+        json={
+            "trace_id": "trace-accept",
+            "previous_trace_id": "trace-accept",
+            "image_id": "supplement-accept.jpg",
+            "crop_type": "番茄",
+            "symptoms": ["病斑扩大"],
+            "choice": "other",
+        },
+    )
+    pre_response.raise_for_status()
+    assert pre_response.json()["status"] == "waiting_for_expert_decision"
+
     response = client.post(
         "/api/diagnose-confirm",
         json={
@@ -558,3 +597,40 @@ def test_supplement_low_confidence_accept_expert_review_returns_pending(monkeypa
     )
     assert should_show_expert_review_decision is False
     assert should_hide_treatment is True
+
+
+def test_waiting_for_expert_decision_rejects_choice_confirmation(monkeypatch, tmp_path):
+    _setup_event_dirs(monkeypatch, tmp_path)
+    upload_dir = _seed_upload(tmp_path, "supplement-choice-invalid.jpg")
+    monkeypatch.setattr(app_module, "UPLOAD_DIR", upload_dir)
+    _seed_previous_case("trace-choice-invalid", "supplement-choice-invalid.jpg")
+    _install_recommend_expert_review_agents(monkeypatch)
+
+    client = TestClient(app_module.app)
+    pre_response = client.post(
+        "/api/diagnose-confirm",
+        json={
+            "trace_id": "trace-choice-invalid",
+            "previous_trace_id": "trace-choice-invalid",
+            "image_id": "supplement-choice-invalid.jpg",
+            "crop_type": "番茄",
+            "symptoms": ["病斑扩大"],
+            "choice": "other",
+        },
+    )
+    pre_response.raise_for_status()
+    assert pre_response.json()["status"] == "waiting_for_expert_decision"
+
+    bad_response = client.post(
+        "/api/diagnose-confirm",
+        json={
+            "trace_id": "trace-choice-invalid",
+            "previous_trace_id": "trace-choice-invalid",
+            "image_id": "supplement-choice-invalid.jpg",
+            "crop_type": "番茄",
+            "symptoms": ["病斑扩大"],
+            "choice": "晚疫病",
+        },
+    )
+    assert bad_response.status_code == 400
+    assert "waiting_for_expert_decision" in str((bad_response.json() or {}).get("detail"))
