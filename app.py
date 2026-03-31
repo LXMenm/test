@@ -934,7 +934,14 @@ def _reason_contains(reason_tokens: list[str], target: str) -> bool:
     return any(target_text in token for token in reason_tokens)
 
 
-def build_confirm_explanation(
+def _reason_equals(reason_tokens: list[str], target: str) -> bool:
+    target_text = str(target or "").strip().lower()
+    if not target_text:
+        return False
+    return any(token == target_text for token in reason_tokens)
+
+
+def build_confirm_explanation_v2(
     *,
     need_confirm: bool,
     fusion_case: Any,
@@ -961,11 +968,7 @@ def build_confirm_explanation(
     text_ok = text_reliable is True
     follow_ups = [str(item).strip() for item in (follow_up_questions or []) if str(item).strip()]
 
-    if (
-        _reason_contains(reason_tokens, "image_text_conflict")
-        or _reason_contains(reason_tokens, "weak_image_text_conflict")
-        or fusion_case_text == "conflict"
-    ):
+    if _reason_equals(reason_tokens, "image_text_conflict") or fusion_case_text == "conflict":
         reason_code = "IMAGE_TEXT_CONFLICT"
         reason_text = "图片识别结果与症状描述不一致"
         action = "reupload_image_and_verify_symptoms"
@@ -975,8 +978,15 @@ def build_confirm_explanation(
         reason_code = "LOW_DISCRIMINATION_NEED_KEY_FEATURES"
         reason_text = "当前最可能的几种病害区分度不足"
         action = "supplement_key_features"
-        ui_mode = "text"
-        fields = ["symptoms"]
+        if supplement_mode_text == "image_only":
+            ui_mode = "image"
+            fields = ["image"]
+        elif supplement_mode_text == "image_and_text":
+            ui_mode = "image_and_text"
+            fields = ["image", "symptoms"]
+        else:
+            ui_mode = "text"
+            fields = ["symptoms"]
     elif (
         _reason_contains(reason_tokens, "both_modalities_weak")
         or fusion_case_text == "both_weak"
@@ -1030,6 +1040,27 @@ def build_confirm_explanation(
         "confirm_fields": fields,
         "confirm_message": confirm_message,
     }
+
+
+def build_confirm_explanation(
+    *,
+    need_confirm: bool,
+    fusion_case: Any,
+    image_reliable: Any,
+    text_reliable: Any,
+    supplement_mode: Any,
+    fallback_reason: Any,
+    follow_up_questions: Any,
+) -> dict[str, Any]:
+    return build_confirm_explanation_v2(
+        need_confirm=need_confirm,
+        fusion_case=fusion_case,
+        image_reliable=image_reliable,
+        text_reliable=text_reliable,
+        supplement_mode=supplement_mode,
+        fallback_reason=fallback_reason,
+        follow_up_questions=follow_up_questions,
+    )
 
 
 def serialize_final_response(payload: dict[str, Any]) -> dict[str, Any]:
@@ -1982,7 +2013,7 @@ async def diagnose_image(
         model_meta=model_meta,
         growth_stage=canonical_growth_stage,
     )
-    confirm_explanation = build_confirm_explanation(
+    confirm_explanation = build_confirm_explanation_v2(
         need_confirm=bool(need_confirm),
         fusion_case=(final_state or {}).get("fusion_case"),
         image_reliable=(final_state or {}).get("image_reliable"),
@@ -2466,7 +2497,7 @@ def _diagnose_confirm_core(request: Request, payload: dict) -> dict:
     )
     flags["follow_up_questions"] = follow_up_questions
     missing_profile_fields = sorted({str(item).strip() for item in (flags.get("missing_profile_fields") or []) if str(item).strip()})
-    confirm_explanation = build_confirm_explanation(
+    confirm_explanation = build_confirm_explanation_v2(
         need_confirm=bool(need_confirm),
         fusion_case=state.get("fusion_case"),
         image_reliable=image_reliable,
