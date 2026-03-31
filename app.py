@@ -1473,9 +1473,14 @@ def _normalize_expert_review_decision(value: Any) -> str | None:
     normalized = str(value or "").strip().lower()
     if not normalized:
         return None
-    if normalized in {"accept", "decline"}:
+    legacy_map = {
+        "accept": "request_expert_review",
+        "decline": "use_current_result",
+    }
+    normalized = legacy_map.get(normalized, normalized)
+    if normalized in {"use_current_result", "request_expert_review"}:
         return normalized
-    raise HTTPException(status_code=400, detail="expert_review_decision 必须为 accept / decline / null")
+    raise HTTPException(status_code=400, detail="expert_review_decision 必须为 use_current_result / request_expert_review / null")
 
 
 def _ensure_follow_up_plan(state: dict[str, Any]) -> dict[str, Any]:
@@ -2208,7 +2213,10 @@ def _diagnose_confirm_core(request: Request, payload: dict) -> dict:
     growth_stage = payload.get("growth_stage")
     model_id = payload.get("model_id")
     choice = str(payload.get("choice") or "").strip()
-    expert_review_decision = _normalize_expert_review_decision(payload.get("expert_review_decision"))
+    final_decision_raw = payload.get("final_decision")
+    if final_decision_raw is None:
+        final_decision_raw = payload.get("expert_review_decision")
+    expert_review_decision = _normalize_expert_review_decision(final_decision_raw)
     print(
         "[DiagnoseConfirm] input",
         json.dumps(
@@ -2240,6 +2248,15 @@ def _diagnose_confirm_core(request: Request, payload: dict) -> dict:
     # 因此确认输入症状必须与上一轮症状做增量合并，避免覆盖。
     history_events = list_trace_events(trace_id)
     previous_case_event = _latest_case_event_by_trace(trace_id)
+    previous_status = str((previous_case_event or {}).get("status") or "").strip().lower() if isinstance(previous_case_event, dict) else ""
+    is_expert_decision_stage = previous_status == "waiting_for_expert_decision"
+    is_supplement_stage = previous_status == "waiting_for_supplement"
+    if is_expert_decision_stage:
+        if choice and choice != "other":
+            raise HTTPException(status_code=400, detail="waiting_for_expert_decision 阶段不允许通过 choice 确认候选病害")
+        choice = "other"
+    elif expert_review_decision is not None and not is_supplement_stage:
+        raise HTTPException(status_code=400, detail="final_decision 仅允许在 waiting_for_expert_decision 阶段提交")
     historical_symptoms: list[str] = []
     for event_like in reversed(history_events):
         if not isinstance(event_like, dict):
@@ -2324,13 +2341,14 @@ def _diagnose_confirm_core(request: Request, payload: dict) -> dict:
             "confirm_round_parent_trace_id": trace_id,
             "model_id": model_id,
             "choice": choice,
+            "final_decision": expert_review_decision,
             "farmer_id": farmer_id,
             "base_id": base_id,
             "confirm_round_index": confirm_round_index,
         },
         outputs={},
     )
-    if choice and choice != "other":
+    if (not is_expert_decision_stage) and choice and choice != "other":
         inherited_context = _inherit_previous_diagnosis_context(
             state,
             choice=choice,
@@ -2418,7 +2436,7 @@ def _diagnose_confirm_core(request: Request, payload: dict) -> dict:
         manual_review_recommended = True
         expert_review_actions = ["use_current_result", "request_expert_review"]
         need_confirm = False
-        if expert_review_decision == "decline":
+        if expert_review_decision == "use_current_result":
             state = _ensure_follow_up_plan(state)
             final_confidence = state.get("final_confidence")
             final_source = state.get("final_source")
@@ -2439,7 +2457,7 @@ def _diagnose_confirm_core(request: Request, payload: dict) -> dict:
             expert_review_status = "DECLINED"
             confirm_status = "completed"
             manual_review_required_before_execution = False
-        elif expert_review_decision == "accept":
+        elif expert_review_decision == "request_expert_review":
             expert_review_selected = True
             expert_review_status = "PENDING"
             confirm_status = "pending_expert_review"
@@ -2758,6 +2776,7 @@ async def diagnose_retry(
     farmer_id: str | None = Form(None),
     base_id: str | None = Form(None),
     expert_review_decision: str | None = Form(None),
+    final_decision: str | None = Form(None),
 ) -> dict:
     resolved_image_id = str(image_id or "").strip()
     if file is not None and file.filename:
@@ -2791,6 +2810,7 @@ async def diagnose_retry(
         "farmer_id": farmer_id,
         "base_id": base_id,
         "expert_review_decision": expert_review_decision,
+        "final_decision": final_decision,
     }
     return _diagnose_confirm_core(request, payload)
 
