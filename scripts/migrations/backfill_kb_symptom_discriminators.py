@@ -9,6 +9,25 @@ from knowledge_base.symptom_discriminators import (
     build_default_symptom_payload,
 )
 
+MANDATORY_CANDIDATES: dict[str, list[str]] = {
+    "同心轮纹": ["早疫病"],
+    "叶背白霉": ["晚疫病"],
+    "叶背橄榄绒霉": ["叶霉病"],
+    "黑色小点": ["叶斑病"],
+    "叶背结网": ["蜘蛛螨"],
+    "节间缩短": ["黄化曲叶病毒病"],
+    "明暗相间花叶": ["花叶病毒病"],
+}
+
+MANDATORY_ALIASES: dict[str, str] = {
+    "一圈一圈的病斑": "同心轮纹",
+    "叶背有白毛": "叶背白霉",
+    "叶背有橄榄色霉层": "叶背橄榄绒霉",
+    "斑里有黑点": "黑色小点",
+    "叶背有细网": "叶背结网",
+    "叶片一块深一块浅": "明暗相间花叶",
+}
+
 
 DEFAULT_RULE_WEIGHTS: dict[str, dict[str, float]] = {
     "早疫病": {"同心轮纹": 1.4, "年轮样病斑": 1.2, "较大圆斑": 1.0, "老叶先发病": 0.9, "斑点": 0.2},
@@ -32,14 +51,16 @@ def main() -> None:
     symptom_map = dict(payload.get("symptom_map") or symptom_candidates)
 
     new_alias_count = 0
-    for alias, canonical in SYMPTOM_ALIASES.items():
+    for alias, canonical in {**SYMPTOM_ALIASES, **MANDATORY_ALIASES}.items():
         if alias not in symptom_aliases:
             new_alias_count += 1
         symptom_aliases[alias] = canonical
 
     new_canonical_count = 0
     new_candidate_count = 0
-    for symptom, diseases in DISCRIMINATIVE_SYMPTOM_DISEASES.items():
+    target_candidates = dict(DISCRIMINATIVE_SYMPTOM_DISEASES)
+    target_candidates.update(MANDATORY_CANDIDATES)
+    for symptom, diseases in target_candidates.items():
         if symptom not in symptom_candidates:
             new_canonical_count += 1
             symptom_candidates[symptom] = []
@@ -47,7 +68,7 @@ def main() -> None:
             if disease not in symptom_candidates[symptom]:
                 symptom_candidates[symptom].append(disease)
                 new_candidate_count += 1
-        symptom_map.setdefault(symptom, list(symptom_candidates[symptom]))
+        symptom_map[symptom] = list(symptom_candidates[symptom])
 
     merged_payload = {
         "symptom_aliases": symptom_aliases,
