@@ -1891,11 +1891,11 @@ export function DashboardPage() {
 
       <div className="grid lg:grid-cols-2 gap-6">
         {modulePrefs.recent && (
-          <Card className="glass-card flex flex-col">
+          <Card className="glass-card flex flex-col h-[800px]">
             {renderModuleHeader('recent', '最近诊断', <Calendar className="w-5 h-5 text-[#b8ddc7]" />)}
             {!moduleCollapse.recent && (
-              <CardContent className="flex-1 min-h-0">
-                <div className="space-y-2 h-[420px] overflow-y-auto dashboard-scrollbar">
+              <CardContent className="flex-1 min-h-0 overflow-hidden">
+                <div className="space-y-2 h-full overflow-y-auto dashboard-scrollbar">
                   {filteredEvents.slice(0, 80).map((event) => (
                     <div
                       key={event.id}
@@ -1958,7 +1958,7 @@ export function DashboardPage() {
 
         {/* Detail Panel */}
         {modulePrefs.detail && (
-          <Card className="glass-card lg:col-span-1 flex flex-col">
+          <Card className="glass-card lg:col-span-1 flex flex-col h-[800px]">
             {renderModuleHeader('detail', '详情', <AlertCircle className="w-5 h-5 text-[#c8f7c5]" />)}
             {!moduleCollapse.detail && (
               <CardContent className="flex-1 min-h-0 overflow-hidden">
