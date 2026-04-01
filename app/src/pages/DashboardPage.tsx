@@ -1478,12 +1478,11 @@ export function DashboardPage() {
       const eventIngredients = Array.isArray(eventKbSnapshot.ingredients)
         ? eventKbSnapshot.ingredients.map((item) => toText(item)).filter(Boolean)
         : [];
-      const rawTreatment = toRecord(selectedEvent?.raw?.treatment);
       return {
         name: toText(eventKbSnapshot.disease ?? eventKbSnapshot.disease_name) || selectedEvent?.disease || '',
         description: toText(eventKbSnapshot.description),
-        treatment: toText(eventKbSnapshot.treatment ?? rawTreatment?.plan ?? selectedEvent?.raw?.treatment_plan),
-        prevention: toText(eventKbSnapshot.prevention ?? rawTreatment?.prevention ?? selectedEvent?.raw?.prevention_advice),
+        treatment: toText(eventKbSnapshot.treatment ?? selectedEvent?.raw?.treatment?.plan ?? selectedEvent?.raw?.treatment_plan),
+        prevention: toText(eventKbSnapshot.prevention ?? selectedEvent?.raw?.treatment?.prevention ?? selectedEvent?.raw?.prevention_advice),
         ingredients: eventIngredients,
       };
     }
