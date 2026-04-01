@@ -1479,7 +1479,6 @@ export function DashboardPage() {
       const eventIngredients = Array.isArray(eventKbSnapshot.ingredients)
         ? eventKbSnapshot.ingredients.map((item) => toText(item)).filter(Boolean)
         : [];
-      const rawTreatment = toRecord(selectedEvent?.raw?.treatment);
       return {
         name: toText(eventKbSnapshot.disease ?? eventKbSnapshot.disease_name) || selectedEvent?.disease || '',
         description: toText(eventKbSnapshot.description),
