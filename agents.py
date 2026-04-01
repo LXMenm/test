@@ -478,6 +478,9 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
                 image_confidence=image_confidence,
                 text_confidence=text_confidence,
                 text_evidence_active=text_evidence_active,
+                normalized_symptoms=normalized_symptoms,
+                image_quality_flags=state.get("image_quality_flags"),
+                image_quality_hint=state.get("image_quality_hint"),
             )
         except TypeError:
             fusion_probs, fusion_meta = diagnosis_engine.fuse_multimodal_probs(
