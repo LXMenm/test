@@ -111,10 +111,12 @@ export function KBPage({ focusDiseaseName = '' }: KBPageProps) {
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState('');
   const [focusDiseaseDetail, setFocusDiseaseDetail] = useState<DiseaseDetail | null>(null);
+  const [showDiseaseDetailDialog, setShowDiseaseDetailDialog] = useState(false);
 
   const clearFocusDisease = () => {
     setFocusDiseaseDetail(null);
     setDetailError('');
+    setShowDiseaseDetailDialog(false);
     if (window.location.pathname.startsWith('/kb/')) {
       window.history.pushState(null, '', '/kb');
       window.dispatchEvent(new PopStateEvent('popstate'));
@@ -185,6 +187,7 @@ export function KBPage({ focusDiseaseName = '' }: KBPageProps) {
     if (!diseaseName) {
       setFocusDiseaseDetail(null);
       setDetailError('');
+      setShowDiseaseDetailDialog(false);
       return;
     }
 
@@ -198,9 +201,11 @@ export function KBPage({ focusDiseaseName = '' }: KBPageProps) {
           throw new Error(typeof data?.detail === 'string' ? data.detail : '获取病害详情失败');
         }
         setFocusDiseaseDetail(data as DiseaseDetail);
+        setShowDiseaseDetailDialog(true);
       } catch (error) {
         setFocusDiseaseDetail(null);
         setDetailError(error instanceof Error ? error.message : '获取病害详情失败');
+        setShowDiseaseDetailDialog(true);
       } finally {
         setDetailLoading(false);
       }
@@ -415,63 +420,10 @@ export function KBPage({ focusDiseaseName = '' }: KBPageProps) {
 
   return (
     <div className="space-y-6 animate-fadeIn">
-      {(focusDiseaseName || focusDiseaseDetail || detailError) && (
-        <Card className="glass-card border-[#c8f7c5]/30">
-          <CardHeader className="flex flex-row items-start justify-between">
-            <div>
-              <CardTitle className="text-white">病害知识详情</CardTitle>
-              <p className="text-white/60 text-sm mt-1">来自 /api/kb/diseases/{'{name}'}，支持从诊断结果直达</p>
-            </div>
-            <Button
-              variant="outline"
-              size="sm"
-              className="border-white/20 text-white hover:bg-white/10"
-              onClick={clearFocusDisease}
-            >
-              返回知识库管理
-            </Button>
-          </CardHeader>
-          <CardContent>
-            {detailLoading && <p className="text-white/70 text-sm">正在加载病害详情...</p>}
-            {!detailLoading && detailError && <p className="text-red-300 text-sm">{detailError}</p>}
-            {!detailLoading && !detailError && focusDiseaseDetail && (
-              <div className="space-y-4 text-sm">
-                <div>
-                  <div className="text-white/60 mb-1">病害名称</div>
-                  <div className="text-[#c8f7c5] font-semibold text-lg">{focusDiseaseDetail.name}</div>
-                </div>
-                <div>
-                  <div className="text-white/60 mb-1">病害描述</div>
-                  <div className="text-white whitespace-pre-wrap">{focusDiseaseDetail.description || '暂无描述'}</div>
-                </div>
-                <div>
-                  <div className="text-white/60 mb-1">治疗建议</div>
-                  <div className="text-white whitespace-pre-wrap">{focusDiseaseDetail.treatment || '暂无治疗建议'}</div>
-                </div>
-                <div>
-                  <div className="text-white/60 mb-1">预防建议</div>
-                  <div className="text-white whitespace-pre-wrap">{focusDiseaseDetail.prevention || '暂无预防建议'}</div>
-                </div>
-                {Array.isArray(focusDiseaseDetail.ingredients) && focusDiseaseDetail.ingredients.length > 0 && (
-                  <div>
-                    <div className="text-white/60 mb-1">有效成分</div>
-                    <div className="flex flex-wrap gap-2">
-                      {focusDiseaseDetail.ingredients.map((item) => (
-                        <Badge key={item} className="bg-[#c8f7c5]/20 text-[#c8f7c5] border border-[#c8f7c5]/40">{item}</Badge>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
-          </CardContent>
-        </Card>
-      )}
-
       {/* Header */}
       <div>
         <h1 className="text-3xl font-bold text-white">
-          知识库<span className="text-[#c8f7c5]">管理</span>
+          知识库<span className="text-[#c8f7c5]">模块</span>
         </h1>
         <p className="text-white/60 mt-1">维护病害描述、治疗方案、诊断规则与症状映射</p>
       </div>
@@ -1166,6 +1118,58 @@ export function KBPage({ focusDiseaseName = '' }: KBPageProps) {
             >
               <Save className="w-4 h-4 mr-1" />
               保存
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Disease Detail Dialog */}
+      <Dialog open={showDiseaseDetailDialog} onOpenChange={setShowDiseaseDetailDialog}>
+        <DialogContent className="bg-[#1a1a1a] border-white/20 text-white max-w-2xl">
+          <DialogHeader>
+            <DialogTitle className="text-white">病害知识详情</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            {detailLoading && <p className="text-white/70 text-sm">正在加载病害详情...</p>}
+            {!detailLoading && detailError && <p className="text-red-300 text-sm">{detailError}</p>}
+            {!detailLoading && !detailError && focusDiseaseDetail && (
+              <div className="space-y-4 text-sm">
+                <div>
+                  <div className="text-white/60 mb-1">病害名称</div>
+                  <div className="text-[#c8f7c5] font-semibold text-lg">{focusDiseaseDetail.name}</div>
+                </div>
+                <div>
+                  <div className="text-white/60 mb-1">病害描述</div>
+                  <div className="text-white whitespace-pre-wrap">{focusDiseaseDetail.description || '暂无描述'}</div>
+                </div>
+                <div>
+                  <div className="text-white/60 mb-1">治疗建议</div>
+                  <div className="text-white whitespace-pre-wrap">{focusDiseaseDetail.treatment || '暂无治疗建议'}</div>
+                </div>
+                <div>
+                  <div className="text-white/60 mb-1">预防建议</div>
+                  <div className="text-white whitespace-pre-wrap">{focusDiseaseDetail.prevention || '暂无预防建议'}</div>
+                </div>
+                {Array.isArray(focusDiseaseDetail.ingredients) && focusDiseaseDetail.ingredients.length > 0 && (
+                  <div>
+                    <div className="text-white/60 mb-1">有效成分</div>
+                    <div className="flex flex-wrap gap-2">
+                      {focusDiseaseDetail.ingredients.map((item) => (
+                        <Badge key={item} className="bg-[#c8f7c5]/20 text-[#c8f7c5] border border-[#c8f7c5]/40">{item}</Badge>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              className="border-white/20 text-white hover:bg-white/10"
+              onClick={clearFocusDisease}
+            >
+              关闭
             </Button>
           </DialogFooter>
         </DialogContent>

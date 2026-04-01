@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useMemo } from 'react';
-import { Eye, Loader2, Stethoscope, CheckCircle2, ZoomIn, X, MapPin, Calendar } from 'lucide-react';
+import { Eye, Loader2, Stethoscope, CheckCircle2, ZoomIn, X } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -32,7 +32,6 @@ interface ReviewCaseDetail extends PendingCaseItem {
   base_name?: string;
   location?: string;
   environment?: string;
-  location?: string;
   province?: string;
   city?: string;
   district?: string;
@@ -329,12 +328,23 @@ export function ExpertReviewPage() {
                   <div className="grid lg:grid-cols-2 gap-4">
                     <div>
                       {detail.image_url && (
-                        <div className="rounded-lg overflow-hidden border border-white/10 bg-black/40">
+                        <div 
+                          className="rounded-lg overflow-hidden border border-white/10 bg-black/40 relative group cursor-pointer"
+                          onClick={() => {
+                            setPreviewImageUrl(detail.image_url || '');
+                            setImagePreviewOpen(true);
+                          }}
+                        >
                           <img 
                             src={detail.image_url} 
                             alt="病例图片" 
-                            className="w-full max-h-64 object-contain mx-auto" 
+                            className="w-full max-h-64 object-contain mx-auto transition-transform duration-200 group-hover:scale-105" 
                           />
+                          <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity duration-200 flex items-center justify-center">
+                            <div className="bg-white/20 backdrop-blur-sm rounded-full p-2">
+                              <ZoomIn className="w-5 h-5 text-white" />
+                            </div>
+                          </div>
                         </div>
                       )}
                     </div>
