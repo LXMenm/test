@@ -1478,11 +1478,12 @@ export function DashboardPage() {
       const eventIngredients = Array.isArray(eventKbSnapshot.ingredients)
         ? eventKbSnapshot.ingredients.map((item) => toText(item)).filter(Boolean)
         : [];
+      const rawTreatment = toRecord(selectedEvent?.raw?.treatment);
       return {
         name: toText(eventKbSnapshot.disease ?? eventKbSnapshot.disease_name) || selectedEvent?.disease || '',
         description: toText(eventKbSnapshot.description),
-        treatment: toText(eventKbSnapshot.treatment ?? selectedEvent?.raw?.treatment?.plan ?? selectedEvent?.raw?.treatment_plan),
-        prevention: toText(eventKbSnapshot.prevention ?? selectedEvent?.raw?.treatment?.prevention ?? selectedEvent?.raw?.prevention_advice),
+        treatment: toText(eventKbSnapshot.treatment ?? rawTreatment?.plan ?? selectedEvent?.raw?.treatment_plan),
+        prevention: toText(eventKbSnapshot.prevention ?? rawTreatment?.prevention ?? selectedEvent?.raw?.prevention_advice),
         ingredients: eventIngredients,
       };
     }
@@ -1947,7 +1948,7 @@ export function DashboardPage() {
 
       <div className="grid lg:grid-cols-2 gap-6">
         {modulePrefs.recent && (
-          <Card className="glass-card flex flex-col h-[800px]">
+          <Card className="glass-card flex flex-col h-[1000px]">
             {renderModuleHeader('recent', '最近诊断', <Calendar className="w-5 h-5 text-[#b8ddc7]" />)}
             {!moduleCollapse.recent && (
               <CardContent className="flex-1 min-h-0 overflow-hidden">
@@ -2014,7 +2015,7 @@ export function DashboardPage() {
 
         {/* Detail Panel */}
         {modulePrefs.detail && (
-          <Card className="glass-card lg:col-span-1 flex flex-col h-[800px]">
+          <Card className="glass-card lg:col-span-1 flex flex-col h-[1000px]">
             {renderModuleHeader('detail', '详情', <AlertCircle className="w-5 h-5 text-[#c8f7c5]" />)}
             {!moduleCollapse.detail && (
               <CardContent className="flex-1 min-h-0 overflow-hidden">
