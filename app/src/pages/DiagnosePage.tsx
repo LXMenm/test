@@ -4,6 +4,7 @@ import { Upload, Send, RefreshCw, AlertCircle, CheckCircle, Loader2, Image as Im
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -743,9 +744,7 @@ export function DiagnosePage() {
       console.log('[confirm] candidates=', candidates);
       console.log('[confirm] derivedNeedConfirm=', needsConfirm);
       setConfirmMode(needsConfirm);
-      if (needsConfirm && candidates[0]?.disease && !confirmChoice) {
-        setConfirmChoice(candidates[0].disease);
-      }
+      setConfirmChoice(needsConfirm ? 'other' : confirmChoice);
     } catch (error) {
       console.error('Diagnosis failed:', error);
     } finally {
@@ -759,7 +758,6 @@ export function DiagnosePage() {
     setResubmitSubmitting(true);
     setResubmitStatus('submitting');
     setConfirmMode(false);
-    setConfirmChoice('other');
     setConfirmSymptoms('');
     setTraceEvents([]);
     const now = Date.now();
@@ -831,7 +829,7 @@ export function DiagnosePage() {
           : deriveNeedConfirm(payload, candidates, normalizedResult.displayConfidencePct)
       );
       setConfirmMode(needsConfirm);
-      setConfirmChoice(needsConfirm && candidates[0]?.disease ? candidates[0].disease : 'other');
+      setConfirmChoice('other');
       setConfirmSymptoms('');
       setResubmitFile(null);
       setResubmitStatus('success');
@@ -843,10 +841,81 @@ export function DiagnosePage() {
     }
   };
 
+  const handleConfirmCandidate = async () => {
+    if (!traceId || !imageId || !confirmChoice || confirmChoice === 'other') return;
+    setPhase2StartTime(Date.now());
+    setConfirmSubmitting(true);
+    try {
+      const resp = await fetch('/api/diagnose-confirm', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          trace_id: traceId,
+          image_id: imageId,
+          crop_type: cropType || '番茄',
+          symptoms: [],
+          growth_stage: growthStage || null,
+          model_id: modelId || null,
+          choice: confirmChoice,
+          notes: null,
+          farmer_id: selectedFarmerId || null,
+          base_id: selectedBaseId || null,
+          final_decision: null,
+        }),
+      });
+      const data = await resp.json();
+      if (!resp.ok) {
+        throw new Error(data?.detail || `确认失败: ${resp.status}`);
+      }
+      if (data.trace_id) {
+        setTraceId(data.trace_id);
+      }
+      if (data.image_id) {
+        setImageId(data.image_id);
+      }
+      if (Array.isArray(data?.events)) {
+        setTraceEvents(normalizeTraceEvents(data.events));
+      }
+      setWorkflowRefreshToken((prev) => prev + 1);
+
+      const mergedPayload = {
+        ...data,
+        image_url: (typeof data?.image_url === 'string' && data.image_url)
+          ? data.image_url
+          : (typeof data?.image_id === 'string' && data.image_id)
+            ? `/uploads/${data.image_id}`
+            : (result?.image_url || ''),
+      };
+      const nextResult = buildResultFromPayload(mergedPayload as Record<string, unknown>);
+      setResult(nextResult);
+      const payloadRecord = mergedPayload && typeof mergedPayload === 'object' ? mergedPayload as Record<string, unknown> : {};
+      setLatestPayload(payloadRecord);
+      const candidates = parseTop3Candidates(payloadRecord, nextResult);
+      const needsConfirm = data?.status === 'waiting_for_supplement' && data?.expert_review_recommended !== true && (
+        hasBackendExplain(payloadRecord)
+          ? data?.need_confirm === true
+          : deriveNeedConfirm(payloadRecord, candidates, nextResult.displayConfidencePct)
+      );
+      setConfirmMode(needsConfirm);
+      setConfirmChoice(needsConfirm ? 'other' : confirmChoice);
+      setConfirmSymptoms('');
+      setResubmitFile(null);
+      setResubmitStatus('idle');
+    } catch (error) {
+      console.error('Confirm candidate failed:', error);
+    } finally {
+      setConfirmSubmitting(false);
+    }
+  };
+
   const handleConfirmSubmit = async (finalDecision?: 'use_current_result' | 'request_expert_review') => {
     if (!traceId || !imageId) return;
     if (!finalDecision) {
-      await handleResubmitWithNewImage();
+      if (confirmChoice !== 'other') {
+        await handleConfirmCandidate();
+      } else {
+        await handleResubmitWithNewImage();
+      }
       return;
     }
     setPhase2StartTime(Date.now());
@@ -919,9 +988,7 @@ export function DiagnosePage() {
       console.log('[confirm] candidates=', candidates);
       console.log('[confirm] derivedNeedConfirm=', needsConfirm);
       setConfirmMode(needsConfirm);
-      if (needsConfirm && candidates[0]?.disease && !confirmChoice) {
-        setConfirmChoice(candidates[0].disease);
-      }
+      setConfirmChoice(needsConfirm ? 'other' : confirmChoice);
     } catch (error) {
       console.error('Confirm diagnose failed:', error);
     } finally {
@@ -962,7 +1029,11 @@ export function DiagnosePage() {
   };
 
   const renderTreatment = (t: unknown): JSX.Element | null => renderRichValue(t);
-  const candidates = parseTop3Candidates(latestPayload ?? result ?? {}, result);
+  const candidates = parseTop3Candidates(latestPayload ?? result ?? {}, result, 'fusion');
+  const top3ConfirmCandidates = candidates.slice(0, 3);
+  const followUpQuestions = Array.isArray(result?.follow_up_questions)
+    ? result.follow_up_questions.map((item) => String(item).trim()).filter(Boolean)
+    : [];
   const confirmUiMode = (() => {
     if (typeof result?.confirm_ui_mode === 'string' && result.confirm_ui_mode.trim()) {
       return result.confirm_ui_mode;
@@ -977,6 +1048,7 @@ export function DiagnosePage() {
   const usesTextSupplement = confirmUiMode === 'text' || confirmUiMode === 'image_and_text';
   const usesImageSupplement = confirmUiMode === 'image' || confirmUiMode === 'image_and_text';
   const shouldShowSupplementSection = result?.status === 'waiting_for_supplement' && confirmUiMode !== 'none';
+  const shouldShowFollowUps = confirmChoice === 'other' && followUpQuestions.length > 0;
   const { shouldShowExpertReviewDecision, shouldHideTreatment } = deriveDiagnoseReviewViewFlags(result, shouldShowSupplementSection);
   const confirmCopy = (() => {
     const code = result?.confirm_reason_code;
@@ -1010,15 +1082,6 @@ export function DiagnosePage() {
     const mappedStage = normalizeGrowthStage(base?.growth_stage || '');
     if (mappedStage) setGrowthStage(mappedStage);
   }, [selectedProfile, selectedBaseId]);
-
-  useEffect(() => {
-    if (!confirmMode) return;
-    // 仅在尚未选择时自动回填首个候选；不要覆盖用户手动选择"仍不确定/其他"。
-    const shouldAutofillChoice = !confirmChoice;
-    if (candidates[0]?.disease && shouldAutofillChoice) {
-      setConfirmChoice(candidates[0].disease);
-    }
-  }, [confirmMode, candidates, confirmChoice]);
 
   useEffect(() => {
     setSectionOpen((prev) => ({
@@ -1421,28 +1484,74 @@ export function DiagnosePage() {
                 <h4 className="text-[#c8f7c5] font-medium">{confirmCopy.title}</h4>
                 <p className="text-sm text-white/80">{result?.confirm_reason_text || confirmCopy.body}</p>
                 <p className="text-xs text-white/70">{result?.confirm_message || confirmCopy.body}</p>
-                {usesTextSupplement && (
-                  <div className="space-y-2">
-                    <Label className="text-white/80">补充症状（逗号分隔）</Label>
-                    <Input value={confirmSymptoms} onChange={(e) => setConfirmSymptoms(e.target.value)} placeholder="例如：病斑边缘褐色, 叶背有霉层" className="bg-white/5 border-white/20 text-white placeholder:text-white/40" />
+                <div className="space-y-3 rounded-lg border border-white/20 bg-white/5 p-3">
+                  <p className="text-sm text-white font-medium">是否直接确认候选病害？</p>
+                  <RadioGroup value={confirmChoice} onValueChange={setConfirmChoice} className="space-y-2">
+                    {top3ConfirmCandidates.map((item, idx) => {
+                      const optionValue = item.disease;
+                      return (
+                        <label key={`confirm-candidate-${item.disease}-${idx}`} className="flex items-center justify-between gap-3 rounded-md border border-white/15 bg-white/[0.04] px-3 py-2 cursor-pointer">
+                          <div className="flex items-center gap-2 min-w-0">
+                            <RadioGroupItem value={optionValue} id={`confirm-candidate-${idx}`} />
+                            <span className="text-white truncate">{item.disease}</span>
+                          </div>
+                          <span className="text-xs text-[#c8f7c5] font-mono">{item.probPct.toFixed(1)}%</span>
+                        </label>
+                      );
+                    })}
+                    <label className="flex items-center gap-2 rounded-md border border-white/15 bg-white/[0.04] px-3 py-2 cursor-pointer">
+                      <RadioGroupItem value="other" id="confirm-candidate-other" />
+                      <span className="text-white/90">其他 / 仍不确定</span>
+                    </label>
+                  </RadioGroup>
+                </div>
+
+                {confirmChoice === 'other' ? (
+                  <>
+                    {shouldShowFollowUps && (confirmUiMode === 'text' || confirmUiMode === 'image_and_text') ? (
+                      <div className="rounded-lg border border-sky-300/30 bg-sky-500/10 p-3">
+                        <p className="text-sm text-sky-100 font-medium mb-2">建议补充信息</p>
+                        <ul className="list-disc pl-5 text-xs text-sky-50/90 space-y-1">
+                          {followUpQuestions.map((question, idx) => <li key={`follow-up-text-${idx}`}>{question}</li>)}
+                        </ul>
+                      </div>
+                    ) : null}
+                    {usesTextSupplement && (
+                      <div className="space-y-2">
+                        <Label className="text-white/80">补充症状（逗号分隔）</Label>
+                        <Input value={confirmSymptoms} onChange={(e) => setConfirmSymptoms(e.target.value)} placeholder="例如：病斑边缘褐色, 叶背有霉层" className="bg-white/5 border-white/20 text-white placeholder:text-white/40" />
+                      </div>
+                    )}
+                    {usesImageSupplement && (
+                      <div className="space-y-3 rounded-lg border border-white/20 bg-white/5 p-3">
+                        <p className="text-sm text-white/90">当前图片信息不足，建议重新上传更清晰图片</p>
+                        <Input type="file" accept="image/*" onChange={handleResubmitFileChange} className="bg-white/5 border-white/20 text-white file:text-white" />
+                        {resubmitStatus === 'selected' && resubmitFile ? (
+                          <p className="text-xs text-[#c8f7c5]">已选择新图片（{resubmitFile.name}），等待上传。点击“{confirmCopy.cta}”后才会提交到服务器。</p>
+                        ) : null}
+                        {resubmitStatus === 'submitting' ? (
+                          <p className="text-xs text-yellow-200">正在上传新图片并发起复诊，请稍候…</p>
+                        ) : null}
+                        {resubmitStatus === 'success' ? (
+                          <p className="text-xs text-emerald-300">已使用新图片重新诊断。</p>
+                        ) : null}
+                        {shouldShowFollowUps && confirmUiMode === 'image' ? (
+                          <div className="rounded-md border border-white/15 bg-white/[0.03] p-2">
+                            <p className="text-xs text-white/70 mb-1">补拍建议（辅助说明）</p>
+                            <ul className="list-disc pl-4 text-xs text-white/70 space-y-1">
+                              {followUpQuestions.map((question, idx) => <li key={`follow-up-image-${idx}`}>{question}</li>)}
+                            </ul>
+                          </div>
+                        ) : null}
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <div className="rounded-lg border border-[#c8f7c5]/40 bg-[#c8f7c5]/10 p-3 text-sm text-[#d5ffd2]">
+                    将按你选择的候选病害“{confirmChoice}”直接继续后续流程。
                   </div>
                 )}
-                {usesImageSupplement && (
-                  <div className="space-y-3 rounded-lg border border-white/20 bg-white/5 p-3">
-                    <p className="text-sm text-white/90">当前图片信息不足，建议重新上传更清晰图片</p>
-                    <Input type="file" accept="image/*" onChange={handleResubmitFileChange} className="bg-white/5 border-white/20 text-white file:text-white" />
-                    {resubmitStatus === 'selected' && resubmitFile ? (
-                      <p className="text-xs text-[#c8f7c5]">已选择新图片（{resubmitFile.name}），等待上传。点击“{confirmCopy.cta}”后才会提交到服务器。</p>
-                    ) : null}
-                    {resubmitStatus === 'submitting' ? (
-                      <p className="text-xs text-yellow-200">正在上传新图片并发起复诊，请稍候…</p>
-                    ) : null}
-                    {resubmitStatus === 'success' ? (
-                      <p className="text-xs text-emerald-300">已使用新图片重新诊断。</p>
-                    ) : null}
-                  </div>
-                )}
-                <Button onClick={() => handleConfirmSubmit()} disabled={confirmSubmitting || resubmitSubmitting || !traceId || !imageId || (usesImageSupplement && !resubmitFile)} className="bg-[#c8f7c5] text-black hover:bg-[#b8e7b5]">{(confirmSubmitting || resubmitSubmitting) ? '提交中...' : confirmCopy.cta}</Button>
+                <Button onClick={() => handleConfirmSubmit()} disabled={confirmSubmitting || resubmitSubmitting || !traceId || !imageId || (confirmChoice === 'other' && usesImageSupplement && !resubmitFile)} className="bg-[#c8f7c5] text-black hover:bg-[#b8e7b5]">{(confirmSubmitting || resubmitSubmitting) ? '提交中...' : (confirmChoice !== 'other' ? '确认该病害并继续' : confirmCopy.cta)}</Button>
               </div>
             ) : shouldShowExpertReviewDecision ? (
               <div className="bg-amber-500/10 border border-amber-400/30 rounded-xl p-4 space-y-4">

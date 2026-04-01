@@ -21,12 +21,14 @@ from personalization.utils import (
 from trace_store import append_trace_event
 from datetime import datetime, timezone
 from typing import Optional
+from typing import Any
 from model_registry import resolve_model
 from pydantic import BaseModel, Field, ValidationError
 import re
 import json
 import os
 from pathlib import Path
+from follow_up_rules import FOLLOW_UP_RULES
 class _LazyKBManagerProxy:
     def __getattr__(self, item: str):
         return getattr(get_kb_manager(), item)
@@ -1269,18 +1271,141 @@ def _resolve_treatment_branch(flags: dict | None) -> str:
         return "ENTERPRISE"
     return "MID"
 
+def _resolve_confirm_ui_mode(flags: dict, state: CropDiseaseState) -> str:
+    mode = str(flags.get("confirm_ui_mode") or state.get("confirm_ui_mode") or "").strip()
+    if mode in {"image", "text", "image_and_text"}:
+        return mode
+    supplement_mode = str(state.get("supplement_mode") or flags.get("supplement_mode") or "").strip()
+    if supplement_mode == "image_only":
+        return "image"
+    if supplement_mode == "text_only":
+        return "text"
+    if supplement_mode == "image_and_text":
+        return "image_and_text"
+    return "image_and_text"
+
+
+def _extract_weak_evidence_types(flags: dict, state: CropDiseaseState, ui_mode: str) -> list[str]:
+    types: list[str] = []
+    fallback_reason = list(flags.get("fallback_reason") or [])
+    reliability_issues = list(state.get("reliability_issue_types") or flags.get("reliability_issue_types") or [])
+    fusion_case = str(state.get("fusion_case") or "").strip()
+    image_reliable = bool(state.get("image_reliable"))
+    text_reliable = bool(state.get("text_reliable"))
+
+    if not image_reliable:
+        types.append("image_weak")
+    if not text_reliable:
+        types.append("text_weak")
+    if "weak_image_text_conflict" in reliability_issues or "image_text_conflict" in fallback_reason or "conflict" in fusion_case:
+        types.append("weak_image_text_conflict")
+    if "low_margin" in fallback_reason:
+        types.append("low_margin")
+    if not image_reliable and not text_reliable:
+        types.append("both_weak")
+    if "low_confidence" in fallback_reason and "both_weak" not in types and not types:
+        types.append("both_weak")
+
+    if not types:
+        if ui_mode == "image":
+            types.append("image_weak")
+        elif ui_mode == "text":
+            types.append("text_weak")
+        else:
+            types.append("both_weak")
+    return list(dict.fromkeys(types))
+
+
+def _identify_confusion_groups(symptoms: list[str], flags: dict, state: CropDiseaseState) -> list[str]:
+    symptom_text = " ".join(str(s) for s in (symptoms or [])).lower()
+    top_candidates = [name for name, _ in list(state.get("fusion_top3") or [])[:3]]
+    fallback_reason = " ".join(str(r) for r in (flags.get("fallback_reason") or [])).lower()
+    fusion_case = str(state.get("fusion_case") or "").lower()
+    discriminator_groups = list(state.get("symptom_discriminator_groups") or [])
+    discriminator_text = " ".join(str(item) for item in discriminator_groups).lower()
+    candidate_text = " ".join(str(name) for name in top_candidates)
+
+    groups: list[str] = []
+    spot_group = {"细菌性斑点病", "早疫病", "晚疫病", "叶霉病", "叶斑病", "靶斑病"}
+    virus_group = {"黄化曲叶病毒病", "花叶病毒病"}
+    mite_group = {"蜘蛛螨", "细菌性斑点病", "早疫病", "叶斑病", "靶斑病"}
+
+    virus_signal = any(name in candidate_text for name in virus_group) or any(k in symptom_text for k in ["卷叶", "花叶", "黄化", "畸形"]) or "virus" in discriminator_text
+    spot_signal = any(name in candidate_text for name in spot_group) or any(k in symptom_text for k in ["斑", "轮纹", "靶斑", "霉层"]) or "spot" in discriminator_text
+    if virus_signal:
+        groups.append("病毒组")
+    if spot_signal and not (virus_signal and any(k in symptom_text for k in ["卷叶", "花叶", "黄化", "畸形"])):
+        groups.append("斑点叶斑组")
+    if any(name in candidate_text for name in mite_group) and ("蜘蛛螨" in candidate_text or any(k in symptom_text for k in ["叶背", "细网", "虫点", "青铜"])):
+        groups.append("蜘蛛螨混淆组")
+    if "conflict" in fallback_reason or "conflict" in fusion_case:
+        if "蜘蛛螨" in candidate_text and "蜘蛛螨混淆组" not in groups:
+            groups.append("蜘蛛螨混淆组")
+
+    return list(dict.fromkeys(groups))
+
+
+def build_follow_up_context(symptoms: list[str], flags: dict, state: CropDiseaseState) -> dict[str, Any]:
+    ui_mode = _resolve_confirm_ui_mode(flags, state)
+    weak_evidence_types = _extract_weak_evidence_types(flags, state, ui_mode)
+    confusion_groups = _identify_confusion_groups(symptoms, flags, state)
+    has_discriminative_text_evidence = bool(state.get("symptom_discriminator_groups") or state.get("text_top3"))
+    return {
+        "ui_mode": ui_mode,
+        "weak_evidence_types": weak_evidence_types,
+        "confusion_groups": confusion_groups,
+        "has_discriminative_text_evidence": has_discriminative_text_evidence,
+    }
+
+
 def _build_follow_up_questions(symptoms: list[str], flags: dict, state: CropDiseaseState) -> list[str]:
-    """低置信度时的通用追问（轻量兼容实现）。"""
-    questions = [
-        "请补充病叶正反面清晰近照（含整体株型）。",
-        "请描述病斑颜色、边缘是否清晰、是否有水渍感或霉层。",
-        "近3天是否出现高湿、连阴雨或棚内通风不足？",
-    ]
-    if any("卷曲" in str(s) for s in (symptoms or [])):
-        questions.append("是否伴随白粉虱/蚜虫活动增多？")
-    if any("斑" in str(s) for s in (symptoms or [])):
-        questions.append("病斑是同心轮纹、靶心状还是水渍状扩展？")
-    return questions
+    context = build_follow_up_context(symptoms, flags, state)
+    ui_mode = context["ui_mode"]
+    weak_types = context["weak_evidence_types"]
+    confusion_groups = context["confusion_groups"]
+
+    image_questions = list(FOLLOW_UP_RULES["ui_mode_templates"]["image"])
+    text_questions = list(FOLLOW_UP_RULES["ui_mode_templates"]["text"])
+    dual_questions = list(FOLLOW_UP_RULES["ui_mode_templates"]["image_and_text"])
+
+    if ui_mode == "image":
+        selected: list[str] = image_questions[:3]
+    elif ui_mode == "text":
+        selected = text_questions[:3]
+    else:
+        selected = [image_questions[0], image_questions[1], text_questions[0], text_questions[1]]
+
+    if "image_weak" in weak_types and ui_mode != "text":
+        selected = image_questions[:3] + selected
+    if "text_weak" in weak_types and ui_mode != "image":
+        selected = text_questions[:3] + selected
+    if "both_weak" in weak_types and ui_mode == "image_and_text":
+        selected = [image_questions[0], image_questions[1], text_questions[0], text_questions[1]] + dual_questions
+    if "weak_image_text_conflict" in weak_types:
+        if ui_mode == "image":
+            selected = image_questions[:3] + selected
+        elif ui_mode == "text":
+            selected = text_questions[:3] + selected
+        else:
+            selected = [image_questions[0], text_questions[0]] + selected
+
+    if confusion_groups:
+        prioritized_group_questions: list[str] = []
+        for group_name in confusion_groups:
+            group_items = FOLLOW_UP_RULES["confusion_group_questions"].get(group_name, [])
+            if ui_mode == "image":
+                prioritized_group_questions.extend(group_items[:1])
+            elif "low_margin" in weak_types or "text_weak" in weak_types:
+                prioritized_group_questions.extend(group_items[:3])
+            else:
+                prioritized_group_questions.extend(group_items[:2])
+        if ui_mode == "image":
+            selected = selected + prioritized_group_questions
+        else:
+            selected = prioritized_group_questions + selected
+
+    selected = [item for item in selected if item]
+    return normalize_follow_up_questions(selected)[:4]
 
 def _build_profile_follow_up_questions(
     missing_fields: list[str],
