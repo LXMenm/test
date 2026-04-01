@@ -1474,6 +1474,7 @@ export function DashboardPage() {
 
   const kbSummary = useMemo(() => {
     const eventKbSnapshot = toRecord(selectedEvent?.raw?.kb_snapshot);
+    const selectedTreatment = toRecord(toRecord(selectedEvent?.raw)?.treatment);
     if (eventKbSnapshot && Object.keys(eventKbSnapshot).length > 0) {
       const eventIngredients = Array.isArray(eventKbSnapshot.ingredients)
         ? eventKbSnapshot.ingredients.map((item) => toText(item)).filter(Boolean)
@@ -1482,8 +1483,8 @@ export function DashboardPage() {
       return {
         name: toText(eventKbSnapshot.disease ?? eventKbSnapshot.disease_name) || selectedEvent?.disease || '',
         description: toText(eventKbSnapshot.description),
-        treatment: toText(eventKbSnapshot.treatment ?? rawTreatment?.plan ?? selectedEvent?.raw?.treatment_plan),
-        prevention: toText(eventKbSnapshot.prevention ?? rawTreatment?.prevention ?? selectedEvent?.raw?.prevention_advice),
+        treatment: toText(eventKbSnapshot.treatment ?? selectedTreatment?.plan ?? selectedEvent?.raw?.treatment_plan),
+        prevention: toText(eventKbSnapshot.prevention ?? selectedTreatment?.prevention ?? selectedEvent?.raw?.prevention_advice),
         ingredients: eventIngredients,
       };
     }
