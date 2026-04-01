@@ -118,6 +118,44 @@ def test_build_confirm_explanation_mapping_cases() -> None:
     assert regression_result["confirm_reason_code"] != "IMAGE_TEXT_CONFLICT"
 
 
+def test_build_confirm_explanation_image_only_must_not_be_overridden_by_conflict_reason() -> None:
+    payload = {
+        "need_confirm": True,
+        "fusion_case": "image_weak_text_strong",
+        "image_reliable": False,
+        "text_reliable": True,
+        "supplement_mode": "image_only",
+        "fallback_reason": ["low_confidence", "weak_image_text_conflict", "image_text_conflict"],
+        "follow_up_questions": ["请补充叶背特征"],
+    }
+    result = app_module.build_confirm_explanation_v2(**payload)
+    assert result["confirm_reason_code"] == "IMAGE_QUALITY_LOW"
+    assert result["confirm_ui_mode"] == "image"
+    assert result["recommended_action"] == "reupload_image"
+    assert result["confirm_fields"] == ["image"]
+    assert "重新上传图片" in (result["confirm_message"] or "")
+    assert result["confirm_reason_code"] != "IMAGE_TEXT_CONFLICT"
+    assert result["confirm_ui_mode"] != "image_and_text"
+
+
+def test_blurry_conflict_case_explain_should_be_image_quality_low() -> None:
+    payload = {
+        "need_confirm": True,
+        "fusion_case": "image_weak_text_strong",
+        "image_reliable": False,
+        "text_reliable": True,
+        "supplement_mode": "image_only",
+        "fallback_reason": ["weak_image_text_conflict"],
+        "follow_up_questions": [],
+    }
+    result = app_module.build_confirm_explanation_v2(**payload)
+    assert result["confirm_reason_code"] == "IMAGE_QUALITY_LOW"
+    assert result["confirm_ui_mode"] == "image"
+    assert result["recommended_action"] == "reupload_image"
+    assert result["confirm_reason_code"] != "IMAGE_TEXT_CONFLICT"
+    assert result["confirm_ui_mode"] != "image_and_text"
+
+
 def test_diagnose_image_returns_explain_fields(monkeypatch):
     monkeypatch.setattr(app_module, "emit_node_event", lambda *args, **kwargs: {})
     monkeypatch.setattr(app_module, "emit_final_event_once", lambda *args, **kwargs: True)
@@ -152,9 +190,9 @@ def test_diagnose_image_returns_explain_fields(monkeypatch):
     resp = client.post("/api/diagnose-image", files={"file": ("case.jpg", b"fake-jpeg-content", "image/jpeg")}, data={"crop_type": "番茄"})
     assert resp.status_code == 200
     data = resp.json()
-    assert data["confirm_reason_code"] == "IMAGE_TEXT_CONFLICT"
-    assert data["confirm_ui_mode"] == "image_and_text"
-    assert data["recommended_action"] == "reupload_image_and_verify_symptoms"
+    assert data["confirm_reason_code"] == "IMAGE_QUALITY_LOW"
+    assert data["confirm_ui_mode"] == "image"
+    assert data["recommended_action"] == "reupload_image"
 
 
 def test_confirm_and_retry_endpoints_compatible_and_support_modes(monkeypatch):

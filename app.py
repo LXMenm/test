@@ -968,7 +968,14 @@ def build_confirm_explanation_v2(
     text_ok = text_reliable is True
     follow_ups = [str(item).strip() for item in (follow_up_questions or []) if str(item).strip()]
 
-    if _reason_equals(reason_tokens, "image_text_conflict") or fusion_case_text == "conflict":
+    image_only_quality_case = (not image_ok and text_ok) or (supplement_mode_text == "image_only" and text_ok)
+    if image_only_quality_case:
+        reason_code = "IMAGE_QUALITY_LOW"
+        reason_text = "当前图片证据不足，无法稳定识别病斑特征"
+        action = "reupload_image"
+        ui_mode = "image"
+        fields = ["image"]
+    elif _reason_equals(reason_tokens, "image_text_conflict") or fusion_case_text == "conflict":
         reason_code = "IMAGE_TEXT_CONFLICT"
         reason_text = "图片识别结果与症状描述不一致"
         action = "reupload_image_and_verify_symptoms"
@@ -997,12 +1004,6 @@ def build_confirm_explanation_v2(
         action = "reupload_image_and_supplement_symptoms"
         ui_mode = "image_and_text"
         fields = ["image", "symptoms"]
-    elif (not image_ok and text_ok) or supplement_mode_text == "image_only":
-        reason_code = "IMAGE_QUALITY_LOW"
-        reason_text = "当前图片证据不足，无法稳定识别病斑特征"
-        action = "reupload_image"
-        ui_mode = "image"
-        fields = ["image"]
     elif (image_ok and not text_ok) or supplement_mode_text == "text_only":
         reason_code = "SYMPTOM_TEXT_INSUFFICIENT"
         reason_text = "症状描述不足，缺少区分病害的关键信息"
@@ -1029,6 +1030,8 @@ def build_confirm_explanation_v2(
         fields = ["symptoms"]
 
     confirm_message = reason_text
+    if ui_mode == "image":
+        confirm_message = f"{reason_text}。请重新上传图片。"
     if follow_ups and ui_mode in {"text", "image_and_text"}:
         confirm_message = f"{reason_text}。请优先补充：{'；'.join(follow_ups[:3])}"
 

@@ -204,6 +204,7 @@ def test_kb_manager_alias_discriminator_and_followup(monkeypatch, tmp_path: Path
     payload["symptom_candidates"].update({
         "斑点": ["细菌性斑点病", "早疫病", "晚疫病", "叶霉病", "叶斑病", "靶斑病"],
         "同心轮纹": ["早疫病", "靶斑病"],
+        "叶背白霉": ["晚疫病", "叶霉病"],
         "叶背橄榄绒霉": ["叶霉病", "早疫病"],
         "黑色小点": ["叶斑病", "早疫病"],
         "叶背结网": ["蜘蛛螨", "早疫病"],
@@ -260,6 +261,16 @@ def test_kb_manager_alias_discriminator_and_followup(monkeypatch, tmp_path: Path
     assert manager.normalize_symptoms(["一圈一圈的病斑", "叶背有白毛", "像靶子一样", "叶背有细网", "叶片一块深一块浅"]) == [
         "同心轮纹", "叶背白霉", "靶心状病斑", "叶背结网", "明暗相间花叶"
     ]
+    assert "早疫病" in manager.get_candidate_diseases_from_symptoms(["同心轮纹"])
+    assert "晚疫病" in manager.get_candidate_diseases_from_symptoms(["叶背白霉"])
+    assert "叶霉病" in manager.get_candidate_diseases_from_symptoms(["叶背橄榄绒霉"])
+    assert "叶斑病" in manager.get_candidate_diseases_from_symptoms(["黑色小点"])
+    assert "蜘蛛螨" in manager.get_candidate_diseases_from_symptoms(["叶背结网"])
+    assert "黄化曲叶病毒病" in manager.get_candidate_diseases_from_symptoms(["节间缩短"])
+    assert "花叶病毒病" in manager.get_candidate_diseases_from_symptoms(["明暗相间花叶"])
+    assert "早疫病" in manager.get_candidate_diseases_from_symptoms(["一圈一圈的病斑"])
+    assert "晚疫病" in manager.get_candidate_diseases_from_symptoms(["叶背有白毛"])
+    assert "蜘蛛螨" in manager.get_candidate_diseases_from_symptoms(["叶背有细网"])
     generic_candidates = manager.get_candidate_diseases_from_symptoms(["斑点"])
     assert len(generic_candidates) >= 4
     narrowed_candidates = manager.get_candidate_diseases_from_symptoms(["同心轮纹", "黑色小点"])
@@ -355,18 +366,44 @@ def test_backfill_kb_symptom_discriminators_script_is_idempotent(monkeypatch) ->
 
     saved_symptom_payload: dict[str, Any] = {}
     saved_rules_payload: dict[str, Any] = {}
+    saved_payloads: list[dict[str, Any]] = []
 
     monkeypatch.setattr(backfill_discriminators_script, "load_symptom_map", lambda: symptom_payload)
     monkeypatch.setattr(backfill_discriminators_script, "load_rules", lambda: rules_payload)
-    monkeypatch.setattr(backfill_discriminators_script, "save_symptom_map", lambda payload: saved_symptom_payload.update(payload))
+    monkeypatch.setattr(
+        backfill_discriminators_script,
+        "save_symptom_map",
+        lambda payload: (saved_symptom_payload.update(payload), saved_payloads.append(json.loads(json.dumps(payload)))),
+    )
     monkeypatch.setattr(backfill_discriminators_script, "save_rules", lambda payload: saved_rules_payload.update(payload))
 
-    out = StringIO()
-    with redirect_stdout(out):
+    first_stdout = StringIO()
+    with redirect_stdout(first_stdout):
         backfill_discriminators_script.main()
+    symptom_payload = saved_payloads[-1]
+    rules_payload = saved_rules_payload
+    second_stdout = StringIO()
+    with redirect_stdout(second_stdout):
         backfill_discriminators_script.main()
 
-    assert "canonical_symptom_added" in out.getvalue()
+    first_stats = json.loads(first_stdout.getvalue().strip().splitlines()[-1])
+    second_stats = json.loads(second_stdout.getvalue().strip().splitlines()[-1])
+    assert first_stats["canonical_symptom_added"] > 0
+    assert first_stats["alias_added"] > 0
+    assert first_stats["candidate_added"] > 0
+    assert second_stats["canonical_symptom_added"] == 0
+    assert second_stats["alias_added"] == 0
+    assert second_stats["candidate_added"] == 0
     assert "symptom_tiers" in saved_symptom_payload
     assert "symptom_discriminator_groups" in saved_symptom_payload
+    assert saved_symptom_payload["symptom_candidates"]["同心轮纹"] == ["早疫病"]
+    assert saved_symptom_payload["symptom_candidates"]["叶背白霉"] == ["晚疫病"]
+    assert saved_symptom_payload["symptom_candidates"]["叶背橄榄绒霉"] == ["叶霉病"]
+    assert saved_symptom_payload["symptom_candidates"]["黑色小点"] == ["叶斑病"]
+    assert saved_symptom_payload["symptom_candidates"]["叶背结网"] == ["蜘蛛螨"]
+    assert saved_symptom_payload["symptom_candidates"]["节间缩短"] == ["黄化曲叶病毒病"]
+    assert saved_symptom_payload["symptom_candidates"]["明暗相间花叶"] == ["花叶病毒病"]
+    assert saved_symptom_payload["symptom_aliases"]["一圈一圈的病斑"] == "同心轮纹"
+    assert saved_symptom_payload["symptom_aliases"]["叶背有白毛"] == "叶背白霉"
+    assert saved_symptom_payload["symptom_aliases"]["叶背有细网"] == "叶背结网"
     assert saved_rules_payload["rules"][0]["symptom_weights"]["同心轮纹"] >= 1.4
