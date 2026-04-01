@@ -973,7 +973,6 @@ export function DiagnosePage() {
   const shouldShowSupplementSection = result?.status === 'waiting_for_supplement' && confirmUiMode !== 'none';
   const {
     expertReviewPending,
-    expertReviewCompleted,
     shouldShowExpertReviewDecision,
     shouldHideTreatment,
   } = deriveDiagnoseReviewViewFlags(result, shouldShowSupplementSection);
@@ -1516,31 +1515,7 @@ export function DiagnosePage() {
 
 
 
-                  <div>
-                    <h4 className="text-white/80 font-medium mb-2">待补充信息（用于提升个性化精度）</h4>
-                    <div className="bg-white/5 rounded-xl p-4 border border-[#c8f7c5]/20 text-sm text-white/80 space-y-3">
-                      <div className="flex items-center gap-2">
-                        <Badge className="bg-[#c8f7c5]/20 text-[#c8f7c5] border border-[#c8f7c5]/40">建议补齐</Badge>
-                      </div>
-                      {Array.isArray(result.follow_up_questions) && result.follow_up_questions.length > 0 ? (
-                        <ul className="list-disc pl-5 space-y-1">
-                          {result.follow_up_questions.map((question, idx) => (
-                            <li key={`${question}-${idx}`}>{question}</li>
-                          ))}
-                        </ul>
-                      ) : (
-                        <p className="text-white/50">暂无待补充信息</p>
-                      )}
-                      {Array.isArray(result.missing_profile_fields) && result.missing_profile_fields.length > 0 ? (
-                        <div className="flex flex-wrap gap-2 pt-1">
-                          {result.missing_profile_fields.map((field) => (
-                            <Badge key={field} variant="outline" className="border-[#c8f7c5]/40 text-[#c8f7c5]">{field}</Badge>
-                          ))}
-                        </div>
-                      ) : null}
-                      <p className="text-xs text-white/60">可前往【农户档案管理】补齐设备/生育期等信息，以获得更精准的可执行方案。</p>
-                    </div>
-                  </div>
+
 
                   {shouldShowSupplementSection ? (
                     <div className="bg-[#c8f7c5]/10 border border-[#c8f7c5]/30 rounded-xl p-4 space-y-4">
@@ -1625,16 +1600,7 @@ export function DiagnosePage() {
                     </div>
                   ) : null}
 
-                  <div className="bg-white/5 border border-white/10 rounded-xl p-4 text-sm text-white/85 space-y-2">
-                    <h4 className="font-medium text-[#c8f7c5]">病例复核详情</h4>
-                    <p>expert_review_status：{result.expert_review_status || 'NONE'}</p>
-                    <p>expert_review_selected：{result.expert_review_selected ? 'true' : 'false'}</p>
-                    <p>expert_review_result：{result.expert_review_result || '-'}</p>
-                    <p>expert_review_notes：{result.expert_review_notes || '-'}</p>
-                    {expertReviewCompleted && (
-                      <p className="text-emerald-300">专家已确认（{result.expert_reviewed_at || '-' }）</p>
-                    )}
-                  </div>
+
 
                   <Separator className="bg-white/10" />
 
