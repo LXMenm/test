@@ -787,13 +787,31 @@ function normalizeEvent(eventLike: unknown, index: number): DiagnosisEvent {
   };
 }
 
+function getEventTimestampMs(event: DiagnosisEvent): number {
+  const ts = Date.parse(event.ts || '');
+  return Number.isNaN(ts) ? 0 : ts;
+}
+
+function pickLatestEventsByTrace(events: DiagnosisEvent[]): DiagnosisEvent[] {
+  const latestByTrace = new Map<string, DiagnosisEvent>();
+  events.forEach((event) => {
+    const traceKey = readableText(event.traceId, '');
+    if (!traceKey) return;
+    const existing = latestByTrace.get(traceKey);
+    if (!existing || getEventTimestampMs(event) > getEventTimestampMs(existing)) {
+      latestByTrace.set(traceKey, event);
+    }
+  });
+  return Array.from(latestByTrace.values()).sort((a, b) => getEventTimestampMs(b) - getEventTimestampMs(a));
+}
+
 export function DashboardPage() {
   const authUser = useMemo(() => loadAuthUser(), []);
   const canViewAllFarmers = authUser?.role === 'ADMIN';
   const scopedFarmerId = canViewAllFarmers ? 'ALL' : (authUser?.linkedFarmerId || authUser?.userId || 'ALL');
   const [presetKey, setPresetKey] = useState<'7d' | '30d' | '90d'>('7d');
   const [allEvents, setAllEvents] = useState<DiagnosisEvent[]>([]);
-  const [selectedEvent, setSelectedEvent] = useState<DiagnosisEvent | null>(null);
+  const [selectedTraceId, setSelectedTraceId] = useState<string | null>(null);
   const [selectedDisease, setSelectedDisease] = useState('ALL');
   const [selectedBranch, setSelectedBranch] = useState('ALL');
   const [selectedPersonalizationStatus, setSelectedPersonalizationStatus] = useState('ALL');
@@ -897,12 +915,11 @@ export function DashboardPage() {
     });
 
     try {
-      const eventsResp = await fetch(`/api/events?start=${safeStart}&end=${safeEnd}&limit=5000`);
+      const eventsResp = await fetch(`/api/events/latest?start=${safeStart}&end=${safeEnd}&limit=5000`);
       const eventsData = await eventsResp.json();
       const eventsList = Array.isArray(eventsData?.events) ? eventsData.events : [];
       const safeEvents = eventsList.map((eventLike: unknown, index: number) => normalizeEvent(eventLike, index));
       setAllEvents(safeEvents);
-      setSelectedEvent(safeEvents.length > 0 ? safeEvents[0] : null);
 
       const [summaryResp, diseaseResp, timeseriesResp, modelResp, reasonResp, farmerResp, baseResp] = await Promise.all([
         fetch(`/api/stats/summary?${params.toString()}`),
@@ -979,7 +996,7 @@ export function DashboardPage() {
         : []);
     } catch {
       setAllEvents([]);
-      setSelectedEvent(null);
+      setSelectedTraceId(null);
       setSummary({ total: 0, today: 0, diseaseKinds: 0, firstPassRate: 0, treatmentSuccessRate: 0, filteredRate: 0, degradedRate: 0, llmFailedRate: 0, avgResponseMs: 0 });
       setStats([]);
       setTimeseries([]);
@@ -1151,6 +1168,12 @@ export function DashboardPage() {
     return true;
   }), [allEvents, selectedDisease, selectedBranch, selectedPersonalizationStatus, selectedModel, selectedFarmerId, selectedBaseId]);
 
+  const recentEvents = useMemo(() => pickLatestEventsByTrace(filteredEvents), [filteredEvents]);
+  const selectedEvent = useMemo(
+    () => (selectedTraceId ? recentEvents.find((event) => event.traceId === selectedTraceId) : null) ?? recentEvents[0] ?? null,
+    [recentEvents, selectedTraceId],
+  );
+
 
   const modelSummary = useMemo(() => ({
     avgResponseMs: summary.avgResponseMs,
@@ -1195,9 +1218,14 @@ export function DashboardPage() {
   }, [modulePrefs]);
 
   useEffect(() => {
-    if (!selectedEvent && filteredEvents.length > 0) setSelectedEvent(filteredEvents[0]);
-    if (selectedEvent && !filteredEvents.some((event) => event.id === selectedEvent.id)) setSelectedEvent(filteredEvents[0] ?? null);
-  }, [filteredEvents, selectedEvent]);
+    if (selectedTraceId && !recentEvents.some((event) => event.traceId === selectedTraceId)) {
+      setSelectedTraceId(recentEvents[0]?.traceId ?? null);
+      return;
+    }
+    if (!selectedTraceId && recentEvents.length > 0) {
+      setSelectedTraceId(recentEvents[0].traceId);
+    }
+  }, [recentEvents, selectedTraceId]);
 
   useEffect(() => {
     const targetDisease = selectedEvent?.disease;
@@ -1896,11 +1924,11 @@ export function DashboardPage() {
             {!moduleCollapse.recent && (
               <CardContent className="flex-1 min-h-0 overflow-hidden">
                 <div className="space-y-2 h-full overflow-y-auto dashboard-scrollbar">
-                  {filteredEvents.slice(0, 80).map((event) => (
+                  {recentEvents.slice(0, 80).map((event) => (
                     <div
-                      key={event.id}
-                      onClick={() => setSelectedEvent(event)}
-                      className={cn('p-3 rounded-xl cursor-pointer transition-all duration-300 border flex gap-3', selectedEvent?.id === event.id ? 'bg-[#203b31] border-[#84b89d]' : 'bg-white/5 hover:bg-white/10 border-transparent')}
+                      key={event.traceId}
+                      onClick={() => setSelectedTraceId(event.traceId)}
+                      className={cn('p-3 rounded-xl cursor-pointer transition-all duration-300 border flex gap-3', selectedEvent?.traceId === event.traceId ? 'bg-[#203b31] border-[#84b89d]' : 'bg-white/5 hover:bg-white/10 border-transparent')}
                     >
                       <div className="flex-shrink-0 rounded-lg overflow-hidden border border-white/10 bg-black/20">
                         <img
@@ -1944,7 +1972,7 @@ export function DashboardPage() {
                       </div>
                     </div>
                   ))}
-                  {filteredEvents.length === 0 && (
+                  {recentEvents.length === 0 && (
                     <div className="text-center py-8 text-white/40">
                       <Calendar className="w-10 h-10 mx-auto mb-2 opacity-50" />
                       <p className="text-sm">暂无数据（请先完成一次诊断或调整日期范围）</p>
