@@ -89,6 +89,7 @@ def _install_repo(monkeypatch, repo: _InMemoryCaseRepo) -> None:
     monkeypatch.setattr(app_module, "list_events_range", repo.list_events_range)
     monkeypatch.setattr(app_module, "append_event", repo.append_event)
     monkeypatch.setattr(app_module, "get_latest_event_by_trace", repo.get_latest_event_by_trace)
+    monkeypatch.setattr(app_module, "load_profile", lambda farmer_id: None)
 
 
 def _headers(role: str = "ADMIN", user_id: str = "A0001") -> dict[str, str]:
@@ -130,6 +131,17 @@ def test_expert_submit_returns_completed_review_task_status(monkeypatch) -> None
         ]
     )
     _install_repo(monkeypatch, repo)
+    monkeypatch.setattr(
+        app_module,
+        "_ensure_follow_up_plan",
+        lambda state: state
+        | {
+            "kb_snapshot": {"disease": state.get("final_disease"), "actions": ["移除病残叶"]},
+            "treatment_plan": f"针对{state.get('final_disease')}执行新方案",
+            "prevention_advice": f"针对{state.get('final_disease')}执行新预防",
+            "verification_result": {"passed": True, "risk_level": "low", "issues": []},
+        },
+    )
     client = TestClient(app_module.app)
 
     resp = client.post(
@@ -141,6 +153,56 @@ def test_expert_submit_returns_completed_review_task_status(monkeypatch) -> None
     item = resp.json()["item"]
     assert item["status"] == "completed"
     assert item["review_task_status"] == "COMPLETED"
+    latest = repo.get_latest_event_by_trace("trace-submit")
+    assert latest["final_disease"] == "灰霉病"
+    assert latest["treatment"]["plan"]
+    assert latest["verification_result"] is not None
+
+
+def test_expert_submit_rebuilds_plan_instead_of_reusing_pending_snapshot(monkeypatch) -> None:
+    now = datetime.now(timezone.utc).isoformat()
+    old_plan = "晚疫病旧方案"
+    repo = _InMemoryCaseRepo(
+        [
+            _event(
+                trace_id="trace-rebuild",
+                status="pending_expert_review",
+                disease="晚疫病",
+                assigned_expert_id="E0001",
+                expert_review_status="PENDING",
+                ts=now,
+            )
+            | {"treatment": {"plan": old_plan, "prevention": "旧预防"}},
+        ]
+    )
+    _install_repo(monkeypatch, repo)
+    monkeypatch.setattr(
+        app_module,
+        "_ensure_follow_up_plan",
+        lambda state: state
+        | {
+            "kb_snapshot": {"disease": state.get("final_disease"), "actions": ["新动作"]},
+            "treatment_plan": f"{state.get('final_disease')}新方案",
+            "prevention_advice": f"{state.get('final_disease')}新预防",
+            "verification_result": {"passed": True, "risk_level": "low", "issues": []},
+        },
+    )
+    client = TestClient(app_module.app)
+
+    resp = client.post(
+        "/api/expert-reviews/trace-rebuild/submit",
+        headers=_headers(role="EXPERT", user_id="E0001"),
+        json={"expert_review_result": "灰霉病", "expert_review_notes": "更新方案"},
+    )
+    assert resp.status_code == 200
+
+    latest = repo.get_latest_event_by_trace("trace-rebuild")
+    assert latest["status"] == "completed"
+    assert latest["expert_review_status"] == "COMPLETED"
+    assert latest["final_disease"] == "灰霉病"
+    assert "灰霉病" in latest["treatment"]["plan"]
+    assert old_plan not in latest["treatment"]["plan"]
+    assert latest["verification_result"] is not None
 
 
 def test_admin_close_marks_cancelled_and_moves_bucket(monkeypatch) -> None:
@@ -333,6 +395,17 @@ def test_clone_append_refreshes_event_id_for_assign_flow_and_submit(monkeypatch)
         ]
     )
     _install_repo(monkeypatch, repo)
+    monkeypatch.setattr(
+        app_module,
+        "_ensure_follow_up_plan",
+        lambda state: state
+        | {
+            "kb_snapshot": {"disease": state.get("final_disease")},
+            "treatment_plan": f"{state.get('final_disease')}方案",
+            "prevention_advice": f"{state.get('final_disease')}预防",
+            "verification_result": {"passed": True, "risk_level": "low", "issues": []},
+        },
+    )
     client = TestClient(app_module.app)
 
     assign_resp = client.post(
@@ -364,6 +437,33 @@ def test_clone_append_refreshes_event_id_for_assign_flow_and_submit(monkeypatch)
 
     latest_by_trace = repo.get_latest_event_by_trace("trace-eventid")
     assert latest_by_trace["event_id"] != old_event_id
+
+    latest_events_resp = client.get("/api/events/latest")
+    assert latest_events_resp.status_code == 200
+    latest_events = latest_events_resp.json()["events"]
+    trace_items = [item for item in latest_events if item["trace_id"] == "trace-eventid"]
+    assert len(trace_items) == 1
+
+
+def test_events_latest_dedupes_by_trace(monkeypatch) -> None:
+    now = datetime.now(timezone.utc).isoformat()
+    repo = _InMemoryCaseRepo(
+        [
+            _event(trace_id="trace-a", status="completed", disease="晚疫病", ts=now) | {"event_id": "evt-a-new", "id": "evt-a-new"},
+            _event(trace_id="trace-a", status="pending_expert_review", disease="早疫病", ts="2026-03-30T10:00:00+00:00") | {"event_id": "evt-a-old", "id": "evt-a-old"},
+            _event(trace_id="trace-b", status="completed", disease="灰霉病", ts=now) | {"event_id": "evt-b-new", "id": "evt-b-new"},
+        ]
+    )
+    _install_repo(monkeypatch, repo)
+    client = TestClient(app_module.app)
+
+    resp = client.get("/api/events/latest")
+    assert resp.status_code == 200
+    events = resp.json()["events"]
+    assert len(events) == 2
+    trace_a = [item for item in events if item["trace_id"] == "trace-a"]
+    assert len(trace_a) == 1
+    assert trace_a[0]["event_id"] == "evt-a-new"
 
 
 def test_review_tabs_only_include_true_review_tasks(monkeypatch) -> None:
