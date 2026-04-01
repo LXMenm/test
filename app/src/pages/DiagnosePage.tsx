@@ -108,6 +108,10 @@ interface ProfileDetail {
     name?: string;
     growth_stage?: string;
     sowing_date?: string;
+    risk_tags?: string[];
+    risk_items?: Array<{ code?: string; label?: string; reason?: string; level?: string; source?: string }>;
+    risk_reasons?: string[];
+    risk_updated_at?: string;
   }>;
 }
 
@@ -148,6 +152,7 @@ export function DiagnosePage() {
   const [confirmSymptoms, setConfirmSymptoms] = useState('');
   const [resubmitFile, setResubmitFile] = useState<File | null>(null);
   const [resubmitSubmitting, setResubmitSubmitting] = useState(false);
+  const [resubmitStatus, setResubmitStatus] = useState<'idle' | 'selected' | 'submitting' | 'success'>('idle');
   const [confirmSubmitting, setConfirmSubmitting] = useState(false);
   const [sectionOpen, setSectionOpen] = useState({
     diagnosis: true,
@@ -199,6 +204,7 @@ export function DiagnosePage() {
   const handleResubmitFileChange = (e: ChangeEvent<HTMLInputElement>) => {
     const selectedFile = e.target.files?.[0] ?? null;
     setResubmitFile(selectedFile);
+    setResubmitStatus(selectedFile ? 'selected' : 'idle');
   };
 
   const toNumber = (value: unknown): number | null => {
@@ -669,6 +675,7 @@ export function DiagnosePage() {
     setConfirmChoice('other');
     setConfirmSymptoms('');
     setResubmitFile(null);
+    setResubmitStatus('idle');
     const now = Date.now();
     setPhase1StartTime(now);
     setPhase2StartTime(null);
@@ -750,6 +757,7 @@ export function DiagnosePage() {
     if (!selectedFarmerId || !traceId || !imageId) return;
     if (usesImageSupplement && !resubmitFile) return;
     setResubmitSubmitting(true);
+    setResubmitStatus('submitting');
     setConfirmMode(false);
     setConfirmChoice('other');
     setConfirmSymptoms('');
@@ -826,8 +834,10 @@ export function DiagnosePage() {
       setConfirmChoice(needsConfirm && candidates[0]?.disease ? candidates[0].disease : 'other');
       setConfirmSymptoms('');
       setResubmitFile(null);
+      setResubmitStatus('success');
     } catch (error) {
       console.error('Resubmit diagnose failed:', error);
+      setResubmitStatus(resubmitFile ? 'selected' : 'idle');
     } finally {
       setResubmitSubmitting(false);
     }
@@ -968,23 +978,6 @@ export function DiagnosePage() {
   const usesImageSupplement = confirmUiMode === 'image' || confirmUiMode === 'image_and_text';
   const shouldShowSupplementSection = result?.status === 'waiting_for_supplement' && confirmUiMode !== 'none';
   const { shouldShowExpertReviewDecision, shouldHideTreatment } = deriveDiagnoseReviewViewFlags(result, shouldShowSupplementSection);
-  const primaryRiskLabels = (() => {
-    if (!result) return [] as string[];
-    if (Array.isArray(result.risk_items) && result.risk_items.length > 0) {
-      const sorted = [...result.risk_items].sort((a, b) => {
-        const weight = (level?: string) => (level === 'high' ? 3 : level === 'medium' ? 2 : 1);
-        return weight(b.level) - weight(a.level);
-      });
-      const labels = sorted
-        .map((item) => (item.label || item.code || '').trim())
-        .filter(Boolean);
-      return Array.from(new Set(labels)).slice(0, 3);
-    }
-    if (Array.isArray(result.risk_tags) && result.risk_tags.length > 0) {
-      return Array.from(new Set(result.risk_tags.map((tag) => String(tag).trim()).filter(Boolean))).slice(0, 3);
-    }
-    return [] as string[];
-  })();
   const confirmCopy = (() => {
     const code = result?.confirm_reason_code;
     const mapping: Record<string, { title: string; body: string; cta: string }> = {
@@ -1004,7 +997,12 @@ export function DiagnosePage() {
     : [];
   const activeBase = selectedProfile?.bases && selectedBaseId ? selectedProfile.bases[selectedBaseId] : undefined;
   const readonlyGrowthStage = normalizeGrowthStage(activeBase?.growth_stage || growthStage || '') || '';
-  const compactRiskItems = (result?.risk_items || []).slice(0, 3);
+  const profileRiskTags = Array.isArray(activeBase?.risk_tags) ? activeBase.risk_tags : [];
+  const profileRiskItems = Array.isArray(activeBase?.risk_items) ? activeBase.risk_items : [];
+  const profileRiskReasons = Array.isArray(activeBase?.risk_reasons) ? activeBase.risk_reasons : [];
+  const profileRiskUpdatedAt = activeBase?.risk_updated_at;
+  const compactRiskItems = profileRiskItems.slice(0, 3);
+  const compactRiskReasons = profileRiskReasons.slice(0, 3);
 
   useEffect(() => {
     if (!selectedProfile?.bases || !selectedBaseId) return;
@@ -1305,9 +1303,9 @@ export function DiagnosePage() {
                   <p>当前生长阶段：{readonlyGrowthStage || '未配置'}</p>
                   <div>
                     <p>农业风险标签：</p>
-                    {primaryRiskLabels.length > 0 ? (
+                    {profileRiskTags.length > 0 ? (
                       <div className="mt-1 flex flex-wrap gap-2">
-                        {primaryRiskLabels.map((tag, idx) => (
+                        {profileRiskTags.map((tag, idx) => (
                           <Badge key={`${tag}-${idx}`} variant="outline" className="border-[#73d59f]/70 text-[#baf7d3]">
                             {tag}
                           </Badge>
@@ -1316,13 +1314,20 @@ export function DiagnosePage() {
                     ) : (
                       <p className="text-white/50 mt-1">暂无风险标签</p>
                     )}
-                    {result?.risk_summary ? <p className="text-white/70 mt-1">{result.risk_summary}</p> : null}
+                    {profileRiskUpdatedAt ? <p className="text-white/60 mt-1">更新时间：{profileRiskUpdatedAt}</p> : null}
                     {compactRiskItems.length > 0 ? (
                       <ul className="list-disc pl-5 mt-1 text-white/70">
                         {compactRiskItems.map((item, idx) => (
                           <li key={`${item.code || item.label || idx}`}>
                             {(item.label || item.code || '风险项')}{item.reason ? `：${item.reason}` : ''}
                           </li>
+                        ))}
+                      </ul>
+                    ) : null}
+                    {compactRiskReasons.length > 0 ? (
+                      <ul className="list-disc pl-5 mt-1 text-white/60">
+                        {compactRiskReasons.map((reason, idx) => (
+                          <li key={`${reason}-${idx}`}>{reason}</li>
                         ))}
                       </ul>
                     ) : null}
@@ -1386,16 +1391,27 @@ export function DiagnosePage() {
           </SectionCard>
 
           <SectionCard sectionKey="candidates" title="候选病害" icon={<AlertCircle className="w-5 h-5 text-[#c8f7c5]" />}>
-            <div className="space-y-2">
-              {candidates.length > 0 ? (
-                candidates.map((item, idx) => (
-                  <div key={`${item.disease}-${idx}`} className="flex items-center gap-3 rounded-lg bg-white/5 px-3 py-2">
-                    <Badge className={cn(idx === 0 ? 'bg-[#c8f7c5] text-black' : 'bg-white/10 text-white')}>#{idx + 1}</Badge>
-                    <button type="button" onClick={() => navigateToKbDisease(item.disease)} className="text-white hover:text-[#c8f7c5] hover:underline underline-offset-4 flex-1 text-left">{item.disease}</button>
-                    <span className="text-[#c8f7c5] font-mono text-sm">{item.probPct.toFixed(2)}%</span>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              {(['image', 'text', 'fusion'] as const).map((source) => {
+                const titleMap: Record<typeof source, string> = {
+                  image: '图像 top3',
+                  text: '文本 top3',
+                  fusion: '融合后 top3',
+                };
+                const items = parseTop3Candidates(latestPayload ?? result ?? {}, result, source);
+                return (
+                  <div key={source} className="bg-white/5 rounded-xl p-3 space-y-2">
+                    <h5 className="text-white/70 text-sm">{titleMap[source]}</h5>
+                    {items.length > 0 ? items.map((item, idx) => (
+                      <div key={`${source}-${item.disease}-${idx}`} className="flex items-center gap-2">
+                        <Badge className={cn(idx === 0 ? 'bg-[#c8f7c5] text-black' : 'bg-white/10 text-white')}>#{idx + 1}</Badge>
+                        <button type="button" onClick={() => navigateToKbDisease(item.disease)} className="text-white hover:text-[#c8f7c5] hover:underline underline-offset-4 flex-1 text-left">{item.disease}</button>
+                        <span className="text-[#c8f7c5] font-mono text-xs">{item.probPct.toFixed(2)}%</span>
+                      </div>
+                    )) : <p className="text-white/40 text-sm">无数据</p>}
                   </div>
-                ))
-              ) : <p className="text-white/50">暂无候选病害</p>}
+                );
+              })}
             </div>
           </SectionCard>
 
@@ -1415,6 +1431,15 @@ export function DiagnosePage() {
                   <div className="space-y-3 rounded-lg border border-white/20 bg-white/5 p-3">
                     <p className="text-sm text-white/90">当前图片信息不足，建议重新上传更清晰图片</p>
                     <Input type="file" accept="image/*" onChange={handleResubmitFileChange} className="bg-white/5 border-white/20 text-white file:text-white" />
+                    {resubmitStatus === 'selected' && resubmitFile ? (
+                      <p className="text-xs text-[#c8f7c5]">已选择新图片（{resubmitFile.name}），等待上传。点击“{confirmCopy.cta}”后才会提交到服务器。</p>
+                    ) : null}
+                    {resubmitStatus === 'submitting' ? (
+                      <p className="text-xs text-yellow-200">正在上传新图片并发起复诊，请稍候…</p>
+                    ) : null}
+                    {resubmitStatus === 'success' ? (
+                      <p className="text-xs text-emerald-300">已使用新图片重新诊断。</p>
+                    ) : null}
                   </div>
                 )}
                 <Button onClick={() => handleConfirmSubmit()} disabled={confirmSubmitting || resubmitSubmitting || !traceId || !imageId || (usesImageSupplement && !resubmitFile)} className="bg-[#c8f7c5] text-black hover:bg-[#b8e7b5]">{(confirmSubmitting || resubmitSubmitting) ? '提交中...' : confirmCopy.cta}</Button>
