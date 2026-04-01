@@ -149,6 +149,7 @@ class _EngineImageTextConflict:
 
 def _run_with_engine(monkeypatch, engine, *, symptoms=None, image_path=None):
     monkeypatch.setattr(agents_module, "get_diagnosis_engine", lambda **kwargs: engine)
+    monkeypatch.setattr(agents_module, "append_trace_event", lambda *args, **kwargs: None)
     state = create_initial_state("test")
     state["crop_type"] = "番茄"
     state["symptoms"] = symptoms or []
@@ -357,6 +358,60 @@ def test_image_strong_text_conflict_reliable_sets_need_confirm(monkeypatch):
     assert state["fusion_meta"].get("fusion_case") == "conflict"
     assert state["fusion_meta"].get("confidence_drop_reason") == "image_text_conflict"
     assert state["personalization_flags"].get("need_confirm") is True
+
+
+class _EngineBlurryEarlyBlightConflict:
+    def __init__(self):
+        self._fuser = DiseaseDiagnosisEngine.__new__(DiseaseDiagnosisEngine)
+
+    def predict_image_proba(self, _):
+        return {"蜘蛛螨": 0.8969, "早疫病": 0.0529, "晚疫病": 0.05}
+
+    def predict_text_proba(self, **kwargs):
+        return {"早疫病": 0.5611, "叶斑病": 0.1342, "晚疫病": 0.3047}
+
+    def build_prior_proba(self, **kwargs):
+        return {}
+
+    def fuse_multimodal_probs(self, image_probs, text_probs, prior_probs, image_confidence=0.0, text_confidence=0.0, text_evidence_active=None, normalized_symptoms=None, image_quality_flags=None, image_quality_hint=None):
+        return DiseaseDiagnosisEngine.fuse_multimodal_probs(
+            self._fuser,
+            image_probs=image_probs,
+            text_probs=text_probs,
+            prior_probs=prior_probs,
+            image_confidence=image_confidence,
+            text_confidence=text_confidence,
+            text_evidence_active=text_evidence_active,
+            normalized_symptoms=normalized_symptoms,
+            image_quality_flags=image_quality_flags,
+            image_quality_hint=image_quality_hint,
+        )
+
+    def build_diagnosis_evidence(self, **kwargs):
+        return {"modality_conflict_flag": kwargs["modality_conflict_flag"], "summary": "blurry-image-strong-text"}
+
+    def _get_disease_description(self, disease_type, symptoms):
+        return disease_type
+
+
+def test_blurry_early_blight_image_with_strong_text_should_downgrade_to_image_only(monkeypatch):
+    monkeypatch.setattr(agents_module, "get_diagnosis_engine", lambda **kwargs: _EngineBlurryEarlyBlightConflict())
+    monkeypatch.setattr(agents_module, "append_trace_event", lambda *args, **kwargs: None)
+    state = create_initial_state("test")
+    state["crop_type"] = "番茄"
+    state["symptoms"] = ["同心轮纹", "老叶先发病"]
+    state["image_path"] = "blurry.JPG"
+    state["personalization_flags"] = {"confirm_when_low_confidence": True}
+    state["image_quality_flags"] = ["blur", "disease-region-unclear"]
+    state = agents_module.diagnosis_agent(state)
+    assert state["image_reliable"] is False
+    assert state["text_reliable"] is True
+    assert state["fusion_meta"].get("fusion_case") == "image_weak_text_strong"
+    assert state["supplement_mode"] == "image_only"
+    assert state["fusion_meta"].get("image_downgraded_on_conflict") is True
+    assert state["personalization_flags"].get("need_confirm") is True
+    reasons = state["personalization_flags"].get("fallback_reason") or []
+    assert "weak_image_text_conflict" in reasons
 
 
 class _EngineRealFusionImageWeakTextStrong:
