@@ -199,6 +199,40 @@ function normalizeSystemConfig(raw: Record<string, unknown> | null | undefined):
   };
 }
 
+function ConfigToggleRow({
+  title,
+  description,
+  impactHint,
+  checked,
+  onChange,
+  enabledText = '已启用',
+  disabledText = '已停用',
+}: {
+  title: string;
+  description: string;
+  impactHint?: string;
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+  enabledText?: string;
+  disabledText?: string;
+}) {
+  return (
+    <div className="rounded-lg border border-white/15 bg-white/[0.06] px-4 py-3 flex items-center justify-between gap-4">
+      <div className="min-w-0">
+        <p className="text-sm text-white font-medium">{title}</p>
+        <p className="text-xs text-white/65 mt-1">{description}</p>
+        {impactHint ? <p className="text-[11px] text-[#f8d25c] mt-1">{impactHint}</p> : null}
+      </div>
+      <div className="flex items-center gap-2 shrink-0">
+        <span className={cn('text-xs px-2 py-1 rounded-md border', checked ? 'border-[#c8f7c5]/50 text-[#c8f7c5] bg-[#c8f7c5]/10' : 'border-red-300/40 text-red-200 bg-red-400/10')}>
+          {checked ? enabledText : disabledText}
+        </span>
+        <Switch checked={checked} onCheckedChange={onChange} className="data-[state=checked]:bg-[#3ddc97] data-[state=unchecked]:bg-white/30" />
+      </div>
+    </div>
+  );
+}
+
 export function AdminPage({ pageType }: { pageType: 'system' | 'review' }) {
   const authUser = loadAuthUser();
   const [config, setConfig] = useState<AdminConfig>(DEFAULT_CONFIG);
@@ -544,8 +578,8 @@ export function AdminPage({ pageType }: { pageType: 'system' | 'review' }) {
               <p className="text-xs text-white/60">控制诊断证据来源、文本/图像分支参与方式与融合判定门槛。</p>
               {fusionExpanded ? (
                 <div className="grid md:grid-cols-2 gap-4">
-                  <div className="flex items-center justify-between rounded-lg border border-white/10 p-3 bg-white/5"><Label>启用图像模型</Label><Switch checked={config.model_fusion.enable_image_model} onCheckedChange={(v) => setConfig((prev) => ({ ...prev, model_fusion: { ...prev.model_fusion, enable_image_model: v } }))} /></div>
-                  <div className="flex items-center justify-between rounded-lg border border-white/10 p-3 bg-white/5"><Label>启用文本模型</Label><Switch checked={config.model_fusion.enable_text_model} onCheckedChange={(v) => setConfig((prev) => ({ ...prev, model_fusion: { ...prev.model_fusion, enable_text_model: v } }))} /></div>
+                  <ConfigToggleRow title="图像证据分支" description="控制图像模型是否参与诊断证据融合。" impactHint="关闭后图像证据不参与融合。" checked={config.model_fusion.enable_image_model} onChange={(v) => setConfig((prev) => ({ ...prev, model_fusion: { ...prev.model_fusion, enable_image_model: v } }))} />
+                  <ConfigToggleRow title="文本证据分支" description="控制文本模型是否参与诊断证据融合。" impactHint="关闭后文本证据不参与融合。" checked={config.model_fusion.enable_text_model} onChange={(v) => setConfig((prev) => ({ ...prev, model_fusion: { ...prev.model_fusion, enable_text_model: v } }))} />
                   <div><Label>文本诊断后端</Label><Select value={config.model_fusion.text_backend} onValueChange={(v) => setConfig((prev) => ({ ...prev, model_fusion: { ...prev.model_fusion, text_backend: v as 'auto' | 'bert' | 'rule' } }))}><SelectTrigger className="bg-white/5 border-white/20 text-white"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="auto">自动选择</SelectItem><SelectItem value="bert">BERT 模型</SelectItem><SelectItem value="rule">规则匹配</SelectItem></SelectContent></Select></div>
                   <div><Label>图像 top1 可靠阈值</Label><Input type="number" min={THRESHOLD_MIN} max={THRESHOLD_MAX} step="0.01" value={config.model_fusion.image_top1_threshold} onChange={(e) => setConfig((prev) => ({ ...prev, model_fusion: { ...prev.model_fusion, image_top1_threshold: Number(e.target.value || 0) } }))} className="bg-white/5 border-white/20 text-white" /></div>
                   <div><Label>图像 margin 阈值</Label><Input type="number" min={THRESHOLD_MIN} max={THRESHOLD_MAX} step="0.01" value={config.model_fusion.image_margin_threshold} onChange={(e) => setConfig((prev) => ({ ...prev, model_fusion: { ...prev.model_fusion, image_margin_threshold: Number(e.target.value || 0) } }))} className="bg-white/5 border-white/20 text-white" /></div>
@@ -572,8 +606,8 @@ export function AdminPage({ pageType }: { pageType: 'system' | 'review' }) {
                 <div className="grid md:grid-cols-2 gap-4">
                   <div><Label>补充诊断轮次上限</Label><Input type="number" min={WORKFLOW_LIMIT_MIN} max={WORKFLOW_LIMIT_MAX} value={config.workflow.confirm_round_limit} onChange={(e) => setConfig((prev) => ({ ...prev, workflow: { ...prev.workflow, confirm_round_limit: Number(e.target.value || 0) } }))} className="bg-white/5 border-white/20 text-white" /></div>
                   <div><Label>校验智能体最大重写次数</Label><Input type="number" min={WORKFLOW_LIMIT_MIN} max={WORKFLOW_LIMIT_MAX} value={config.workflow.validator_rewrite_limit} onChange={(e) => setConfig((prev) => ({ ...prev, workflow: { ...prev.workflow, validator_rewrite_limit: Number(e.target.value || 0) } }))} className="bg-white/5 border-white/20 text-white" /></div>
-                  <div className="flex items-center justify-between rounded-lg border border-white/10 p-3 bg-white/5"><Label>启用个性化智能体</Label><Switch checked={config.workflow.enable_personalization_agent} onCheckedChange={(v) => setConfig((prev) => ({ ...prev, workflow: { ...prev.workflow, enable_personalization_agent: v } }))} /></div>
-                  <div className="flex items-center justify-between rounded-lg border border-white/10 p-3 bg-white/5"><Label>启用校验智能体</Label><Switch checked={config.workflow.enable_validator_agent} onCheckedChange={(v) => setConfig((prev) => ({ ...prev, workflow: { ...prev.workflow, enable_validator_agent: v } }))} /></div>
+                  <ConfigToggleRow title="个性化增强" description="将农户画像与基地约束注入诊断链路。" impactHint="关闭后退化为通用诊断。" checked={config.workflow.enable_personalization_agent} onChange={(v) => setConfig((prev) => ({ ...prev, workflow: { ...prev.workflow, enable_personalization_agent: v } }))} />
+                  <ConfigToggleRow title="校验阶段" description="控制是否允许进入约束校验流程。" impactHint="关闭后跳过约束校验阶段。" checked={config.workflow.enable_validator_agent} onChange={(v) => setConfig((prev) => ({ ...prev, workflow: { ...prev.workflow, enable_validator_agent: v } }))} />
                 </div>
               ) : null}
             </section>
@@ -589,9 +623,9 @@ export function AdminPage({ pageType }: { pageType: 'system' | 'review' }) {
               <p className="text-xs text-white/60">控制 LLM 总开关、治疗建议生成阶段与约束规则启用状态。</p>
               {llmConfigExpanded ? (
                 <div className="grid md:grid-cols-3 gap-4">
-                  <div className="flex items-center justify-between rounded-lg border border-white/10 p-4 bg-white/5"><Label className="text-white">启用大语言模型</Label><Switch checked={config.llm.enable_llm} onCheckedChange={(v) => setConfig((prev) => ({ ...prev, llm: { ...prev.llm, enable_llm: v } }))} /></div>
-                  <div className="flex items-center justify-between rounded-lg border border-white/10 p-4 bg-white/5"><Label className="text-white">启用治疗建议生成</Label><Switch checked={config.llm.enable_treatment_generation} onCheckedChange={(v) => setConfig((prev) => ({ ...prev, llm: { ...prev.llm, enable_treatment_generation: v } }))} /></div>
-                  <div className="flex items-center justify-between rounded-lg border border-white/10 p-4 bg-white/5"><Label className="text-white">启用约束校验</Label><Switch checked={config.llm.enable_constraint_validation} onCheckedChange={(v) => setConfig((prev) => ({ ...prev, llm: { ...prev.llm, enable_constraint_validation: v } }))} /></div>
+                  <ConfigToggleRow title="LLM 总开关" description="统一控制 LLM 相关调用是否允许执行。" checked={config.llm.enable_llm} onChange={(v) => setConfig((prev) => ({ ...prev, llm: { ...prev.llm, enable_llm: v } }))} />
+                  <ConfigToggleRow title="治疗建议阶段" description="控制是否进入治疗建议生成流程。" impactHint="关闭后跳过治疗建议阶段。" checked={config.llm.enable_treatment_generation} onChange={(v) => setConfig((prev) => ({ ...prev, llm: { ...prev.llm, enable_treatment_generation: v } }))} />
+                  <ConfigToggleRow title="约束规则" description="控制是否启用约束规则与合规校验。" impactHint="关闭后跳过约束校验阶段。" checked={config.llm.enable_constraint_validation} onChange={(v) => setConfig((prev) => ({ ...prev, llm: { ...prev.llm, enable_constraint_validation: v } }))} />
                 </div>
               ) : null}
             </section>
@@ -649,16 +683,11 @@ export function AdminPage({ pageType }: { pageType: 'system' | 'review' }) {
             {pathImpactExpanded ? (
               <ul className="text-xs text-white/70 space-y-2 list-disc pl-5">
                 {/* TODO(graph-shortcut): 后续可评估将 enable_personalization_agent 下沉为 route/graph shortcut，减少无效路径开销。 */}
-                <li><code>enable_personalization_agent</code>：当前实现是节点内逻辑降级，不是 LangGraph 图结构裁剪。</li>
-                <li><code>enable_treatment_generation</code>：影响是否进入治疗建议生成阶段。</li>
-                <li><code>enable_constraint_validation</code> + <code>enable_validator_agent</code>：共同决定是否进入约束校验阶段。</li>
+                <li><code>enable_personalization_agent</code>：关闭后退化为通用诊断（节点内逻辑降级，不裁剪 LangGraph 结构）。</li>
+                <li><code>enable_treatment_generation</code>：关闭后跳过治疗建议阶段。</li>
+                <li><code>enable_constraint_validation</code> + <code>enable_validator_agent</code>：任一关闭都会跳过约束校验阶段。</li>
               </ul>
             ) : null}
-          </section>
-
-          <section className="rounded-xl border border-white/15 p-4 bg-white/[0.03]">
-            <h3 className="font-semibold text-white text-base">D. 页面操作区</h3>
-            <p className="text-xs text-white/60 mt-1">顶部工具条保留刷新配置、恢复整页默认值、保存配置；各分组内保留恢复本组默认值。</p>
           </section>
         </CardContent>
       </Card>
