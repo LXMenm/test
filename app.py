@@ -1498,6 +1498,78 @@ def _ensure_follow_up_plan(state: dict[str, Any]) -> dict[str, Any]:
     return state
 
 
+def _rebuild_final_snapshot_from_expert_review(
+    event: dict[str, Any],
+    *,
+    confirmed_disease: str,
+) -> dict[str, Any]:
+    """基于专家确认病害重建最终快照所需的 KB/治疗/合规字段。"""
+    meta = _safe_record(event.get("meta"))
+    personalization_flags = _safe_record(event.get("personalization_flags"))
+    if not personalization_flags:
+        personalization_flags = {
+            "farm_scale": meta.get("farm_scale"),
+            "pesticide_access_level": meta.get("pesticide_access_level"),
+            "equipment": meta.get("equipment") or [],
+            "cultivation_mode": meta.get("cultivation_mode"),
+            "harvest_window_days": meta.get("harvest_window_days"),
+            "banned_ingredients": meta.get("banned_ingredients") or [],
+            "prefer_organic": bool(meta.get("prefer_organic")),
+        }
+
+    state: dict[str, Any] = {
+        "trace_id": event.get("trace_id"),
+        "final_disease": confirmed_disease,
+        "disease_type": confirmed_disease,
+        "crop_type": "番茄",
+        "symptoms": _normalize_symptoms_input(event.get("symptoms")),
+        "meta": meta,
+        "personalization_flags": personalization_flags,
+        "kb_snapshot": None,
+        "treatment_plan": None,
+        "prevention_advice": None,
+        "verification_result": None,
+    }
+
+    try:
+        state = _ensure_follow_up_plan(state)
+    except Exception as exc:
+        print(f"[ExpertReview] follow_up_plan 重建失败，降级到 KB 兜底方案: {exc}")
+
+    treatment_plan = str(state.get("treatment_plan") or "").strip()
+    prevention_advice = str(state.get("prevention_advice") or "").strip()
+    if not (treatment_plan and prevention_advice):
+        fallback_treatment, personalization_outputs = _build_degraded_treatment(
+            confirmed_disease,
+            dict(personalization_flags),
+        )
+        if fallback_treatment is not None:
+            treatment_plan = str(fallback_treatment.plan or "").strip()
+            prevention_advice = str(fallback_treatment.prevention or "").strip()
+            if isinstance(personalization_outputs, dict):
+                selected_branch = personalization_outputs.get("selected_branch")
+                if selected_branch:
+                    state["selected_branch"] = selected_branch
+            state["treatment_plan"] = treatment_plan
+            state["prevention_advice"] = prevention_advice
+
+    if state.get("verification_result") is None and (treatment_plan or prevention_advice):
+        try:
+            state = verification_agent(state)
+        except Exception as exc:
+            print(f"[ExpertReview] verification 重建失败，写入降级审查结果: {exc}")
+            state["verification_result"] = {
+                "passed": False,
+                "risk_level": "high",
+                "issues": ["verification_unavailable_after_expert_submit"],
+                "must_fix": ["请人工复核该方案的合规性后再执行"],
+                "suggested_rewrite_points": [],
+                "compliance_summary": "专家确认后自动合规审查暂不可用，请人工复核。",
+            }
+
+    return state
+
+
 def _normalize_symptoms_input(symptoms: Any) -> list[str]:
     if isinstance(symptoms, list):
         return [str(item).strip() for item in symptoms if str(item).strip()]
@@ -3525,6 +3597,32 @@ def get_events(
     return {"events": [_serialize_event_dto(event, inject_trace_steps=True) for event in filtered_events]}
 
 
+@app.get("/api/events/latest")
+def get_latest_events(
+    request: Request,
+    start: str | None = None,
+    end: str | None = None,
+    limit: int = 50,
+    farmer_id: str | None = None,
+) -> dict[str, list[dict[str, Any]]]:
+    actor = _get_request_actor(request)
+    scoped_farmer_id = _apply_farmer_scope(actor, farmer_id)
+    if start or end:
+        if (start and not validate_date_str(start)) or (end and not validate_date_str(end)):
+            raise HTTPException(status_code=400, detail="日期格式应为 YYYY-MM-DD")
+        events = list_events_range(start, end, 200000)
+    else:
+        events = list_events(200000)
+
+    filtered_events = [
+        event for event in events
+        if not scoped_farmer_id or _event_farmer_id(event) == scoped_farmer_id
+    ]
+    latest_events = _pick_latest_case_by_trace(filtered_events)
+    safe_limit = max(1, min(1000, int(limit)))
+    return {"events": [_serialize_event_dto(event, inject_trace_steps=True) for event in latest_events[:safe_limit]]}
+
+
 @app.post("/api/auth/login")
 def login(payload: LoginRequest, request: Request) -> dict[str, Any]:
     identifier = str(payload.identifier or payload.username or payload.user_id or "").strip()
@@ -3888,9 +3986,11 @@ def submit_expert_review(trace_id: str, request: Request, payload: dict = Body(.
         raise HTTPException(status_code=400, detail="expert_review_result 不能为空")
     supplement_symptoms = sanitize_user_text(payload.get("expert_review_supplement_symptoms"))
     review_notes = sanitize_user_text(payload.get("expert_review_notes"))
-    regenerate_treatment = bool(payload.get("regenerate_treatment", True))
-
     next_event = _clone_case_event_for_append(event)
+    rebuilt_state = _rebuild_final_snapshot_from_expert_review(
+        event,
+        confirmed_disease=confirmed_disease,
+    )
     next_event["final_disease"] = confirmed_disease
     next_event["status"] = "completed"
     next_event["assigned_expert_id"] = actor.get("user_id") or event.get("assigned_expert_id")
@@ -3905,26 +4005,19 @@ def submit_expert_review(trace_id: str, request: Request, payload: dict = Body(.
     next_event["manual_review_required_before_execution"] = False
     next_event["expert_review_actions"] = []
     next_event["confirm_message"] = "专家已确认，方案已更新"
-
-    if regenerate_treatment:
-        treatment, personalization_outputs = _build_degraded_treatment(
-            confirmed_disease,
-            {
-                "farm_scale": _safe_record(next_event.get("meta")).get("farm_scale"),
-                "pesticide_access_level": _safe_record(next_event.get("meta")).get("pesticide_access_level"),
-                "equipment": _safe_record(next_event.get("meta")).get("equipment") or [],
-                "cultivation_mode": _safe_record(next_event.get("meta")).get("cultivation_mode"),
-            },
-        )
-        if treatment is not None:
-            next_event["treatment"] = {
-                "plan": treatment.plan,
-                "prevention": treatment.prevention,
-            }
-            next_event["treatment_available"] = True
-            next_event["graph_treatment_generated"] = True
-            if isinstance(personalization_outputs, dict):
-                next_event["selected_branch"] = personalization_outputs.get("selected_branch") or next_event.get("selected_branch")
+    next_event["kb_snapshot"] = rebuilt_state.get("kb_snapshot")
+    next_event["verification_result"] = rebuilt_state.get("verification_result")
+    treatment_plan = str(rebuilt_state.get("treatment_plan") or "").strip()
+    prevention_advice = str(rebuilt_state.get("prevention_advice") or "").strip()
+    next_event["treatment"] = {
+        "plan": treatment_plan,
+        "prevention": prevention_advice,
+    }
+    next_event["verification_available"] = next_event["verification_result"] is not None
+    next_event["treatment_available"] = bool(treatment_plan and prevention_advice)
+    next_event["graph_treatment_generated"] = next_event["treatment_available"]
+    if rebuilt_state.get("selected_branch"):
+        next_event["selected_branch"] = rebuilt_state.get("selected_branch")
 
     append_event(serialize_final_response(next_event))
     return {"item": _serialize_admin_review_detail(next_event)}
