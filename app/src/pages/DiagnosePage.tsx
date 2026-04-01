@@ -1071,10 +1071,8 @@ export function DiagnosePage() {
   const readonlyGrowthStage = normalizeGrowthStage(activeBase?.growth_stage || growthStage || '') || '';
   const profileRiskTags = Array.isArray(activeBase?.risk_tags) ? activeBase.risk_tags : [];
   const profileRiskItems = Array.isArray(activeBase?.risk_items) ? activeBase.risk_items : [];
-  const profileRiskReasons = Array.isArray(activeBase?.risk_reasons) ? activeBase.risk_reasons : [];
   const profileRiskUpdatedAt = activeBase?.risk_updated_at;
   const compactRiskItems = profileRiskItems.slice(0, 3);
-  const compactRiskReasons = profileRiskReasons.slice(0, 3);
 
   useEffect(() => {
     if (!selectedProfile?.bases || !selectedBaseId) return;
@@ -1384,13 +1382,6 @@ export function DiagnosePage() {
                           <li key={`${item.code || item.label || idx}`}>
                             {(item.label || item.code || '风险项')}{item.reason ? `：${item.reason}` : ''}
                           </li>
-                        ))}
-                      </ul>
-                    ) : null}
-                    {compactRiskReasons.length > 0 ? (
-                      <ul className="list-disc pl-5 mt-1 text-white/60">
-                        {compactRiskReasons.map((reason, idx) => (
-                          <li key={`${reason}-${idx}`}>{reason}</li>
                         ))}
                       </ul>
                     ) : null}
