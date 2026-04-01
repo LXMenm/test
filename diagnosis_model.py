@@ -78,6 +78,54 @@ def _load_tf_custom_objects(model_path: str) -> Dict[str, object]:
 
 FUSE_MULTIMODAL_VERSION = "fuse_v4_text_gate_with_weak_conflict_20260321"
 PREDICT_TEXT_PROBA_VERSION = "text_v3_bert_with_rule_fallback_20260316"
+
+
+_IMAGE_QUALITY_WEAK_FLAGS = {
+    "blur",
+    "blurry",
+    "low-detail",
+    "low_detail",
+    "crop-too-small",
+    "crop_too_small",
+    "disease-region-unclear",
+    "disease_region_unclear",
+}
+
+
+def _has_image_quality_issue(
+    image_quality_flags: Optional[List[str]] = None,
+    image_quality_hint: Optional[str] = None,
+) -> bool:
+    normalized_flags = {str(item).strip().lower() for item in (image_quality_flags or []) if str(item).strip()}
+    if normalized_flags.intersection(_IMAGE_QUALITY_WEAK_FLAGS):
+        return True
+    hint_text = str(image_quality_hint or "").strip().lower()
+    return hint_text in {"blur", "blurry", "low_quality", "low-quality", "weak", "模糊"}
+
+
+def should_downgrade_image_on_conflict(
+    *,
+    has_image: bool,
+    has_text: bool,
+    strong_text_evidence: bool,
+    image_top1: Optional[str],
+    text_top1: Optional[str],
+    modality_conflict_flag: bool,
+    weak_conflict_candidate: bool,
+    image_quality_flags: Optional[List[str]] = None,
+    image_quality_hint: Optional[str] = None,
+) -> bool:
+    if not (has_image and has_text and strong_text_evidence):
+        return False
+    if not image_top1 or not text_top1 or image_top1 == text_top1:
+        return False
+    if not (modality_conflict_flag or weak_conflict_candidate):
+        return False
+    if _has_image_quality_issue(image_quality_flags=image_quality_flags, image_quality_hint=image_quality_hint):
+        return True
+    return bool(weak_conflict_candidate)
+
+
 def evaluate_confirmation_decision(
     *,
     fusion_top3: List[Tuple[str, float]],
@@ -126,6 +174,9 @@ def evaluate_confirmation_decision(
     modality_conflict_flag = bool(fusion_meta.get("modality_conflict_flag") if isinstance(fusion_meta, dict) else False)
     weak_conflict_candidate = bool(fusion_meta.get("weak_conflict_candidate") if isinstance(fusion_meta, dict) else False)
     supplement_mode = str(fusion_meta.get("supplement_mode", "none") if isinstance(fusion_meta, dict) else "none")
+    image_downgraded_on_conflict = bool(
+        fusion_meta.get("image_downgraded_on_conflict") if isinstance(fusion_meta, dict) else False
+    )
     
     weak_conflict_threshold = float(diagnosis_conf_threshold)
     weak_conflict_flag = bool(weak_conflict_candidate and final_confidence < weak_conflict_threshold)
@@ -134,6 +185,9 @@ def evaluate_confirmation_decision(
         need_confirm = True
         reasons.append("image_text_conflict")
     elif weak_conflict_flag:
+        need_confirm = True
+        reasons.append("weak_image_text_conflict")
+    elif image_downgraded_on_conflict and (not image_reliable) and text_reliable and supplement_mode == "image_only":
         need_confirm = True
         reasons.append("weak_image_text_conflict")
     elif fusion_case == "both_weak":
@@ -574,7 +628,7 @@ class DiseaseDiagnosisEngine:
     def _topk(dist: Dict[str, float], k: int = 3) -> List[Tuple[str, float]]:
         return sorted([(k0, float(v0)) for k0, v0 in (dist or {}).items()], key=lambda x: x[1], reverse=True)[:k]
 
-    def fuse_multimodal_probs(self, image_probs: Dict[str, float], text_probs: Dict[str, float], prior_probs: Dict[str, float], image_confidence: float = 0.0, text_confidence: float = 0.0, text_evidence_active: Optional[bool] = None) -> Tuple[Dict[str, float], Dict[str, object]]:
+    def fuse_multimodal_probs(self, image_probs: Dict[str, float], text_probs: Dict[str, float], prior_probs: Dict[str, float], image_confidence: float = 0.0, text_confidence: float = 0.0, text_evidence_active: Optional[bool] = None, normalized_symptoms: Optional[List[str]] = None, image_quality_flags: Optional[List[str]] = None, image_quality_hint: Optional[str] = None) -> Tuple[Dict[str, float], Dict[str, object]]:
         image_probs = self._normalized(image_probs)
         text_probs = self._normalized(text_probs)
         prior_probs = self._normalized(prior_probs)
@@ -604,6 +658,32 @@ class DiseaseDiagnosisEngine:
         weak_conflict_min_image_top1 = float(thresholds["weak_conflict_min_image_top1"])
         weak_conflict_min_text_top1 = float(thresholds["weak_conflict_min_text_top1"])
         weak_conflict_candidate = bool(has_image and has_text and image_top1 and text_top1 and image_top1 != text_top1 and (image_top1_conf >= weak_conflict_min_image_top1 or text_top1_conf >= weak_conflict_min_text_top1))
+        discriminative_hit = False
+        if reliable_text and text_top1_conf >= 0.50 and text_margin >= 0.18:
+            try:
+                discriminative_hit = bool(_get_kb_manager().has_discriminative_text_evidence(normalized_symptoms or []))
+            except Exception:
+                discriminative_hit = False
+        strong_text_evidence = bool(
+            reliable_text
+            and text_top1_conf >= 0.50
+            and text_margin >= 0.18
+            and discriminative_hit
+        )
+        image_downgraded_on_conflict = should_downgrade_image_on_conflict(
+            has_image=has_image,
+            has_text=has_text,
+            strong_text_evidence=strong_text_evidence,
+            image_top1=image_top1,
+            text_top1=text_top1,
+            modality_conflict_flag=conflict,
+            weak_conflict_candidate=weak_conflict_candidate,
+            image_quality_flags=image_quality_flags,
+            image_quality_hint=image_quality_hint,
+        )
+        if image_downgraded_on_conflict:
+            reliable_image = False
+            conflict = False
         reliability_summary = build_reliability_summary(image_reliable=reliable_image, text_reliable=reliable_text, modality_conflict_flag=conflict)
         base_weights = {"image": 0.0, "text": 0.0, "prior": 0.0}
         confidence_drop_reason = None
@@ -652,13 +732,13 @@ class DiseaseDiagnosisEngine:
             normalized_weights = {k: (base_weights[k] / active_sum if active.get(k) else 0.0) for k in ["image", "text", "prior"]}
         keys = set(image_probs) | set(text_probs) | set(prior_probs)
         if not keys:
-            meta = {"fuse_version": FUSE_MULTIMODAL_VERSION, "has_image": has_image, "has_text": has_text, "has_prior": has_prior, **reliability_summary, "image_top1_conf": image_top1_conf, "text_top1_conf": text_top1_conf, "image_margin": image_margin, "text_margin": text_margin, "fusion_case": fusion_case, "normalized_weights": normalized_weights, "pre_fusion_top1": {"image": image_top3[:1], "text": text_top3[:1], "prior": prior_top3[:1]}, "pre_fusion_top3": {"image": image_top3, "text": text_top3, "prior": prior_top3}, "post_fusion_top3": [("健康", 1.0)], "confidence_drop_reason": confidence_drop_reason, "modality_conflict_flag": conflict, "weak_conflict_candidate": weak_conflict_candidate}
+            meta = {"fuse_version": FUSE_MULTIMODAL_VERSION, "has_image": has_image, "has_text": has_text, "has_prior": has_prior, **reliability_summary, "image_top1_conf": image_top1_conf, "text_top1_conf": text_top1_conf, "image_margin": image_margin, "text_margin": text_margin, "fusion_case": fusion_case, "normalized_weights": normalized_weights, "pre_fusion_top1": {"image": image_top3[:1], "text": text_top3[:1], "prior": prior_top3[:1]}, "pre_fusion_top3": {"image": image_top3, "text": text_top3, "prior": prior_top3}, "post_fusion_top3": [("健康", 1.0)], "confidence_drop_reason": confidence_drop_reason, "modality_conflict_flag": conflict, "weak_conflict_candidate": weak_conflict_candidate, "strong_text_evidence": strong_text_evidence, "image_downgraded_on_conflict": image_downgraded_on_conflict}
             return {"健康": 1.0}, meta
         fused = {}
         for key in keys:
             fused[key] = normalized_weights["image"] * image_probs.get(key, 0.0) + normalized_weights["text"] * text_probs_for_fusion.get(key, 0.0) + normalized_weights["prior"] * prior_probs.get(key, 0.0)
         fused = self._normalized(fused)
-        meta = {"fuse_version": FUSE_MULTIMODAL_VERSION, "has_image": has_image, "has_text": has_text, "has_prior": has_prior, **reliability_summary, "image_top1_conf": image_top1_conf, "text_top1_conf": text_top1_conf, "image_margin": image_margin, "text_margin": text_margin, "fusion_case": fusion_case, "normalized_weights": normalized_weights, "pre_fusion_top1": {"image": image_top3[:1], "text": text_top3[:1], "prior": prior_top3[:1]}, "pre_fusion_top3": {"image": image_top3, "text": text_top3, "prior": prior_top3}, "post_fusion_top3": self._topk(fused, 3), "confidence_drop_reason": confidence_drop_reason, "modality_conflict_flag": conflict, "weak_conflict_candidate": weak_conflict_candidate}
+        meta = {"fuse_version": FUSE_MULTIMODAL_VERSION, "has_image": has_image, "has_text": has_text, "has_prior": has_prior, **reliability_summary, "image_top1_conf": image_top1_conf, "text_top1_conf": text_top1_conf, "image_margin": image_margin, "text_margin": text_margin, "fusion_case": fusion_case, "normalized_weights": normalized_weights, "pre_fusion_top1": {"image": image_top3[:1], "text": text_top3[:1], "prior": prior_top3[:1]}, "pre_fusion_top3": {"image": image_top3, "text": text_top3, "prior": prior_top3}, "post_fusion_top3": self._topk(fused, 3), "confidence_drop_reason": confidence_drop_reason, "modality_conflict_flag": conflict, "weak_conflict_candidate": weak_conflict_candidate, "strong_text_evidence": strong_text_evidence, "image_downgraded_on_conflict": image_downgraded_on_conflict}
         return fused, meta
 
     def build_diagnosis_evidence(self, normalized_symptoms: List[str], raw_symptoms: List[str], image_probs: Dict[str, float], text_probs: Dict[str, float], prior_probs: Dict[str, float], fusion_probs: Dict[str, float], fusion_meta: Dict[str, object], modality_conflict_flag: bool, final_disease: str, final_confidence: float, final_source: str) -> Dict[str, object]:

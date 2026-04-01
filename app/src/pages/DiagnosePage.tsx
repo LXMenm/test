@@ -7,7 +7,6 @@ import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { Separator } from '@/components/ui/separator';
 import { cn } from '@/lib/utils';
 import { deriveDiagnoseReviewViewFlags } from './diagnoseStatusView';
 import { AgentWorkflowPanel } from '@/components/AgentWorkflowPanel';
@@ -18,7 +17,6 @@ import {
   getPesticideAccessLevelLabel,
   getSelectedBranchLabel,
   normalizeGrowthStage,
-  TOMATO_GROWTH_STAGE_OPTIONS,
 } from '@/lib/profileLabels';
 import { resolveModelOptions } from '@/lib/modelOptions';
 import { fetchTraceEvents } from '@/lib/traceClient';
@@ -110,6 +108,10 @@ interface ProfileDetail {
     name?: string;
     growth_stage?: string;
     sowing_date?: string;
+    risk_tags?: string[];
+    risk_items?: Array<{ code?: string; label?: string; reason?: string; level?: string; source?: string }>;
+    risk_reasons?: string[];
+    risk_updated_at?: string;
   }>;
 }
 
@@ -131,6 +133,7 @@ type PendingExpertItem = {
 };
 
 export function DiagnosePage() {
+  const showAdminSections = true;
   const modelOptions = resolveModelOptions();
   const [file, setFile] = useState<File | null>(null);
   const [imagePreview, setImagePreview] = useState<string>('');
@@ -148,11 +151,17 @@ export function DiagnosePage() {
   const [confirmChoice, setConfirmChoice] = useState('other');
   const [confirmSymptoms, setConfirmSymptoms] = useState('');
   const [resubmitFile, setResubmitFile] = useState<File | null>(null);
-  const [resubmitPreview, setResubmitPreview] = useState('');
   const [resubmitSubmitting, setResubmitSubmitting] = useState(false);
+  const [resubmitStatus, setResubmitStatus] = useState<'idle' | 'selected' | 'submitting' | 'success'>('idle');
   const [confirmSubmitting, setConfirmSubmitting] = useState(false);
-  const [showRawTrace, setShowRawTrace] = useState(false);
-  const [workflowCollapsed, setWorkflowCollapsed] = useState(false);
+  const [sectionOpen, setSectionOpen] = useState({
+    diagnosis: true,
+    candidates: true,
+    confirm: false,
+    personalization: false,
+    treatment: true,
+    workflow: false,
+  });
   const [phase1StartTime, setPhase1StartTime] = useState<number | null>(null);
   const [phase2StartTime, setPhase2StartTime] = useState<number | null>(null);
   const [phase1FrozenMs, setPhase1FrozenMs] = useState<number | null>(null);
@@ -169,6 +178,9 @@ export function DiagnosePage() {
   const traceFetchAbortRef = useRef<AbortController | null>(null);
   const authUser = loadAuthUser();
   const canViewExpertInbox = authUser?.role === 'EXPERT' || authUser?.role === 'ADMIN';
+  const toggleSection = (key: keyof typeof sectionOpen) => {
+    setSectionOpen((prev) => ({ ...prev, [key]: !prev[key] }));
+  };
 
   const navigateToKbDisease = (disease: string) => {
     const name = disease.trim();
@@ -192,15 +204,7 @@ export function DiagnosePage() {
   const handleResubmitFileChange = (e: ChangeEvent<HTMLInputElement>) => {
     const selectedFile = e.target.files?.[0] ?? null;
     setResubmitFile(selectedFile);
-    if (!selectedFile) {
-      setResubmitPreview('');
-      return;
-    }
-    const reader = new FileReader();
-    reader.onloadend = () => {
-      setResubmitPreview(reader.result as string);
-    };
-    reader.readAsDataURL(selectedFile);
+    setResubmitStatus(selectedFile ? 'selected' : 'idle');
   };
 
   const toNumber = (value: unknown): number | null => {
@@ -671,7 +675,7 @@ export function DiagnosePage() {
     setConfirmChoice('other');
     setConfirmSymptoms('');
     setResubmitFile(null);
-    setResubmitPreview('');
+    setResubmitStatus('idle');
     const now = Date.now();
     setPhase1StartTime(now);
     setPhase2StartTime(null);
@@ -753,6 +757,7 @@ export function DiagnosePage() {
     if (!selectedFarmerId || !traceId || !imageId) return;
     if (usesImageSupplement && !resubmitFile) return;
     setResubmitSubmitting(true);
+    setResubmitStatus('submitting');
     setConfirmMode(false);
     setConfirmChoice('other');
     setConfirmSymptoms('');
@@ -829,9 +834,10 @@ export function DiagnosePage() {
       setConfirmChoice(needsConfirm && candidates[0]?.disease ? candidates[0].disease : 'other');
       setConfirmSymptoms('');
       setResubmitFile(null);
-      setResubmitPreview('');
+      setResubmitStatus('success');
     } catch (error) {
       console.error('Resubmit diagnose failed:', error);
+      setResubmitStatus(resubmitFile ? 'selected' : 'idle');
     } finally {
       setResubmitSubmitting(false);
     }
@@ -971,29 +977,7 @@ export function DiagnosePage() {
   const usesTextSupplement = confirmUiMode === 'text' || confirmUiMode === 'image_and_text';
   const usesImageSupplement = confirmUiMode === 'image' || confirmUiMode === 'image_and_text';
   const shouldShowSupplementSection = result?.status === 'waiting_for_supplement' && confirmUiMode !== 'none';
-  const {
-    expertReviewPending,
-    expertReviewCompleted,
-    shouldShowExpertReviewDecision,
-    shouldHideTreatment,
-  } = deriveDiagnoseReviewViewFlags(result, shouldShowSupplementSection);
-  const primaryRiskLabels = (() => {
-    if (!result) return [] as string[];
-    if (Array.isArray(result.risk_items) && result.risk_items.length > 0) {
-      const sorted = [...result.risk_items].sort((a, b) => {
-        const weight = (level?: string) => (level === 'high' ? 3 : level === 'medium' ? 2 : 1);
-        return weight(b.level) - weight(a.level);
-      });
-      const labels = sorted
-        .map((item) => (item.label || item.code || '').trim())
-        .filter(Boolean);
-      return Array.from(new Set(labels)).slice(0, 3);
-    }
-    if (Array.isArray(result.risk_tags) && result.risk_tags.length > 0) {
-      return Array.from(new Set(result.risk_tags.map((tag) => String(tag).trim()).filter(Boolean))).slice(0, 3);
-    }
-    return [] as string[];
-  })();
+  const { shouldShowExpertReviewDecision, shouldHideTreatment } = deriveDiagnoseReviewViewFlags(result, shouldShowSupplementSection);
   const confirmCopy = (() => {
     const code = result?.confirm_reason_code;
     const mapping: Record<string, { title: string; body: string; cta: string }> = {
@@ -1011,6 +995,14 @@ export function DiagnosePage() {
       name: base?.name,
     }))
     : [];
+  const activeBase = selectedProfile?.bases && selectedBaseId ? selectedProfile.bases[selectedBaseId] : undefined;
+  const readonlyGrowthStage = normalizeGrowthStage(activeBase?.growth_stage || growthStage || '') || '';
+  const profileRiskTags = Array.isArray(activeBase?.risk_tags) ? activeBase.risk_tags : [];
+  const profileRiskItems = Array.isArray(activeBase?.risk_items) ? activeBase.risk_items : [];
+  const profileRiskReasons = Array.isArray(activeBase?.risk_reasons) ? activeBase.risk_reasons : [];
+  const profileRiskUpdatedAt = activeBase?.risk_updated_at;
+  const compactRiskItems = profileRiskItems.slice(0, 3);
+  const compactRiskReasons = profileRiskReasons.slice(0, 3);
 
   useEffect(() => {
     if (!selectedProfile?.bases || !selectedBaseId) return;
@@ -1027,6 +1019,14 @@ export function DiagnosePage() {
       setConfirmChoice(candidates[0].disease);
     }
   }, [confirmMode, candidates, confirmChoice]);
+
+  useEffect(() => {
+    setSectionOpen((prev) => ({
+      ...prev,
+      confirm: shouldShowSupplementSection,
+      treatment: Boolean(result?.treatment),
+    }));
+  }, [shouldShowSupplementSection, result?.treatment]);
 
   const refreshTrace = async (source: string = 'DiagnosePage.traceEffect') => {
     if (!traceId) return;
@@ -1090,6 +1090,42 @@ export function DiagnosePage() {
   }
   const displayedTiming = traceTiming.hasTraceTiming ? traceTiming : fallbackTiming;
   const timingSourceLabel = traceTiming.hasTraceTiming ? 'trace events' : (displayedTiming ? '本地提交兜底' : null);
+  const SectionCard = ({
+    sectionKey,
+    title,
+    icon,
+    children,
+    hidden = false,
+  }: {
+    sectionKey: keyof typeof sectionOpen;
+    title: string;
+    icon: JSX.Element;
+    children: JSX.Element;
+    hidden?: boolean;
+  }) => {
+    if (hidden) return null;
+    const open = sectionOpen[sectionKey];
+    return (
+      <Card className="glass-card">
+        <CardHeader className="flex flex-row items-center justify-between">
+          <CardTitle className="text-white flex items-center gap-2">
+            {icon}
+            {title}
+          </CardTitle>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => toggleSection(sectionKey)}
+            className="text-white/70 hover:bg-white/10"
+          >
+            {open ? <ChevronUp className="w-4 h-4 mr-1" /> : <ChevronDown className="w-4 h-4 mr-1" />}
+            {open ? '收起' : '展开'}
+          </Button>
+        </CardHeader>
+        {open ? <CardContent>{children}</CardContent> : null}
+      </Card>
+    );
+  };
   return (
     <div className="space-y-6 animate-fadeIn">
       {canViewExpertInbox && (
@@ -1201,24 +1237,6 @@ export function DiagnosePage() {
               />
             </div>
 
-            {/* Growth Stage */}
-            <div className="space-y-2">
-              <Label className="text-white/80">生长阶段（可选）</Label>
-              <Select value={normalizeGrowthStage(growthStage) || '__EMPTY__'} onValueChange={(value) => setGrowthStage(value === '__EMPTY__' ? '' : value)}>
-                <SelectTrigger className="bg-white/5 border-white/20 text-white">
-                  <SelectValue placeholder="请选择番茄生长阶段" className="text-white placeholder:text-white/60" />
-                </SelectTrigger>
-                <SelectContent side="bottom" align="start" sideOffset={6} className="bg-[#111] text-white border-white/20">
-                  <SelectItem value="__EMPTY__">未设置</SelectItem>
-                  {TOMATO_GROWTH_STAGE_OPTIONS.map((stage: { value: string; label: string }) => (
-                    <SelectItem key={stage.value} value={stage.value} className="text-white data-[highlighted]:bg-[#c8f7c5] data-[highlighted]:text-black">
-                      {stage.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-
             {/* Model Selection */}
             <div className="space-y-2">
               <Label className="text-white/80">识别模型</Label>
@@ -1282,6 +1300,38 @@ export function DiagnosePage() {
                   <p>禁用成分：{(selectedProfile.constraints?.banned_ingredients || []).join('、') || '无'}</p>
                   <p>采收窗口：{selectedProfile.constraints?.harvest_window_days ?? '未设置'} 天</p>
                   <p>基地：{selectedBaseId || selectedProfile.active_base_id || '未设置'}</p>
+                  <p>当前生长阶段：{readonlyGrowthStage || '未配置'}</p>
+                  <div>
+                    <p>农业风险标签：</p>
+                    {profileRiskTags.length > 0 ? (
+                      <div className="mt-1 flex flex-wrap gap-2">
+                        {profileRiskTags.map((tag, idx) => (
+                          <Badge key={`${tag}-${idx}`} variant="outline" className="border-[#73d59f]/70 text-[#baf7d3]">
+                            {tag}
+                          </Badge>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-white/50 mt-1">暂无风险标签</p>
+                    )}
+                    {profileRiskUpdatedAt ? <p className="text-white/60 mt-1">更新时间：{profileRiskUpdatedAt}</p> : null}
+                    {compactRiskItems.length > 0 ? (
+                      <ul className="list-disc pl-5 mt-1 text-white/70">
+                        {compactRiskItems.map((item, idx) => (
+                          <li key={`${item.code || item.label || idx}`}>
+                            {(item.label || item.code || '风险项')}{item.reason ? `：${item.reason}` : ''}
+                          </li>
+                        ))}
+                      </ul>
+                    ) : null}
+                    {compactRiskReasons.length > 0 ? (
+                      <ul className="list-disc pl-5 mt-1 text-white/60">
+                        {compactRiskReasons.map((reason, idx) => (
+                          <li key={`${reason}-${idx}`}>{reason}</li>
+                        ))}
+                      </ul>
+                    ) : null}
+                  </div>
                 </div>
               )}
               {!selectedFarmerId && (
@@ -1312,482 +1362,133 @@ export function DiagnosePage() {
 
         {/* Right Column - Results */}
         <div className="lg:col-span-3 space-y-6">
-          {/* Diagnosis Result Card */}
-          <Card className="glass-card">
-            <CardHeader>
-              <CardTitle className="text-white flex items-center gap-2">
-                <CheckCircle className="w-5 h-5 text-[#c8f7c5]" />
-                诊断结果
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              {result ? (
-                <div className="space-y-5 animate-fadeIn">
-                  {/* Result Image */}
-                  {result.image_url && (
-                    <div className="rounded-xl overflow-hidden bg-black/30">
-                      <img 
-                        src={result.image_url} 
-                        alt="Diagnosed" 
-                        className="w-full max-h-64 object-contain"
-                      />
-                    </div>
-                  )}
-
-                  {/* Main Result */}
-                  <div className="grid sm:grid-cols-3 gap-4">
-                    <div className="bg-white/5 rounded-xl p-4">
-                      <p className="text-white/60 text-sm mb-1">最终病害</p>
-                      <button
-                        type="button"
-                        onClick={() => navigateToKbDisease(result.final_disease)}
-                        className="text-left text-xl font-bold text-[#c8f7c5] hover:underline underline-offset-4"
-                      >
-                        {result.final_disease}
-                      </button>
-                    </div>
-                    <div className="bg-white/5 rounded-xl p-4">
-                      <p className="text-white/60 text-sm mb-1">置信度</p>
-                      <p className="text-xl font-bold text-[#c8f7c5]">{result.displayConfidencePct !== null ? `${result.displayConfidencePct.toFixed(2)}%` : "—"}</p>
-                    </div>
-                    <div className="bg-white/5 rounded-xl p-4">
-                      <p className="text-white/60 text-sm mb-1">使用模型</p>
-                      <p className="text-sm font-medium text-white">{result.model_display_name}</p>
-                    </div>
+          <SectionCard sectionKey="diagnosis" title="诊断结果" icon={<CheckCircle className="w-5 h-5 text-[#c8f7c5]" />}>
+            {result ? (
+              <div className="space-y-4 animate-fadeIn">
+                {result.image_url && (
+                  <div className="rounded-xl overflow-hidden bg-black/30">
+                    <img src={result.image_url} alt="Diagnosed" className="w-full max-h-64 object-contain" />
                   </div>
-
-                  {candidates.length > 0 ? (
-                    <div className="bg-white/5 rounded-xl p-4">
-                      <div className="flex items-center justify-between mb-4">
-                        <h4 className="text-white/80 font-medium">病害诊治top3</h4>
-                        <div className="text-sm text-white/60">
-                          {result?.confirm_reason_code && (
-                            <span>原因码: {result.confirm_reason_code}</span>
-                          )}
-                          {result?.reliability_issue_types && result.reliability_issue_types.length > 0 && (
-                            <span className="ml-2">weights: {result.reliability_issue_types.join(', ')}</span>
-                          )}
-                        </div>
-                      </div>
-                      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                        <div className="flex flex-col">
-                          <h5 className="text-white/60 text-sm mb-2">图像top3</h5>
-                          <div className="space-y-2 flex-1">
-                            {parseTop3Candidates(latestPayload ?? result ?? {}, result, 'image').map((item, idx) => (
-                              <div key={idx} className="flex items-center gap-3">
-                                <Badge
-                                  variant={idx === 0 ? 'default' : 'outline'}
-                                  className={cn(
-                                    'min-w-[3rem] text-center',
-                                    idx === 0 ? 'bg-[#c8f7c5] text-black' : 'border-white/30 text-white',
-                                  )}
-                                >
-                                  #{idx + 1}
-                                </Badge>
-                                <button
-                                  type="button"
-                                  onClick={() => navigateToKbDisease(item.disease)}
-                                  className="text-white flex-1 text-left hover:text-[#c8f7c5] hover:underline underline-offset-4"
-                                >
-                                  {item.disease}
-                                </button>
-                                <span className="text-[#c8f7c5] font-mono">{item.probPct.toFixed(2)}%</span>
-                              </div>
-                            ))}
-                            {parseTop3Candidates(latestPayload ?? result ?? {}, result, 'image').length === 0 && (
-                              <div className="text-white/40 text-sm">无数据</div>
-                            )}
-                          </div>
-                        </div>
-                        <div className="flex flex-col">
-                          <h5 className="text-white/60 text-sm mb-2">文本top3</h5>
-                          <div className="space-y-2 flex-1">
-                            {parseTop3Candidates(latestPayload ?? result ?? {}, result, 'text').map((item, idx) => (
-                              <div key={idx} className="flex items-center gap-3">
-                                <Badge
-                                  variant={idx === 0 ? 'default' : 'outline'}
-                                  className={cn(
-                                    'min-w-[3rem] text-center',
-                                    idx === 0 ? 'bg-[#c8f7c5] text-black' : 'border-white/30 text-white',
-                                  )}
-                                >
-                                  #{idx + 1}
-                                </Badge>
-                                <button
-                                  type="button"
-                                  onClick={() => navigateToKbDisease(item.disease)}
-                                  className="text-white flex-1 text-left hover:text-[#c8f7c5] hover:underline underline-offset-4"
-                                >
-                                  {item.disease}
-                                </button>
-                                <span className="text-[#c8f7c5] font-mono">{item.probPct.toFixed(2)}%</span>
-                              </div>
-                            ))}
-                            {parseTop3Candidates(latestPayload ?? result ?? {}, result, 'text').length === 0 && (
-                              <div className="text-white/40 text-sm">无数据</div>
-                            )}
-                          </div>
-                        </div>
-                        <div className="flex flex-col">
-                          <h5 className="text-white/60 text-sm mb-2">融合top3</h5>
-                          <div className="space-y-2 flex-1">
-                            {parseTop3Candidates(latestPayload ?? result ?? {}, result, 'fusion').map((item, idx) => (
-                              <div key={idx} className="flex items-center gap-3">
-                                <Badge
-                                  variant={idx === 0 ? 'default' : 'outline'}
-                                  className={cn(
-                                    'min-w-[3rem] text-center',
-                                    idx === 0 ? 'bg-[#c8f7c5] text-black' : 'border-white/30 text-white',
-                                  )}
-                                >
-                                  #{idx + 1}
-                                </Badge>
-                                <button
-                                  type="button"
-                                  onClick={() => navigateToKbDisease(item.disease)}
-                                  className="text-white flex-1 text-left hover:text-[#c8f7c5] hover:underline underline-offset-4"
-                                >
-                                  {item.disease}
-                                </button>
-                                <span className="text-[#c8f7c5] font-mono">{item.probPct.toFixed(2)}%</span>
-                              </div>
-                            ))}
-                            {parseTop3Candidates(latestPayload ?? result ?? {}, result, 'fusion').length === 0 && (
-                              <div className="text-white/40 text-sm">无数据</div>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  ) : null}
-
-                  <div>
-                    <h4 className="text-white/80 font-medium mb-2">个性化影响（生成阶段）</h4>
-                    <div className="bg-white/5 rounded-xl p-4 text-sm text-white/80 space-y-2">
-                      <div className="flex items-center gap-2">
-                        <span>已应用个性化：</span>
-                        <Badge className={cn(result.personalization_applied ? 'bg-[#c8f7c5] text-black' : 'bg-white/10 text-white')}>
-                          {result.personalization_applied ? '是' : '否'}
-                        </Badge>
-                        {result.filtered && (
-                          <Badge className="bg-yellow-400 text-black">后处理已过滤</Badge>
-                        )}
-                      </div>
-                      {Array.isArray(result.personalization_reasons) && result.personalization_reasons.length > 0 ? (
-                        <ul className="list-disc pl-5 space-y-1">
-                          {result.personalization_reasons.map((reason: string, idx: number) => (
-                            <li key={`${reason}-${idx}`}>{reason}</li>
-                          ))}
-                        </ul>
-                      ) : Array.isArray(result.filtered_reasons) && result.filtered_reasons.length > 0 ? (
-                        <ul className="list-disc pl-5 space-y-1">
-                          {result.filtered_reasons.map((reason, idx) => (
-                            <li key={`${reason}-${idx}`}>{reason}</li>
-                          ))}
-                        </ul>
-                      ) : (
-                        <p className="text-white/50">暂无个性化影响说明</p>
-                      )}
-                    </div>
-                  </div>
-
-                  <div>
-                    <h4 className="text-white/80 font-medium mb-2">农业风险标签（辅助解释层）</h4>
-                    <div className="bg-white/5 rounded-xl p-4 border border-[#c8f7c5]/20 text-sm text-white/80">
-                      {primaryRiskLabels.length > 0 ? (
-                        <div className="flex flex-wrap gap-2">
-                          {primaryRiskLabels.map((tag, idx) => (
-                            <span
-                              key={`${tag}-${idx}`}
-                              className="inline-flex items-center rounded-full border border-[#73d59f]/70 bg-[#73d59f]/20 px-3 py-1 text-xs font-medium text-[#baf7d3]"
-                            >
-                              {tag}
-                            </span>
-                          ))}
-                        </div>
-                      ) : (
-                        <div className="text-center py-4 text-white/50">
-                          <p>暂无风险标签</p>
-                          <p className="text-xs mt-1">风险标签仅用于解释层，原始字段仍是诊断与方案生成的主依据。</p>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-
-
-
-                  <div>
-                    <h4 className="text-white/80 font-medium mb-2">待补充信息（用于提升个性化精度）</h4>
-                    <div className="bg-white/5 rounded-xl p-4 border border-[#c8f7c5]/20 text-sm text-white/80 space-y-3">
-                      <div className="flex items-center gap-2">
-                        <Badge className="bg-[#c8f7c5]/20 text-[#c8f7c5] border border-[#c8f7c5]/40">建议补齐</Badge>
-                      </div>
-                      {Array.isArray(result.follow_up_questions) && result.follow_up_questions.length > 0 ? (
-                        <ul className="list-disc pl-5 space-y-1">
-                          {result.follow_up_questions.map((question, idx) => (
-                            <li key={`${question}-${idx}`}>{question}</li>
-                          ))}
-                        </ul>
-                      ) : (
-                        <p className="text-white/50">暂无待补充信息</p>
-                      )}
-                      {Array.isArray(result.missing_profile_fields) && result.missing_profile_fields.length > 0 ? (
-                        <div className="flex flex-wrap gap-2 pt-1">
-                          {result.missing_profile_fields.map((field) => (
-                            <Badge key={field} variant="outline" className="border-[#c8f7c5]/40 text-[#c8f7c5]">{field}</Badge>
-                          ))}
-                        </div>
-                      ) : null}
-                      <p className="text-xs text-white/60">可前往【农户档案管理】补齐设备/生育期等信息，以获得更精准的可执行方案。</p>
-                    </div>
-                  </div>
-
-                  {shouldShowSupplementSection ? (
-                    <div className="bg-[#c8f7c5]/10 border border-[#c8f7c5]/30 rounded-xl p-4 space-y-4">
-                      <h4 className="text-[#c8f7c5] font-medium">{confirmCopy.title}</h4>
-                      <p className="text-sm text-white/80">{result?.confirm_reason_text || confirmCopy.body}</p>
-                      <p className="text-xs text-white/70">{result?.confirm_message || confirmCopy.body}</p>
-
-                      {usesTextSupplement && (
-                        <>
-                          <div className="space-y-2">
-                            <Label className="text-white/80">补充症状（逗号分隔）</Label>
-                            <Input
-                              value={confirmSymptoms}
-                              onChange={(e) => setConfirmSymptoms(e.target.value)}
-                              placeholder="例如：病斑边缘褐色, 叶背有霉层, 水渍状扩展"
-                              className="bg-white/5 border-white/20 text-white placeholder:text-white/40"
-                            />
-                          </div>
-                          {Array.isArray(result?.follow_up_questions) && result.follow_up_questions.length > 0 ? (
-                            <ul className="list-disc pl-5 text-xs text-white/70 space-y-1">
-                              {result.follow_up_questions.map((q, idx) => <li key={`${q}-${idx}`}>{q}</li>)}
-                            </ul>
-                          ) : null}
-                        </>
-                      )}
-
-                      {usesImageSupplement && (
-                        <div className="space-y-3 rounded-lg border border-white/20 bg-white/5 p-3">
-                          <p className="text-sm text-white/90">当前图片信息不足，建议重新上传更清晰图片</p>
-                          <p className="text-xs text-white/70">可补拍叶片正面、背面及病斑近照</p>
-                          <Input type="file" accept="image/*" onChange={handleResubmitFileChange} className="bg-white/5 border-white/20 text-white file:text-white" />
-                          {resubmitPreview ? (
-                            <img src={resubmitPreview} alt="重新上传预览" className="max-h-40 rounded-lg object-contain bg-black/30" />
-                          ) : (
-                            <p className="text-xs text-white/60">{resubmitFile ? `已选择文件：${resubmitFile.name}` : '尚未选择重新上传图片'}</p>
-                          )}
-                        </div>
-                      )}
-
-                      <div className="flex flex-col sm:flex-row gap-3">
-                        <Button
-                          onClick={() => handleConfirmSubmit()}
-                          disabled={confirmSubmitting || resubmitSubmitting || !traceId || !imageId || (usesImageSupplement && !resubmitFile)}
-                          className="bg-[#c8f7c5] text-black hover:bg-[#b8e7b5]"
-                        >
-                          {(confirmSubmitting || resubmitSubmitting) ? '提交中...' : confirmCopy.cta}
-                        </Button>
-                      </div>
-                    </div>
-                  ) : shouldShowExpertReviewDecision ? (
-                    <div className="bg-amber-500/10 border border-amber-400/30 rounded-xl p-4 space-y-4">
-                      <h4 className="text-amber-200 font-medium">补充诊断后仍建议专家复核</h4>
-                      <p className="text-sm text-white/80">
-                        {result.confirm_message || '多次补充后仍存在不确定性。你可以使用当前结果结束，或转入待专家复核状态。'}
-                      </p>
-                      <div className="flex flex-col sm:flex-row gap-3">
-                        <Button
-                          onClick={() => handleConfirmSubmit('use_current_result')}
-                          disabled={confirmSubmitting || !traceId || !imageId}
-                          className="bg-[#c8f7c5] text-black hover:bg-[#b8e7b5]"
-                        >
-                          {confirmSubmitting ? '提交中...' : '使用当前结果结束'}
-                        </Button>
-                        <Button
-                          onClick={() => handleConfirmSubmit('request_expert_review')}
-                          disabled={confirmSubmitting || !traceId || !imageId}
-                          variant="outline"
-                          className="border-amber-300/50 text-amber-100 hover:bg-amber-500/10"
-                        >
-                          {confirmSubmitting ? '提交中...' : '转入专家复核'}
-                        </Button>
-                      </div>
-                    </div>
-                  ) : null}
-
-                  {expertReviewPending ? (
-                    <div className="bg-blue-500/10 border border-blue-400/30 rounded-xl p-4 text-blue-100 text-sm space-y-2">
-                      <h4 className="font-medium">已转入专家复核</h4>
-                      <p>{result?.confirm_message || '当前病例已进入待专家复核状态，后续将由专家确认病害并补充最终方案。'}</p>
-                      <p className="text-xs text-blue-200/90">expert_review_status：{result?.expert_review_status || 'PENDING'}</p>
-                      <p className="text-xs text-blue-200/90">当前不下发治疗方案，等待专家确认。</p>
-                    </div>
-                  ) : null}
-
-                  <div className="bg-white/5 border border-white/10 rounded-xl p-4 text-sm text-white/85 space-y-2">
-                    <h4 className="font-medium text-[#c8f7c5]">病例复核详情</h4>
-                    <p>expert_review_status：{result.expert_review_status || 'NONE'}</p>
-                    <p>expert_review_selected：{result.expert_review_selected ? 'true' : 'false'}</p>
-                    <p>expert_review_result：{result.expert_review_result || '-'}</p>
-                    <p>expert_review_notes：{result.expert_review_notes || '-'}</p>
-                    {expertReviewCompleted && (
-                      <p className="text-emerald-300">专家已确认（{result.expert_reviewed_at || '-' }）</p>
-                    )}
-                  </div>
-
-                  <Separator className="bg-white/10" />
-
-                  {/* Treatment */}
-                  {shouldHideTreatment && (
-                    <div className="bg-yellow-500/10 border border-yellow-400/30 rounded-xl p-4 text-yellow-200 text-sm">
-                      {expertReviewPending
-                        ? '当前病例已进入待专家复核状态，治疗/预防方案将在后续专家确认后下发。'
-                        : shouldShowExpertReviewDecision
-                          ? '当前结果已支持结束或转入专家复核，请先完成选择。'
-                          : '置信度不足，建议先完成补充诊断、确认候选病害或补充症状。'}
-                    </div>
-                  )}
-
-                  {Boolean(result.treatment) && !shouldHideTreatment && (
-                    <div>
-                      <h4 className="text-white/80 font-medium mb-2 flex items-center gap-2">
-                        <AlertCircle className="w-4 h-4 text-[#c8f7c5]" />
-                        治疗方案
-                        {result.selected_branch ? (
-                          <span className="inline-flex items-center rounded-full border border-emerald-600/70 bg-emerald-900/50 px-2 py-0.5 text-xs text-emerald-100">
-                            {getSelectedBranchLabel(result.selected_branch)}
-                          </span>
-                        ) : null}
-                      </h4>
-                      <div className="bg-white/5 rounded-xl p-4 text-white/80 text-sm leading-relaxed whitespace-pre-line">
-                        {renderTreatment(result.treatment)}
-                      </div>
-                    </div>
-                  )}
-
-                </div>
-              ) : (
-                <div className="text-center py-12 text-white/40">
-                  <ImageIcon className="w-16 h-16 mx-auto mb-4 opacity-50" />
-                  <p>上传图片并点击诊断按钮获取结果</p>
-                </div>
-              )}
-            </CardContent>
-          </Card>
-
-          {/* Trace Events Card */}
-          <Card className="glass-card">
-            <CardHeader className="flex flex-row items-center justify-between">
-              <CardTitle className="text-white flex items-center gap-2">
-                <RefreshCw className="w-5 h-5 text-[#c8f7c5]" />
-                多智能体协作流程
-              </CardTitle>
-              <div className="flex items-center gap-3">
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setWorkflowCollapsed((prev) => !prev)}
-                  className="text-white/70 hover:bg-white/10"
-                >
-                  {workflowCollapsed ? <ChevronDown className="w-4 h-4 mr-1" /> : <ChevronUp className="w-4 h-4 mr-1" />}
-                  {workflowCollapsed ? '展开流程' : '折叠流程'}
-                </Button>
-                {traceId && (
-                  <>
-                    <span className="text-white/40 text-sm">追踪ID: {traceId.slice(0, 16)}...</span>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => { void refreshTrace('DiagnosePage.manualRefresh'); }}
-                      className="border-white/20 text-white hover:bg-white/10"
-                    >
-                      <RefreshCw className="w-4 h-4" />
-                    </Button>
-                  </>
                 )}
+                <div className="grid sm:grid-cols-3 gap-4">
+                  <div className="bg-white/5 rounded-xl p-4">
+                    <p className="text-white/60 text-sm mb-1">最终病害</p>
+                    <button type="button" onClick={() => navigateToKbDisease(result.final_disease)} className="text-left text-xl font-bold text-[#c8f7c5] hover:underline underline-offset-4">{result.final_disease}</button>
+                  </div>
+                  <div className="bg-white/5 rounded-xl p-4">
+                    <p className="text-white/60 text-sm mb-1">置信度</p>
+                    <p className="text-xl font-bold text-[#c8f7c5]">{result.displayConfidencePct !== null ? `${result.displayConfidencePct.toFixed(2)}%` : "—"}</p>
+                  </div>
+                  <div className="bg-white/5 rounded-xl p-4">
+                    <p className="text-white/60 text-sm mb-1">使用模型</p>
+                    <p className="text-sm font-medium text-white">{result.model_display_name}</p>
+                  </div>
+                </div>
               </div>
-            </CardHeader>
-            {!workflowCollapsed && (
-            <CardContent className="space-y-4">
-              <p className="text-xs text-white/60">
-                当前流程包含：接待解析 → 病害诊断 → 知识检索 → 方案生成 → 农业合规审查。
-              </p>
+            ) : (
+              <div className="text-center py-12 text-white/40"><ImageIcon className="w-16 h-16 mx-auto mb-4 opacity-50" /><p>上传图片并点击诊断按钮获取结果</p></div>
+            )}
+          </SectionCard>
+
+          <SectionCard sectionKey="candidates" title="候选病害" icon={<AlertCircle className="w-5 h-5 text-[#c8f7c5]" />}>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              {(['image', 'text', 'fusion'] as const).map((source) => {
+                const titleMap: Record<typeof source, string> = {
+                  image: '图像 top3',
+                  text: '文本 top3',
+                  fusion: '融合后 top3',
+                };
+                const items = parseTop3Candidates(latestPayload ?? result ?? {}, result, source);
+                return (
+                  <div key={source} className="bg-white/5 rounded-xl p-3 space-y-2">
+                    <h5 className="text-white/70 text-sm">{titleMap[source]}</h5>
+                    {items.length > 0 ? items.map((item, idx) => (
+                      <div key={`${source}-${item.disease}-${idx}`} className="flex items-center gap-2">
+                        <Badge className={cn(idx === 0 ? 'bg-[#c8f7c5] text-black' : 'bg-white/10 text-white')}>#{idx + 1}</Badge>
+                        <button type="button" onClick={() => navigateToKbDisease(item.disease)} className="text-white hover:text-[#c8f7c5] hover:underline underline-offset-4 flex-1 text-left">{item.disease}</button>
+                        <span className="text-[#c8f7c5] font-mono text-xs">{item.probPct.toFixed(2)}%</span>
+                      </div>
+                    )) : <p className="text-white/40 text-sm">无数据</p>}
+                  </div>
+                );
+              })}
+            </div>
+          </SectionCard>
+
+          <SectionCard sectionKey="confirm" title="confirm / retry 面板" icon={<RefreshCw className="w-5 h-5 text-[#c8f7c5]" />}>
+            {shouldShowSupplementSection ? (
+              <div className="bg-[#c8f7c5]/10 border border-[#c8f7c5]/30 rounded-xl p-4 space-y-4">
+                <h4 className="text-[#c8f7c5] font-medium">{confirmCopy.title}</h4>
+                <p className="text-sm text-white/80">{result?.confirm_reason_text || confirmCopy.body}</p>
+                <p className="text-xs text-white/70">{result?.confirm_message || confirmCopy.body}</p>
+                {usesTextSupplement && (
+                  <div className="space-y-2">
+                    <Label className="text-white/80">补充症状（逗号分隔）</Label>
+                    <Input value={confirmSymptoms} onChange={(e) => setConfirmSymptoms(e.target.value)} placeholder="例如：病斑边缘褐色, 叶背有霉层" className="bg-white/5 border-white/20 text-white placeholder:text-white/40" />
+                  </div>
+                )}
+                {usesImageSupplement && (
+                  <div className="space-y-3 rounded-lg border border-white/20 bg-white/5 p-3">
+                    <p className="text-sm text-white/90">当前图片信息不足，建议重新上传更清晰图片</p>
+                    <Input type="file" accept="image/*" onChange={handleResubmitFileChange} className="bg-white/5 border-white/20 text-white file:text-white" />
+                    {resubmitStatus === 'selected' && resubmitFile ? (
+                      <p className="text-xs text-[#c8f7c5]">已选择新图片（{resubmitFile.name}），等待上传。点击“{confirmCopy.cta}”后才会提交到服务器。</p>
+                    ) : null}
+                    {resubmitStatus === 'submitting' ? (
+                      <p className="text-xs text-yellow-200">正在上传新图片并发起复诊，请稍候…</p>
+                    ) : null}
+                    {resubmitStatus === 'success' ? (
+                      <p className="text-xs text-emerald-300">已使用新图片重新诊断。</p>
+                    ) : null}
+                  </div>
+                )}
+                <Button onClick={() => handleConfirmSubmit()} disabled={confirmSubmitting || resubmitSubmitting || !traceId || !imageId || (usesImageSupplement && !resubmitFile)} className="bg-[#c8f7c5] text-black hover:bg-[#b8e7b5]">{(confirmSubmitting || resubmitSubmitting) ? '提交中...' : confirmCopy.cta}</Button>
+              </div>
+            ) : shouldShowExpertReviewDecision ? (
+              <div className="bg-amber-500/10 border border-amber-400/30 rounded-xl p-4 space-y-4">
+                <p className="text-sm text-white/80">{result?.confirm_message || '多次补充后仍存在不确定性。'}</p>
+                <div className="flex flex-col sm:flex-row gap-3">
+                  <Button onClick={() => handleConfirmSubmit('use_current_result')} disabled={confirmSubmitting || !traceId || !imageId} className="bg-[#c8f7c5] text-black hover:bg-[#b8e7b5]">使用当前结果结束</Button>
+                  <Button onClick={() => handleConfirmSubmit('request_expert_review')} disabled={confirmSubmitting || !traceId || !imageId} variant="outline" className="border-amber-300/50 text-amber-100 hover:bg-amber-500/10">转入专家复核</Button>
+                </div>
+              </div>
+            ) : <p className="text-white/60">当前无需补充信息。</p>}
+          </SectionCard>
+
+          <SectionCard sectionKey="personalization" title="个性化影响" icon={<Bell className="w-5 h-5 text-[#c8f7c5]" />}>
+            <div className="bg-white/5 rounded-xl p-4 text-sm text-white/80 space-y-2">
+              <div className="flex items-center gap-2">
+                <span>已应用个性化：</span>
+                <Badge className={cn(result?.personalization_applied ? 'bg-[#c8f7c5] text-black' : 'bg-white/10 text-white')}>{result?.personalization_applied ? '是' : '否'}</Badge>
+                {result?.selected_branch ? <Badge className="bg-emerald-900/60 text-emerald-100">{getSelectedBranchLabel(result.selected_branch)}</Badge> : null}
+              </div>
+              {Array.isArray(result?.personalization_reasons) && result.personalization_reasons.length > 0 ? (
+                <ul className="list-disc pl-5 space-y-1">{result.personalization_reasons.map((reason, idx) => <li key={`${reason}-${idx}`}>{reason}</li>)}</ul>
+              ) : <p className="text-white/50">暂无个性化影响说明</p>}
+            </div>
+          </SectionCard>
+
+          <SectionCard sectionKey="treatment" title="治疗建议" icon={<AlertCircle className="w-5 h-5 text-[#c8f7c5]" />}>
+            {shouldHideTreatment ? (
+              <div className="bg-yellow-500/10 border border-yellow-400/30 rounded-xl p-4 text-yellow-200 text-sm">当前阶段暂不下发治疗建议，请先完成确认/复核流程。</div>
+            ) : Boolean(result?.treatment) ? (
+              <div className="bg-white/5 rounded-xl p-4 text-white/80 text-sm leading-relaxed whitespace-pre-line">{renderTreatment(result?.treatment)}</div>
+            ) : (
+              <p className="text-white/50">暂无治疗建议</p>
+            )}
+          </SectionCard>
+
+          <SectionCard sectionKey="workflow" title="多智能体流程" icon={<RefreshCw className="w-5 h-5 text-[#c8f7c5]" />} hidden={!showAdminSections}>
+            <div className="space-y-4">
+              <p className="text-xs text-white/60">当前流程包含：接待解析 → 病害诊断 → 知识检索 → 方案生成。</p>
               {displayedTiming && timingSourceLabel && (
                 <div className="rounded-lg border border-white/10 bg-white/5 px-3 py-2">
-                  <p className="text-xs text-white/65">
-                    耗时真值来源：{timingSourceLabel}。总耗时 {formatDurationMs(displayedTiming.totalMs)}（一诊 {formatDurationMs(displayedTiming.phase1Ms)} / 二诊 {formatDurationMs(displayedTiming.phase2Ms)}）
-                  </p>
+                  <p className="text-xs text-white/65">耗时来源：{timingSourceLabel}。总耗时 {formatDurationMs(displayedTiming.totalMs)}（一诊 {formatDurationMs(displayedTiming.phase1Ms)} / 二诊 {formatDurationMs(displayedTiming.phase2Ms)}）</p>
                 </div>
               )}
-              <AgentWorkflowPanel
-                traceId={traceId || undefined}
-                confidencePct={result?.displayConfidencePct ?? undefined}
-                refreshToken={workflowRefreshToken}
-              />
-
-              <div className="flex items-center justify-between">
-                <p className="text-xs text-white/50">调试事件流（开发排查）</p>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setShowRawTrace((prev) => !prev)}
-                  className="text-white/70 hover:bg-white/10"
-                >
-                  {showRawTrace ? <ChevronUp className="w-4 h-4 mr-1" /> : <ChevronDown className="w-4 h-4 mr-1" />}
-                  {showRawTrace ? '收起事件' : '展开事件'}
-                </Button>
-              </div>
-
-              {showRawTrace && (traceEvents.length > 0 ? (
-                <div className="space-y-3 max-h-80 overflow-y-auto">
-                  {traceEvents.map((event, idx) => (
-                    <div 
-                      key={`${event.timestamp}-${idx}`}
-                      className="flex items-start gap-3 p-3 rounded-lg bg-white/5 animate-slideIn"
-                      style={{ animationDelay: `${idx * 30}ms` }}
-                    >
-                      <div className={cn(
-                        "w-2 h-2 rounded-full mt-2 flex-shrink-0",
-                        event.status === '完成' || event.status === 'done' || event.status === 'completed'
-                          ? "bg-green-400" 
-                          : event.status === '错误' || event.status === 'error'
-                          ? "bg-red-400"
-                          : "bg-[#c8f7c5] animate-pulse"
-                      )} />
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <span className="text-white/40 text-xs font-mono">
-                            {new Date(event.timestamp).toLocaleTimeString()}
-                          </span>
-                          <Badge variant="outline" className="border-[#c8f7c5]/50 text-[#c8f7c5] text-xs">
-                            {event.agent}
-                          </Badge>
-                          <span className="text-white text-sm">{event.status}</span>
-                        </div>
-                        {event.message && (
-                          <p className="text-white/50 text-xs mt-1">{event.message}</p>
-                        )}
-
-                        <details className="mt-2">
-                          <summary className="text-xs text-white/40 cursor-pointer hover:text-white/70">查看原始 JSON</summary>
-                          <pre className="mt-1 text-[11px] text-white/60 bg-black/30 border border-white/10 rounded-md p-2 whitespace-pre-wrap break-all">
-                            {JSON.stringify(event.raw, null, 2)}
-                          </pre>
-                        </details>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <div className="text-center py-8 text-white/40">
-                  <RefreshCw className="w-10 h-10 mx-auto mb-3 opacity-50" />
-                  <p className="text-sm">暂未收到追踪事件，面板将使用模拟进度降级展示</p>
-                </div>
-              ))}
-            </CardContent>
-            )}
-          </Card>
+              <AgentWorkflowPanel traceId={traceId || undefined} confidencePct={result?.displayConfidencePct ?? undefined} refreshToken={workflowRefreshToken} />
+            </div>
+          </SectionCard>
         </div>
       </div>
     </div>
