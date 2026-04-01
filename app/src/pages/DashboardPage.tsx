@@ -680,15 +680,15 @@ function navigateToKbDisease(diseaseName: string) {
 }
 
 function getConfidencePct(source: Record<string, unknown>): number | null {
+  const finalConfidence = Number(source.final_confidence);
+  if (Number.isFinite(finalConfidence)) return finalConfidence <= 1 ? finalConfidence * 100 : finalConfidence;
+
   const imageResult = source.image_result && typeof source.image_result === 'object'
     ? source.image_result as Record<string, unknown>
     : undefined;
 
   const confidencePct = Number(imageResult?.confidence_pct);
   if (Number.isFinite(confidencePct)) return confidencePct;
-
-  const finalConfidence = Number(source.final_confidence);
-  if (Number.isFinite(finalConfidence)) return finalConfidence <= 1 ? finalConfidence * 100 : finalConfidence;
 
   const confidence = Number(imageResult?.confidence);
   if (Number.isFinite(confidence)) return confidence * 100;
@@ -1384,14 +1384,13 @@ export function DashboardPage() {
   }, [selectedEvent, traceNodeMap]);
 
   const caseDiagnosis = useMemo(() => {
-    const diagnosisOutputs = getNodeOutputs(getLatestNode(traceNodeMap, 'diagnosis'));
-    const disease = toText(diagnosisOutputs.final_disease) || selectedEvent?.disease || '—';
-    const confidence = diagnosisOutputs.final_confidence ?? diagnosisOutputs.confidence_pct ?? selectedEvent?.confidencePct;
+    const disease = selectedEvent?.disease || '—';
+    const confidence = selectedEvent?.confidencePct;
     return {
       disease,
-      confidenceText: confidence === undefined ? (selectedEvent?.confidencePct !== null && selectedEvent?.confidencePct !== undefined ? `${selectedEvent.confidencePct.toFixed(2)}%` : '—') : toPercent(confidence),
+      confidenceText: confidence !== null && confidence !== undefined ? `${confidence.toFixed(2)}%` : '—',
     };
-  }, [traceNodeMap, selectedEvent]);
+  }, [selectedEvent]);
 
   const caseBranchLabel = useMemo(() => {
     if (!selectedEvent) return '未分档';
@@ -1406,6 +1405,21 @@ export function DashboardPage() {
     const plan = sanitizeTraceText(treatmentObj?.plan ?? selectedEvent.raw.treatment_plan);
     const prevention = sanitizeTraceText(treatmentObj?.prevention ?? selectedEvent.raw.prevention_advice);
     return { plan, prevention };
+  }, [selectedEvent]);
+
+  const caseVerificationSummary = useMemo(() => {
+    if (!selectedEvent) return { passedText: '—', riskLevel: '—', summary: '', issues: '' };
+    const verification = toRecord(selectedEvent.raw.verification_result);
+    const passed = verification?.passed;
+    const issues = Array.isArray(verification?.issues)
+      ? verification.issues.map((item) => sanitizeTraceText(item)).filter(Boolean).join('、')
+      : '';
+    return {
+      passedText: typeof passed === 'boolean' ? toYesNo(passed) : '—',
+      riskLevel: sanitizeTraceText(verification?.risk_level) || '—',
+      summary: sanitizeTraceText(verification?.compliance_summary ?? verification?.summary),
+      issues,
+    };
   }, [selectedEvent]);
 
   const caseFallbackSummary = useMemo(() => {
@@ -1459,6 +1473,20 @@ export function DashboardPage() {
   }, [filteredEvents]);
 
   const kbSummary = useMemo(() => {
+    const eventKbSnapshot = toRecord(selectedEvent?.raw?.kb_snapshot);
+    if (eventKbSnapshot && Object.keys(eventKbSnapshot).length > 0) {
+      const eventIngredients = Array.isArray(eventKbSnapshot.ingredients)
+        ? eventKbSnapshot.ingredients.map((item) => toText(item)).filter(Boolean)
+        : [];
+      return {
+        name: toText(eventKbSnapshot.disease ?? eventKbSnapshot.disease_name) || selectedEvent?.disease || '',
+        description: toText(eventKbSnapshot.description),
+        treatment: toText(eventKbSnapshot.treatment ?? selectedEvent?.raw?.treatment?.plan ?? selectedEvent?.raw?.treatment_plan),
+        prevention: toText(eventKbSnapshot.prevention ?? selectedEvent?.raw?.treatment?.prevention ?? selectedEvent?.raw?.prevention_advice),
+        ingredients: eventIngredients,
+      };
+    }
+
     const kbOutputs = getNodeOutputs(getLatestNode(traceNodeMap, 'kb_retrieval'));
     const kbDoc = toRecord(kbOutputs.kb_disease) ?? {};
     const ingredients = Array.isArray(kbOutputs.ingredients)
@@ -1471,7 +1499,7 @@ export function DashboardPage() {
       prevention: toText(kbOutputs.prevention ?? kbDoc.prevention) || kbDetail?.prevention || '',
       ingredients,
     };
-  }, [traceNodeMap, kbDetail, selectedEvent?.disease]);
+  }, [traceNodeMap, kbDetail, selectedEvent]);
 
   const maxCount = Math.max(...stats.map((s) => s.count), 1);
 
@@ -2035,6 +2063,7 @@ export function DashboardPage() {
                       <p className="text-white/60 text-xs mb-1">模型 / 时间 / 档位</p>
                       <p className="text-white text-sm">{selectedEvent.modelName || selectedEvent.modelId}</p>
                       <p className="text-white/60 text-xs mt-1">{safeDisplayTime(selectedEvent.ts)} · {caseBranchLabel}</p>
+                      <p className="text-white/60 text-xs mt-1">状态：{selectedEvent.status || '—'} · 专家复核：{selectedEvent.expertReviewStatus || 'NONE'}</p>
                     </div>
                     <div className="bg-white/5 rounded-lg p-3 text-sm text-white/80 space-y-2">
                       <p className="text-white/60 text-xs">处方建议</p>
@@ -2045,6 +2074,13 @@ export function DashboardPage() {
                           <div className="whitespace-pre-wrap">{caseTreatmentSummary.prevention}</div>
                         </div>
                       )}
+                    </div>
+                    <div className="bg-white/5 rounded-lg p-3 text-sm text-white/80 space-y-1">
+                      <p className="text-white/60 text-xs">合规审查（latest event）</p>
+                      <div>是否通过：{caseVerificationSummary.passedText}</div>
+                      <div>风险等级：{caseVerificationSummary.riskLevel}</div>
+                      <div>摘要：{caseVerificationSummary.summary || '暂无'}</div>
+                      <div>问题：{caseVerificationSummary.issues || '暂无'}</div>
                     </div>
                     <div className="bg-white/5 rounded-lg p-3 text-sm text-white/80 space-y-2">
                       <p className="text-white/60 text-xs">回退 / LLM 状态</p>

@@ -23,3 +23,21 @@ test('recent list renders one card per traceId', () => {
   assert.match(source, /key=\{event\.traceId\}/);
   assert.doesNotMatch(source, /key=\{event\.id\}/);
 });
+
+test('confidence priority uses final_confidence before image_result confidence', () => {
+  const finalIdx = source.indexOf('const finalConfidence = Number(source.final_confidence);');
+  const imagePctIdx = source.indexOf('const confidencePct = Number(imageResult?.confidence_pct);');
+  assert.ok(finalIdx >= 0 && imagePctIdx >= 0 && finalIdx < imagePctIdx);
+});
+
+test('case tab reads latest event snapshot fields for diagnosis/treatment/verification', () => {
+  assert.match(source, /const disease = selectedEvent\?\.disease \|\| '—';/);
+  assert.match(source, /const treatmentObj = toRecord\(selectedEvent\.treatment\);/);
+  assert.match(source, /const verification = toRecord\(selectedEvent\.raw\.verification_result\);/);
+  assert.doesNotMatch(source, /const diagnosisOutputs = getNodeOutputs\(getLatestNode\(traceNodeMap, 'diagnosis'\)\)/);
+});
+
+test('kb tab prefers latest event kb_snapshot and only then falls back to trace kb node', () => {
+  assert.match(source, /const eventKbSnapshot = toRecord\(selectedEvent\?\.raw\?\.kb_snapshot\);/);
+  assert.match(source, /const kbOutputs = getNodeOutputs\(getLatestNode\(traceNodeMap, 'kb_retrieval'\)\);/);
+});
