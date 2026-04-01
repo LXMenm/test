@@ -15,6 +15,7 @@ from knowledge_base.kb_manager import KnowledgeBaseManager
 from mysql_models import KBSymptomAliasORM, KBSymptomCandidateDiseaseORM, KBSymptomMapORM
 from repositories import kb_repo_mysql
 import scripts.migrations.migrate_kb_symptom_map_normalized as migrate_symptom_map_script
+import scripts.migrations.backfill_kb_symptom_discriminators as backfill_discriminators_script
 
 
 def _fixture_diseases() -> dict[str, Any]:
@@ -47,6 +48,10 @@ def _symptom_payload() -> dict[str, Any]:
             "发黄": ["黄化曲叶病毒病", "缺素症"],
             "卷曲": ["黄化曲叶病毒病"],
         },
+        "symptom_tiers": {"发黄": "generic", "卷曲": "generic", "节间缩短": "discriminative"},
+        "symptom_discriminator_groups": {"节间缩短": ["病毒组"]},
+        "follow_up_hints": {"病毒组": ["是否有节间缩短、矮化丛生？"]},
+        "negative_cues": {"病毒组": ["叶背白霉"]},
     }
 
 
@@ -125,7 +130,8 @@ def test_load_symptom_map_mysql_prefers_normalized_child_tables_but_keeps_compat
 
     assert loaded["symptom_aliases"]["叶片发黄"] == "发黄"
     assert loaded["symptom_candidates"]["发黄"] == ["黄化曲叶病毒病", "缺素症"]
-    assert set(loaded.keys()) == {"symptom_aliases", "symptom_candidates", "symptom_map"}
+    assert {"symptom_aliases", "symptom_candidates", "symptom_map"}.issubset(set(loaded.keys()))
+    assert loaded["symptom_tiers"]["节间缩短"] == "discriminative"
 
 
 def test_load_symptom_map_mysql_falls_back_to_legacy_json_when_child_tables_are_empty(monkeypatch, tmp_path: Path) -> None:
@@ -181,6 +187,105 @@ def test_kb_manager_normalize_and_candidate_lookup_do_not_regress(monkeypatch, t
 
     assert manager.normalize_symptoms(["叶片发黄", "叶子发黄", "卷叶"]) == ["发黄", "卷曲"]
     assert manager.get_candidate_diseases_from_symptoms(["叶片发黄", "卷叶"]) == ["黄化曲叶病毒病"]
+
+
+def test_kb_manager_alias_discriminator_and_followup(monkeypatch, tmp_path: Path) -> None:
+    engine, session_scope = _make_session_scope(tmp_path)
+    _create_symptom_tables(engine)
+    monkeypatch.setattr(kb_repo_mysql, "get_db_session", session_scope)
+    payload = _symptom_payload()
+    payload["symptom_aliases"].update({
+        "一圈一圈的病斑": "同心轮纹",
+        "叶背有白毛": "叶背白霉",
+        "像靶子一样": "靶心状病斑",
+        "叶背有细网": "叶背结网",
+        "叶片一块深一块浅": "明暗相间花叶",
+    })
+    payload["symptom_candidates"].update({
+        "斑点": ["细菌性斑点病", "早疫病", "晚疫病", "叶霉病", "叶斑病", "靶斑病"],
+        "同心轮纹": ["早疫病", "靶斑病"],
+        "叶背橄榄绒霉": ["叶霉病", "早疫病"],
+        "黑色小点": ["叶斑病", "早疫病"],
+        "叶背结网": ["蜘蛛螨", "早疫病"],
+        "节间缩短": ["黄化曲叶病毒病", "花叶病毒病"],
+        "明暗相间花叶": ["花叶病毒病", "黄化曲叶病毒病"],
+    })
+    payload["symptom_map"].update(payload["symptom_candidates"])
+    payload["symptom_tiers"].update({
+        "同心轮纹": "discriminative",
+        "叶背橄榄绒霉": "discriminative",
+        "黑色小点": "discriminative",
+        "叶背结网": "discriminative",
+        "节间缩短": "discriminative",
+        "明暗相间花叶": "discriminative",
+    })
+    kb_repo_mysql.save_symptom_map_mysql(payload)
+
+    diseases = _fixture_diseases()
+    treatments = _fixture_treatments()
+    rules = _fixture_rules()
+    for rule in rules["rules"]:
+        if rule.get("disease") == "早疫病":
+            rule["symptom_weights"] = {"同心轮纹": 1.4, "黑色小点": 0.1}
+        if rule.get("disease") == "靶斑病":
+            rule["symptom_weights"] = {"同心轮纹": 0.2}
+        if rule.get("disease") == "叶霉病":
+            rule["symptom_weights"] = {"叶背橄榄绒霉": 1.6}
+        if rule.get("disease") == "叶斑病":
+            rule["symptom_weights"] = {"黑色小点": 1.5}
+        if rule.get("disease") == "蜘蛛螨":
+            rule["symptom_weights"] = {"叶背结网": 1.7}
+        if rule.get("disease") == "黄化曲叶病毒病":
+            rule["symptom_weights"] = {"节间缩短": 1.6, "明暗相间花叶": 0.2}
+        if rule.get("disease") == "花叶病毒病":
+            rule["symptom_weights"] = {"节间缩短": 0.2, "明暗相间花叶": 1.6}
+
+    monkeypatch.setattr(kb_store, "KB_STORE_MODE", "mysql")
+    monkeypatch.setattr(
+        kb_store,
+        "_get_mysql_repo",
+        lambda: {
+            "load_diseases_mysql": lambda: diseases,
+            "save_diseases_mysql": lambda payload: payload,
+            "load_treatments_mysql": lambda: treatments,
+            "save_treatments_mysql": lambda payload: payload,
+            "load_rules_mysql": lambda: rules,
+            "save_rules_mysql": lambda payload: payload,
+            "load_symptom_map_mysql": kb_repo_mysql.load_symptom_map_mysql,
+            "save_symptom_map_mysql": kb_repo_mysql.save_symptom_map_mysql,
+        },
+    )
+    manager = KnowledgeBaseManager()
+
+    assert manager.normalize_symptoms(["一圈一圈的病斑", "叶背有白毛", "像靶子一样", "叶背有细网", "叶片一块深一块浅"]) == [
+        "同心轮纹", "叶背白霉", "靶心状病斑", "叶背结网", "明暗相间花叶"
+    ]
+    generic_candidates = manager.get_candidate_diseases_from_symptoms(["斑点"])
+    assert len(generic_candidates) >= 4
+    narrowed_candidates = manager.get_candidate_diseases_from_symptoms(["同心轮纹", "黑色小点"])
+    assert len(narrowed_candidates) <= len(generic_candidates)
+
+    probs_ring = manager.score_diseases_from_text("番茄", ["同心轮纹"])
+    assert probs_ring.get("早疫病", 0.0) > probs_ring.get("靶斑病", 0.0)
+    probs_leaf_mold = manager.score_diseases_from_text("番茄", ["叶背橄榄绒霉"])
+    assert probs_leaf_mold.get("叶霉病", 0.0) > probs_leaf_mold.get("早疫病", 0.0)
+    probs_spot = manager.score_diseases_from_text("番茄", ["黑色小点"])
+    assert probs_spot.get("叶斑病", 0.0) > probs_spot.get("早疫病", 0.0)
+    probs_mite = manager.score_diseases_from_text("番茄", ["叶背有细网"])
+    assert probs_mite.get("蜘蛛螨", 0.0) > probs_mite.get("早疫病", 0.0)
+    probs_ty = manager.score_diseases_from_text("番茄", ["节间缩短"])
+    assert probs_ty.get("黄化曲叶病毒病", 0.0) > probs_ty.get("花叶病毒病", 0.0)
+    probs_mosaic = manager.score_diseases_from_text("番茄", ["叶片一块深一块浅"])
+    assert probs_mosaic.get("花叶病毒病", 0.0) > probs_mosaic.get("黄化曲叶病毒病", 0.0)
+
+    assert manager.has_discriminative_text_evidence(["斑点", "发黄"]) is False
+    assert manager.has_discriminative_text_evidence(["同心轮纹"]) is True
+
+    follow_ups = manager.generate_text_follow_up_questions(
+        ["斑点", "叶斑"],
+        {"早疫病": 0.35, "靶斑病": 0.34, "晚疫病": 0.31},
+    )
+    assert any("同心轮纹" in item for item in follow_ups)
 
 
 def test_migrate_kb_symptom_map_normalized_script_is_idempotent(monkeypatch, tmp_path: Path) -> None:
@@ -242,3 +347,26 @@ def test_migrate_kb_symptom_map_normalized_script_is_idempotent(monkeypatch, tmp
     assert len(candidate_count_first) == len(candidate_count_second) == 3
     assert "[kb-symptom-map-normalize] canonical_symptoms=2" in first_stdout.getvalue()
     assert "[kb-symptom-map-normalize] aliases=3" in second_stdout.getvalue()
+
+
+def test_backfill_kb_symptom_discriminators_script_is_idempotent(monkeypatch) -> None:
+    symptom_payload = _symptom_payload()
+    rules_payload = {"rules": [{"disease": "早疫病", "symptom_weights": {"同心轮纹": 0.2}}]}
+
+    saved_symptom_payload: dict[str, Any] = {}
+    saved_rules_payload: dict[str, Any] = {}
+
+    monkeypatch.setattr(backfill_discriminators_script, "load_symptom_map", lambda: symptom_payload)
+    monkeypatch.setattr(backfill_discriminators_script, "load_rules", lambda: rules_payload)
+    monkeypatch.setattr(backfill_discriminators_script, "save_symptom_map", lambda payload: saved_symptom_payload.update(payload))
+    monkeypatch.setattr(backfill_discriminators_script, "save_rules", lambda payload: saved_rules_payload.update(payload))
+
+    out = StringIO()
+    with redirect_stdout(out):
+        backfill_discriminators_script.main()
+        backfill_discriminators_script.main()
+
+    assert "canonical_symptom_added" in out.getvalue()
+    assert "symptom_tiers" in saved_symptom_payload
+    assert "symptom_discriminator_groups" in saved_symptom_payload
+    assert saved_rules_payload["rules"][0]["symptom_weights"]["同心轮纹"] >= 1.4

@@ -680,15 +680,15 @@ function navigateToKbDisease(diseaseName: string) {
 }
 
 function getConfidencePct(source: Record<string, unknown>): number | null {
+  const finalConfidence = Number(source.final_confidence);
+  if (Number.isFinite(finalConfidence)) return finalConfidence <= 1 ? finalConfidence * 100 : finalConfidence;
+
   const imageResult = source.image_result && typeof source.image_result === 'object'
     ? source.image_result as Record<string, unknown>
     : undefined;
 
   const confidencePct = Number(imageResult?.confidence_pct);
   if (Number.isFinite(confidencePct)) return confidencePct;
-
-  const finalConfidence = Number(source.final_confidence);
-  if (Number.isFinite(finalConfidence)) return finalConfidence <= 1 ? finalConfidence * 100 : finalConfidence;
 
   const confidence = Number(imageResult?.confidence);
   if (Number.isFinite(confidence)) return confidence * 100;
@@ -787,13 +787,31 @@ function normalizeEvent(eventLike: unknown, index: number): DiagnosisEvent {
   };
 }
 
+function getEventTimestampMs(event: DiagnosisEvent): number {
+  const ts = Date.parse(event.ts || '');
+  return Number.isNaN(ts) ? 0 : ts;
+}
+
+function pickLatestEventsByTrace(events: DiagnosisEvent[]): DiagnosisEvent[] {
+  const latestByTrace = new Map<string, DiagnosisEvent>();
+  events.forEach((event) => {
+    const traceKey = readableText(event.traceId, '');
+    if (!traceKey) return;
+    const existing = latestByTrace.get(traceKey);
+    if (!existing || getEventTimestampMs(event) > getEventTimestampMs(existing)) {
+      latestByTrace.set(traceKey, event);
+    }
+  });
+  return Array.from(latestByTrace.values()).sort((a, b) => getEventTimestampMs(b) - getEventTimestampMs(a));
+}
+
 export function DashboardPage() {
   const authUser = useMemo(() => loadAuthUser(), []);
   const canViewAllFarmers = authUser?.role === 'ADMIN';
   const scopedFarmerId = canViewAllFarmers ? 'ALL' : (authUser?.linkedFarmerId || authUser?.userId || 'ALL');
   const [presetKey, setPresetKey] = useState<'7d' | '30d' | '90d'>('7d');
   const [allEvents, setAllEvents] = useState<DiagnosisEvent[]>([]);
-  const [selectedEvent, setSelectedEvent] = useState<DiagnosisEvent | null>(null);
+  const [selectedTraceId, setSelectedTraceId] = useState<string | null>(null);
   const [selectedDisease, setSelectedDisease] = useState('ALL');
   const [selectedBranch, setSelectedBranch] = useState('ALL');
   const [selectedPersonalizationStatus, setSelectedPersonalizationStatus] = useState('ALL');
@@ -897,12 +915,11 @@ export function DashboardPage() {
     });
 
     try {
-      const eventsResp = await fetch(`/api/events?start=${safeStart}&end=${safeEnd}&limit=5000`);
+      const eventsResp = await fetch(`/api/events/latest?start=${safeStart}&end=${safeEnd}&limit=5000`);
       const eventsData = await eventsResp.json();
       const eventsList = Array.isArray(eventsData?.events) ? eventsData.events : [];
       const safeEvents = eventsList.map((eventLike: unknown, index: number) => normalizeEvent(eventLike, index));
       setAllEvents(safeEvents);
-      setSelectedEvent(safeEvents.length > 0 ? safeEvents[0] : null);
 
       const [summaryResp, diseaseResp, timeseriesResp, modelResp, reasonResp, farmerResp, baseResp] = await Promise.all([
         fetch(`/api/stats/summary?${params.toString()}`),
@@ -979,7 +996,7 @@ export function DashboardPage() {
         : []);
     } catch {
       setAllEvents([]);
-      setSelectedEvent(null);
+      setSelectedTraceId(null);
       setSummary({ total: 0, today: 0, diseaseKinds: 0, firstPassRate: 0, treatmentSuccessRate: 0, filteredRate: 0, degradedRate: 0, llmFailedRate: 0, avgResponseMs: 0 });
       setStats([]);
       setTimeseries([]);
@@ -1151,6 +1168,12 @@ export function DashboardPage() {
     return true;
   }), [allEvents, selectedDisease, selectedBranch, selectedPersonalizationStatus, selectedModel, selectedFarmerId, selectedBaseId]);
 
+  const recentEvents = useMemo(() => pickLatestEventsByTrace(filteredEvents), [filteredEvents]);
+  const selectedEvent = useMemo(
+    () => (selectedTraceId ? recentEvents.find((event) => event.traceId === selectedTraceId) : null) ?? recentEvents[0] ?? null,
+    [recentEvents, selectedTraceId],
+  );
+
 
   const modelSummary = useMemo(() => ({
     avgResponseMs: summary.avgResponseMs,
@@ -1195,9 +1218,14 @@ export function DashboardPage() {
   }, [modulePrefs]);
 
   useEffect(() => {
-    if (!selectedEvent && filteredEvents.length > 0) setSelectedEvent(filteredEvents[0]);
-    if (selectedEvent && !filteredEvents.some((event) => event.id === selectedEvent.id)) setSelectedEvent(filteredEvents[0] ?? null);
-  }, [filteredEvents, selectedEvent]);
+    if (selectedTraceId && !recentEvents.some((event) => event.traceId === selectedTraceId)) {
+      setSelectedTraceId(recentEvents[0]?.traceId ?? null);
+      return;
+    }
+    if (!selectedTraceId && recentEvents.length > 0) {
+      setSelectedTraceId(recentEvents[0].traceId);
+    }
+  }, [recentEvents, selectedTraceId]);
 
   useEffect(() => {
     const targetDisease = selectedEvent?.disease;
@@ -1356,14 +1384,13 @@ export function DashboardPage() {
   }, [selectedEvent, traceNodeMap]);
 
   const caseDiagnosis = useMemo(() => {
-    const diagnosisOutputs = getNodeOutputs(getLatestNode(traceNodeMap, 'diagnosis'));
-    const disease = toText(diagnosisOutputs.final_disease) || selectedEvent?.disease || '—';
-    const confidence = diagnosisOutputs.final_confidence ?? diagnosisOutputs.confidence_pct ?? selectedEvent?.confidencePct;
+    const disease = selectedEvent?.disease || '—';
+    const confidence = selectedEvent?.confidencePct;
     return {
       disease,
-      confidenceText: confidence === undefined ? (selectedEvent?.confidencePct !== null && selectedEvent?.confidencePct !== undefined ? `${selectedEvent.confidencePct.toFixed(2)}%` : '—') : toPercent(confidence),
+      confidenceText: confidence !== null && confidence !== undefined ? `${confidence.toFixed(2)}%` : '—',
     };
-  }, [traceNodeMap, selectedEvent]);
+  }, [selectedEvent]);
 
   const caseBranchLabel = useMemo(() => {
     if (!selectedEvent) return '未分档';
@@ -1378,6 +1405,21 @@ export function DashboardPage() {
     const plan = sanitizeTraceText(treatmentObj?.plan ?? selectedEvent.raw.treatment_plan);
     const prevention = sanitizeTraceText(treatmentObj?.prevention ?? selectedEvent.raw.prevention_advice);
     return { plan, prevention };
+  }, [selectedEvent]);
+
+  const caseVerificationSummary = useMemo(() => {
+    if (!selectedEvent) return { passedText: '—', riskLevel: '—', summary: '', issues: '' };
+    const verification = toRecord(selectedEvent.raw.verification_result);
+    const passed = verification?.passed;
+    const issues = Array.isArray(verification?.issues)
+      ? verification.issues.map((item) => sanitizeTraceText(item)).filter(Boolean).join('、')
+      : '';
+    return {
+      passedText: typeof passed === 'boolean' ? toYesNo(passed) : '—',
+      riskLevel: sanitizeTraceText(verification?.risk_level) || '—',
+      summary: sanitizeTraceText(verification?.compliance_summary ?? verification?.summary),
+      issues,
+    };
   }, [selectedEvent]);
 
   const caseFallbackSummary = useMemo(() => {
@@ -1431,6 +1473,20 @@ export function DashboardPage() {
   }, [filteredEvents]);
 
   const kbSummary = useMemo(() => {
+    const eventKbSnapshot = toRecord(selectedEvent?.raw?.kb_snapshot);
+    if (eventKbSnapshot && Object.keys(eventKbSnapshot).length > 0) {
+      const eventIngredients = Array.isArray(eventKbSnapshot.ingredients)
+        ? eventKbSnapshot.ingredients.map((item) => toText(item)).filter(Boolean)
+        : [];
+      return {
+        name: toText(eventKbSnapshot.disease ?? eventKbSnapshot.disease_name) || selectedEvent?.disease || '',
+        description: toText(eventKbSnapshot.description),
+        treatment: toText(eventKbSnapshot.treatment ?? selectedEvent?.raw?.treatment?.plan ?? selectedEvent?.raw?.treatment_plan),
+        prevention: toText(eventKbSnapshot.prevention ?? selectedEvent?.raw?.treatment?.prevention ?? selectedEvent?.raw?.prevention_advice),
+        ingredients: eventIngredients,
+      };
+    }
+
     const kbOutputs = getNodeOutputs(getLatestNode(traceNodeMap, 'kb_retrieval'));
     const kbDoc = toRecord(kbOutputs.kb_disease) ?? {};
     const ingredients = Array.isArray(kbOutputs.ingredients)
@@ -1443,7 +1499,7 @@ export function DashboardPage() {
       prevention: toText(kbOutputs.prevention ?? kbDoc.prevention) || kbDetail?.prevention || '',
       ingredients,
     };
-  }, [traceNodeMap, kbDetail, selectedEvent?.disease]);
+  }, [traceNodeMap, kbDetail, selectedEvent]);
 
   const maxCount = Math.max(...stats.map((s) => s.count), 1);
 
@@ -1896,11 +1952,11 @@ export function DashboardPage() {
             {!moduleCollapse.recent && (
               <CardContent className="flex-1 min-h-0 overflow-hidden">
                 <div className="space-y-2 h-full overflow-y-auto dashboard-scrollbar">
-                  {filteredEvents.slice(0, 80).map((event) => (
+                  {recentEvents.slice(0, 80).map((event) => (
                     <div
-                      key={event.id}
-                      onClick={() => setSelectedEvent(event)}
-                      className={cn('p-3 rounded-xl cursor-pointer transition-all duration-300 border flex gap-3', selectedEvent?.id === event.id ? 'bg-[#203b31] border-[#84b89d]' : 'bg-white/5 hover:bg-white/10 border-transparent')}
+                      key={event.traceId}
+                      onClick={() => setSelectedTraceId(event.traceId)}
+                      className={cn('p-3 rounded-xl cursor-pointer transition-all duration-300 border flex gap-3', selectedEvent?.traceId === event.traceId ? 'bg-[#203b31] border-[#84b89d]' : 'bg-white/5 hover:bg-white/10 border-transparent')}
                     >
                       <div className="flex-shrink-0 rounded-lg overflow-hidden border border-white/10 bg-black/20">
                         <img
@@ -1944,7 +2000,7 @@ export function DashboardPage() {
                       </div>
                     </div>
                   ))}
-                  {filteredEvents.length === 0 && (
+                  {recentEvents.length === 0 && (
                     <div className="text-center py-8 text-white/40">
                       <Calendar className="w-10 h-10 mx-auto mb-2 opacity-50" />
                       <p className="text-sm">暂无数据（请先完成一次诊断或调整日期范围）</p>
@@ -2007,6 +2063,7 @@ export function DashboardPage() {
                       <p className="text-white/60 text-xs mb-1">模型 / 时间 / 档位</p>
                       <p className="text-white text-sm">{selectedEvent.modelName || selectedEvent.modelId}</p>
                       <p className="text-white/60 text-xs mt-1">{safeDisplayTime(selectedEvent.ts)} · {caseBranchLabel}</p>
+                      <p className="text-white/60 text-xs mt-1">状态：{selectedEvent.status || '—'} · 专家复核：{selectedEvent.expertReviewStatus || 'NONE'}</p>
                     </div>
                     <div className="bg-white/5 rounded-lg p-3 text-sm text-white/80 space-y-2">
                       <p className="text-white/60 text-xs">处方建议</p>
@@ -2017,6 +2074,13 @@ export function DashboardPage() {
                           <div className="whitespace-pre-wrap">{caseTreatmentSummary.prevention}</div>
                         </div>
                       )}
+                    </div>
+                    <div className="bg-white/5 rounded-lg p-3 text-sm text-white/80 space-y-1">
+                      <p className="text-white/60 text-xs">合规审查（latest event）</p>
+                      <div>是否通过：{caseVerificationSummary.passedText}</div>
+                      <div>风险等级：{caseVerificationSummary.riskLevel}</div>
+                      <div>摘要：{caseVerificationSummary.summary || '暂无'}</div>
+                      <div>问题：{caseVerificationSummary.issues || '暂无'}</div>
                     </div>
                     <div className="bg-white/5 rounded-lg p-3 text-sm text-white/80 space-y-2">
                       <p className="text-white/60 text-xs">回退 / LLM 状态</p>

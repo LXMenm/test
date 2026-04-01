@@ -20,6 +20,12 @@ from mysql_models import (
 
 
 _PAYLOAD_KEY = "__payload__"
+_OPTIONAL_SYMPTOM_META_KEYS = (
+    "symptom_tiers",
+    "symptom_discriminator_groups",
+    "follow_up_hints",
+    "negative_cues",
+)
 
 
 def _as_dict(value: Any) -> dict[str, Any]:
@@ -188,7 +194,7 @@ def _load_symptom_map_from_main_rows(rows: list[KBSymptomMapORM]) -> dict[str, A
     for row in rows:
         if row.symptom_key == _PAYLOAD_KEY:
             payload = _as_dict(row.meta_json)
-            return {
+            result = {
                 "symptom_aliases": _clone_dict(_as_dict(payload.get("symptom_aliases"))),
                 "symptom_candidates": {
                     str(k): _as_list(v) for k, v in _as_dict(payload.get("symptom_candidates")).items()
@@ -197,6 +203,12 @@ def _load_symptom_map_from_main_rows(rows: list[KBSymptomMapORM]) -> dict[str, A
                     str(k): _as_list(v) for k, v in _as_dict(payload.get("symptom_map")).items()
                 },
             }
+            for key in _OPTIONAL_SYMPTOM_META_KEYS:
+                if key in payload:
+                    value = payload.get(key)
+                    if isinstance(value, dict) and value:
+                        result[key] = _clone_dict(value)
+            return result
 
         canonical = str(row.canonical_symptom or row.symptom_key or "").strip()
         if not canonical:
@@ -211,11 +223,12 @@ def _load_symptom_map_from_main_rows(rows: list[KBSymptomMapORM]) -> dict[str, A
         raw_symptom_map = meta.get("symptom_map") if isinstance(meta.get("symptom_map"), list) else None
         symptom_map[canonical] = [str(item).strip() for item in (raw_symptom_map if raw_symptom_map is not None else candidates) if str(item).strip()]
 
-    return {
+    result = {
         "symptom_aliases": symptom_aliases,
         "symptom_candidates": symptom_candidates,
         "symptom_map": symptom_map,
     }
+    return result
 
 
 def _replace_symptom_map_children(
@@ -515,11 +528,16 @@ def load_symptom_map_mysql() -> dict[str, Any]:
             symptom_candidates[canonical] = diseases
             symptom_map.setdefault(canonical, list(diseases))
 
-    return {
+    result = {
         "symptom_aliases": symptom_aliases,
         "symptom_candidates": symptom_candidates,
         "symptom_map": symptom_map,
     }
+    for key in _OPTIONAL_SYMPTOM_META_KEYS:
+        value = fallback_payload.get(key)
+        if isinstance(value, dict) and value:
+            result[key] = _clone_dict(value)
+    return result
 
 
 def save_symptom_map_mysql(payload: dict[str, Any]) -> dict[str, Any]:
@@ -536,6 +554,12 @@ def save_symptom_map_mysql(payload: dict[str, Any]) -> dict[str, Any]:
         canonical_key = str(canonical).strip()
         if alias_key and canonical_key:
             reverse_aliases.setdefault(canonical_key, []).append(alias_key)
+
+    optional_meta: dict[str, Any] = {}
+    for key in _OPTIONAL_SYMPTOM_META_KEYS:
+        value = payload.get(key)
+        if isinstance(value, dict):
+            optional_meta[key] = value
 
     with get_db_session() as session:
         try:
@@ -555,6 +579,7 @@ def save_symptom_map_mysql(payload: dict[str, Any]) -> dict[str, Any]:
                         "symptom_aliases": symptom_aliases,
                         "symptom_candidates": symptom_candidates,
                         "symptom_map": legacy_symptom_map,
+                        **optional_meta,
                     },
                 )
             )
@@ -567,6 +592,8 @@ def save_symptom_map_mysql(payload: dict[str, Any]) -> dict[str, Any]:
                         disease_candidates_json=_as_list(symptom_candidates.get(canonical)) or None,
                         meta_json={
                             "symptom_map": _as_list(legacy_symptom_map.get(canonical)),
+                            "tier": _as_dict(optional_meta.get("symptom_tiers")).get(canonical),
+                            "discriminator_groups": _as_dict(optional_meta.get("symptom_discriminator_groups")).get(canonical),
                         },
                     )
                 )
@@ -593,3 +620,8 @@ def backfill_symptom_map_normalized_mysql(payload: dict[str, Any]) -> dict[str, 
             session.rollback()
             raise
     return stats
+    optional_meta: dict[str, Any] = {}
+    for key in _OPTIONAL_SYMPTOM_META_KEYS:
+        value = payload.get(key)
+        if isinstance(value, dict):
+            optional_meta[key] = value

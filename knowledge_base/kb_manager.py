@@ -11,6 +11,13 @@ from .disease_kb import DiseaseKnowledge
 from .diagnosis_kb import RuleDiagnosisKnowledge
 from .treatment_kb import TreatmentKnowledge
 from .kb_store import load_diseases, load_symptom_map
+from .symptom_discriminators import (
+    CONFUSION_GROUPS,
+    DISCRIMINATIVE_SYMPTOM_DISEASES,
+    GENERIC_SYMPTOMS,
+    SYMPTOM_ALIASES,
+    build_default_symptom_payload,
+)
 
 CANONICAL_DISEASES_10 = ["健康", "早疫病", "晚疫病", "黄化曲叶病毒病", "叶霉病", "细菌性斑点病", "叶斑病", "蜘蛛螨", "靶斑病", "花叶病毒病"]
 
@@ -43,14 +50,43 @@ class KnowledgeBaseManager:
                     self.image_label_to_disease[key] = disease
 
         symptom_payload = load_symptom_map()
+        default_payload = build_default_symptom_payload()
         aliases = symptom_payload.get("symptom_aliases") or {}
         candidates = symptom_payload.get("symptom_candidates") or symptom_payload.get("symptom_map") or {}
         self.symptom_aliases: Dict[str, str] = {
             str(k).strip(): str(v).strip() for k, v in aliases.items() if str(k).strip() and str(v).strip()
         }
+        for alias, canonical in SYMPTOM_ALIASES.items():
+            self.symptom_aliases.setdefault(alias, canonical)
         self.symptom_candidates: Dict[str, List[str]] = {
             str(k).strip(): [str(item).strip() for item in (v or []) if str(item).strip()]
             for k, v in candidates.items()
+            if str(k).strip()
+        }
+        merged_tiers = dict(default_payload.get("symptom_tiers") or {})
+        merged_tiers.update(symptom_payload.get("symptom_tiers") or {})
+        self.symptom_tiers: Dict[str, str] = {
+            str(k).strip(): str(v).strip().lower()
+            for k, v in merged_tiers.items()
+            if str(k).strip()
+        }
+        merged_discriminator_groups = dict(default_payload.get("symptom_discriminator_groups") or {})
+        merged_discriminator_groups.update(symptom_payload.get("symptom_discriminator_groups") or {})
+        self.symptom_discriminator_groups: Dict[str, List[str]] = {
+            str(k).strip(): [str(item).strip() for item in (v or []) if str(item).strip()]
+            for k, v in merged_discriminator_groups.items()
+            if str(k).strip()
+        }
+        merged_follow_up_hints = dict(default_payload.get("follow_up_hints") or {})
+        merged_follow_up_hints.update(symptom_payload.get("follow_up_hints") or {})
+        self.follow_up_hints: Dict[str, List[str]] = {
+            str(k).strip(): [str(item).strip() for item in (v or []) if str(item).strip()]
+            for k, v in merged_follow_up_hints.items()
+            if str(k).strip()
+        }
+        self.confusion_groups: Dict[str, List[str]] = {
+            str(k).strip(): [str(item).strip() for item in (v or []) if str(item).strip()]
+            for k, v in CONFUSION_GROUPS.items()
             if str(k).strip()
         }
 
@@ -97,14 +133,88 @@ class KnowledgeBaseManager:
         return bool(normalized)
 
     def get_candidate_diseases_from_symptoms(self, symptoms: List[str]) -> List[str]:
-        candidates: List[str] = []
-        seen = set()
+        score_by_disease: Dict[str, float] = {}
         for symptom in self.normalize_symptoms(symptoms):
-            for disease in self.symptom_candidates.get(symptom, []):
-                if disease in self.canonical_diseases and disease not in seen:
-                    seen.add(disease)
-                    candidates.append(disease)
-        return candidates
+            tier = self.symptom_tiers.get(symptom, "generic")
+            tier_weight = 2.5 if tier == "discriminative" else 1.0
+            for rank, disease in enumerate(self.symptom_candidates.get(symptom, []), start=1):
+                if disease in self.canonical_diseases:
+                    score_by_disease[disease] = score_by_disease.get(disease, 0.0) + tier_weight / max(rank, 1)
+        ranked = sorted(score_by_disease.items(), key=lambda item: item[1], reverse=True)
+        return [name for name, _ in ranked]
+
+    def has_discriminative_text_evidence(self, symptoms: List[str]) -> bool:
+        normalized = self.normalize_symptoms(symptoms)
+        if not normalized:
+            return False
+        for symptom in normalized:
+            tier = self.symptom_tiers.get(symptom, "")
+            if tier == "discriminative":
+                return True
+            if symptom in DISCRIMINATIVE_SYMPTOM_DISEASES:
+                return True
+        if all(symptom in GENERIC_SYMPTOMS for symptom in normalized):
+            return False
+        return False
+
+    def generate_text_follow_up_questions(
+        self,
+        symptoms: List[str],
+        text_probs: Optional[Dict[str, float]] = None,
+    ) -> List[str]:
+        normalized = self.normalize_symptoms(symptoms)
+        groups = set()
+        for symptom in normalized:
+            for group in self.symptom_discriminator_groups.get(symptom, []):
+                groups.add(group)
+        probs = text_probs or {}
+        ranked = sorted(probs.items(), key=lambda item: item[1], reverse=True)
+        if len(ranked) >= 2 and abs(ranked[0][1] - ranked[1][1]) <= 0.12:
+            top_set = {ranked[0][0], ranked[1][0]}
+            for group_name, diseases in self.confusion_groups.items():
+                if len(top_set.intersection(set(diseases))) >= 2:
+                    groups.add(group_name)
+
+        questions: List[str] = []
+        for group in groups:
+            for question in self.follow_up_hints.get(group, []):
+                if question not in questions:
+                    questions.append(question)
+        return questions[:6]
+
+    def rerank_text_candidates_with_discriminators(
+        self,
+        scores: Dict[str, float],
+        symptoms: List[str],
+    ) -> Dict[str, float]:
+        ranked = sorted(scores.items(), key=lambda item: item[1], reverse=True)
+        if len(ranked) < 2:
+            return scores
+        if abs(ranked[0][1] - ranked[1][1]) > 0.12:
+            return scores
+
+        top_names = {ranked[0][0], ranked[1][0], ranked[2][0] if len(ranked) > 2 else ranked[1][0]}
+        active_groups = [
+            group_name
+            for group_name, diseases in self.confusion_groups.items()
+            if len(top_names.intersection(set(diseases))) >= 2
+        ]
+        if not active_groups:
+            return scores
+
+        adjusted = dict(scores)
+        for symptom in self.normalize_symptoms(symptoms):
+            preferred = DISCRIMINATIVE_SYMPTOM_DISEASES.get(symptom, [])
+            tier = self.symptom_tiers.get(symptom, "")
+            if tier != "discriminative" and not preferred:
+                continue
+            for disease_name in preferred:
+                if disease_name in adjusted:
+                    adjusted[disease_name] += 0.15
+        total = sum(v for v in adjusted.values() if v > 0)
+        if total <= 0:
+            return scores
+        return {k: max(v, 0.0) / total for k, v in adjusted.items()}
 
     def get_possible_diseases_by_symptom(self, symptom):
         canonical = self.normalize_symptoms([symptom])
@@ -175,6 +285,13 @@ class KnowledgeBaseManager:
 
         if not scores:
             return {}
+
+        scores = self.rerank_text_candidates_with_discriminators(scores, normalized_symptoms)
+        if not self.has_discriminative_text_evidence(normalized_symptoms):
+            # 只有粗粒度词时，避免过度自信：向均匀分布轻微回拉
+            smooth = 0.15
+            uniform = 1.0 / max(len(scores), 1)
+            scores = {k: (1 - smooth) * v + smooth * uniform for k, v in scores.items()}
 
         total = sum(v for v in scores.values() if v > 0)
         if total <= 0:
