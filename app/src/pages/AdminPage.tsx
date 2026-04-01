@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Loader2, RefreshCcw, Save, ClipboardCheck, User, Clock, CheckCircle2, AlertTriangle, ChevronDown, ChevronUp } from 'lucide-react';
+import { Loader2, RefreshCcw, Save, ClipboardCheck, User, Clock, CheckCircle2, ChevronDown, ChevronUp } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -199,6 +199,40 @@ function normalizeSystemConfig(raw: Record<string, unknown> | null | undefined):
   };
 }
 
+function ConfigToggleRow({
+  title,
+  description,
+  impactHint,
+  checked,
+  onChange,
+  enabledText = '已启用',
+  disabledText = '已停用',
+}: {
+  title: string;
+  description: string;
+  impactHint?: string;
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+  enabledText?: string;
+  disabledText?: string;
+}) {
+  return (
+    <div className="rounded-lg border border-white/15 bg-white/[0.06] px-4 py-3 flex items-center justify-between gap-4">
+      <div className="min-w-0">
+        <p className="text-sm text-white font-medium">{title}</p>
+        <p className="text-xs text-white/65 mt-1">{description}</p>
+        {impactHint ? <p className="text-[11px] text-[#f8d25c] mt-1">{impactHint}</p> : null}
+      </div>
+      <div className="flex items-center gap-2 shrink-0">
+        <span className={cn('text-xs px-2 py-1 rounded-md border', checked ? 'border-[#c8f7c5]/50 text-[#c8f7c5] bg-[#c8f7c5]/10' : 'border-red-300/40 text-red-200 bg-red-400/10')}>
+          {checked ? enabledText : disabledText}
+        </span>
+        <Switch checked={checked} onCheckedChange={onChange} className="data-[state=checked]:bg-[#3ddc97] data-[state=unchecked]:bg-white/30" />
+      </div>
+    </div>
+  );
+}
+
 export function AdminPage({ pageType }: { pageType: 'system' | 'review' }) {
   const authUser = loadAuthUser();
   const [config, setConfig] = useState<AdminConfig>(DEFAULT_CONFIG);
@@ -207,8 +241,9 @@ export function AdminPage({ pageType }: { pageType: 'system' | 'review' }) {
   const [configSaving, setConfigSaving] = useState(false);
   const [configTip, setConfigTip] = useState<string>('');
   const [configErrors, setConfigErrors] = useState<string[]>([]);
-  const [basicExpanded, setBasicExpanded] = useState(true);
-  const [advancedExpanded, setAdvancedExpanded] = useState(false);
+  const [fusionExpanded, setFusionExpanded] = useState(true);
+  const [workflowExpanded, setWorkflowExpanded] = useState(true);
+  const [llmConfigExpanded, setLlmConfigExpanded] = useState(true);
   const [runtimeSnapshotExpanded, setRuntimeSnapshotExpanded] = useState(false);
   const [runtimeTemplateExpanded, setRuntimeTemplateExpanded] = useState(false);
   const [runtimeConstraintExpanded, setRuntimeConstraintExpanded] = useState(false);
@@ -427,19 +462,16 @@ export function AdminPage({ pageType }: { pageType: 'system' | 'review' }) {
     }
   }, [pageType, statusFilter]);
 
-  const configSummary = '基础配置影响模型参与与阈值判定，高级配置影响工作流与生成/校验链路。';
+  const configSummary = '将可编辑配置、运行时观测、链路说明和页面操作分区，降低配置页混乱感。';
 
-  const restoreBasicDefaults = () => {
+  const restoreFusionDefaults = () => {
     setConfig((prev) => ({
       ...prev,
-      workflow: {
-        ...prev.workflow,
-        enable_personalization_agent: DEFAULT_CONFIG.workflow.enable_personalization_agent,
-      },
       model_fusion: {
         ...prev.model_fusion,
         enable_image_model: DEFAULT_CONFIG.model_fusion.enable_image_model,
         enable_text_model: DEFAULT_CONFIG.model_fusion.enable_text_model,
+        text_backend: DEFAULT_CONFIG.model_fusion.text_backend,
         image_top1_threshold: DEFAULT_CONFIG.model_fusion.image_top1_threshold,
         image_margin_threshold: DEFAULT_CONFIG.model_fusion.image_margin_threshold,
         text_top1_threshold: DEFAULT_CONFIG.model_fusion.text_top1_threshold,
@@ -451,10 +483,10 @@ export function AdminPage({ pageType }: { pageType: 'system' | 'review' }) {
       },
     }));
     setConfigErrors([]);
-    setConfigTip('已恢复基础配置默认值（尚未保存到服务器）。');
+    setConfigTip('已恢复“诊断证据与融合”默认值（尚未保存到服务器）。');
   };
 
-  const restoreAdvancedDefaults = () => {
+  const restoreWorkflowDefaults = () => {
     setConfig((prev) => ({
       ...prev,
       workflow: {
@@ -462,11 +494,16 @@ export function AdminPage({ pageType }: { pageType: 'system' | 'review' }) {
         confirm_round_limit: DEFAULT_CONFIG.workflow.confirm_round_limit,
         validator_rewrite_limit: DEFAULT_CONFIG.workflow.validator_rewrite_limit,
         enable_validator_agent: DEFAULT_CONFIG.workflow.enable_validator_agent,
+        enable_personalization_agent: DEFAULT_CONFIG.workflow.enable_personalization_agent,
       },
-      model_fusion: {
-        ...prev.model_fusion,
-        text_backend: DEFAULT_CONFIG.model_fusion.text_backend,
-      },
+    }));
+    setConfigErrors([]);
+    setConfigTip('已恢复“工作流与重试”默认值（尚未保存到服务器）。');
+  };
+
+  const restoreLlmDefaults = () => {
+    setConfig((prev) => ({
+      ...prev,
       llm: {
         ...prev.llm,
         enable_llm: DEFAULT_CONFIG.llm.enable_llm,
@@ -475,7 +512,7 @@ export function AdminPage({ pageType }: { pageType: 'system' | 'review' }) {
       },
     }));
     setConfigErrors([]);
-    setConfigTip('已恢复高级配置默认值（尚未保存到服务器）。');
+    setConfigTip('已恢复“LLM 与生成”默认值（尚未保存到服务器）。');
   };
 
   const canAssignTask = statusFilter === 'pending' && selected?.review_task_status === 'UNASSIGNED';
@@ -493,7 +530,6 @@ export function AdminPage({ pageType }: { pageType: 'system' | 'review' }) {
           <div>
             <CardTitle className="text-white">系统配置</CardTitle>
             <p className="text-xs text-white/60 mt-1">{configSummary}</p>
-            <p className="text-[11px] text-white/45 mt-1">“恢复默认配置”会重置整页；“恢复本组默认值”仅重置当前展开分组。</p>
           </div>
           <div className="flex gap-2">
             <Button variant="outline" size="sm" onClick={() => { void loadConfig(); }}>
@@ -502,13 +538,14 @@ export function AdminPage({ pageType }: { pageType: 'system' | 'review' }) {
             <Button
               variant="outline"
               size="sm"
+              className="border-white/15 text-white/75"
               onClick={() => {
                 setConfig(JSON.parse(JSON.stringify(DEFAULT_CONFIG)) as AdminConfig);
                 setConfigErrors([]);
-                setConfigTip('已恢复默认配置（尚未保存到服务器）。');
+                setConfigTip('已恢复整页默认值（尚未保存到服务器）。');
               }}
             >
-              恢复默认配置
+              恢复整页默认值
             </Button>
             <Button size="sm" className="bg-[#c8f7c5] text-black" onClick={() => { void saveConfig(); }} disabled={configSaving}>
               <Save className="w-4 h-4 mr-1" />{configSaving ? '保存中...' : '保存配置'}
@@ -524,318 +561,134 @@ export function AdminPage({ pageType }: { pageType: 'system' | 'review' }) {
             </div>
           ) : null}
 
-          <section className="rounded-xl border border-[#3ddc97]/30 p-4 space-y-3 bg-[#3ddc97]/[0.06]">
-            <div className="flex flex-wrap gap-3 items-center justify-between">
-              <button type="button" className="flex items-center gap-2 text-left" onClick={() => setBasicExpanded((v) => !v)}>
-                <h3 className="font-semibold text-[#c8f7c5] text-lg">基础配置（第一层）</h3>
-                {basicExpanded ? <ChevronUp className="w-4 h-4 text-white/70" /> : <ChevronDown className="w-4 h-4 text-white/70" />}
-              </button>
-              <Button variant="outline" size="sm" onClick={restoreBasicDefaults}>恢复本组默认值</Button>
-            </div>
+          <section className="rounded-xl border border-[#3ddc97]/30 p-4 space-y-4 bg-[#3ddc97]/[0.06]">
             <div className="rounded-lg border border-[#3ddc97]/30 bg-[#3ddc97]/10 p-3 text-xs text-[#d4ffe8]">
-              以下为可编辑运行时配置，保存后即时影响系统行为。
+              <h3 className="font-semibold text-[#c8f7c5] text-base">A. 可编辑运行配置</h3>
+              <p className="mt-1">以下字段会写入 /api/admin/system-config，保存后即时影响系统行为。</p>
             </div>
-            <p className="text-xs text-white/60">面向日常运营调优：修改后通常影响个性化开关、模型参与策略以及融合阈值判定。</p>
-            {basicExpanded ? (
-              <div className="grid md:grid-cols-2 gap-4">
-                <div className="rounded-lg border border-white/10 p-3 bg-white/5 space-y-2">
-                  <div className="flex items-center justify-between">
-                    <Label>启用个性化智能体</Label>
-                    <Switch checked={config.workflow.enable_personalization_agent} onCheckedChange={(v) => setConfig((prev) => ({ ...prev, workflow: { ...prev.workflow, enable_personalization_agent: v } }))} />
-                  </div>
-                  <p className="text-xs text-white/50">开启：诊断阶段会注入农户画像、基地约束与个性化上下文；关闭：退化为非个性化诊断，不再补充个性化提示。当前实现是节点内逻辑降级，不是 LangGraph 图结构裁剪。</p>
-                  <p className="text-[11px] text-white/40">默认值：{String(DEFAULT_CONFIG.workflow.enable_personalization_agent)}</p>
-                </div>
-                <div className="flex items-center justify-between rounded-lg border border-white/10 p-3 bg-white/5">
-                  <div>
-                    <Label>启用图像模型</Label>
-                    <p className="text-xs text-white/50 mt-1">影响诊断证据来源与融合分支：关闭后图像证据不再参与融合决策，不是普通 UI 展示项。</p>
-                    <p className="text-[11px] text-white/40">默认值：{String(DEFAULT_CONFIG.model_fusion.enable_image_model)}</p>
-                  </div>
-                  <Switch checked={config.model_fusion.enable_image_model} onCheckedChange={(v) => setConfig((prev) => ({ ...prev, model_fusion: { ...prev.model_fusion, enable_image_model: v } }))} />
-                </div>
-                <div className="flex items-center justify-between rounded-lg border border-white/10 p-3 bg-white/5">
-                  <div>
-                    <Label>启用文本模型</Label>
-                    <p className="text-xs text-white/50 mt-1">影响症状文本证据来源与融合分支：关闭后文本证据不再参与融合决策，不是普通 UI 展示项。</p>
-                    <p className="text-[11px] text-white/40">默认值：{String(DEFAULT_CONFIG.model_fusion.enable_text_model)}</p>
-                  </div>
-                  <Switch checked={config.model_fusion.enable_text_model} onCheckedChange={(v) => setConfig((prev) => ({ ...prev, model_fusion: { ...prev.model_fusion, enable_text_model: v } }))} />
-                </div>
-                <div>
-                  <Label>图像 top1 可靠阈值</Label>
-                  <Input type="number" min={THRESHOLD_MIN} max={THRESHOLD_MAX} step="0.01" value={config.model_fusion.image_top1_threshold} onChange={(e) => setConfig((prev) => ({ ...prev, model_fusion: { ...prev.model_fusion, image_top1_threshold: Number(e.target.value || 0) } }))} className="bg-white/5 border-white/20 text-white" />
-                  <p className="text-xs text-white/50 mt-1">图像结果被视为可靠的最低 top1 置信度。推荐：0.6~0.8。影响模块：融合可靠性门控。</p>
-                  <p className="text-[11px] text-white/40">默认值：{DEFAULT_CONFIG.model_fusion.image_top1_threshold}</p>
-                </div>
-                <div>
-                  <Label>图像 margin 阈值</Label>
-                  <Input type="number" min={THRESHOLD_MIN} max={THRESHOLD_MAX} step="0.01" value={config.model_fusion.image_margin_threshold} onChange={(e) => setConfig((prev) => ({ ...prev, model_fusion: { ...prev.model_fusion, image_margin_threshold: Number(e.target.value || 0) } }))} className="bg-white/5 border-white/20 text-white" />
-                  <p className="text-xs text-white/50 mt-1">图像 top1-top2 最小差值。推荐：0.1~0.2。影响模块：融合冲突判定。</p>
-                  <p className="text-[11px] text-white/40">默认值：{DEFAULT_CONFIG.model_fusion.image_margin_threshold}</p>
-                </div>
-                <div>
-                  <Label>文本 top1 可靠阈值</Label>
-                  <Input type="number" min={THRESHOLD_MIN} max={THRESHOLD_MAX} step="0.01" value={config.model_fusion.text_top1_threshold} onChange={(e) => setConfig((prev) => ({ ...prev, model_fusion: { ...prev.model_fusion, text_top1_threshold: Number(e.target.value || 0) } }))} className="bg-white/5 border-white/20 text-white" />
-                  <p className="text-xs text-white/50 mt-1">文本结果被视为可靠的最低 top1 置信度。推荐：0.35~0.6。影响模块：文本证据可信度判定。</p>
-                  <p className="text-[11px] text-white/40">默认值：{DEFAULT_CONFIG.model_fusion.text_top1_threshold}</p>
-                </div>
-                <div>
-                  <Label>文本 margin 阈值</Label>
-                  <Input type="number" min={THRESHOLD_MIN} max={THRESHOLD_MAX} step="0.01" value={config.model_fusion.text_margin_threshold} onChange={(e) => setConfig((prev) => ({ ...prev, model_fusion: { ...prev.model_fusion, text_margin_threshold: Number(e.target.value || 0) } }))} className="bg-white/5 border-white/20 text-white" />
-                  <p className="text-xs text-white/50 mt-1">文本 top1-top2 最小差值。推荐：0.05~0.2。影响模块：文本冲突与置信触发。</p>
-                  <p className="text-[11px] text-white/40">默认值：{DEFAULT_CONFIG.model_fusion.text_margin_threshold}</p>
-                </div>
-                <div>
-                  <Label>弱冲突图像阈值</Label>
-                  <Input type="number" min={THRESHOLD_MIN} max={THRESHOLD_MAX} step="0.01" value={config.model_fusion.weak_conflict_min_image_top1} onChange={(e) => setConfig((prev) => ({ ...prev, model_fusion: { ...prev.model_fusion, weak_conflict_min_image_top1: Number(e.target.value || 0) } }))} className="bg-white/5 border-white/20 text-white" />
-                  <p className="text-xs text-white/50 mt-1">弱冲突时图像分支触发阈值。推荐：0.5~0.8。影响模块：补充诊断触发策略。</p>
-                  <p className="text-[11px] text-white/40">默认值：{DEFAULT_CONFIG.model_fusion.weak_conflict_min_image_top1}</p>
-                </div>
-                <div>
-                  <Label>弱冲突文本阈值</Label>
-                  <Input type="number" min={THRESHOLD_MIN} max={THRESHOLD_MAX} step="0.01" value={config.model_fusion.weak_conflict_min_text_top1} onChange={(e) => setConfig((prev) => ({ ...prev, model_fusion: { ...prev.model_fusion, weak_conflict_min_text_top1: Number(e.target.value || 0) } }))} className="bg-white/5 border-white/20 text-white" />
-                  <p className="text-xs text-white/50 mt-1">弱冲突时文本分支触发阈值。推荐：0.35~0.7。影响模块：补充诊断触发策略。</p>
-                  <p className="text-[11px] text-white/40">默认值：{DEFAULT_CONFIG.model_fusion.weak_conflict_min_text_top1}</p>
-                </div>
-                <div>
-                  <Label>诊断低置信度阈值</Label>
-                  <Input type="number" min={THRESHOLD_MIN} max={THRESHOLD_MAX} step="0.01" value={config.model_fusion.diagnosis_conf_threshold} onChange={(e) => setConfig((prev) => ({ ...prev, model_fusion: { ...prev.model_fusion, diagnosis_conf_threshold: Number(e.target.value || 0) } }))} className="bg-white/5 border-white/20 text-white" />
-                  <p className="text-xs text-white/50 mt-1">最终置信度低于该值时会倾向追问。推荐：0.45~0.65。影响模块：workflow.confirm。</p>
-                  <p className="text-[11px] text-white/40">默认值：{DEFAULT_CONFIG.model_fusion.diagnosis_conf_threshold}</p>
-                </div>
-                <div>
-                  <Label>低 margin 阈值</Label>
-                  <Input type="number" min={THRESHOLD_MIN} max={THRESHOLD_MAX} step="0.01" value={config.model_fusion.low_margin_threshold} onChange={(e) => setConfig((prev) => ({ ...prev, model_fusion: { ...prev.model_fusion, low_margin_threshold: Number(e.target.value || 0) } }))} className="bg-white/5 border-white/20 text-white" />
-                  <p className="text-xs text-white/50 mt-1">Top1 与 Top2 过近时触发不确定性。推荐：0.02~0.08。影响模块：workflow.confirm。</p>
-                  <p className="text-[11px] text-white/40">默认值：{DEFAULT_CONFIG.model_fusion.low_margin_threshold}</p>
-                </div>
-              </div>
-            ) : null}
-          </section>
 
-          <section className="rounded-xl border border-[#f8d25c]/30 p-4 space-y-4 bg-[#f8d25c]/5">
-            <div className="flex flex-wrap gap-3 items-center justify-between">
-              <button type="button" className="flex items-center gap-2 text-left" onClick={() => setAdvancedExpanded((v) => !v)}>
-                <h3 className="font-semibold text-[#f8d25c] text-lg">高级配置（第二层）</h3>
-                {advancedExpanded ? <ChevronUp className="w-4 h-4 text-white/70" /> : <ChevronDown className="w-4 h-4 text-white/70" />}
-              </button>
-              <Button variant="outline" size="sm" onClick={restoreAdvancedDefaults}>恢复本组默认值</Button>
-            </div>
-            <div className="rounded-lg border border-[#f8d25c]/40 bg-[#f8d25c]/10 p-3 text-xs text-[#f8d25c] flex items-start gap-2">
-              <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
-              <p>以下参数会影响系统工作流、模型策略或生成链路，仅建议高级管理员调整。</p>
-            </div>
-            {advancedExpanded ? (
-              <>
-                <div className="rounded-lg border border-[#f8d25c]/40 bg-[#f8d25c]/10 p-3 text-xs text-[#fff2be]">
-                  以下为可编辑运行时配置，保存后即时影响系统行为。
-                </div>
+            <section className="rounded-xl border border-white/10 p-4 bg-white/[0.02] space-y-3">
+              <div className="flex items-center justify-between gap-3">
+                <button type="button" className="flex items-center gap-2 text-left" onClick={() => setFusionExpanded((v) => !v)}>
+                  <h4 className="font-semibold text-[#c8f7c5]">A1. 诊断证据与融合</h4>
+                  {fusionExpanded ? <ChevronUp className="w-4 h-4 text-white/70" /> : <ChevronDown className="w-4 h-4 text-white/70" />}
+                </button>
+                <Button variant="outline" size="sm" className="border-white/20 text-white/80" onClick={restoreFusionDefaults}>恢复本组默认值</Button>
+              </div>
+              <p className="text-xs text-white/60">控制诊断证据来源、文本/图像分支参与方式与融合判定门槛。</p>
+              {fusionExpanded ? (
                 <div className="grid md:grid-cols-2 gap-4">
-                  <div>
-                    <Label>补充诊断轮次上限</Label>
-                    <Input type="number" min={WORKFLOW_LIMIT_MIN} max={WORKFLOW_LIMIT_MAX} value={config.workflow.confirm_round_limit} onChange={(e) => setConfig((prev) => ({ ...prev, workflow: { ...prev.workflow, confirm_round_limit: Number(e.target.value || 0) } }))} className="bg-white/5 border-white/20 text-white" />
-                    <p className="text-xs text-white/50 mt-1">控制补充诊断最多允许轮次（在确认输入流程中生效），达到上限后不再继续追问。</p>
-                    <p className="text-[11px] text-white/40">默认值：{DEFAULT_CONFIG.workflow.confirm_round_limit}</p>
-                  </div>
-                  <div>
-                    <Label>校验智能体最大重写次数</Label>
-                    <Input type="number" min={WORKFLOW_LIMIT_MIN} max={WORKFLOW_LIMIT_MAX} value={config.workflow.validator_rewrite_limit} onChange={(e) => setConfig((prev) => ({ ...prev, workflow: { ...prev.workflow, validator_rewrite_limit: Number(e.target.value || 0) } }))} className="bg-white/5 border-white/20 text-white" />
-                    <p className="text-xs text-white/50 mt-1">约束校验不通过时，允许回退重写治疗建议的最大次数；仅在校验链路开启时生效。</p>
-                    <p className="text-[11px] text-white/40">默认值：{DEFAULT_CONFIG.workflow.validator_rewrite_limit}</p>
-                  </div>
-                  <div className="rounded-lg border border-white/10 p-3 bg-white/5 space-y-2">
-                    <div className="flex items-center justify-between">
-                      <Label>启用校验智能体</Label>
-                      <Switch checked={config.workflow.enable_validator_agent} onCheckedChange={(v) => setConfig((prev) => ({ ...prev, workflow: { ...prev.workflow, enable_validator_agent: v } }))} />
-                    </div>
-                    <p className="text-xs text-white/50">控制是否进入约束/合规校验阶段的前置开关；关闭时将直接跳过该阶段。</p>
-                    <p className="text-[11px] text-white/40">默认值：{String(DEFAULT_CONFIG.workflow.enable_validator_agent)}</p>
-                  </div>
-                  <div>
-                    <Label>文本诊断后端</Label>
-                    <Select value={config.model_fusion.text_backend} onValueChange={(v) => setConfig((prev) => ({ ...prev, model_fusion: { ...prev.model_fusion, text_backend: v as 'auto' | 'bert' | 'rule' } }))}>
-                      <SelectTrigger className="bg-white/5 border-white/20 text-white"><SelectValue /></SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="auto">自动选择</SelectItem>
-                        <SelectItem value="bert">BERT 模型</SelectItem>
-                        <SelectItem value="rule">规则匹配</SelectItem>
-                      </SelectContent>
-                    </Select>
-                    <p className="text-xs text-white/50 mt-1">切换症状文本诊断实现（auto/bert/rule），影响文本分支证据生成，而非主流程节点数量。</p>
-                    <p className="text-[11px] text-white/40">默认值：{DEFAULT_CONFIG.model_fusion.text_backend}</p>
-                  </div>
+                  <ConfigToggleRow title="图像证据分支" description="控制图像模型是否参与诊断证据融合。" impactHint="关闭后图像证据不参与融合。" checked={config.model_fusion.enable_image_model} onChange={(v) => setConfig((prev) => ({ ...prev, model_fusion: { ...prev.model_fusion, enable_image_model: v } }))} />
+                  <ConfigToggleRow title="文本证据分支" description="控制文本模型是否参与诊断证据融合。" impactHint="关闭后文本证据不参与融合。" checked={config.model_fusion.enable_text_model} onChange={(v) => setConfig((prev) => ({ ...prev, model_fusion: { ...prev.model_fusion, enable_text_model: v } }))} />
+                  <div><Label>文本诊断后端</Label><Select value={config.model_fusion.text_backend} onValueChange={(v) => setConfig((prev) => ({ ...prev, model_fusion: { ...prev.model_fusion, text_backend: v as 'auto' | 'bert' | 'rule' } }))}><SelectTrigger className="bg-white/5 border-white/20 text-white"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="auto">自动选择</SelectItem><SelectItem value="bert">BERT 模型</SelectItem><SelectItem value="rule">规则匹配</SelectItem></SelectContent></Select></div>
+                  <div><Label>图像 top1 可靠阈值</Label><Input type="number" min={THRESHOLD_MIN} max={THRESHOLD_MAX} step="0.01" value={config.model_fusion.image_top1_threshold} onChange={(e) => setConfig((prev) => ({ ...prev, model_fusion: { ...prev.model_fusion, image_top1_threshold: Number(e.target.value || 0) } }))} className="bg-white/5 border-white/20 text-white" /></div>
+                  <div><Label>图像 margin 阈值</Label><Input type="number" min={THRESHOLD_MIN} max={THRESHOLD_MAX} step="0.01" value={config.model_fusion.image_margin_threshold} onChange={(e) => setConfig((prev) => ({ ...prev, model_fusion: { ...prev.model_fusion, image_margin_threshold: Number(e.target.value || 0) } }))} className="bg-white/5 border-white/20 text-white" /></div>
+                  <div><Label>文本 top1 可靠阈值</Label><Input type="number" min={THRESHOLD_MIN} max={THRESHOLD_MAX} step="0.01" value={config.model_fusion.text_top1_threshold} onChange={(e) => setConfig((prev) => ({ ...prev, model_fusion: { ...prev.model_fusion, text_top1_threshold: Number(e.target.value || 0) } }))} className="bg-white/5 border-white/20 text-white" /></div>
+                  <div><Label>文本 margin 阈值</Label><Input type="number" min={THRESHOLD_MIN} max={THRESHOLD_MAX} step="0.01" value={config.model_fusion.text_margin_threshold} onChange={(e) => setConfig((prev) => ({ ...prev, model_fusion: { ...prev.model_fusion, text_margin_threshold: Number(e.target.value || 0) } }))} className="bg-white/5 border-white/20 text-white" /></div>
+                  <div><Label>弱冲突图像阈值</Label><Input type="number" min={THRESHOLD_MIN} max={THRESHOLD_MAX} step="0.01" value={config.model_fusion.weak_conflict_min_image_top1} onChange={(e) => setConfig((prev) => ({ ...prev, model_fusion: { ...prev.model_fusion, weak_conflict_min_image_top1: Number(e.target.value || 0) } }))} className="bg-white/5 border-white/20 text-white" /></div>
+                  <div><Label>弱冲突文本阈值</Label><Input type="number" min={THRESHOLD_MIN} max={THRESHOLD_MAX} step="0.01" value={config.model_fusion.weak_conflict_min_text_top1} onChange={(e) => setConfig((prev) => ({ ...prev, model_fusion: { ...prev.model_fusion, weak_conflict_min_text_top1: Number(e.target.value || 0) } }))} className="bg-white/5 border-white/20 text-white" /></div>
+                  <div><Label>诊断低置信度阈值</Label><Input type="number" min={THRESHOLD_MIN} max={THRESHOLD_MAX} step="0.01" value={config.model_fusion.diagnosis_conf_threshold} onChange={(e) => setConfig((prev) => ({ ...prev, model_fusion: { ...prev.model_fusion, diagnosis_conf_threshold: Number(e.target.value || 0) } }))} className="bg-white/5 border-white/20 text-white" /></div>
+                  <div><Label>低 margin 阈值</Label><Input type="number" min={THRESHOLD_MIN} max={THRESHOLD_MAX} step="0.01" value={config.model_fusion.low_margin_threshold} onChange={(e) => setConfig((prev) => ({ ...prev, model_fusion: { ...prev.model_fusion, low_margin_threshold: Number(e.target.value || 0) } }))} className="bg-white/5 border-white/20 text-white" /></div>
                 </div>
+              ) : null}
+            </section>
 
-                <section className="rounded-xl border border-white/10 p-5 space-y-4">
-                  <h3 className="font-semibold text-[#c8f7c5] text-lg flex items-center gap-2">
-                    <div className="w-1.5 h-6 bg-[#c8f7c5] rounded-full" />
-                    大语言模型参数
-                  </h3>
-                  <div className="grid md:grid-cols-3 gap-4">
-                    <div className="flex items-center justify-between rounded-lg border border-white/10 p-4 bg-white/5">
-                      <div>
-                        <Label className="text-white">启用大语言模型</Label>
-                        <p className="text-xs text-white/50 mt-1">运行时总开关：关闭后相关 LLM 调用会被直接禁用（抛出 LLM_DISABLED_BY_ADMIN_CONFIG），而不是仅“效果变差”。</p>
-                        <p className="text-[11px] text-white/40 mt-1">默认值：{String(DEFAULT_CONFIG.llm.enable_llm)}</p>
-                      </div>
-                      <Switch checked={config.llm.enable_llm} onCheckedChange={(v) => setConfig((prev) => ({ ...prev, llm: { ...prev.llm, enable_llm: v } }))} />
-                    </div>
-                    <div className="flex items-center justify-between rounded-lg border border-white/10 p-4 bg-white/5">
-                      <div>
-                        <Label className="text-white">启用治疗建议生成</Label>
-                        <p className="text-xs text-white/50 mt-1">开启：系统可继续进入治疗建议生成阶段；关闭：将跳过该链路，可能提前结束，不再产出动态治疗建议。</p>
-                        <p className="text-[11px] text-white/40 mt-1">默认值：{String(DEFAULT_CONFIG.llm.enable_treatment_generation)}</p>
-                      </div>
-                      <Switch checked={config.llm.enable_treatment_generation} onCheckedChange={(v) => setConfig((prev) => ({ ...prev, llm: { ...prev.llm, enable_treatment_generation: v } }))} />
-                    </div>
-                    <div className="flex items-center justify-between rounded-lg border border-white/10 p-4 bg-white/5">
-                      <div>
-                        <Label className="text-white">启用约束校验</Label>
-                        <p className="text-xs text-white/50 mt-1">开启：系统可进入合规/约束审查阶段；关闭：跳过该阶段，不再执行约束校验审查。</p>
-                        <p className="text-[11px] text-white/40 mt-1">默认值：{String(DEFAULT_CONFIG.llm.enable_constraint_validation)}</p>
-                      </div>
-                      <Switch checked={config.llm.enable_constraint_validation} onCheckedChange={(v) => setConfig((prev) => ({ ...prev, llm: { ...prev.llm, enable_constraint_validation: v } }))} />
-                    </div>
-                  </div>
-                  <div className="rounded-xl border border-dashed border-white/25 p-4 bg-white/[0.03]">
-                    <h4 className="text-sm font-semibold text-white mb-2">只读观测区</h4>
-                    <p className="text-xs text-white/60">以下为当前运行时观测信息，仅用于查看，不可直接编辑；不作为配置写入源。</p>
-                  </div>
+            <section className="rounded-xl border border-white/10 p-4 bg-white/[0.02] space-y-3">
+              <div className="flex items-center justify-between gap-3">
+                <button type="button" className="flex items-center gap-2 text-left" onClick={() => setWorkflowExpanded((v) => !v)}>
+                  <h4 className="font-semibold text-[#c8f7c5]">A2. 工作流与重试</h4>
+                  {workflowExpanded ? <ChevronUp className="w-4 h-4 text-white/70" /> : <ChevronDown className="w-4 h-4 text-white/70" />}
+                </button>
+                <Button variant="outline" size="sm" className="border-white/20 text-white/80" onClick={restoreWorkflowDefaults}>恢复本组默认值</Button>
+              </div>
+              <p className="text-xs text-white/60">控制是否允许补充诊断、方案重写、个性化增强与校验阶段。</p>
+              {workflowExpanded ? (
+                <div className="grid md:grid-cols-2 gap-4">
+                  <div><Label>补充诊断轮次上限</Label><Input type="number" min={WORKFLOW_LIMIT_MIN} max={WORKFLOW_LIMIT_MAX} value={config.workflow.confirm_round_limit} onChange={(e) => setConfig((prev) => ({ ...prev, workflow: { ...prev.workflow, confirm_round_limit: Number(e.target.value || 0) } }))} className="bg-white/5 border-white/20 text-white" /></div>
+                  <div><Label>校验智能体最大重写次数</Label><Input type="number" min={WORKFLOW_LIMIT_MIN} max={WORKFLOW_LIMIT_MAX} value={config.workflow.validator_rewrite_limit} onChange={(e) => setConfig((prev) => ({ ...prev, workflow: { ...prev.workflow, validator_rewrite_limit: Number(e.target.value || 0) } }))} className="bg-white/5 border-white/20 text-white" /></div>
+                  <ConfigToggleRow title="个性化增强" description="将农户画像与基地约束注入诊断链路。" impactHint="关闭后退化为通用诊断。" checked={config.workflow.enable_personalization_agent} onChange={(v) => setConfig((prev) => ({ ...prev, workflow: { ...prev.workflow, enable_personalization_agent: v } }))} />
+                  <ConfigToggleRow title="校验阶段" description="控制是否允许进入约束校验流程。" impactHint="关闭后跳过约束校验阶段。" checked={config.workflow.enable_validator_agent} onChange={(v) => setConfig((prev) => ({ ...prev, workflow: { ...prev.workflow, enable_validator_agent: v } }))} />
+                </div>
+              ) : null}
+            </section>
 
-                  <div className="rounded-xl border border-white/15 p-4 bg-white/[0.03] space-y-3">
-                    <button type="button" className="w-full flex items-center justify-between text-left" onClick={() => setPathImpactExpanded((v) => !v)}>
-                      <h4 className="text-sm font-semibold text-[#f8d25c]">路径影响说明（当前实现）</h4>
-                      {pathImpactExpanded ? <ChevronUp className="w-4 h-4 text-white/70" /> : <ChevronDown className="w-4 h-4 text-white/70" />}
-                    </button>
-                    {pathImpactExpanded ? (
-                      <ul className="text-xs text-white/70 space-y-2 list-disc pl-5">
-                        {/* TODO(graph-shortcut): 后续可评估将 enable_personalization_agent 下沉为 route/graph shortcut，减少无效路径开销。 */}
-                        <li><code>enable_personalization_agent</code>：当前实现会清空个性化上下文与原因，属于节点内逻辑降级，LangGraph 编排结构不裁剪。</li>
-                        <li><code>enable_treatment_generation</code>：影响是否继续进入治疗建议生成阶段；关闭后不再产出动态治疗建议。</li>
-                        <li><code>enable_constraint_validation</code> + <code>enable_validator_agent</code>：共同决定是否进入约束校验阶段，任一关闭都会跳过该阶段。</li>
-                      </ul>
-                    ) : null}
-                  </div>
-                </section>
-              </>
-            ) : null}
+            <section className="rounded-xl border border-white/10 p-4 bg-white/[0.02] space-y-3">
+              <div className="flex items-center justify-between gap-3">
+                <button type="button" className="flex items-center gap-2 text-left" onClick={() => setLlmConfigExpanded((v) => !v)}>
+                  <h4 className="font-semibold text-[#c8f7c5]">A3. LLM 与生成</h4>
+                  {llmConfigExpanded ? <ChevronUp className="w-4 h-4 text-white/70" /> : <ChevronDown className="w-4 h-4 text-white/70" />}
+                </button>
+                <Button variant="outline" size="sm" className="border-white/20 text-white/80" onClick={restoreLlmDefaults}>恢复本组默认值</Button>
+              </div>
+              <p className="text-xs text-white/60">控制 LLM 总开关、治疗建议生成阶段与约束规则启用状态。</p>
+              {llmConfigExpanded ? (
+                <div className="grid md:grid-cols-3 gap-4">
+                  <ConfigToggleRow title="LLM 总开关" description="统一控制 LLM 相关调用是否允许执行。" checked={config.llm.enable_llm} onChange={(v) => setConfig((prev) => ({ ...prev, llm: { ...prev.llm, enable_llm: v } }))} />
+                  <ConfigToggleRow title="治疗建议阶段" description="控制是否进入治疗建议生成流程。" impactHint="关闭后跳过治疗建议阶段。" checked={config.llm.enable_treatment_generation} onChange={(v) => setConfig((prev) => ({ ...prev, llm: { ...prev.llm, enable_treatment_generation: v } }))} />
+                  <ConfigToggleRow title="约束规则" description="控制是否启用约束规则与合规校验。" impactHint="关闭后跳过约束校验阶段。" checked={config.llm.enable_constraint_validation} onChange={(v) => setConfig((prev) => ({ ...prev, llm: { ...prev.llm, enable_constraint_validation: v } }))} />
+                </div>
+              ) : null}
+            </section>
           </section>
 
-          {advancedExpanded ? <section className="rounded-xl border border-white/10 p-5 space-y-4 bg-white/[0.02]">
-            <h3 className="font-semibold text-[#c8f7c5] text-lg flex items-center gap-2">
-              <div className="w-1.5 h-6 bg-[#c8f7c5] rounded-full" />
-              高级配置运行时信息（只读）
-            </h3>
-            <div className="rounded-lg border border-dashed border-white/25 bg-white/[0.03] p-3 text-xs text-white/70">
-              以下为当前运行时观测信息，仅用于查看，不可直接编辑。
+          <section className="rounded-xl border border-[#7da5ff]/30 p-4 bg-[#7da5ff]/[0.06] space-y-4">
+            <div className="rounded-lg border border-[#7da5ff]/30 bg-[#7da5ff]/10 p-3 text-xs text-[#d5e3ff]">
+              <h3 className="font-semibold text-[#bad1ff] text-base">B. 运行时观测（只读）</h3>
+              <p className="mt-1">仅用于查看，不可直接编辑；不作为配置写入源。</p>
             </div>
-            <div className="rounded-xl border border-white/10 p-4 bg-gradient-to-br from-[#13221c] to-[#0f1a15]">
-              <h4 className="text-sm font-semibold text-[#c8f7c5] mb-4 flex items-center gap-2">
-                <div className="w-1 h-5 bg-[#c8f7c5] rounded-full" />
-                当前大模型信息（只读摘要）
-              </h4>
-              <div className="grid md:grid-cols-3 gap-4">
-                <div>
-                  <Label className="text-white/50 text-xs mb-1 block">当前大模型提供方</Label>
-                  <div className="bg-white/5 border border-white/10 rounded-lg p-3 text-white/90">{llmRuntimeSnapshot.model.provider_display_name}</div>
-                </div>
-                <div>
-                  <Label className="text-white/50 text-xs mb-1 block">当前模型名称 / model_id</Label>
-                  <div className="bg-white/5 border border-white/10 rounded-lg p-3 text-white/90">{llmRuntimeSnapshot.model.model_id}</div>
-                </div>
-                <div>
-                  <Label className="text-white/50 text-xs mb-1 block">当前模型显示名称</Label>
-                  <div className="bg-white/5 border border-white/10 rounded-lg p-3 text-white/90">{llmRuntimeSnapshot.model.model_display_name}</div>
-                </div>
-              </div>
-            </div>
-
             <div className="rounded-xl border border-white/10 p-4 bg-gradient-to-br from-[#13221c] to-[#0f1a15]">
               <button type="button" className="w-full flex items-center justify-between text-left" onClick={() => setRuntimeSnapshotExpanded((v) => !v)}>
-                <h4 className="text-sm font-semibold text-[#c8f7c5] flex items-center gap-2">
-                  <div className="w-1 h-5 bg-[#c8f7c5] rounded-full" />
-                  运行时快照（只读）
-                </h4>
+                <h4 className="text-sm font-semibold text-[#c8f7c5]">当前模型</h4>
                 {runtimeSnapshotExpanded ? <ChevronUp className="w-4 h-4 text-white/70" /> : <ChevronDown className="w-4 h-4 text-white/70" />}
               </button>
-              {runtimeSnapshotExpanded ? (
-                <div className="mt-4 grid md:grid-cols-3 gap-4">
-                  <div>
-                    <Label className="text-white/50 text-xs mb-1 block">约束模式</Label>
-                    <div className="bg-white/5 border border-white/10 rounded-lg p-3 text-white/90">{llmRuntimeSnapshot.constraint_validation.mode}</div>
-                  </div>
-                  <div>
-                    <Label className="text-white/50 text-xs mb-1 block">约束全局状态</Label>
-                    <div className="bg-white/5 border border-white/10 rounded-lg p-3 text-white/90">{llmRuntimeSnapshot.constraint_validation.global_enabled === false ? '禁用' : '启用'}</div>
-                  </div>
-                  <div>
-                    <Label className="text-white/50 text-xs mb-1 block">约束条目数</Label>
-                    <div className="bg-white/5 border border-white/10 rounded-lg p-3 text-white/90">{llmRuntimeSnapshot.constraint_validation.items.length}</div>
-                  </div>
-                </div>
-              ) : null}
+              {runtimeSnapshotExpanded ? <div className="mt-4 grid md:grid-cols-3 gap-4"><div className="bg-white/5 border border-white/10 rounded-lg p-3">{llmRuntimeSnapshot.model.provider_display_name}</div><div className="bg-white/5 border border-white/10 rounded-lg p-3">{llmRuntimeSnapshot.model.model_id}</div><div className="bg-white/5 border border-white/10 rounded-lg p-3">{llmRuntimeSnapshot.model.model_display_name}</div></div> : null}
             </div>
-
             <div className="rounded-xl border border-white/10 p-4 bg-gradient-to-br from-[#13221c] to-[#0f1a15]">
               <button type="button" className="w-full flex items-center justify-between text-left" onClick={() => setRuntimeTemplateExpanded((v) => !v)}>
-                <h4 className="text-sm font-semibold text-[#c8f7c5] flex items-center gap-2">
-                  <div className="w-1 h-5 bg-[#c8f7c5] rounded-full" />
-                  当前治疗建议模板信息（只读）
-                </h4>
+                <h4 className="text-sm font-semibold text-[#c8f7c5]">当前生成模板</h4>
                 {runtimeTemplateExpanded ? <ChevronUp className="w-4 h-4 text-white/70" /> : <ChevronDown className="w-4 h-4 text-white/70" />}
               </button>
-              {runtimeTemplateExpanded ? (
-                <div className="mt-4 grid md:grid-cols-3 gap-4">
-                  <div>
-                    <Label className="text-white/50 text-xs mb-1 block">当前治疗建议模板</Label>
-                    <div className="bg-white/5 border border-white/10 rounded-lg p-3 text-white/90">{llmRuntimeSnapshot.template.name}</div>
-                  </div>
-                  <div className="md:col-span-2">
-                    <Label className="text-white/50 text-xs mb-1 block">模板适用场景</Label>
-                    <div className="bg-white/5 border border-white/10 rounded-lg p-3 text-white/90">{llmRuntimeSnapshot.template.scenes}</div>
-                  </div>
-                  <div className="md:col-span-3">
-                    <Label className="text-white/50 text-xs mb-1 block">模板用途说明</Label>
-                    <div className="bg-white/5 border border-white/10 rounded-lg p-4 text-white/80 text-sm">{llmRuntimeSnapshot.template.purpose}</div>
-                  </div>
-                </div>
-              ) : null}
+              {runtimeTemplateExpanded ? <div className="mt-4 space-y-2"><div className="bg-white/5 border border-white/10 rounded-lg p-3">模板：{llmRuntimeSnapshot.template.name}</div><div className="bg-white/5 border border-white/10 rounded-lg p-3">场景：{llmRuntimeSnapshot.template.scenes}</div><div className="bg-white/5 border border-white/10 rounded-lg p-3">用途：{llmRuntimeSnapshot.template.purpose}</div></div> : null}
             </div>
-
             <div className="rounded-xl border border-white/10 p-4 bg-gradient-to-br from-[#13221c] to-[#0f1a15]">
               <button type="button" className="w-full flex items-center justify-between text-left" onClick={() => setRuntimeConstraintExpanded((v) => !v)}>
-                <h4 className="text-sm font-semibold text-[#c8f7c5] flex items-center gap-2">
-                  <div className="w-1 h-5 bg-[#c8f7c5] rounded-full" />
-                  约束校验信息（只读）
-                </h4>
+                <h4 className="text-sm font-semibold text-[#c8f7c5]">当前约束状态</h4>
                 {runtimeConstraintExpanded ? <ChevronUp className="w-4 h-4 text-white/70" /> : <ChevronDown className="w-4 h-4 text-white/70" />}
               </button>
               {runtimeConstraintExpanded ? (
-                <>
-                  <div className="rounded-lg border border-white/10 bg-white/5 p-3 mb-3 mt-4">
-                    <p className="text-xs text-white/50">全局开关状态</p>
-                    <p className={`text-sm mt-1 ${llmRuntimeSnapshot.constraint_validation.global_enabled === false ? 'text-red-300' : 'text-[#c8f7c5]'}`}>
-                      {llmRuntimeSnapshot.constraint_validation.global_enabled === false ? '当前约束校验未启用' : '当前约束校验已启用'}
-                    </p>
-                  </div>
-                  <div className="space-y-2">
-                    {llmRuntimeSnapshot.constraint_validation.items.map((item) => (
-                      <div key={item.key} className="rounded-lg border border-white/10 bg-white/5 p-3">
-                        <div className="flex items-center justify-between">
-                          <p className="text-sm text-white">{item.label}</p>
-                          <span className={`text-xs px-2 py-1 rounded border ${item.enabled ? 'border-[#c8f7c5]/40 text-[#c8f7c5]' : 'border-white/20 text-white/60'}`}>
-                            {item.enabled ? '已启用' : '已关闭'}
-                          </span>
-                        </div>
-                        <p className="text-xs text-white/50 mt-1">{item.description}</p>
+                <div className="mt-4 space-y-2">
+                  <p className="text-xs text-white/70">模式：{llmRuntimeSnapshot.constraint_validation.mode}，全局：{llmRuntimeSnapshot.constraint_validation.global_enabled === false ? '禁用' : '启用'}</p>
+                  {llmRuntimeSnapshot.constraint_validation.items.map((item) => (
+                    <div key={item.key} className="rounded-lg border border-white/10 bg-white/5 p-3">
+                      <div className="flex items-center justify-between">
+                        <p className="text-sm text-white">{item.label}</p>
+                        <span className={`text-xs px-2 py-1 rounded border ${item.enabled ? 'border-[#c8f7c5]/40 text-[#c8f7c5]' : 'border-white/20 text-white/60'}`}>{item.enabled ? '已启用' : '已关闭'}</span>
                       </div>
-                    ))}
-                  </div>
-                </>
+                      <p className="text-xs text-white/50 mt-1">{item.description}</p>
+                    </div>
+                  ))}
+                </div>
               ) : null}
             </div>
-          </section> : null}
+          </section>
+
+          <section className="rounded-xl border border-[#f8d25c]/30 p-4 bg-[#f8d25c]/[0.05] space-y-3">
+            <div className="flex items-center justify-between">
+              <h3 className="font-semibold text-[#f8d25c] text-base">C. 链路影响说明（设计说明）</h3>
+              <button type="button" className="flex items-center gap-1 text-white/70" onClick={() => setPathImpactExpanded((v) => !v)}>
+                {pathImpactExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+              </button>
+            </div>
+            <p className="text-xs text-white/60">该区不是接口返回，也不是配置写入源，仅用于理解当前实现。</p>
+            {pathImpactExpanded ? (
+              <ul className="text-xs text-white/70 space-y-2 list-disc pl-5">
+                {/* TODO(graph-shortcut): 后续可评估将 enable_personalization_agent 下沉为 route/graph shortcut，减少无效路径开销。 */}
+                <li><code>enable_personalization_agent</code>：关闭后退化为通用诊断（节点内逻辑降级，不裁剪 LangGraph 结构）。</li>
+                <li><code>enable_treatment_generation</code>：关闭后跳过治疗建议阶段。</li>
+                <li><code>enable_constraint_validation</code> + <code>enable_validator_agent</code>：任一关闭都会跳过约束校验阶段。</li>
+              </ul>
+            ) : null}
+          </section>
         </CardContent>
       </Card>
     );
