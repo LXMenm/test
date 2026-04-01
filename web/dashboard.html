@@ -205,7 +205,7 @@
     const rangeText = document.getElementById("rangeText");
 
     let currentEvents = [];
-    let selectedId = null;
+    let selectedTraceId = null;
 
     function showError(message) {
       errorBanner.textContent = message;
@@ -285,8 +285,8 @@
 
       events.forEach(event => {
         const row = document.createElement("tr");
-        row.dataset.id = event.id || event.ts || "";
-        if (selectedId && row.dataset.id === selectedId) {
+        row.dataset.traceId = event.trace_id || "";
+        if (selectedTraceId && row.dataset.traceId === selectedTraceId) {
           row.classList.add("selected");
         }
         row.innerHTML = `
@@ -296,9 +296,10 @@
           <td>${event.fallback_used ? "是" : "否"}</td>
         `;
         row.addEventListener("click", () => {
-          selectedId = row.dataset.id;
+          selectedTraceId = row.dataset.traceId;
           renderTable(currentEvents);
-          renderDetail(event);
+          const latestForTrace = currentEvents.find(item => item.trace_id === selectedTraceId) || event;
+          renderDetail(latestForTrace);
         });
         tbody.appendChild(row);
       });
@@ -422,17 +423,25 @@
       try {
         const [statsResponse, eventsResponse] = await Promise.all([
           fetchJson(`/api/stats/disease?start=${range.start}&end=${range.end}`),
-          fetchJson(`/api/events?start=${range.start}&end=${range.end}&limit=50`),
+          fetchJson(`/api/events/latest?start=${range.start}&end=${range.end}&limit=50`),
         ]);
         const stats = Object.entries(statsResponse || {})
           .map(([disease, count]) => ({ disease, count }))
           .sort((a, b) => b.count - a.count)
           .slice(0, 8);
-        currentEvents = eventsResponse || [];
+        currentEvents = eventsResponse.events || [];
         rangeText.textContent = `区间：${range.start} ~ ${range.end}`;
         renderChart(stats);
         renderTable(currentEvents);
-        renderDetail(currentEvents[0] || null);
+        const detailEvent = (selectedTraceId && currentEvents.find(item => item.trace_id === selectedTraceId))
+          || currentEvents[0]
+          || null;
+        if (!detailEvent) {
+          selectedTraceId = null;
+        } else {
+          selectedTraceId = detailEvent.trace_id || null;
+        }
+        renderDetail(detailEvent);
       } catch (error) {
         showError(error.message || "加载失败");
       }
