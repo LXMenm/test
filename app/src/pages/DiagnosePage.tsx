@@ -841,10 +841,81 @@ export function DiagnosePage() {
     }
   };
 
+  const handleConfirmCandidate = async () => {
+    if (!traceId || !imageId || !confirmChoice || confirmChoice === 'other') return;
+    setPhase2StartTime(Date.now());
+    setConfirmSubmitting(true);
+    try {
+      const resp = await fetch('/api/diagnose-confirm', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          trace_id: traceId,
+          image_id: imageId,
+          crop_type: cropType || '番茄',
+          symptoms: [],
+          growth_stage: growthStage || null,
+          model_id: modelId || null,
+          choice: confirmChoice,
+          notes: null,
+          farmer_id: selectedFarmerId || null,
+          base_id: selectedBaseId || null,
+          final_decision: null,
+        }),
+      });
+      const data = await resp.json();
+      if (!resp.ok) {
+        throw new Error(data?.detail || `确认失败: ${resp.status}`);
+      }
+      if (data.trace_id) {
+        setTraceId(data.trace_id);
+      }
+      if (data.image_id) {
+        setImageId(data.image_id);
+      }
+      if (Array.isArray(data?.events)) {
+        setTraceEvents(normalizeTraceEvents(data.events));
+      }
+      setWorkflowRefreshToken((prev) => prev + 1);
+
+      const mergedPayload = {
+        ...data,
+        image_url: (typeof data?.image_url === 'string' && data.image_url)
+          ? data.image_url
+          : (typeof data?.image_id === 'string' && data.image_id)
+            ? `/uploads/${data.image_id}`
+            : (result?.image_url || ''),
+      };
+      const nextResult = buildResultFromPayload(mergedPayload as Record<string, unknown>);
+      setResult(nextResult);
+      const payloadRecord = mergedPayload && typeof mergedPayload === 'object' ? mergedPayload as Record<string, unknown> : {};
+      setLatestPayload(payloadRecord);
+      const candidates = parseTop3Candidates(payloadRecord, nextResult);
+      const needsConfirm = data?.status === 'waiting_for_supplement' && data?.expert_review_recommended !== true && (
+        hasBackendExplain(payloadRecord)
+          ? data?.need_confirm === true
+          : deriveNeedConfirm(payloadRecord, candidates, nextResult.displayConfidencePct)
+      );
+      setConfirmMode(needsConfirm);
+      setConfirmChoice(needsConfirm ? 'other' : confirmChoice);
+      setConfirmSymptoms('');
+      setResubmitFile(null);
+      setResubmitStatus('idle');
+    } catch (error) {
+      console.error('Confirm candidate failed:', error);
+    } finally {
+      setConfirmSubmitting(false);
+    }
+  };
+
   const handleConfirmSubmit = async (finalDecision?: 'use_current_result' | 'request_expert_review') => {
     if (!traceId || !imageId) return;
     if (!finalDecision) {
-      await handleResubmitWithNewImage();
+      if (confirmChoice !== 'other') {
+        await handleConfirmCandidate();
+      } else {
+        await handleResubmitWithNewImage();
+      }
       return;
     }
     setPhase2StartTime(Date.now());
@@ -960,6 +1031,9 @@ export function DiagnosePage() {
   const renderTreatment = (t: unknown): JSX.Element | null => renderRichValue(t);
   const candidates = parseTop3Candidates(latestPayload ?? result ?? {}, result, 'fusion');
   const top3ConfirmCandidates = candidates.slice(0, 3);
+  const followUpQuestions = Array.isArray(result?.follow_up_questions)
+    ? result.follow_up_questions.map((item) => String(item).trim()).filter(Boolean)
+    : [];
   const confirmUiMode = (() => {
     if (typeof result?.confirm_ui_mode === 'string' && result.confirm_ui_mode.trim()) {
       return result.confirm_ui_mode;
@@ -974,6 +1048,7 @@ export function DiagnosePage() {
   const usesTextSupplement = confirmUiMode === 'text' || confirmUiMode === 'image_and_text';
   const usesImageSupplement = confirmUiMode === 'image' || confirmUiMode === 'image_and_text';
   const shouldShowSupplementSection = result?.status === 'waiting_for_supplement' && confirmUiMode !== 'none';
+  const shouldShowFollowUps = confirmChoice === 'other' && followUpQuestions.length > 0;
   const { shouldShowExpertReviewDecision, shouldHideTreatment } = deriveDiagnoseReviewViewFlags(result, shouldShowSupplementSection);
   const confirmCopy = (() => {
     const code = result?.confirm_reason_code;
@@ -1424,6 +1499,14 @@ export function DiagnosePage() {
 
                 {confirmChoice === 'other' ? (
                   <>
+                    {shouldShowFollowUps && (confirmUiMode === 'text' || confirmUiMode === 'image_and_text') ? (
+                      <div className="rounded-lg border border-sky-300/30 bg-sky-500/10 p-3">
+                        <p className="text-sm text-sky-100 font-medium mb-2">建议补充信息</p>
+                        <ul className="list-disc pl-5 text-xs text-sky-50/90 space-y-1">
+                          {followUpQuestions.map((question, idx) => <li key={`follow-up-text-${idx}`}>{question}</li>)}
+                        </ul>
+                      </div>
+                    ) : null}
                     {usesTextSupplement && (
                       <div className="space-y-2">
                         <Label className="text-white/80">补充症状（逗号分隔）</Label>
@@ -1442,6 +1525,14 @@ export function DiagnosePage() {
                         ) : null}
                         {resubmitStatus === 'success' ? (
                           <p className="text-xs text-emerald-300">已使用新图片重新诊断。</p>
+                        ) : null}
+                        {shouldShowFollowUps && confirmUiMode === 'image' ? (
+                          <div className="rounded-md border border-white/15 bg-white/[0.03] p-2">
+                            <p className="text-xs text-white/70 mb-1">补拍建议（辅助说明）</p>
+                            <ul className="list-disc pl-4 text-xs text-white/70 space-y-1">
+                              {followUpQuestions.map((question, idx) => <li key={`follow-up-image-${idx}`}>{question}</li>)}
+                            </ul>
+                          </div>
                         ) : null}
                       </div>
                     )}
