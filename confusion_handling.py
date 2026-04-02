@@ -93,8 +93,12 @@ def handle_confusing_cases(
         "final_class": predicted_class,
         "final_confidence": confidence,
         "is_adjusted": False,
-        "adjustment_reason": None
+        "adjustment_reason": None,
+        "label_changed": False,
+        "confidence_changed": False,
+        "target_confusing_class": None,
     }
+    symptoms = [str(s).strip().lower() for s in (symptoms or []) if str(s).strip()]
     
     # 第一步：主动检查症状是否匹配其他易混淆类别
     # 这用于处理高置信度误识别的情况
@@ -102,10 +106,11 @@ def handle_confusing_cases(
         if predicted_class == class1 or predicted_class == class2:
             # 当前预测是易混淆对之一，检查症状
             other_class = class2 if predicted_class == class1 else class1
+            pair_threshold = float(rule.get("confidence_threshold", 0.80))
             
             # 获取两个类别的症状特征
-            symptoms_predicted = rule["symptoms_1"] if predicted_class == class1 else rule["symptoms_2"]
-            symptoms_other = rule["symptoms_2"] if predicted_class == class1 else rule["symptoms_1"]
+            symptoms_predicted = [str(item).strip().lower() for item in (rule["symptoms_1"] if predicted_class == class1 else rule["symptoms_2"])]
+            symptoms_other = [str(item).strip().lower() for item in (rule["symptoms_2"] if predicted_class == class1 else rule["symptoms_1"])]
             
             # 统计症状匹配
             match_predicted = sum(1 for sym in symptoms if any(keyword in sym for keyword in symptoms_predicted))
@@ -118,6 +123,9 @@ def handle_confusing_cases(
                 # 降低置信度，因为模型原本预测错误
                 result["final_confidence"] = min(confidence * 0.8, 0.75)
                 result["is_adjusted"] = True
+                result["label_changed"] = True
+                result["confidence_changed"] = True
+                result["target_confusing_class"] = other_class
                 result["adjustment_reason"] = f"{rule['name']}：症状匹配{other_class.split('___')[-1]}，修正预测"
                 return result
             elif match_other > 0 and match_predicted == 0:
@@ -125,13 +133,16 @@ def handle_confusing_cases(
                 result["final_class"] = other_class
                 result["final_confidence"] = min(confidence * 0.7, 0.7)
                 result["is_adjusted"] = True
+                result["label_changed"] = True
+                result["confidence_changed"] = True
+                result["target_confusing_class"] = other_class
                 result["adjustment_reason"] = f"{rule['name']}：症状完全不匹配当前预测，修正为{other_class.split('___')[-1]}"
                 return result
             
             # 第二步：无症状时，基于置信度阈值和候选列表进行判断
             # 这用于处理仅上传图片的情况
             # 对于仅图像输入，使用更低的阈值（0.80），因为缺乏症状验证
-            image_only_threshold = 0.80
+            image_only_threshold = min(pair_threshold, 0.80)
             if not symptoms and confidence >= image_only_threshold:
                 # 高置信度预测，但可能是误识别
                 # 检查候选列表中是否有易混淆类别
@@ -152,6 +163,8 @@ def handle_confusing_cases(
                         # 置信度差距小，可能是误识别，降低置信度
                         result["final_confidence"] = min(confidence * 0.85, 0.80)
                         result["is_adjusted"] = True
+                        result["confidence_changed"] = True
+                        result["target_confusing_class"] = other_class
                         result["adjustment_reason"] = f"{rule['name']}：高置信度预测但候选接近，降低置信度提示确认"
                         return result
                     else:
@@ -160,6 +173,8 @@ def handle_confusing_cases(
                         # 降低置信度并提示用户确认
                         result["final_confidence"] = min(confidence * 0.75, 0.75)
                         result["is_adjusted"] = True
+                        result["confidence_changed"] = True
+                        result["target_confusing_class"] = other_class
                         result["adjustment_reason"] = f"{rule['name']}：仅图像输入的高置信度预测，建议结合症状确认"
                         return result
                 else:
@@ -167,6 +182,8 @@ def handle_confusing_cases(
                     # 仍然降低置信度，提示用户确认
                     result["final_confidence"] = min(confidence * 0.80, 0.80)
                     result["is_adjusted"] = True
+                    result["confidence_changed"] = True
+                    result["target_confusing_class"] = other_class
                     result["adjustment_reason"] = f"{rule['name']}：仅图像输入，建议结合症状确认"
                     return result
     
@@ -179,8 +196,8 @@ def handle_confusing_cases(
             
             # 基于症状进行区分
             class1, class2 = sorted([predicted_class, candidate])
-            symptoms1 = rule["symptoms_1"]
-            symptoms2 = rule["symptoms_2"]
+            symptoms1 = [str(item).strip().lower() for item in rule["symptoms_1"]]
+            symptoms2 = [str(item).strip().lower() for item in rule["symptoms_2"]]
             
             # 统计症状匹配
             match1 = sum(1 for sym in symptoms if any(keyword in sym for keyword in symptoms1))
@@ -192,6 +209,9 @@ def handle_confusing_cases(
                     result["final_class"] = class1
                     result["final_confidence"] = max(confidence * 0.8, candidate_conf, 0.6)
                     result["is_adjusted"] = True
+                    result["label_changed"] = True
+                    result["confidence_changed"] = True
+                    result["target_confusing_class"] = class1
                     result["adjustment_reason"] = f"基于症状匹配，修正为{class1.split('___')[-1]}"
             elif match2 > match1:
                 # 更可能是 class2
@@ -199,6 +219,9 @@ def handle_confusing_cases(
                     result["final_class"] = class2
                     result["final_confidence"] = max(confidence * 0.8, candidate_conf, 0.6)
                     result["is_adjusted"] = True
+                    result["label_changed"] = True
+                    result["confidence_changed"] = True
+                    result["target_confusing_class"] = class2
                     result["adjustment_reason"] = f"基于症状匹配，修正为{class2.split('___')[-1]}"
             else:
                 # 症状匹配相当，且有明显匹配的特征，才降低置信度
@@ -207,6 +230,8 @@ def handle_confusing_cases(
                 if total_match > 0 and confidence > 0.8:
                     result["final_confidence"] = min(confidence, 0.75)
                     result["is_adjusted"] = True
+                    result["confidence_changed"] = True
+                    result["target_confusing_class"] = candidate
                     result["adjustment_reason"] = f"{rule['name']}：症状匹配相当，降低置信度"
                 # 如果 total_match == 0，说明症状太模糊，不进行调整
     

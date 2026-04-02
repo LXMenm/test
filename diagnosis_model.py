@@ -635,6 +635,40 @@ class DiseaseDiagnosisEngine:
     def _topk(dist: Dict[str, float], k: int = 3) -> List[Tuple[str, float]]:
         return sorted([(k0, float(v0)) for k0, v0 in (dist or {}).items()], key=lambda x: x[1], reverse=True)[:k]
 
+    def _apply_confusion_adjustment_to_probs(
+        self,
+        probs: Dict[str, float],
+        original_class_cn: str,
+        adjusted_class_cn: str,
+        final_confidence: float,
+    ) -> Dict[str, float]:
+        if not probs:
+            return {}
+        new_probs = {k: max(float(v), 0.0) for k, v in probs.items()}
+        original_class_cn = str(original_class_cn or "").strip()
+        adjusted_class_cn = str(adjusted_class_cn or "").strip()
+        if not original_class_cn or not adjusted_class_cn:
+            return self._normalized(new_probs)
+        if original_class_cn not in new_probs:
+            new_probs[original_class_cn] = 0.0
+        if adjusted_class_cn not in new_probs:
+            new_probs[adjusted_class_cn] = 0.0
+        bounded_conf = max(0.0, min(float(final_confidence or 0.0), 1.0))
+        new_probs[original_class_cn] = bounded_conf
+        if adjusted_class_cn != original_class_cn:
+            old_adjusted = float(new_probs.get(adjusted_class_cn, 0.0))
+            desired_adjusted = max(old_adjusted, bounded_conf)
+            transfer_amount = max(0.0, desired_adjusted - old_adjusted)
+            if transfer_amount > 0:
+                donor_classes = [cls for cls in new_probs if cls != adjusted_class_cn and new_probs.get(cls, 0.0) > 0]
+                donor_total = sum(new_probs.get(cls, 0.0) for cls in donor_classes)
+                if donor_total > 0:
+                    for cls in donor_classes:
+                        reduction = transfer_amount * (new_probs[cls] / donor_total)
+                        new_probs[cls] = max(0.0, new_probs[cls] - reduction)
+            new_probs[adjusted_class_cn] = desired_adjusted
+        return self._normalized(new_probs)
+
     def fuse_multimodal_probs(self, image_probs: Dict[str, float], text_probs: Dict[str, float], prior_probs: Dict[str, float], image_confidence: float = 0.0, text_confidence: float = 0.0, text_evidence_active: Optional[bool] = None, normalized_symptoms: Optional[List[str]] = None, image_quality_flags: Optional[List[str]] = None, image_quality_hint: Optional[str] = None) -> Tuple[Dict[str, float], Dict[str, object]]:
         image_probs = self._normalized(image_probs)
         text_probs = self._normalized(text_probs)
@@ -645,6 +679,8 @@ class DiseaseDiagnosisEngine:
         image_top3 = self._topk(image_probs, 3)
         text_top3 = self._topk(text_probs, 3)
         prior_top3 = self._topk(prior_probs, 3)
+        image_top3_raw = list(image_top3)
+        text_top3_raw = list(text_top3)
         image_top1_conf = float(image_top3[0][1]) if image_top3 else 0.0
         image_top2_conf = float(image_top3[1][1]) if len(image_top3) > 1 else 0.0
         image_margin = image_top1_conf - image_top2_conf
@@ -658,7 +694,7 @@ class DiseaseDiagnosisEngine:
         text_top1_threshold = float(thresholds["text_top1_threshold"])
         text_margin_threshold = float(thresholds["text_margin_threshold"])
         reliable_text = bool(text_top3 and text_top1_conf >= text_top1_threshold and text_margin >= text_margin_threshold)
-        text_probs_for_fusion = text_probs if reliable_text else {}
+        text_probs_for_fusion = text_probs.copy() if reliable_text else {}
         image_top1 = image_top3[0][0] if image_top3 else None
         text_top1 = text_top3[0][0] if text_top3 else None
         
@@ -686,34 +722,23 @@ class DiseaseDiagnosisEngine:
                 image_top1_conf = image_confusion_result['final_confidence']
                 
                 # 创建调整后的图像概率分布
-                # 降低原始预测类别的概率
                 original_class_cn = self._map_label_cn(image_confusion_result['original_class'])
                 adjusted_class_cn = image_top1
-                
-                if original_class_cn in image_probs_for_fusion:
-                    # 降低原始类别的概率
-                    image_probs_for_fusion[original_class_cn] = image_top1_conf
-                    
-                    # 如果调整到了不同的类别，提高调整后类别的概率
-                    if adjusted_class_cn != original_class_cn and adjusted_class_cn in image_probs_for_fusion:
-                        # 从其他类别转移概率到调整后的类别
-                        transfer_amount = image_top1_conf - image_probs_for_fusion.get(adjusted_class_cn, 0.0)
-                        if transfer_amount > 0:
-                            # 从其他类别均匀转移概率
-                            other_classes = [cls for cls in image_probs_for_fusion if cls != original_class_cn]
-                            if other_classes:
-                                transfer_per_class = transfer_amount / len(other_classes)
-                                for cls in other_classes:
-                                    image_probs_for_fusion[cls] = max(0.0, image_probs_for_fusion[cls] - transfer_per_class)
-                            image_probs_for_fusion[adjusted_class_cn] = image_top1_conf
-                
-                # 重新计算 image_margin
-                if len(image_top3) > 1:
-                    image_top2_conf = float(image_top3[1][1])
-                    image_margin = image_top1_conf - image_top2_conf
-                # 重新计算 reliable_image
+                if adjusted_class_cn not in image_probs_for_fusion:
+                    image_probs_for_fusion[adjusted_class_cn] = 0.0
+                image_probs_for_fusion = self._apply_confusion_adjustment_to_probs(
+                    image_probs_for_fusion,
+                    original_class_cn=original_class_cn,
+                    adjusted_class_cn=adjusted_class_cn,
+                    final_confidence=image_top1_conf,
+                )
+                image_top3 = self._topk(image_probs_for_fusion, 3)
+                image_top1 = image_top3[0][0] if image_top3 else image_top1
+                image_top1_conf = float(image_top3[0][1]) if image_top3 else float(image_top1_conf)
+                image_top2_conf = float(image_top3[1][1]) if len(image_top3) > 1 else 0.0
+                image_margin = image_top1_conf - image_top2_conf
                 reliable_image = bool(image_top3 and image_top1_conf >= image_top1_threshold and image_margin >= image_margin_threshold)
-        
+
         if text_top1:
             # 将中文标签转换为英文标签进行易混淆处理
             text_top1_en = self._map_label_en(text_top1)
@@ -729,11 +754,21 @@ class DiseaseDiagnosisEngine:
                 adjusted_class_en = text_confusion_result['final_class']
                 text_top1 = self._map_label_cn(adjusted_class_en)
                 text_top1_conf = text_confusion_result['final_confidence']
-                # 重新计算 text_margin
-                if len(text_top3) > 1:
-                    text_top2_conf = float(text_top3[1][1])
-                    text_margin = text_top1_conf - text_top2_conf
-                # 重新计算 reliable_text
+                original_class_cn = self._map_label_cn(text_confusion_result['original_class'])
+                adjusted_class_cn = text_top1
+                if adjusted_class_cn not in text_probs_for_fusion:
+                    text_probs_for_fusion[adjusted_class_cn] = 0.0
+                text_probs_for_fusion = self._apply_confusion_adjustment_to_probs(
+                    text_probs_for_fusion,
+                    original_class_cn=original_class_cn,
+                    adjusted_class_cn=adjusted_class_cn,
+                    final_confidence=text_top1_conf,
+                )
+                text_top3 = self._topk(text_probs_for_fusion, 3)
+                text_top1 = text_top3[0][0] if text_top3 else text_top1
+                text_top1_conf = float(text_top3[0][1]) if text_top3 else float(text_top1_conf)
+                text_top2_conf = float(text_top3[1][1]) if len(text_top3) > 1 else 0.0
+                text_margin = text_top1_conf - text_top2_conf
                 reliable_text = bool(text_top3 and text_top1_conf >= text_top1_threshold and text_margin >= text_margin_threshold)
         
         conflict = bool(has_image and has_text and reliable_image and reliable_text and image_top1 and text_top1 and image_top1 != text_top1)
@@ -831,15 +866,20 @@ class DiseaseDiagnosisEngine:
             normalized_weights = {"image": 0.0, "text": 0.0, "prior": 0.0}
         else:
             normalized_weights = {k: (base_weights[k] / active_sum if active.get(k) else 0.0) for k in ["image", "text", "prior"]}
-        keys = set(image_probs) | set(text_probs) | set(prior_probs)
+        adjusted_pre_fusion_top3 = {
+            "image": self._topk(image_probs_for_fusion, 3),
+            "text": self._topk(text_probs_for_fusion, 3),
+            "prior": prior_top3,
+        }
+        keys = set(image_probs_for_fusion) | set(text_probs_for_fusion) | set(prior_probs)
         if not keys:
-            meta = {"fuse_version": FUSE_MULTIMODAL_VERSION, "has_image": has_image, "has_text": has_text, "has_prior": has_prior, **reliability_summary, "image_top1_conf": image_top1_conf, "text_top1_conf": text_top1_conf, "image_margin": image_margin, "text_margin": text_margin, "fusion_case": fusion_case, "normalized_weights": normalized_weights, "pre_fusion_top1": {"image": image_top3[:1], "text": text_top3[:1], "prior": prior_top3[:1]}, "pre_fusion_top3": {"image": image_top3, "text": text_top3, "prior": prior_top3}, "post_fusion_top3": ["健康", 1.0], "confidence_drop_reason": confidence_drop_reason, "modality_conflict_flag": conflict, "weak_conflict_candidate": weak_conflict_candidate, "strong_text_evidence": strong_text_evidence, "image_downgraded_on_conflict": image_downgraded_on_conflict, "image_confusion_result": image_confusion_result, "text_confusion_result": text_confusion_result}
+            meta = {"fuse_version": FUSE_MULTIMODAL_VERSION, "has_image": has_image, "has_text": has_text, "has_prior": has_prior, **reliability_summary, "image_top1_conf": image_top1_conf, "text_top1_conf": text_top1_conf, "image_margin": image_margin, "text_margin": text_margin, "fusion_case": fusion_case, "normalized_weights": normalized_weights, "pre_fusion_top1": {"image": image_top3[:1], "text": text_top3[:1], "prior": prior_top3[:1]}, "pre_fusion_top3": adjusted_pre_fusion_top3, "pre_fusion_top3_raw": {"image": image_top3_raw, "text": text_top3_raw, "prior": prior_top3}, "pre_fusion_top3_adjusted": adjusted_pre_fusion_top3, "post_fusion_top3": ["健康", 1.0], "confidence_drop_reason": confidence_drop_reason, "modality_conflict_flag": conflict, "weak_conflict_candidate": weak_conflict_candidate, "strong_text_evidence": strong_text_evidence, "image_downgraded_on_conflict": image_downgraded_on_conflict, "image_confusion_result": image_confusion_result, "text_confusion_result": text_confusion_result}
             return {"健康": 1.0}, meta
         fused = {}
         for key in keys:
             fused[key] = normalized_weights["image"] * image_probs_for_fusion.get(key, 0.0) + normalized_weights["text"] * text_probs_for_fusion.get(key, 0.0) + normalized_weights["prior"] * prior_probs.get(key, 0.0)
         fused = self._normalized(fused)
-        meta = {"fuse_version": FUSE_MULTIMODAL_VERSION, "has_image": has_image, "has_text": has_text, "has_prior": has_prior, **reliability_summary, "image_top1_conf": image_top1_conf, "text_top1_conf": text_top1_conf, "image_margin": image_margin, "text_margin": text_margin, "fusion_case": fusion_case, "normalized_weights": normalized_weights, "pre_fusion_top1": {"image": image_top3[:1], "text": text_top3[:1], "prior": prior_top3[:1]}, "pre_fusion_top3": {"image": image_top3, "text": text_top3, "prior": prior_top3}, "post_fusion_top3": self._topk(fused, 3), "confidence_drop_reason": confidence_drop_reason, "modality_conflict_flag": conflict, "weak_conflict_candidate": weak_conflict_candidate, "strong_text_evidence": strong_text_evidence, "image_downgraded_on_conflict": image_downgraded_on_conflict, "image_confusion_result": image_confusion_result, "text_confusion_result": text_confusion_result}
+        meta = {"fuse_version": FUSE_MULTIMODAL_VERSION, "has_image": has_image, "has_text": has_text, "has_prior": has_prior, **reliability_summary, "image_top1_conf": image_top1_conf, "text_top1_conf": text_top1_conf, "image_margin": image_margin, "text_margin": text_margin, "fusion_case": fusion_case, "normalized_weights": normalized_weights, "pre_fusion_top1": {"image": image_top3[:1], "text": text_top3[:1], "prior": prior_top3[:1]}, "pre_fusion_top3": adjusted_pre_fusion_top3, "pre_fusion_top3_raw": {"image": image_top3_raw, "text": text_top3_raw, "prior": prior_top3}, "pre_fusion_top3_adjusted": adjusted_pre_fusion_top3, "post_fusion_top3": self._topk(fused, 3), "confidence_drop_reason": confidence_drop_reason, "modality_conflict_flag": conflict, "weak_conflict_candidate": weak_conflict_candidate, "strong_text_evidence": strong_text_evidence, "image_downgraded_on_conflict": image_downgraded_on_conflict, "image_confusion_result": image_confusion_result, "text_confusion_result": text_confusion_result}
         return fused, meta
 
     def build_diagnosis_evidence(self, normalized_symptoms: List[str], raw_symptoms: List[str], image_probs: Dict[str, float], text_probs: Dict[str, float], prior_probs: Dict[str, float], fusion_probs: Dict[str, float], fusion_meta: Dict[str, object], modality_conflict_flag: bool, final_disease: str, final_confidence: float, final_source: str) -> Dict[str, object]:

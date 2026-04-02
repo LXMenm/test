@@ -24,7 +24,6 @@ from typing import Optional
 from typing import Any
 from model_registry import resolve_model
 from pydantic import BaseModel, Field, ValidationError
-from confusion_handling import handle_confusing_cases
 import re
 import json
 import os
@@ -593,6 +592,11 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
         print(f"[易混淆处理] 图像模型预测调整: {image_confusion_result.get('adjustment_reason')}")
     if text_confusion_result and text_confusion_result.get("is_adjusted"):
         print(f"[易混淆处理] 文本模型预测调整: {text_confusion_result.get('adjustment_reason')}")
+    adjusted_top3 = (fusion_meta.get("pre_fusion_top3_adjusted") if isinstance(fusion_meta, dict) else None) or {}
+    image_top3_adjusted = list(adjusted_top3.get("image") or [])
+    text_top3_adjusted = list(adjusted_top3.get("text") or [])
+    if state.get("image_diagnosis") and image_top3_adjusted:
+        state["image_diagnosis"]["top3_adjusted"] = [(name, float(prob)) for name, prob in image_top3_adjusted]
 
     if debug_enabled:
         print(f"[DiagnosisDebug] {json.dumps(debug_payload, ensure_ascii=False)}")
@@ -626,6 +630,10 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
             "supplement_mode": supplement_mode,
             "summary": f"融合诊断Top1: {final_disease}",
         }
+    diagnosis_evidence["image_confusion_result"] = image_confusion_result
+    diagnosis_evidence["text_confusion_result"] = text_confusion_result
+    diagnosis_evidence["image_top3_adjusted"] = [(name, float(prob)) for name, prob in image_top3_adjusted]
+    diagnosis_evidence["text_top3_adjusted"] = [(name, float(prob)) for name, prob in text_top3_adjusted]
 
     confidence_policy = make_confidence_flags(
         fusion_top3,
