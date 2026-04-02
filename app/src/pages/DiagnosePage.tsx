@@ -583,13 +583,14 @@ export function DiagnosePage() {
 
   const fetchProfiles = async () => {
     try {
-      const resp = await fetch('/api/profiles');
+      const resp = await authFetch('/api/profiles', undefined, authUser);
       const data = await resp.json();
       if (!resp.ok) throw new Error(String(data?.detail || '加载农户档案失败'));
       setProfiles(parseProfiles(data?.profiles));
     } catch (error) {
       console.error('Failed to fetch profiles:', error);
       setProfiles([]);
+      alert(error instanceof Error ? error.message : '加载农户档案失败');
     }
   };
 
@@ -615,7 +616,7 @@ export function DiagnosePage() {
       return;
     }
     try {
-      const resp = await fetch(`/api/profiles/${encodeURIComponent(farmerId)}`);
+      const resp = await authFetch(`/api/profiles/${encodeURIComponent(farmerId)}`, undefined, authUser);
       const data = await resp.json();
       if (!resp.ok) throw new Error(String(data?.detail || '加载档案详情失败'));
       const profile = (data || {}) as ProfileDetail;
@@ -630,6 +631,7 @@ export function DiagnosePage() {
       console.error('Failed to fetch profile detail:', error);
       setSelectedProfile(null);
       setSelectedBaseId('');
+      alert(error instanceof Error ? error.message : '加载档案详情失败');
     }
   };
 
@@ -695,10 +697,10 @@ export function DiagnosePage() {
       if (selectedBaseId) fd.append('base_id', selectedBaseId);
       console.log('diagnose-image model_id=', modelId);
 
-      const resp = await fetch('/api/diagnose-image', {
+      const resp = await authFetch('/api/diagnose-image', {
         method: 'POST',
         body: fd
-      });
+      }, authUser);
       const raw = await resp.text();
       let data: unknown = null;
       try {
@@ -779,10 +781,10 @@ export function DiagnosePage() {
       fd.append('farmer_id', selectedFarmerId);
       if (selectedBaseId) fd.append('base_id', selectedBaseId);
 
-      const resp = await fetch('/api/diagnose-retry', {
+      const resp = await authFetch('/api/diagnose-retry', {
         method: 'POST',
         body: fd,
-      });
+      }, authUser);
       const raw = await resp.text();
       let data: unknown = null;
       try {
@@ -846,7 +848,7 @@ export function DiagnosePage() {
     setPhase2StartTime(Date.now());
     setConfirmSubmitting(true);
     try {
-      const resp = await fetch('/api/diagnose-confirm', {
+      const resp = await authFetch('/api/diagnose-confirm', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -862,7 +864,7 @@ export function DiagnosePage() {
           base_id: selectedBaseId || null,
           final_decision: null,
         }),
-      });
+      }, authUser);
       const data = await resp.json();
       if (!resp.ok) {
         throw new Error(data?.detail || `确认失败: ${resp.status}`);
@@ -934,7 +936,7 @@ export function DiagnosePage() {
         ? finalDecision
         : null;
 
-      const resp = await fetch('/api/diagnose-confirm', {
+      const resp = await authFetch('/api/diagnose-confirm', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -950,7 +952,7 @@ export function DiagnosePage() {
           base_id: selectedBaseId || null,
           final_decision: finalDecisionForConfirm,
         }),
-      });
+      }, authUser);
       const data = await resp.json();
       if (!resp.ok) {
         throw new Error(data?.detail || `确认失败: ${resp.status}`);

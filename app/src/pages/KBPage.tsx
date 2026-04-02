@@ -8,7 +8,7 @@ import { Badge } from '@/components/ui/badge';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { loadAuthUser } from '@/auth';
+import { authFetch, loadAuthUser } from '@/auth';
 
 
 interface Disease {
@@ -112,6 +112,14 @@ export function KBPage({ focusDiseaseName = '' }: KBPageProps) {
   const [detailError, setDetailError] = useState('');
   const [focusDiseaseDetail, setFocusDiseaseDetail] = useState<DiseaseDetail | null>(null);
   const [showDiseaseDetailDialog, setShowDiseaseDetailDialog] = useState(false);
+  const readErrorDetail = async (resp: Response, fallback: string): Promise<string> => {
+    try {
+      const data = await resp.json();
+      return typeof data?.detail === 'string' ? data.detail : fallback;
+    } catch {
+      return fallback;
+    }
+  };
 
   const clearFocusDisease = () => {
     setFocusDiseaseDetail(null);
@@ -125,11 +133,14 @@ export function KBPage({ focusDiseaseName = '' }: KBPageProps) {
 
   const fetchDiseases = async () => {
     try {
-      const resp = await fetch('/api/kb/diseases');
+      const resp = await authFetch('/api/kb/diseases', undefined, authUser);
       const data = await resp.json();
+      if (!resp.ok) throw new Error(typeof data?.detail === 'string' ? data.detail : '加载病害列表失败');
       setDiseases(data.items || []);
     } catch (error) {
-      console.error('Failed to fetch diseases:', error);
+      const detail = error instanceof Error ? error.message : '加载病害列表失败';
+      console.error('Failed to fetch diseases:', detail);
+      alert(detail);
     }
   };
 
@@ -152,8 +163,9 @@ export function KBPage({ focusDiseaseName = '' }: KBPageProps) {
           break;
       }
       
-      const resp = await fetch(endpoint);
+      const resp = await authFetch(endpoint, undefined, authUser);
       const data = await resp.json();
+      if (!resp.ok) throw new Error(typeof data?.detail === 'string' ? data.detail : `加载${tab}失败`);
       
       switch (tab) {
         case 'treatments':
@@ -167,7 +179,9 @@ export function KBPage({ focusDiseaseName = '' }: KBPageProps) {
           break;
       }
     } catch (error) {
-      console.error(`Failed to fetch ${tab}:`, error);
+      const detail = error instanceof Error ? error.message : `加载${tab}失败`;
+      console.error(`Failed to fetch ${tab}:`, detail);
+      alert(detail);
     } finally {
       setLoading(false);
     }
@@ -195,7 +209,7 @@ export function KBPage({ focusDiseaseName = '' }: KBPageProps) {
       setDetailLoading(true);
       setDetailError('');
       try {
-        const resp = await fetch(`/api/kb/diseases/${encodeURIComponent(diseaseName)}`);
+        const resp = await authFetch(`/api/kb/diseases/${encodeURIComponent(diseaseName)}`, undefined, authUser);
         const data = await resp.json();
         if (!resp.ok) {
           throw new Error(typeof data?.detail === 'string' ? data.detail : '获取病害详情失败');
@@ -222,11 +236,11 @@ export function KBPage({ focusDiseaseName = '' }: KBPageProps) {
     const isNew = diseaseDialogMode === 'create';
     const targetName = isNew ? editingDisease.name : editingDiseaseOriginalName;
     try {
-      const resp = await fetch(`/api/kb/diseases${isNew ? '' : '/' + encodeURIComponent(targetName)}`, {
+      const resp = await authFetch(`/api/kb/diseases${isNew ? '' : '/' + encodeURIComponent(targetName)}`, {
         method: isNew ? 'POST' : 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(editingDisease)
-      });
+      }, authUser);
       
       if (resp.ok) {
         fetchDiseases();
@@ -235,26 +249,32 @@ export function KBPage({ focusDiseaseName = '' }: KBPageProps) {
         setEditingDiseaseOriginalName('');
       } else if (resp.status === 409) {
         alert('病害已存在');
+      } else {
+        alert(await readErrorDetail(resp, '保存病害失败'));
       }
     } catch (error) {
       console.error('Failed to save disease:', error);
+      alert('保存病害失败');
     }
   };
 
   const deleteDiseases = async () => {
     try {
-      const resp = await fetch('/api/kb/diseases', {
+      const resp = await authFetch('/api/kb/diseases', {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ names: selectedDiseases })
-      });
+      }, authUser);
       
       if (resp.ok) {
         setSelectedDiseases([]);
         fetchDiseases();
+      } else {
+        alert(await readErrorDetail(resp, '删除病害失败'));
       }
     } catch (error) {
       console.error('Failed to delete diseases:', error);
+      alert('删除病害失败');
     }
   };
 
@@ -283,11 +303,11 @@ export function KBPage({ focusDiseaseName = '' }: KBPageProps) {
 
     const isNew = !treatments.find(t => t.disease === editingTreatment.disease);
     try {
-      const resp = await fetch(`/api/kb/treatments${isNew ? '' : '/' + encodeURIComponent(editingTreatment.disease)}`, {
+      const resp = await authFetch(`/api/kb/treatments${isNew ? '' : '/' + encodeURIComponent(editingTreatment.disease)}`, {
         method: isNew ? 'POST' : 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
-      });
+      }, authUser);
 
       if (resp.ok) {
         fetchData('treatments');
@@ -296,26 +316,32 @@ export function KBPage({ focusDiseaseName = '' }: KBPageProps) {
         setEditingTreatmentActionsJson('');
         setEditingTreatmentActionsError('');
         setShowActionsEditor(false);
+      } else {
+        alert(await readErrorDetail(resp, '保存治疗方案失败'));
       }
     } catch (error) {
       console.error('Failed to save treatment:', error);
+      alert('保存治疗方案失败');
     }
   };
 
   const deleteTreatments = async () => {
     try {
-      const resp = await fetch('/api/kb/treatments', {
+      const resp = await authFetch('/api/kb/treatments', {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ diseases: selectedTreatments })
-      });
+      }, authUser);
       
       if (resp.ok) {
         setSelectedTreatments([]);
         fetchData('treatments');
+      } else {
+        alert(await readErrorDetail(resp, '删除治疗方案失败'));
       }
     } catch (error) {
       console.error('Failed to delete treatments:', error);
+      alert('删除治疗方案失败');
     }
   };
 
@@ -324,36 +350,42 @@ export function KBPage({ focusDiseaseName = '' }: KBPageProps) {
     
     const isNew = !editingRule.rule_id;
     try {
-      const resp = await fetch(`/api/kb/rules${isNew ? '' : '/' + editingRule.rule_id}`, {
+      const resp = await authFetch(`/api/kb/rules${isNew ? '' : '/' + editingRule.rule_id}`, {
         method: isNew ? 'POST' : 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(editingRule)
-      });
+      }, authUser);
       
       if (resp.ok) {
         fetchData('rules');
         setShowRuleDialog(false);
         setEditingRule(null);
+      } else {
+        alert(await readErrorDetail(resp, '保存规则失败'));
       }
     } catch (error) {
       console.error('Failed to save rule:', error);
+      alert('保存规则失败');
     }
   };
 
   const deleteRules = async () => {
     try {
-      const resp = await fetch('/api/kb/rules', {
+      const resp = await authFetch('/api/kb/rules', {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ rule_ids: selectedRules })
-      });
+      }, authUser);
       
       if (resp.ok) {
         setSelectedRules([]);
         fetchData('rules');
+      } else {
+        alert(await readErrorDetail(resp, '删除规则失败'));
       }
     } catch (error) {
       console.error('Failed to delete rules:', error);
+      alert('删除规则失败');
     }
   };
 
@@ -363,11 +395,11 @@ export function KBPage({ focusDiseaseName = '' }: KBPageProps) {
     const isNew = symptomDialogMode === 'create';
     const targetSymptom = isNew ? editingSymptomMap.symptom : editingSymptomOriginalName;
     try {
-      const resp = await fetch(`/api/kb/symptom-map${isNew ? '' : '/' + encodeURIComponent(targetSymptom)}`, {
+      const resp = await authFetch(`/api/kb/symptom-map${isNew ? '' : '/' + encodeURIComponent(targetSymptom)}`, {
         method: isNew ? 'POST' : 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(editingSymptomMap)
-      });
+      }, authUser);
       
       if (resp.ok) {
         fetchData('symptom-map');
@@ -376,26 +408,32 @@ export function KBPage({ focusDiseaseName = '' }: KBPageProps) {
         setEditingSymptomOriginalName('');
       } else if (resp.status === 409) {
         alert('症状已存在');
+      } else {
+        alert(await readErrorDetail(resp, '保存症状映射失败'));
       }
     } catch (error) {
       console.error('Failed to save symptom map:', error);
+      alert('保存症状映射失败');
     }
   };
 
   const deleteSymptomMaps = async () => {
     try {
-      const resp = await fetch('/api/kb/symptom-map', {
+      const resp = await authFetch('/api/kb/symptom-map', {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ symptoms: selectedSymptomMaps })
-      });
+      }, authUser);
       
       if (resp.ok) {
         setSelectedSymptomMaps([]);
         fetchData('symptom-map');
+      } else {
+        alert(await readErrorDetail(resp, '删除症状映射失败'));
       }
     } catch (error) {
       console.error('Failed to delete symptom maps:', error);
+      alert('删除症状映射失败');
     }
   };
 

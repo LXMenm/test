@@ -10,7 +10,7 @@ import { cn } from '@/lib/utils';
 import { getCultivationModeLabel, getEquipmentLabel, getFarmScaleLabel, getGrowthStageLabel, getPesticideAccessLevelLabel, getRiskPreferenceLabel } from '@/lib/profileLabels';
 import { getModelLabel, resolveModelOptions } from '@/lib/modelOptions';
 import { fetchTraceEvents } from '@/lib/traceClient';
-import { loadAuthUser } from '@/auth';
+import { authFetch, loadAuthUser } from '@/auth';
 
 interface DiseaseStat {
   disease: string;
@@ -909,20 +909,20 @@ export function DashboardPage() {
     });
 
     try {
-      const eventsResp = await fetch(`/api/events/latest?start=${safeStart}&end=${safeEnd}&limit=5000`);
+      const eventsResp = await authFetch(`/api/events/latest?start=${safeStart}&end=${safeEnd}&limit=5000`, undefined, authUser);
       const eventsData = await eventsResp.json();
       const eventsList = Array.isArray(eventsData?.events) ? eventsData.events : [];
       const safeEvents = eventsList.map((eventLike: unknown, index: number) => normalizeEvent(eventLike, index));
       setAllEvents(safeEvents);
 
       const [summaryResp, diseaseResp, timeseriesResp, modelResp, reasonResp, farmerResp, baseResp] = await Promise.all([
-        fetch(`/api/stats/summary?${params.toString()}`),
-        fetch(`/api/stats/disease?${params.toString()}`),
-        fetch(`/api/stats/timeseries?${params.toString()}`),
-        fetch(`/api/stats/models?${params.toString()}`),
-        fetch(`/api/stats/filter-reasons?${params.toString()}`),
-        fetch(`/api/stats/by-farmer?start=${safeStart}&end=${safeEnd}&base_id=${encodeURIComponent(selectedBaseId)}&disease=${encodeURIComponent(selectedDisease)}&model_id=${encodeURIComponent(selectedModel)}&selected_branch=${encodeURIComponent(selectedBranch)}&personalization_status=${encodeURIComponent(selectedPersonalizationStatus)}`),
-        fetch(`/api/stats/by-base?start=${safeStart}&end=${safeEnd}&farmer_id=${encodeURIComponent(selectedFarmerId)}&model_id=${encodeURIComponent(selectedModel)}&selected_branch=${encodeURIComponent(selectedBranch)}&personalization_status=${encodeURIComponent(selectedPersonalizationStatus)}`),
+        authFetch(`/api/stats/summary?${params.toString()}`, undefined, authUser),
+        authFetch(`/api/stats/disease?${params.toString()}`, undefined, authUser),
+        authFetch(`/api/stats/timeseries?${params.toString()}`, undefined, authUser),
+        authFetch(`/api/stats/models?${params.toString()}`, undefined, authUser),
+        authFetch(`/api/stats/filter-reasons?${params.toString()}`, undefined, authUser),
+        authFetch(`/api/stats/by-farmer?start=${safeStart}&end=${safeEnd}&base_id=${encodeURIComponent(selectedBaseId)}&disease=${encodeURIComponent(selectedDisease)}&model_id=${encodeURIComponent(selectedModel)}&selected_branch=${encodeURIComponent(selectedBranch)}&personalization_status=${encodeURIComponent(selectedPersonalizationStatus)}`, undefined, authUser),
+        authFetch(`/api/stats/by-base?start=${safeStart}&end=${safeEnd}&farmer_id=${encodeURIComponent(selectedFarmerId)}&model_id=${encodeURIComponent(selectedModel)}&selected_branch=${encodeURIComponent(selectedBranch)}&personalization_status=${encodeURIComponent(selectedPersonalizationStatus)}`, undefined, authUser),
       ]);
 
       const summaryData = await summaryResp.json();
@@ -1002,12 +1002,12 @@ export function DashboardPage() {
     } finally {
       setLoading(false);
     }
-  }, [effectiveRange.end, effectiveRange.start, selectedFarmerId, selectedBaseId, selectedDisease, selectedModel, selectedBranch, selectedPersonalizationStatus]);
+  }, [authUser, effectiveRange.end, effectiveRange.start, selectedFarmerId, selectedBaseId, selectedDisease, selectedModel, selectedBranch, selectedPersonalizationStatus]);
 
   useEffect(() => {
     const run = async () => {
       try {
-        const resp = await fetch('/api/profiles');
+        const resp = await authFetch('/api/profiles', undefined, authUser);
         const data = await resp.json();
         const items: Record<string, unknown>[] = Array.isArray(data?.profiles) ? data.profiles : [];
         setProfiles(items
@@ -1018,12 +1018,12 @@ export function DashboardPage() {
       }
     };
     run();
-  }, []);
+  }, [authUser]);
 
   useEffect(() => {
     const run = async () => {
       try {
-        const resp = await fetch('/api/kb/diseases');
+        const resp = await authFetch('/api/kb/diseases', undefined, authUser);
         const data = await resp.json();
         const items: KbDiseaseListItem[] = Array.isArray(data?.items) ? data.items : [];
         setKbDiseases(
@@ -1037,7 +1037,7 @@ export function DashboardPage() {
       }
     };
     void run();
-  }, []);
+  }, [authUser]);
 
   useEffect(() => {
     if (!selectedFarmerId || selectedFarmerId === 'ALL') {
@@ -1047,7 +1047,7 @@ export function DashboardPage() {
     }
     const run = async () => {
       try {
-        const resp = await fetch(`/api/profiles/${encodeURIComponent(selectedFarmerId)}`);
+        const resp = await authFetch(`/api/profiles/${encodeURIComponent(selectedFarmerId)}`, undefined, authUser);
         const data = await resp.json() as ProfileDetail;
         const bases = data?.bases && typeof data.bases === 'object'
           ? Object.entries(data.bases).map(([id, value]) => ({ id, name: value?.name }))
@@ -1058,7 +1058,7 @@ export function DashboardPage() {
       }
     };
     run();
-  }, [selectedFarmerId]);
+  }, [authUser, selectedFarmerId]);
 
   const weatherRiskTip = useMemo(() => {
     if (!weatherCard) return '请先选择档案与基地，或补充基地经纬度后刷新天气。';
@@ -1087,7 +1087,7 @@ export function DashboardPage() {
     if (!farmerId || farmerId === 'ALL' || !baseId || baseId === 'ALL') return;
     setWeatherLoading(true);
     try {
-      const resp = await fetch(`/api/profiles/${encodeURIComponent(farmerId)}/bases/${encodeURIComponent(baseId)}/weather/refresh`, { method: 'POST' });
+      const resp = await authFetch(`/api/profiles/${encodeURIComponent(farmerId)}/bases/${encodeURIComponent(baseId)}/weather/refresh`, { method: 'POST' }, authUser);
       const data = await resp.json();
       if (!resp.ok) throw new Error(String(data?.detail || '天气刷新失败'));
       setWeatherCard((prev) => ({
@@ -1105,7 +1105,7 @@ export function DashboardPage() {
     } finally {
       setWeatherLoading(false);
     }
-  }, []);
+  }, [authUser]);
 
   useEffect(() => {
     const run = async () => {
@@ -1114,7 +1114,7 @@ export function DashboardPage() {
         return;
       }
       try {
-        const resp = await fetch(`/api/profiles/${encodeURIComponent(selectedFarmerId)}`);
+        const resp = await authFetch(`/api/profiles/${encodeURIComponent(selectedFarmerId)}`, undefined, authUser);
         const data = await resp.json() as ProfileDetail;
         if (!resp.ok) throw new Error();
         const bases = data?.bases && typeof data.bases === 'object' ? data.bases : {};
@@ -1221,7 +1221,21 @@ export function DashboardPage() {
     }
   }, [recentEvents, selectedTraceId]);
 
-
+  useEffect(() => {
+    const targetDisease = selectedEvent?.disease;
+    if (!targetDisease || targetDisease === '未识别病害') { setKbDetail(null); return; }
+    const run = async () => {
+      try {
+        const resp = await authFetch(`/api/kb/diseases/${encodeURIComponent(targetDisease)}`, undefined, authUser);
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(String(data?.detail || 'kb detail failed'));
+        setKbDetail(data as KbDetail);
+      } catch {
+        setKbDetail(null);
+      }
+    };
+    run();
+  }, [selectedEvent?.disease]);
 
   useEffect(() => {
     const traceId = selectedEvent?.traceId;
