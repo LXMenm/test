@@ -24,6 +24,7 @@ from typing import Optional
 from typing import Any
 from model_registry import resolve_model
 from pydantic import BaseModel, Field, ValidationError
+from confusion_handling import handle_confusing_cases
 import re
 import json
 import os
@@ -584,6 +585,15 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
             "final_confidence": float(final_confidence),
         }
     )
+    # 记录易混淆处理结果
+    image_confusion_result = fusion_meta.get("image_confusion_result") if isinstance(fusion_meta, dict) else None
+    text_confusion_result = fusion_meta.get("text_confusion_result") if isinstance(fusion_meta, dict) else None
+    
+    if image_confusion_result and image_confusion_result.get("is_adjusted"):
+        print(f"[易混淆处理] 图像模型预测调整: {image_confusion_result.get('adjustment_reason')}")
+    if text_confusion_result and text_confusion_result.get("is_adjusted"):
+        print(f"[易混淆处理] 文本模型预测调整: {text_confusion_result.get('adjustment_reason')}")
+
     if debug_enabled:
         print(f"[DiagnosisDebug] {json.dumps(debug_payload, ensure_ascii=False)}")
 
