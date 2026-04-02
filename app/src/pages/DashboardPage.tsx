@@ -1221,21 +1221,7 @@ export function DashboardPage() {
     }
   }, [recentEvents, selectedTraceId]);
 
-  useEffect(() => {
-    const targetDisease = selectedEvent?.disease;
-    if (!targetDisease || targetDisease === '未识别病害') { setKbDetail(null); return; }
-    const run = async () => {
-      try {
-        const resp = await authFetch(`/api/kb/diseases/${encodeURIComponent(targetDisease)}`, undefined, authUser);
-        const data = await resp.json();
-        if (!resp.ok) throw new Error(String(data?.detail || 'kb detail failed'));
-        setKbDetail(data as KbDetail);
-      } catch {
-        setKbDetail(null);
-      }
-    };
-    run();
-  }, [selectedEvent?.disease]);
+
 
   useEffect(() => {
     const traceId = selectedEvent?.traceId;
