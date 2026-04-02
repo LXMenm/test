@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useState, useRef, memo, useCallback } from 'react';
 import type { ChangeEvent, JSX } from 'react';
 import { Upload, Send, RefreshCw, AlertCircle, CheckCircle, Loader2, Image as ImageIcon, ChevronDown, ChevronUp, Bell } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -133,6 +133,57 @@ type PendingExpertItem = {
   farmer_id?: string;
 };
 
+type SectionOpenState = {
+  diagnosis: boolean;
+  candidates: boolean;
+  confirm: boolean;
+  personalization: boolean;
+  treatment: boolean;
+  workflow: boolean;
+};
+
+type SectionCardProps = {
+  sectionKey: keyof SectionOpenState;
+  title: string;
+  icon: JSX.Element;
+  children: JSX.Element;
+  hidden?: boolean;
+  open: boolean;
+  onToggle: (key: keyof SectionOpenState) => void;
+};
+
+const SectionCard = memo(function SectionCard({
+  sectionKey,
+  title,
+  icon,
+  children,
+  hidden = false,
+  open,
+  onToggle,
+}: SectionCardProps) {
+  if (hidden) return null;
+  return (
+    <Card className="glass-card">
+      <CardHeader className="flex flex-row items-center justify-between">
+        <CardTitle className="text-white flex items-center gap-2">
+          {icon}
+          {title}
+        </CardTitle>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => onToggle(sectionKey)}
+          className="text-white/70 hover:bg-white/10"
+        >
+          {open ? <ChevronUp className="w-4 h-4 mr-1" /> : <ChevronDown className="w-4 h-4 mr-1" />}
+          {open ? '收起' : '展开'}
+        </Button>
+      </CardHeader>
+      {open ? <CardContent>{children}</CardContent> : null}
+    </Card>
+  );
+});
+
 export function DiagnosePage() {
   const showAdminSections = true;
   const modelOptions = resolveModelOptions();
@@ -155,7 +206,7 @@ export function DiagnosePage() {
   const [resubmitSubmitting, setResubmitSubmitting] = useState(false);
   const [resubmitStatus, setResubmitStatus] = useState<'idle' | 'selected' | 'submitting' | 'success'>('idle');
   const [confirmSubmitting, setConfirmSubmitting] = useState(false);
-  const [sectionOpen, setSectionOpen] = useState({
+  const [sectionOpen, setSectionOpen] = useState<SectionOpenState>({
     diagnosis: true,
     candidates: true,
     confirm: false,
@@ -179,9 +230,9 @@ export function DiagnosePage() {
   const traceFetchAbortRef = useRef<AbortController | null>(null);
   const authUser = loadAuthUser();
   const canViewExpertInbox = authUser?.role === 'EXPERT' || authUser?.role === 'ADMIN';
-  const toggleSection = (key: keyof typeof sectionOpen) => {
+  const toggleSection = useCallback((key: keyof SectionOpenState) => {
     setSectionOpen((prev) => ({ ...prev, [key]: !prev[key] }));
-  };
+  }, []);
 
   const navigateToKbDisease = (disease: string) => {
     const name = disease.trim();
@@ -1083,13 +1134,21 @@ export function DiagnosePage() {
     if (mappedStage) setGrowthStage(mappedStage);
   }, [selectedProfile, selectedBaseId]);
 
+  const hasTreatment = Boolean(result?.treatment);
   useEffect(() => {
-    setSectionOpen((prev) => ({
-      ...prev,
-      confirm: shouldShowSupplementSection,
-      treatment: Boolean(result?.treatment),
-    }));
-  }, [shouldShowSupplementSection, result?.treatment]);
+    setSectionOpen((prev) => {
+      const nextConfirm = shouldShowSupplementSection;
+      const nextTreatment = hasTreatment;
+      if (prev.confirm === nextConfirm && prev.treatment === nextTreatment) {
+        return prev;
+      }
+      return {
+        ...prev,
+        confirm: nextConfirm,
+        treatment: nextTreatment,
+      };
+    });
+  }, [shouldShowSupplementSection, hasTreatment]);
 
   const refreshTrace = async (source: string = 'DiagnosePage.traceEffect') => {
     if (!traceId) return;
@@ -1153,42 +1212,6 @@ export function DiagnosePage() {
   }
   const displayedTiming = traceTiming.hasTraceTiming ? traceTiming : fallbackTiming;
   const timingSourceLabel = traceTiming.hasTraceTiming ? 'trace events' : (displayedTiming ? '本地提交兜底' : null);
-  const SectionCard = ({
-    sectionKey,
-    title,
-    icon,
-    children,
-    hidden = false,
-  }: {
-    sectionKey: keyof typeof sectionOpen;
-    title: string;
-    icon: JSX.Element;
-    children: JSX.Element;
-    hidden?: boolean;
-  }) => {
-    if (hidden) return null;
-    const open = sectionOpen[sectionKey];
-    return (
-      <Card className="glass-card">
-        <CardHeader className="flex flex-row items-center justify-between">
-          <CardTitle className="text-white flex items-center gap-2">
-            {icon}
-            {title}
-          </CardTitle>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => toggleSection(sectionKey)}
-            className="text-white/70 hover:bg-white/10"
-          >
-            {open ? <ChevronUp className="w-4 h-4 mr-1" /> : <ChevronDown className="w-4 h-4 mr-1" />}
-            {open ? '收起' : '展开'}
-          </Button>
-        </CardHeader>
-        {open ? <CardContent>{children}</CardContent> : null}
-      </Card>
-    );
-  };
   return (
     <div className="space-y-6 animate-fadeIn">
       {canViewExpertInbox && (
@@ -1418,7 +1441,7 @@ export function DiagnosePage() {
 
         {/* Right Column - Results */}
         <div className="lg:col-span-3 space-y-6">
-          <SectionCard sectionKey="diagnosis" title="诊断结果" icon={<CheckCircle className="w-5 h-5 text-[#c8f7c5]" />}>
+          <SectionCard sectionKey="diagnosis" title="诊断结果" icon={<CheckCircle className="w-5 h-5 text-[#c8f7c5]" />} open={sectionOpen.diagnosis} onToggle={toggleSection}>
             {result ? (
               <div className="space-y-4 animate-fadeIn">
                 {result.image_url && (
@@ -1446,7 +1469,7 @@ export function DiagnosePage() {
             )}
           </SectionCard>
 
-          <SectionCard sectionKey="candidates" title="候选病害" icon={<AlertCircle className="w-5 h-5 text-[#c8f7c5]" />}>
+          <SectionCard sectionKey="candidates" title="候选病害" icon={<AlertCircle className="w-5 h-5 text-[#c8f7c5]" />} open={sectionOpen.candidates} onToggle={toggleSection}>
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               {(['image', 'text', 'fusion'] as const).map((source) => {
                 const titleMap: Record<typeof source, string> = {
@@ -1471,7 +1494,7 @@ export function DiagnosePage() {
             </div>
           </SectionCard>
 
-          <SectionCard sectionKey="confirm" title="confirm / retry 面板" icon={<RefreshCw className="w-5 h-5 text-[#c8f7c5]" />}>
+          <SectionCard sectionKey="confirm" title="confirm / retry 面板" icon={<RefreshCw className="w-5 h-5 text-[#c8f7c5]" />} open={sectionOpen.confirm} onToggle={toggleSection}>
             {shouldShowSupplementSection ? (
               <div className="bg-[#c8f7c5]/10 border border-[#c8f7c5]/30 rounded-xl p-4 space-y-4">
                 <h4 className="text-[#c8f7c5] font-medium">{confirmCopy.title}</h4>
@@ -1557,7 +1580,7 @@ export function DiagnosePage() {
             ) : <p className="text-white/60">当前无需补充信息。</p>}
           </SectionCard>
 
-          <SectionCard sectionKey="personalization" title="个性化影响" icon={<Bell className="w-5 h-5 text-[#c8f7c5]" />}>
+          <SectionCard sectionKey="personalization" title="个性化影响" icon={<Bell className="w-5 h-5 text-[#c8f7c5]" />} open={sectionOpen.personalization} onToggle={toggleSection}>
             <div className="bg-white/5 rounded-xl p-4 text-sm text-white/80 space-y-2">
               <div className="flex items-center gap-2">
                 <span>已应用个性化：</span>
@@ -1570,7 +1593,7 @@ export function DiagnosePage() {
             </div>
           </SectionCard>
 
-          <SectionCard sectionKey="treatment" title="治疗建议" icon={<AlertCircle className="w-5 h-5 text-[#c8f7c5]" />}>
+          <SectionCard sectionKey="treatment" title="治疗建议" icon={<AlertCircle className="w-5 h-5 text-[#c8f7c5]" />} open={sectionOpen.treatment} onToggle={toggleSection}>
             {shouldHideTreatment ? (
               <div className="bg-yellow-500/10 border border-yellow-400/30 rounded-xl p-4 text-yellow-200 text-sm">当前阶段暂不下发治疗建议，请先完成确认/复核流程。</div>
             ) : Boolean(result?.treatment) ? (
@@ -1580,7 +1603,7 @@ export function DiagnosePage() {
             )}
           </SectionCard>
 
-          <SectionCard sectionKey="workflow" title="多智能体流程" icon={<RefreshCw className="w-5 h-5 text-[#c8f7c5]" />} hidden={!showAdminSections}>
+          <SectionCard sectionKey="workflow" title="多智能体流程" icon={<RefreshCw className="w-5 h-5 text-[#c8f7c5]" />} hidden={!showAdminSections} open={sectionOpen.workflow} onToggle={toggleSection}>
             <div className="space-y-4">
               <p className="text-xs text-white/60">当前流程包含：接待解析 → 病害诊断 → 知识检索 → 方案生成。</p>
               {displayedTiming && timingSourceLabel && (
