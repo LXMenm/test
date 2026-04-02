@@ -98,13 +98,7 @@ interface BaseStat {
   diseaseCounts: Record<string, number>;
 }
 
-interface KbDetail {
-  name: string;
-  description: string;
-  treatment: string;
-  prevention: string;
-  ingredients?: string[];
-}
+
 
 interface ProfileListItem {
   id: string;
@@ -839,7 +833,7 @@ export function DashboardPage() {
   const [selectedFarmerId, setSelectedFarmerId] = useState(scopedFarmerId);
   const [selectedBaseId, setSelectedBaseId] = useState('ALL');
   const [farmerBases, setFarmerBases] = useState<Array<{ id: string; name?: string }>>([]);
-  const [kbDetail, setKbDetail] = useState<KbDetail | null>(null);
+
   const [traceSummary, setTraceSummary] = useState<TraceSummaryItem[]>([]);
   const [traceRawEvents, setTraceRawEvents] = useState<unknown[]>([]);
   const traceFetchAbortRef = useRef<AbortController | null>(null);
@@ -1227,21 +1221,7 @@ export function DashboardPage() {
     }
   }, [recentEvents, selectedTraceId]);
 
-  useEffect(() => {
-    const targetDisease = selectedEvent?.disease;
-    if (!targetDisease || targetDisease === '未识别病害') { setKbDetail(null); return; }
-    const run = async () => {
-      try {
-        const resp = await fetch(`/api/kb/diseases/${encodeURIComponent(targetDisease)}`);
-        const data = await resp.json();
-        if (!resp.ok) throw new Error(String(data?.detail || 'kb detail failed'));
-        setKbDetail(data as KbDetail);
-      } catch {
-        setKbDetail(null);
-      }
-    };
-    run();
-  }, [selectedEvent?.disease]);
+
 
   useEffect(() => {
     const traceId = selectedEvent?.traceId;
@@ -1472,35 +1452,7 @@ export function DashboardPage() {
     }));
   }, [filteredEvents]);
 
-  const kbSummary = useMemo(() => {
-    const eventKbSnapshot = toRecord(selectedEvent?.raw?.kb_snapshot);
-    const selectedTreatment = toRecord(toRecord(selectedEvent?.raw)?.treatment);
-    if (eventKbSnapshot && Object.keys(eventKbSnapshot).length > 0) {
-      const eventIngredients = Array.isArray(eventKbSnapshot.ingredients)
-        ? eventKbSnapshot.ingredients.map((item) => toText(item)).filter(Boolean)
-        : [];
-      return {
-        name: toText(eventKbSnapshot.disease ?? eventKbSnapshot.disease_name) || selectedEvent?.disease || '',
-        description: toText(eventKbSnapshot.description),
-        treatment: toText(eventKbSnapshot.treatment ?? selectedTreatment?.plan ?? selectedEvent?.raw?.treatment_plan),
-        prevention: toText(eventKbSnapshot.prevention ?? selectedTreatment?.prevention ?? selectedEvent?.raw?.prevention_advice),
-        ingredients: eventIngredients,
-      };
-    }
 
-    const kbOutputs = getNodeOutputs(getLatestNode(traceNodeMap, 'kb_retrieval'));
-    const kbDoc = toRecord(kbOutputs.kb_disease) ?? {};
-    const ingredients = Array.isArray(kbOutputs.ingredients)
-      ? kbOutputs.ingredients.map((item) => toText(item)).filter(Boolean)
-      : (Array.isArray(kbDoc.ingredients) ? kbDoc.ingredients.map((item) => toText(item)).filter(Boolean) : []);
-    return {
-      name: toText(kbOutputs.disease ?? kbOutputs.disease_name ?? kbDoc.name) || kbDetail?.name || selectedEvent?.disease || '',
-      description: toText(kbOutputs.description ?? kbDoc.description) || kbDetail?.description || '',
-      treatment: toText(kbOutputs.treatment ?? kbDoc.treatment) || kbDetail?.treatment || '',
-      prevention: toText(kbOutputs.prevention ?? kbDoc.prevention) || kbDetail?.prevention || '',
-      ingredients,
-    };
-  }, [traceNodeMap, kbDetail, selectedEvent]);
 
   const maxCount = Math.max(...stats.map((s) => s.count), 1);
 
@@ -2021,11 +1973,10 @@ export function DashboardPage() {
               <CardContent className="flex-1 min-h-0 overflow-hidden">
                 {selectedEvent ? (
               <Tabs defaultValue="case" className="w-full flex flex-col h-full">
-                <TabsList className="bg-white/5 border border-white/10 grid grid-cols-4">
+                <TabsList className="bg-white/5 border border-white/10 grid grid-cols-3">
                   <TabsTrigger value="case">病例</TabsTrigger>
                   <TabsTrigger value="personal">个性化</TabsTrigger>
                   <TabsTrigger value="trace">Trace</TabsTrigger>
-                  <TabsTrigger value="kb">知识库</TabsTrigger>
                 </TabsList>
                 <div className="flex-1 overflow-y-auto dashboard-scrollbar pt-3">
                   <TabsContent value="case" className="space-y-3 mt-0">
@@ -2150,43 +2101,7 @@ export function DashboardPage() {
                       <pre className="bg-black/30 rounded-lg p-2 text-[11px] text-white/70 max-h-40 overflow-auto">{JSON.stringify(traceRawEvents, null, 2)}</pre>
                     )}
                   </TabsContent>
-                  <TabsContent value="kb" className="space-y-2 mt-0 text-sm text-white/80">
-                    {kbSummary.name ? (
-                      <>
-                        <button type="button" className="text-[#c8f7c5] font-semibold hover:underline" onClick={() => navigateToKbDisease(kbSummary.name)}>
-                          {kbSummary.name}
-                        </button>
-                        <div className="bg-white/5 rounded-lg p-2 whitespace-pre-wrap">
-                          <div className="text-xs text-white/60 mb-1">病害描述</div>
-                          {kbSummary.description || '暂无描述'}
-                        </div>
-                        <div className="bg-white/5 rounded-lg p-2 whitespace-pre-wrap">
-                          <div className="text-xs text-white/60 mb-1">治疗方案</div>
-                          {kbSummary.treatment || '暂无'}
-                        </div>
-                        <div className="bg-white/5 rounded-lg p-2 whitespace-pre-wrap">
-                          <div className="text-xs text-white/60 mb-1">预防建议</div>
-                          {kbSummary.prevention || '暂无'}
-                        </div>
-                                              <div className="bg-white/5 rounded-lg p-2">
-                            <div className="text-xs text-white/60 mb-2">推荐成分</div>
-                            <div className="flex flex-wrap gap-1">
-                              {(kbSummary.ingredients.length ?? 0) > 0 ? kbSummary.ingredients.map((ingredient) => (
-                                <Badge key={ingredient} className="bg-[#c8f7c5]/20 text-[#c8f7c5]">{ingredient}</Badge>
-                              )) : <span className="text-white/40">暂无 ingredients</span>}
-                            </div>
-                          </div>
-                          <Button size="sm" variant="outline" className="border-white/20 text-white" onClick={() => navigateToKbDisease(kbSummary.name)}>
-                            查看知识库详情
-                          </Button>
-                        </>
-                      ) : (
-                        <div className="bg-white/5 rounded-lg p-3 space-y-2">
-                          <p className="text-white/50">暂无知识库详情</p>
-                          <Button size="sm" variant="outline" disabled className="border-white/20 text-white/50">查看知识库详情</Button>
-                        </div>
-                      )}
-                  </TabsContent>
+
                 </div>
               </Tabs>
             ) : (
