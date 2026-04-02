@@ -185,7 +185,8 @@ const SectionCard = memo(function SectionCard({
 });
 
 export function DiagnosePage() {
-  const showAdminSections = true;
+  const authUser = loadAuthUser();
+  const isAdmin = authUser?.role === 'ADMIN';
   const modelOptions = resolveModelOptions();
   const [file, setFile] = useState<File | null>(null);
   const [imagePreview, setImagePreview] = useState<string>('');
@@ -228,8 +229,7 @@ export function DiagnosePage() {
   const [showExpertInbox, setShowExpertInbox] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const traceFetchAbortRef = useRef<AbortController | null>(null);
-  const authUser = loadAuthUser();
-  const canViewExpertInbox = authUser?.role === 'EXPERT' || authUser?.role === 'ADMIN';
+  const canViewExpertInbox = isAdmin;
   const toggleSection = useCallback((key: keyof SectionOpenState) => {
     setSectionOpen((prev) => ({ ...prev, [key]: !prev[key] }));
   }, []);
@@ -748,22 +748,22 @@ export function DiagnosePage() {
       if (selectedBaseId) fd.append('base_id', selectedBaseId);
       console.log('diagnose-image model_id=', modelId);
 
-      const resp = await authFetch('/api/diagnose-image', {
+      const startResp = await authFetch('/api/diagnose-image/start', {
         method: 'POST',
         body: fd
       }, authUser);
-      const raw = await resp.text();
+      const raw = await startResp.text();
       let data: unknown = null;
       try {
         data = raw ? JSON.parse(raw) : null;
       } catch {
         data = null;
       }
-      if (!resp.ok) {
+      if (!startResp.ok) {
         const detail = data && typeof data === 'object' && 'detail' in data
           ? String((data as { detail?: unknown }).detail ?? '')
           : '';
-        throw new Error(detail || raw || `诊断失败: ${resp.status}`);
+        throw new Error(detail || raw || `诊断失败: ${startResp.status}`);
       }
 
       if (!data || typeof data !== 'object') {
@@ -798,6 +798,36 @@ export function DiagnosePage() {
       console.log('[confirm] derivedNeedConfirm=', needsConfirm);
       setConfirmMode(needsConfirm);
       setConfirmChoice(needsConfirm ? 'other' : confirmChoice);
+
+      if (payload.status !== 'waiting_for_supplement') {
+        const continueResp = await authFetch('/api/diagnose-image/continue', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            trace_id: payload.trace_id,
+            image_id: payload.image_id,
+            crop_type: cropType || '番茄',
+            symptoms: symptomsForDiagnose || null,
+            growth_stage: growthStage.trim() || null,
+            model_id: modelId || null,
+            farmer_id: selectedFarmerId,
+            base_id: selectedBaseId || null,
+          }),
+        }, authUser);
+        const continueData = await continueResp.json();
+        if (!continueResp.ok) {
+          throw new Error(String(continueData?.detail || `继续诊断失败: ${continueResp.status}`));
+        }
+        if (continueData && typeof continueData === 'object') {
+          const mergedPayload = { ...payload, ...(continueData as Record<string, unknown>) };
+          const mergedResult = buildResultFromPayload(mergedPayload);
+          setResult(mergedResult);
+          setLatestPayload(mergedPayload);
+          if (Array.isArray((continueData as Record<string, unknown>).events)) {
+            setTraceEvents(normalizeTraceEvents((continueData as Record<string, unknown>).events));
+          }
+        }
+      }
     } catch (error) {
       console.error('Diagnosis failed:', error);
     } finally {
@@ -1198,6 +1228,30 @@ export function DiagnosePage() {
     };
   }, [traceId]);
 
+  useEffect(() => {
+    if (!traceEvents.length) return;
+    const latest = [...traceEvents].reverse().find((item) => item.raw && typeof item.raw === 'object');
+    const raw = latest?.raw as Record<string, unknown> | undefined;
+    if (!raw) return;
+    const node = String(raw.node || '');
+    const status = String(raw.status || '').toLowerCase();
+    const payload = raw.payload && typeof raw.payload === 'object' ? raw.payload as Record<string, unknown> : {};
+    if (!result) return;
+    if (node === 'DiagnosisCompleted' || (node === 'DiagnosisAgent' && status === 'end')) {
+      setResult((prev) => prev ? buildResultFromPayload({ ...prev, ...payload }) : prev);
+    }
+    if (node === 'TreatmentCompleted' || (node === 'TreatmentAgent' && status === 'end')) {
+      setResult((prev) => prev ? buildResultFromPayload({ ...prev, ...payload }) : prev);
+    }
+    if (node === 'VerificationCompleted' || (node === 'VerificationAgent' && status === 'end')) {
+      setResult((prev) => prev ? buildResultFromPayload({ ...prev, ...payload }) : prev);
+    }
+    if (node === 'AwaitUserConfirmation' && status === 'end') {
+      setResult((prev) => (prev ? { ...prev, status: 'waiting_for_supplement' } : prev));
+      setConfirmMode(true);
+    }
+  }, [traceEvents, result]);
+
   const rawTraceTimingEvents = traceEvents.map((event) => event.raw);
   const traceTiming = calcTracePhaseTiming(rawTraceTimingEvents, timingNowMs);
   const fallbackTiming = phase1StartTime === null
@@ -1449,18 +1503,20 @@ export function DiagnosePage() {
                     <img src={result.image_url} alt="Diagnosed" className="w-full max-h-64 object-contain" />
                   </div>
                 )}
-                <div className="grid sm:grid-cols-3 gap-4">
+                <div className={cn('grid gap-4', isAdmin ? 'sm:grid-cols-3' : 'sm:grid-cols-2')}>
                   <div className="bg-white/5 rounded-xl p-4">
                     <p className="text-white/60 text-sm mb-1">最终病害</p>
                     <button type="button" onClick={() => navigateToKbDisease(result.final_disease)} className="text-left text-xl font-bold text-[#c8f7c5] hover:underline underline-offset-4">{result.final_disease}</button>
                   </div>
+                  {isAdmin && (
+                    <div className="bg-white/5 rounded-xl p-4">
+                      <p className="text-white/60 text-sm mb-1">置信度</p>
+                      <p className="text-xl font-bold text-[#c8f7c5]">{result.displayConfidencePct !== null ? `${result.displayConfidencePct.toFixed(2)}%` : "—"}</p>
+                    </div>
+                  )}
                   <div className="bg-white/5 rounded-xl p-4">
-                    <p className="text-white/60 text-sm mb-1">置信度</p>
-                    <p className="text-xl font-bold text-[#c8f7c5]">{result.displayConfidencePct !== null ? `${result.displayConfidencePct.toFixed(2)}%` : "—"}</p>
-                  </div>
-                  <div className="bg-white/5 rounded-xl p-4">
-                    <p className="text-white/60 text-sm mb-1">使用模型</p>
-                    <p className="text-sm font-medium text-white">{result.model_display_name}</p>
+                    <p className="text-white/60 text-sm mb-1">{isAdmin ? '使用模型' : '诊断状态'}</p>
+                    <p className="text-sm font-medium text-white">{isAdmin ? result.model_display_name : (result.status || 'diagnosis_completed')}</p>
                   </div>
                 </div>
               </div>
@@ -1469,7 +1525,7 @@ export function DiagnosePage() {
             )}
           </SectionCard>
 
-          <SectionCard sectionKey="candidates" title="候选病害" icon={<AlertCircle className="w-5 h-5 text-[#c8f7c5]" />} open={sectionOpen.candidates} onToggle={toggleSection}>
+          <SectionCard sectionKey="candidates" title="候选病害" icon={<AlertCircle className="w-5 h-5 text-[#c8f7c5]" />} hidden={!isAdmin} open={sectionOpen.candidates} onToggle={toggleSection}>
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               {(['image', 'text', 'fusion'] as const).map((source) => {
                 const titleMap: Record<typeof source, string> = {
@@ -1494,7 +1550,7 @@ export function DiagnosePage() {
             </div>
           </SectionCard>
 
-          <SectionCard sectionKey="confirm" title="confirm / retry 面板" icon={<RefreshCw className="w-5 h-5 text-[#c8f7c5]" />} open={sectionOpen.confirm} onToggle={toggleSection}>
+          <SectionCard sectionKey="confirm" title="补充诊断信息" icon={<RefreshCw className="w-5 h-5 text-[#c8f7c5]" />} open={sectionOpen.confirm} onToggle={toggleSection}>
             {shouldShowSupplementSection ? (
               <div className="bg-[#c8f7c5]/10 border border-[#c8f7c5]/30 rounded-xl p-4 space-y-4">
                 <h4 className="text-[#c8f7c5] font-medium">{confirmCopy.title}</h4>
@@ -1517,7 +1573,7 @@ export function DiagnosePage() {
                     })}
                     <label className="flex items-center gap-2 rounded-md border border-white/15 bg-white/[0.04] px-3 py-2 cursor-pointer">
                       <RadioGroupItem value="other" id="confirm-candidate-other" />
-                      <span className="text-white/90">其他 / 仍不确定</span>
+                      <span className="text-white/90">我不确定，继续补充信息</span>
                     </label>
                   </RadioGroup>
                 </div>
@@ -1580,7 +1636,7 @@ export function DiagnosePage() {
             ) : <p className="text-white/60">当前无需补充信息。</p>}
           </SectionCard>
 
-          <SectionCard sectionKey="personalization" title="个性化影响" icon={<Bell className="w-5 h-5 text-[#c8f7c5]" />} open={sectionOpen.personalization} onToggle={toggleSection}>
+          <SectionCard sectionKey="personalization" title="个性化影响" icon={<Bell className="w-5 h-5 text-[#c8f7c5]" />} hidden={!isAdmin} open={sectionOpen.personalization} onToggle={toggleSection}>
             <div className="bg-white/5 rounded-xl p-4 text-sm text-white/80 space-y-2">
               <div className="flex items-center gap-2">
                 <span>已应用个性化：</span>
@@ -1598,12 +1654,14 @@ export function DiagnosePage() {
               <div className="bg-yellow-500/10 border border-yellow-400/30 rounded-xl p-4 text-yellow-200 text-sm">当前阶段暂不下发治疗建议，请先完成确认/复核流程。</div>
             ) : Boolean(result?.treatment) ? (
               <div className="bg-white/5 rounded-xl p-4 text-white/80 text-sm leading-relaxed whitespace-pre-line">{renderTreatment(result?.treatment)}</div>
+            ) : (loading || (result && result.status !== 'waiting_for_supplement')) ? (
+              <p className="text-white/60">方案生成中...</p>
             ) : (
               <p className="text-white/50">暂无治疗建议</p>
             )}
           </SectionCard>
 
-          <SectionCard sectionKey="workflow" title="多智能体流程" icon={<RefreshCw className="w-5 h-5 text-[#c8f7c5]" />} hidden={!showAdminSections} open={sectionOpen.workflow} onToggle={toggleSection}>
+          <SectionCard sectionKey="workflow" title="多智能体流程" icon={<RefreshCw className="w-5 h-5 text-[#c8f7c5]" />} hidden={!isAdmin} open={sectionOpen.workflow} onToggle={toggleSection}>
             <div className="space-y-4">
               <p className="text-xs text-white/60">当前流程包含：接待解析 → 病害诊断 → 知识检索 → 方案生成。</p>
               {displayedTiming && timingSourceLabel && (
