@@ -44,6 +44,9 @@ interface AgentWorkflowPanelProps {
   confidencePct?: number;
   phaseStartMs?: number;
   refreshToken?: number;
+  initialEvents?: unknown[];
+  initialPayload?: Record<string, unknown> | null;
+  i18n?: Record<string, unknown> | null;
 }
 
 interface RawTraceEvent {
@@ -74,6 +77,8 @@ interface NormalizedEvent {
   title: string;
   detail: string;
   raw: Record<string, unknown>;
+  semanticNode: string;
+  sourceKind: 'node_event' | 'agent_event';
   agentId: FixedAgentId;
   nodeName: string;
   status: AgentStatus | 'info' | 'decision';
@@ -129,6 +134,31 @@ const MERGE_MAP: Record<string, FixedAgentId> = {
   review: 'verification',
   persist: 'treatment',
   final: 'final',
+};
+
+const NODE_TO_AGENT_ALIAS: Record<string, string> = {
+  parseinput: 'parse_input',
+  diagnosisagent: 'diagnosis',
+  diagnosiscompleted: 'diagnosis',
+  confidencegate: 'confidence_gate',
+  kbretrievalagent: 'kb_retrieval',
+  personalizationagent: 'personalization',
+  prescriptionagent: 'prescription',
+  validatoragent: 'validator',
+  persist: 'persist',
+  final: 'final',
+};
+
+const deriveSemanticNode = (raw: RawTraceEvent): string => {
+  const node = String(raw.node || '').trim();
+  if (node) {
+    const compact = node.toLowerCase().replace(/[^a-z0-9]/g, '');
+    if (NODE_TO_AGENT_ALIAS[compact]) return NODE_TO_AGENT_ALIAS[compact];
+  }
+  const step = String(raw.step || '').trim().toLowerCase();
+  if (step) return step;
+  const agent = String(raw.agent_id || raw.agent || '').trim().toLowerCase();
+  return agent || 'unknown';
 };
 
 const buildInitialState = (): Record<FixedAgentId, AgentRowState> => {
@@ -188,7 +218,8 @@ const normalizeEvent = (raw: RawTraceEvent): NormalizedEvent => {
   const normalized = normalizeTraceEvent(raw);
   const ts = normalized.ts ?? undefined;
   const tsMs = parseTsMs(ts);
-  const agent = mapToFixedAgent(normalized.agentId, normalized.stage);
+  const semanticNode = deriveSemanticNode(raw);
+  const agent = mapToFixedAgent(normalized.agentId || semanticNode, semanticNode || normalized.stage);
   const decision = isRecord(normalized.raw.decision) ? normalized.raw.decision : undefined;
   const outputs = isRecord(normalized.raw.outputs) ? normalized.raw.outputs : undefined;
   const inputs = isRecord(normalized.raw.inputs) ? normalized.raw.inputs : undefined;
@@ -203,6 +234,8 @@ const normalizeEvent = (raw: RawTraceEvent): NormalizedEvent => {
     title: normalized.title,
     detail: normalized.detail,
     raw: normalized.raw,
+    semanticNode,
+    sourceKind: raw.node ? 'node_event' : 'agent_event',
     agentId: agent,
     nodeName: normalized.stage,
     status: toPanelStatus(normalized.status),
@@ -285,6 +318,88 @@ const getOutputs = (event: NormalizedEvent): Record<string, unknown> => {
   return data;
 };
 
+const DIAGNOSIS_KEYS = ['final_disease', 'disease_type', 'disease', 'final_confidence', 'disease_confidence', 'confidence', 'confidence_pct', 'need_confirm', 'top3', 'top3_diseases'] as const;
+const RECEPTION_KEYS = ['crop_type', 'symptoms', 'image_path', 'missing_profile_fields', 'follow_up_questions'] as const;
+
+const scoreEventRichness = (event: NormalizedEvent, agentId: FixedAgentId): number => {
+  const outputs = getOutputs(event);
+  const payload = isRecord(event.data.payload) ? event.data.payload as Record<string, unknown> : {};
+  const keys = Object.keys({ ...payload, ...outputs }).length;
+  let score = keys;
+  if (agentId === 'diagnosis') {
+    DIAGNOSIS_KEYS.forEach((key) => {
+      if (outputs[key] !== undefined || payload[key] !== undefined) score += 4;
+    });
+    if (event.semanticNode === 'diagnosis' && String(event.raw.node || '').toLowerCase() === 'diagnosiscompleted') score += 12;
+    if (event.semanticNode === 'confidence_gate') score += 1;
+  }
+  if (agentId === 'reception') {
+    RECEPTION_KEYS.forEach((key) => {
+      if (outputs[key] !== undefined || payload[key] !== undefined) score += 4;
+    });
+    if (event.semanticNode === 'parse_input') score += 2;
+  }
+  if (agentId === 'verification' && (outputs['verification_result'] !== undefined || payload['verification_result'] !== undefined)) score += 6;
+  if (agentId === 'treatment' && outputs['actions'] !== undefined) score += 6;
+  return score;
+};
+
+const pickBestEventForSummary = (events: NormalizedEvent[], agentId: FixedAgentId): NormalizedEvent | undefined => {
+  return [...events].sort((a, b) => {
+    const diff = scoreEventRichness(b, agentId) - scoreEventRichness(a, agentId);
+    if (diff !== 0) return diff;
+    const aSeq = typeof a.seq === 'number' ? a.seq : Number.MAX_SAFE_INTEGER;
+    const bSeq = typeof b.seq === 'number' ? b.seq : Number.MAX_SAFE_INTEGER;
+    return bSeq - aSeq;
+  })[0];
+};
+
+const mergeOutputsForAgent = (
+  events: NormalizedEvent[],
+  agentId: FixedAgentId,
+  initialPayload?: Record<string, unknown> | null,
+): { merged: Record<string, unknown>; source: 'trace' | 'initial_payload' | 'mixed' } => {
+  const merged: Record<string, unknown> = {};
+  let source: 'trace' | 'initial_payload' | 'mixed' = 'trace';
+  const sorted = [...events].sort((a, b) => {
+    const aSeq = typeof a.seq === 'number' ? a.seq : Number.MAX_SAFE_INTEGER;
+    const bSeq = typeof b.seq === 'number' ? b.seq : Number.MAX_SAFE_INTEGER;
+    return aSeq - bSeq;
+  });
+  sorted.forEach((event) => Object.assign(merged, getOutputs(event)));
+
+  if (!initialPayload) return { merged, source };
+
+  const receptionSeed: Record<string, unknown> = {
+    crop_type: initialPayload.crop_type,
+    symptoms: initialPayload.symptoms,
+    image_path: initialPayload.image_path,
+    missing_profile_fields: initialPayload.missing_profile_fields,
+    follow_up_questions: initialPayload.follow_up_questions,
+  };
+  const diagnosisSeed: Record<string, unknown> = {
+    final_disease: initialPayload.final_disease,
+    disease_type: initialPayload.disease_type,
+    final_confidence: initialPayload.final_confidence ?? initialPayload.displayConfidencePct,
+    confidence_pct: initialPayload.confidence_pct,
+    need_confirm: initialPayload.need_confirm,
+    final_source: initialPayload.final_source,
+    top3: initialPayload.top3,
+  };
+  const seed = agentId === 'reception' ? receptionSeed : agentId === 'diagnosis' ? diagnosisSeed : {};
+  const seedKeys = Object.keys(seed).filter((k) => seed[k] !== undefined);
+  if (!seedKeys.length) return { merged, source };
+
+  seedKeys.forEach((key) => {
+    if (merged[key] === undefined || merged[key] === null || merged[key] === '') {
+      merged[key] = seed[key];
+      source = source === 'trace' ? 'mixed' : source;
+    }
+  });
+  if (!events.length) source = 'initial_payload';
+  return { merged, source };
+};
+
 const TREATMENT_OUTPUT_KEYS = [
   'selected_branch',
   'llm_failed',
@@ -321,18 +436,23 @@ const getPreferredTreatmentOutputs = (allEvents: NormalizedEvent[], fallbackOutp
   return fallbackOutputs;
 };
 
-const extractHighlights = (agentId: FixedAgentId, allEvents: NormalizedEvent[]): string[] => {
+const extractHighlights = (
+  agentId: FixedAgentId,
+  allEvents: NormalizedEvent[],
+  initialPayload?: Record<string, unknown> | null,
+): string[] => {
   const events = getEventsByAgent(allEvents, agentId);
-  if (!events.length) return [];
+  if (!events.length && !initialPayload) return [];
   const latest = events[events.length - 1];
-  const outputs = getOutputs(latest);
-  const data = isRecord(latest.data) ? latest.data : {};
+  const bestEvent = pickBestEventForSummary(events, agentId) ?? latest;
+  const { merged: outputs, source } = mergeOutputsForAgent(events, agentId, initialPayload);
+  const data = isRecord(bestEvent?.data) ? bestEvent.data : {};
   const decision = isRecord(data['decision']) ? data['decision'] : {};
   const outputsSummary = String((isRecord(outputs) ? outputs['summary'] : undefined) ?? (isRecord(outputs) ? outputs['message'] : undefined) ?? '').trim();
   const inputSummary = isRecord(data['inputs']) ? shortText(JSON.stringify(data['inputs']), 120) : '';
-  if (latest.status === 'decision') {
+  if (bestEvent?.status === 'decision') {
     return [
-      `决策：${shortText(latest.detail || String(decision['reason'] ?? decision['reason_str'] ?? latest.message), 120) || '无'}`,
+      `决策：${shortText(bestEvent.detail || String(decision['reason'] ?? decision['reason_str'] ?? bestEvent.message), 120) || '无'}`,
       decision['route'] ? `路由：${String(decision['route'])}` : '路由：未提供',
     ];
   }
@@ -352,7 +472,12 @@ const extractHighlights = (agentId: FixedAgentId, allEvents: NormalizedEvent[]):
     const imagePath = String(outputs['image_path'] ?? '').trim();
     const symptoms = toArray(outputs['symptoms']).length;
     const missing = toStringArray(outputs['missing_profile_fields']);
-    return [`结构化抽取：作物=${cropType} / 图像=${imagePath ? '已识别' : '未识别'} / 症状=${symptoms}项 / 缺失字段=${missing.length ? `${missing.join(',')}（${missing.length}项）` : '0项'}`];
+    const followUps = toArray(outputs['follow_up_questions']).length;
+    const src = source === 'mixed' || source === 'initial_payload' ? '（含诊断首包补充）' : '';
+    return [
+      `结构化抽取${src}：作物=${cropType} / 图像=${imagePath ? '已识别' : '未识别'} / 症状=${symptoms}项`,
+      `缺失字段=${missing.length ? `${missing.join(',')}（${missing.length}项）` : '0项'} / follow_up=${followUps}条`,
+    ];
   }
 
   if (agentId === 'diagnosis') {
@@ -360,7 +485,16 @@ const extractHighlights = (agentId: FixedAgentId, allEvents: NormalizedEvent[]):
     const confidence = toPercent(outputs['final_confidence'] ?? outputs['disease_confidence'] ?? outputs['confidence_pct'] ?? outputs['confidence']);
     const source = String(outputs['final_source'] ?? '-');
     const needConfirm = outputs['need_confirm'] === true ? '是' : '否';
-    return [`诊断：${disease} / 置信度=${confidence} / 来源=${source} / need_confirm=${needConfirm}`];
+    const gateEvent = [...events].reverse().find((event) => event.semanticNode === 'confidence_gate');
+    const gateOutputs = gateEvent ? getOutputs(gateEvent) : {};
+    const gateReason = String(gateOutputs['gate_reason'] ?? gateOutputs['need_confirm_reason'] ?? gateEvent?.message ?? '').trim();
+    const gateText = outputs['need_confirm'] === true ? `低置信需确认${gateReason ? `（${gateReason}）` : ''}` : '通过/无需回退';
+    return [
+      `诊断结果：${disease}（置信度=${confidence}）`,
+      `来源：${source}`,
+      `need_confirm：${needConfirm}`,
+      `门控结论：${gateText}`,
+    ];
   }
 
   if (agentId === 'kb_retrieval') {
@@ -409,7 +543,7 @@ const extractHighlights = (agentId: FixedAgentId, allEvents: NormalizedEvent[]):
     if (issues.length) lines.push(`主要问题：${issues.slice(0, 2).join('；')}`);
     if (mustFix.length) lines.push(`必须修改：${mustFix.slice(0, 2).join('；')}`);
     if (!issues.length && !mustFix.length && summary) lines.push(`摘要：${shortText(summary, 120)}`);
-    if (lines.length <= 2) lines.push(shortText(latest.message, 120) || '正在检查禁用成分与安全间隔...');
+    if (lines.length <= 2) lines.push(shortText(bestEvent?.message, 120) || '正在检查禁用成分与安全间隔...');
     return lines.slice(0, 4);
   }
 
@@ -417,12 +551,16 @@ const extractHighlights = (agentId: FixedAgentId, allEvents: NormalizedEvent[]):
   if (outputsSummary || inputSummary) {
     return [outputsSummary ? `输出：${outputsSummary}` : `输入：${inputSummary}`];
   }
-  return [shortText(latest.message, 100) || '等待事件'];
+  return [shortText(bestEvent?.message, 100) || '等待事件'];
 };
 
-const extractSubsteps = (agentId: FixedAgentId, allEvents: NormalizedEvent[]): Array<{ seq?: number; node: string; message: string }> => {
+const extractSubsteps = (
+  agentId: FixedAgentId,
+  allEvents: NormalizedEvent[],
+  initialPayload?: Record<string, unknown> | null,
+): Array<{ seq?: number; node: string; message: string }> => {
   const events = getEventsByAgent(allEvents, agentId);
-  if (!events.length) return [];
+  if (!events.length && !initialPayload) return [];
   const map = new Map<string, { seq?: number; node: string; message: string }>();
   const push = (key: string, item: { seq?: number; node: string; message: string }) => {
     if (!map.has(key)) map.set(key, item);
@@ -444,26 +582,30 @@ const extractSubsteps = (agentId: FixedAgentId, allEvents: NormalizedEvent[]): A
     }
 
     if (agentId === 'reception') {
-      push('parse', { seq: event.seq, node: 'parse_input', message: '解析输入（file/symptoms/crop_type）' });
-      if (outputs['crop_type']) push('normalize', { seq: event.seq, node: 'normalize', message: `规范化字段：crop_type=${String(outputs['crop_type'])}` });
-      push('extract_image', { seq: event.seq, node: 'extract_image', message: `提取 image_path：${outputs['image_path'] ? '已生成' : '未生成'}` });
+      push(`parse-${event.seq ?? 'na'}`, { seq: event.seq, node: event.semanticNode, message: shortText(event.message || '解析输入', 120) || '解析输入' });
+      if (outputs['crop_type']) push(`normalize-${event.seq ?? 'na'}`, { seq: event.seq, node: 'normalize', message: `规范化字段：crop_type=${String(outputs['crop_type'])}` });
+      push(`image-${event.seq ?? 'na'}`, { seq: event.seq, node: 'extract_image', message: `提取 image_path：${outputs['image_path'] ? String(outputs['image_path']) : '未生成'}` });
       const missing = toStringArray(outputs['missing_profile_fields']);
-      push('missing_fields', { seq: event.seq, node: 'missing_fields', message: `检测缺失字段：${missing.length ? missing.join(',') : '无'}` });
+      push(`missing-${event.seq ?? 'na'}`, { seq: event.seq, node: 'missing_fields', message: `检测缺失字段：${missing.length ? missing.join(',') : '无'}` });
       const followUps = toArray(outputs['follow_up_questions']).length;
-      if (followUps) push('followup_map', { seq: event.seq, node: 'followup_map', message: `缺失字段映射为追问：follow_up_questions=${followUps}条` });
+      if (followUps) push(`followup-${event.seq ?? 'na'}`, { seq: event.seq, node: 'followup_map', message: `缺失字段映射为追问：follow_up_questions=${followUps}条` });
       return;
     }
 
     if (agentId === 'diagnosis') {
-      const top1 = String(outputs['top1_disease'] ?? outputs['disease_type'] ?? outputs['final_disease'] ?? '-');
+      const top1 = String(outputs['top1_disease'] ?? outputs['disease_type'] ?? outputs['final_disease'] ?? outputs['disease'] ?? '-');
       const top3 = toStringArray(outputs['top3_diseases'] ?? outputs['top3']).join(',') || '-';
-      push('infer', { seq: event.seq, node: 'infer', message: `模型推理完成：top1=${top1}，top3=${top3}` });
+      push(`infer-${event.seq ?? 'na'}`, { seq: event.seq, node: event.semanticNode, message: shortText(event.message, 120) || `模型推理完成：top1=${top1}，top3=${top3}` });
+      if (event.semanticNode === 'diagnosis' && String(event.raw.node || '').toLowerCase() === 'diagnosiscompleted') {
+        const conf = toPercent(outputs['final_confidence'] ?? outputs['disease_confidence'] ?? outputs['confidence_pct'] ?? outputs['confidence']);
+        push(`diag-complete-${event.seq ?? 'na'}`, { seq: event.seq, node: 'diagnosis_complete', message: `诊断完成：${top1}（${conf}）` });
+      }
       const conf = toPercent(outputs['final_confidence'] ?? outputs['disease_confidence'] ?? outputs['confidence_pct'] ?? outputs['confidence']);
       const gateReason = String(outputs['gate_reason'] ?? outputs['need_confirm_reason'] ?? '').trim();
-      push('gate', { seq: event.seq, node: 'gate', message: outputs['need_confirm'] === true ? `低置信度（${gateReason || conf}）` : `置信度门控：通过（${conf}）` });
-      push('confirm', { seq: event.seq, node: 'confirm', message: `need_confirm：${outputs['need_confirm'] === true ? '是（生成二次确认候选）' : '否'}` });
+      push(`gate-${event.seq ?? 'na'}`, { seq: event.seq, node: 'confidence_gate', message: outputs['need_confirm'] === true ? `低置信度（${gateReason || conf}）` : `置信度门控：通过（${conf}）` });
+      push(`confirm-${event.seq ?? 'na'}`, { seq: event.seq, node: 'confirm', message: `need_confirm：${outputs['need_confirm'] === true ? '是（生成二次确认候选）' : '否'}` });
       const hintFailed = outputs['personalized_hint_failed'] === true;
-      push('personalized_hint', { seq: event.seq, node: 'personalized_hint', message: `个性化诊断提示：${hintFailed ? '失败（已降级）' : '成功'}` });
+      push(`hint-${event.seq ?? 'na'}`, { seq: event.seq, node: 'personalized_hint', message: `个性化诊断提示：${hintFailed ? '失败（已降级）' : '成功'}` });
       return;
     }
 
@@ -514,10 +656,28 @@ const extractSubsteps = (agentId: FixedAgentId, allEvents: NormalizedEvent[]): A
     if (agentId === 'final') push('final', { seq: event.seq, node: event.nodeName, message: shortText(event.message, 100) || '流程结束' });
   });
 
+  if (!events.length && initialPayload && agentId === 'diagnosis') {
+    const disease = String(initialPayload.final_disease ?? initialPayload.disease_type ?? '-');
+    const confidence = toPercent(initialPayload.final_confidence ?? initialPayload.displayConfidencePct ?? initialPayload.confidence_pct);
+    push('seed-diagnosis', { node: 'diagnosis_seed', message: `诊断首包：${disease}（${confidence}）` });
+  }
+  if (!events.length && initialPayload && agentId === 'reception') {
+    const crop = String(initialPayload.crop_type ?? '-');
+    const symptoms = toArray(initialPayload.symptoms).length;
+    push('seed-reception', { node: 'reception_seed', message: `诊断首包：crop_type=${crop} / symptoms=${symptoms}项` });
+  }
+
   return Array.from(map.values()).slice(-5);
 };
 
-export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refreshToken }: AgentWorkflowPanelProps) {
+export function AgentWorkflowPanel({
+  traceId,
+  confidencePct,
+  phaseStartMs,
+  refreshToken,
+  initialEvents,
+  initialPayload,
+}: AgentWorkflowPanelProps) {
   const [rows, setRows] = useState<Record<FixedAgentId, AgentRowState>>(buildInitialState());
   const [connectionState, setConnectionState] = useState<'idle' | 'connecting' | 'connected' | 'disconnected'>('idle');
   const [connectionHint, setConnectionHint] = useState('');
@@ -529,6 +689,7 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
   const [diagnosisConfidencePct, setDiagnosisConfidencePct] = useState<number | undefined>(undefined);
   const [allEvents, setAllEvents] = useState<NormalizedEvent[]>([]);
   const [showSystemNodes, setShowSystemNodes] = useState(false);
+  const [showAgentDebug, setShowAgentDebug] = useState(false);
   const [debugOpen, setDebugOpen] = useState<Record<FixedAgentId, boolean>>({
     supervisor: false,
     reception: false,
@@ -559,6 +720,7 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
     final: [],
   });
   const allEventsRef = useRef<NormalizedEvent[]>([]);
+  const seededByInitialEventsRef = useRef(false);
 
   const clearTicker = useCallback(() => {
     if (tickerRef.current) {
@@ -703,9 +865,9 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
           : `${agentId} 执行中`;
       const message = shortText(event.message || fallbackMessage, 140) || fallbackMessage;
 
-      current.steps = extractSubsteps(agentId, allEventsRef.current).slice(-5);
+      current.steps = extractSubsteps(agentId, allEventsRef.current, initialPayload).slice(-5);
       current.lastMessage = message;
-      current.highlights = extractHighlights(agentId, allEventsRef.current);
+      current.highlights = extractHighlights(agentId, allEventsRef.current, initialPayload);
 
       if (event.status === 'running') {
         current.status = 'running';
@@ -770,7 +932,7 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
 
     return true;
 
-  }, [maybeStartTicker, stopPolling, closeStream, clearTicker, completeSupervisorOnDone]);
+  }, [maybeStartTicker, stopPolling, closeStream, clearTicker, completeSupervisorOnDone, initialPayload]);
 
 
   useEffect(() => {
@@ -791,6 +953,7 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
         final: [],
       };
       allEventsRef.current = [];
+      seededByInitialEventsRef.current = false;
       queueMicrotask(() => setAllEvents([]));
       return;
     }
@@ -823,7 +986,19 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
       final: [],
     };
     allEventsRef.current = [];
+    seededByInitialEventsRef.current = false;
     queueMicrotask(() => setAllEvents([]));
+    if (!seededByInitialEventsRef.current) {
+      const seed = Array.isArray(initialEvents) ? initialEvents : [];
+      const normalizedSeed = seed
+        .map((evt) => normalizeEvent(evt as RawTraceEvent))
+        .filter((evt) => shouldIncludeEvent(evt.raw as RawTraceEvent, phaseStartMs));
+      if (normalizedSeed.length) {
+        allEventsRef.current = dedupBySeq(normalizedSeed);
+        queueMicrotask(() => setAllEvents(allEventsRef.current));
+        seededByInitialEventsRef.current = true;
+      }
+    }
 
     const openStream = () => {
       if (cancelled || workflowDoneRef.current || updatesStoppedRef.current || waitingStableRef.current) return;
@@ -947,7 +1122,7 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
       cancelled = true;
       clearExternal();
     };
-  }, [traceId, phaseStartMs, refreshToken, abortActiveTraceFetch, applyNormalizedEvent, clearExternal, closeStream, stopPolling]);
+  }, [traceId, phaseStartMs, refreshToken, abortActiveTraceFetch, applyNormalizedEvent, clearExternal, closeStream, stopPolling, initialEvents]);
 
   useEffect(() => {
     if (workflowDone) {
@@ -992,6 +1167,7 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
   const renderedRows = useMemo(() => {
     return FIXED_AGENTS.map((def) => {
       const row = rows[def.id];
+      const hasAgentEvents = getEventsByAgent(allEvents, def.id).length > 0;
       const elapsedMs = row.startTs ? Math.max(0, (row.endTs ?? nowMs) - row.startTs) : 0;
       const progress = row.status === 'running' && !workflowDone
         ? Math.max(row.progress, softProgress(elapsedMs))
@@ -1000,6 +1176,7 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
         ...def,
         ...row,
         progress,
+        hasAgentEvents,
         duration: formatDurationMs((phaseDurationsByAgent[def.id]?.phase1Ms ?? 0) + (phaseDurationsByAgent[def.id]?.phase2Ms ?? 0)),
         phase1Duration: formatDurationMs(phaseDurationsByAgent[def.id]?.phase1Ms ?? 0),
         phase2Duration: formatDurationMs(phaseDurationsByAgent[def.id]?.phase2Ms ?? 0),
@@ -1067,6 +1244,18 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
           )}
         >
           显示系统节点（校验/落盘）
+        </button>
+        <button
+          type="button"
+          onClick={() => setShowAgentDebug((v) => !v)}
+          className={cn(
+            "text-xs px-2 py-1 rounded border",
+            showAgentDebug
+              ? "border-sky-300/70 text-sky-200 bg-sky-500/10"
+              : "border-white/20 text-white/60 hover:text-white/80"
+          )}
+        >
+          调试：按阶段事件
         </button>
       </div>
 
@@ -1143,7 +1332,7 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
                     </div>
 
                     <p className={cn('text-sm mt-2 text-white/70', running && 'animate-pulse')}>
-                      {row.lastMessage || row.description}
+                      {row.hasAgentEvents ? (row.lastMessage || row.description) : '当前 trace 尚未回放到该阶段'}
                     </p>
 
                     <div className="mt-3 rounded-md bg-black/25 border border-white/10 p-2">
@@ -1158,7 +1347,7 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
                           ))}
                         </ul>
                       ) : (
-                        <p className="text-xs text-white/40">暂无关键步骤</p>
+                        <p className="text-xs text-white/40">{row.hasAgentEvents ? '事件存在但关键字段为空' : '当前 trace 尚未回放到该阶段'}</p>
                       )}
                     </div>
 
@@ -1198,7 +1387,7 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
                             <span className="mx-1">·</span>
                             <span>{step.message}</span>
                           </div>
-                        )) : <div className="text-xs text-white/40">暂无子步骤</div>}
+                        )) : <div className="text-xs text-white/40">{row.hasAgentEvents ? '事件存在但暂无可提炼子步骤' : '当前 trace 尚未回放到该阶段'}</div>}
                       </div>
                     )}
 
@@ -1234,6 +1423,29 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
               );
             })}
           </div>
+        </div>
+      )}
+
+      {showAgentDebug && (
+        <div className="rounded-xl border border-sky-300/30 bg-sky-500/10 p-3 space-y-2">
+          <p className="text-xs text-sky-100">调试：每个 fixed agent 实际聚合的事件（seq / semanticNode / fixedAgentId / message）。</p>
+          {FIXED_AGENTS.map((agent) => {
+            const agentEvents = getEventsByAgent(allEvents, agent.id);
+            return (
+              <div key={`debug-${agent.id}`} className="text-xs">
+                <p className="text-sky-200 mb-1">{agent.id}（{agentEvents.length}）</p>
+                {agentEvents.length ? (
+                  <div className="space-y-1 max-h-24 overflow-auto">
+                    {agentEvents.map((event, index) => (
+                      <div key={`${event.traceId}-${event.seq ?? `na-${index}`}`} className="font-mono text-white/75">
+                        {event.seq ?? '∞'} | {event.semanticNode} | {event.agentId} | {shortText(event.message, 80)}
+                      </div>
+                    ))}
+                  </div>
+                ) : <p className="text-white/40">当前 trace 尚未回放到该阶段</p>}
+              </div>
+            );
+          })}
         </div>
       )}
 

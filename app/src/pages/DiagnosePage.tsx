@@ -1271,6 +1271,10 @@ export function DiagnosePage() {
   }
   const displayedTiming = traceTiming.hasTraceTiming ? traceTiming : fallbackTiming;
   const timingSourceLabel = traceTiming.hasTraceTiming ? 'trace events' : (displayedTiming ? '本地提交兜底' : null);
+  const hasDownstreamTraceEvents = traceEvents.some((event) => {
+    const node = String(event.raw.node ?? event.stage ?? '').toLowerCase();
+    return node.includes('kbretrieval') || node.includes('prescription') || node.includes('personalization') || node.includes('validator') || node.includes('verification') || node === 'final';
+  });
   return (
     <div className="space-y-6 animate-fadeIn">
       {canViewExpertInbox && (
@@ -1673,13 +1677,24 @@ export function DiagnosePage() {
 
           <SectionCard sectionKey="workflow" title="多智能体流程" icon={<RefreshCw className="w-5 h-5 text-[#c8f7c5]" />} hidden={!isAdmin} open={sectionOpen.workflow} onToggle={toggleSection}>
             <div className="space-y-4">
-              <p className="text-xs text-white/60">当前流程包含：接待解析 → 病害诊断 → 知识检索 → 方案生成。</p>
+              <p className="text-xs text-white/60">
+                {hasDownstreamTraceEvents
+                  ? '当前流程包含：接待解析 → 病害诊断 → 知识检索 → 方案生成。'
+                  : '当前 trace 主要处于一诊阶段（接待解析 → 病害诊断），下游阶段将在后续事件到达后显示。'}
+              </p>
               {displayedTiming && timingSourceLabel && (
                 <div className="rounded-lg border border-white/10 bg-white/5 px-3 py-2">
                   <p className="text-xs text-white/65">耗时来源：{timingSourceLabel}。总耗时 {formatDurationMs(displayedTiming.totalMs)}（一诊 {formatDurationMs(displayedTiming.phase1Ms)} / 二诊 {formatDurationMs(displayedTiming.phase2Ms)}）</p>
                 </div>
               )}
-              <AgentWorkflowPanel traceId={traceId || undefined} confidencePct={result?.displayConfidencePct ?? undefined} refreshToken={workflowRefreshToken} />
+              <AgentWorkflowPanel
+                traceId={traceId || undefined}
+                confidencePct={result?.displayConfidencePct ?? undefined}
+                refreshToken={workflowRefreshToken}
+                initialEvents={Array.isArray(latestPayload?.events) ? latestPayload.events as unknown[] : []}
+                initialPayload={latestPayload}
+                i18n={latestPayload && typeof latestPayload.i18n === 'object' ? latestPayload.i18n as Record<string, unknown> : null}
+              />
             </div>
           </SectionCard>
         </div>
