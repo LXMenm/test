@@ -20,6 +20,8 @@ export interface NormalizedEvent {
   tsMs?: number;
   agentId: FixedAgentId;
   nodeName: string;
+  semanticNode?: string;
+  protocol?: 'workflow_snapshot' | 'compact_replay' | 'unknown';
   status: string;
   data: Record<string, unknown>;
 }
@@ -48,6 +50,7 @@ export interface AgentRuntimeDurations extends AgentPhaseDurations {
   phase1Open?: boolean;
   phase2Open?: boolean;
   missingStart?: boolean;
+  source?: 'replay' | 'workflow_snapshot' | 'none';
 }
 
 export const parseTsMs = (ts?: string): number | undefined => {
@@ -238,12 +241,157 @@ export const isWaitingForUserInputEvent = (event: NormalizedEvent): boolean => {
   );
 };
 
+export const splitEventsForTiming = (events: NormalizedEvent[]) => {
+  const workflowEvents: NormalizedEvent[] = [];
+  const compactEvents: NormalizedEvent[] = [];
+  const unknownEvents: NormalizedEvent[] = [];
+
+  events.forEach((event) => {
+    if (event.protocol === 'workflow_snapshot') {
+      workflowEvents.push(event);
+      return;
+    }
+    if (event.protocol === 'compact_replay') {
+      compactEvents.push(event);
+      return;
+    }
+    unknownEvents.push(event);
+  });
+
+  return { workflowEvents, compactEvents, unknownEvents };
+};
+
+const sortNormalizedEvents = (events: NormalizedEvent[]): NormalizedEvent[] => {
+  return [...events].sort((a, b) => {
+    const sa = typeof a.seq === 'number' ? a.seq : Number.MAX_SAFE_INTEGER;
+    const sb = typeof b.seq === 'number' ? b.seq : Number.MAX_SAFE_INTEGER;
+    if (sa !== sb) return sa - sb;
+    return (a.tsMs ?? Number.MAX_SAFE_INTEGER) - (b.tsMs ?? Number.MAX_SAFE_INTEGER);
+  });
+};
+
+const toStatusKind = (status: string): 'start' | 'end' | 'other' => {
+  const lower = String(status || '').toLowerCase();
+  if (['start', 'running'].includes(lower)) return 'start';
+  if (['end', 'completed', 'error'].includes(lower)) return 'end';
+  return 'other';
+};
+
+const mapReplayEventToAgent = (event: NormalizedEvent): FixedAgentId | undefined => {
+  const node = String(event.semanticNode || event.nodeName || '').toLowerCase();
+  if (node.includes('parse_input') || node.includes('parseinput')) return 'reception';
+  if (node.includes('diagnosis') || node.includes('confidence_gate') || node.includes('confidencegate')) return 'diagnosis';
+  return undefined;
+};
+
+const mapWorkflowEventToAgent = (event: NormalizedEvent): FixedAgentId => {
+  const data = event.data ?? {};
+  const hinted = String(data.agent_id ?? data.agent ?? '').toLowerCase();
+  return mapTimingAgentId(hinted || event.agentId, event.nodeName);
+};
+
+const calcRuntimeFromEvents = (
+  events: NormalizedEvent[],
+  nowMs: number,
+  workflowDone: boolean,
+  resolveAgent: (event: NormalizedEvent) => FixedAgentId | undefined,
+  source: 'replay' | 'workflow_snapshot',
+): Record<FixedAgentId, AgentRuntimeDurations & { hasEvents: boolean; open?: boolean }> => {
+  const sorted = sortNormalizedEvents(events);
+  let phaseBoundaryIndex = -1;
+  for (let i = 0; i < sorted.length; i += 1) {
+    if (isSecondPhaseBoundaryEvent(sorted[i])) {
+      phaseBoundaryIndex = i;
+      break;
+    }
+  }
+
+  const totals = Object.fromEntries(
+    FIXED_AGENT_IDS.map((agentId) => [agentId, { phase1Ms: 0, phase2Ms: 0, totalMs: 0, missingStart: false, hasEvents: false, source }]),
+  ) as Record<FixedAgentId, AgentRuntimeDurations & { hasEvents: boolean; open?: boolean }>;
+  const openStarts = Object.fromEntries(FIXED_AGENT_IDS.map((agentId) => [agentId, { phase1: undefined as number | undefined, phase2: undefined as number | undefined }])) as Record<FixedAgentId, { phase1?: number; phase2?: number }>;
+
+  sorted.forEach((event, index) => {
+    if (typeof event.tsMs !== 'number') return;
+    const agentId = resolveAgent(event);
+    if (!agentId) return;
+    totals[agentId].hasEvents = true;
+    const phase: 'phase1' | 'phase2' = phaseBoundaryIndex >= 0 && index >= phaseBoundaryIndex ? 'phase2' : 'phase1';
+    const statusKind = toStatusKind(event.status);
+    if (statusKind === 'start') {
+      if (typeof openStarts[agentId][phase] !== 'number') {
+        openStarts[agentId][phase] = event.tsMs;
+      }
+      return;
+    }
+    if (statusKind === 'end') {
+      const startMs = openStarts[agentId][phase];
+      if (typeof startMs !== 'number') {
+        totals[agentId].missingStart = true;
+        return;
+      }
+      totals[agentId][phase === 'phase1' ? 'phase1Ms' : 'phase2Ms'] += Math.max(0, event.tsMs - startMs);
+      openStarts[agentId][phase] = undefined;
+    }
+  });
+
+  FIXED_AGENT_IDS.forEach((agentId) => {
+    (['phase1', 'phase2'] as const).forEach((phase) => {
+      const startMs = openStarts[agentId][phase];
+      if (typeof startMs !== 'number') return;
+      if (!workflowDone) {
+        totals[agentId][phase === 'phase1' ? 'phase1Ms' : 'phase2Ms'] += Math.max(0, nowMs - startMs);
+        totals[agentId][phase === 'phase1' ? 'phase1Open' : 'phase2Open'] = true;
+        totals[agentId].open = true;
+      }
+    });
+    totals[agentId].totalMs = totals[agentId].phase1Ms + totals[agentId].phase2Ms;
+  });
+
+  return totals;
+};
+
+export const calcAgentRuntimeFromReplay = (
+  compactEvents: NormalizedEvent[],
+  nowMs: number,
+  workflowDone: boolean,
+) => calcRuntimeFromEvents(compactEvents, nowMs, workflowDone, mapReplayEventToAgent, 'replay');
+
+export const calcAgentRuntimeFromWorkflowSnapshot = (
+  workflowEvents: NormalizedEvent[],
+  nowMs: number,
+  workflowDone: boolean,
+) => calcRuntimeFromEvents(workflowEvents, nowMs, workflowDone, mapWorkflowEventToAgent, 'workflow_snapshot');
+
+export const calcAgentRuntimeBySourcePriority = (
+  events: NormalizedEvent[],
+  nowMs: number,
+  workflowDone: boolean,
+): Record<FixedAgentId, AgentRuntimeDurations> => {
+  const { workflowEvents, compactEvents, unknownEvents } = splitEventsForTiming(events);
+  const replayRuntime = calcAgentRuntimeFromReplay(compactEvents, nowMs, workflowDone);
+  const snapshotRuntime = calcAgentRuntimeFromWorkflowSnapshot([...workflowEvents, ...unknownEvents], nowMs, workflowDone);
+  return Object.fromEntries(FIXED_AGENT_IDS.map((agentId) => {
+    const replay = replayRuntime[agentId];
+    const snapshot = snapshotRuntime[agentId];
+    const replayValid = (replay.totalMs > 0) || replay.open === true;
+    if (replayValid) {
+      return [agentId, { ...replay, source: 'replay' }];
+    }
+    const snapshotValid = (snapshot.totalMs > 0) || snapshot.open === true || snapshot.missingStart === true || snapshot.hasEvents;
+    if (snapshotValid) {
+      return [agentId, { ...snapshot, source: 'workflow_snapshot' }];
+    }
+    return [agentId, { phase1Ms: 0, phase2Ms: 0, totalMs: 0, missingStart: true, source: 'none' as const }];
+  })) as Record<FixedAgentId, AgentRuntimeDurations>;
+};
+
 export const calcPhaseDurationsByAgent = (
   events: NormalizedEvent[],
   nowMs: number,
   workflowDone: boolean,
 ): Record<FixedAgentId, AgentPhaseDurations> => {
-  const runtime = calcAgentRuntimeByIntervals(events, nowMs, workflowDone);
+  const runtime = calcAgentRuntimeBySourcePriority(events, nowMs, workflowDone);
   return Object.fromEntries(
     FIXED_AGENT_IDS.map((agentId) => [
       agentId,
@@ -257,66 +405,7 @@ export const calcAgentRuntimeByIntervals = (
   nowMs: number,
   workflowDone: boolean,
 ): Record<FixedAgentId, AgentRuntimeDurations> => {
-  const sorted = [...events].sort((a, b) => {
-    const sa = typeof a.seq === 'number' ? a.seq : Number.MAX_SAFE_INTEGER;
-    const sb = typeof b.seq === 'number' ? b.seq : Number.MAX_SAFE_INTEGER;
-    if (sa !== sb) return sa - sb;
-    return (a.tsMs ?? Number.MAX_SAFE_INTEGER) - (b.tsMs ?? Number.MAX_SAFE_INTEGER);
-  });
-
-  let phaseBoundaryIndex = -1;
-  for (let i = 0; i < sorted.length; i += 1) {
-    if (isSecondPhaseBoundaryEvent(sorted[i])) {
-      phaseBoundaryIndex = i;
-      break;
-    }
-  }
-
-  const totals = Object.fromEntries(
-    FIXED_AGENT_IDS.map((agentId) => [agentId, { phase1Ms: 0, phase2Ms: 0, totalMs: 0, missingStart: false }]),
-  ) as Record<FixedAgentId, AgentRuntimeDurations>;
-  const openStarts = Object.fromEntries(FIXED_AGENT_IDS.map((agentId) => [agentId, { phase1: undefined as number | undefined, phase2: undefined as number | undefined }])) as Record<FixedAgentId, { phase1?: number; phase2?: number }>;
-
-  const closeInterval = (agentId: FixedAgentId, phase: 'phase1' | 'phase2', endMs: number) => {
-    const startMs = openStarts[agentId][phase];
-    if (typeof startMs !== 'number') {
-      totals[agentId].missingStart = true;
-      return;
-    }
-    totals[agentId][phase === 'phase1' ? 'phase1Ms' : 'phase2Ms'] += Math.max(0, endMs - startMs);
-    openStarts[agentId][phase] = undefined;
-  };
-
-  sorted.forEach((event, index) => {
-    const phase: 'phase1' | 'phase2' = phaseBoundaryIndex >= 0 && index >= phaseBoundaryIndex ? 'phase2' : 'phase1';
-    if (typeof event.tsMs !== 'number') return;
-
-    if (event.status === 'running' || event.status === 'start') {
-      if (typeof openStarts[event.agentId][phase] !== 'number') {
-        openStarts[event.agentId][phase] = event.tsMs;
-      }
-      return;
-    }
-
-    if (event.status === 'completed' || event.status === 'end' || event.status === 'error') {
-      closeInterval(event.agentId, phase, event.tsMs);
-    }
-  });
-
-  FIXED_AGENT_IDS.forEach((agentId) => {
-    (['phase1', 'phase2'] as const).forEach((phase) => {
-      const startMs = openStarts[agentId][phase];
-      if (typeof startMs !== 'number') return;
-      const canGrow = !workflowDone;
-      if (canGrow) {
-        totals[agentId][phase === 'phase1' ? 'phase1Ms' : 'phase2Ms'] += Math.max(0, nowMs - startMs);
-        totals[agentId][phase === 'phase1' ? 'phase1Open' : 'phase2Open'] = true;
-      }
-    });
-    totals[agentId].totalMs = totals[agentId].phase1Ms + totals[agentId].phase2Ms;
-  });
-
-  return totals;
+  return calcAgentRuntimeBySourcePriority(events, nowMs, workflowDone);
 };
 
 export const calcOverallPhaseDuration = (

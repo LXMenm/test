@@ -29,7 +29,7 @@ import {
 } from '@/components/traceEvents';
 import type { LucideIcon } from 'lucide-react';
 import {
-  calcAgentRuntimeByIntervals,
+  calcAgentRuntimeBySourcePriority,
   calcWallClockPhaseDuration,
   formatDurationMs,
   isReplayTerminalWaitingEvent,
@@ -1332,8 +1332,8 @@ export function AgentWorkflowPanel({
   );
 
   const phaseDurationsByAgent = useMemo(
-    () => calcAgentRuntimeByIntervals(primaryPanelEvents, nowMs, workflowDone) as Record<FixedAgentId, AgentPhaseDurations>,
-    [primaryPanelEvents, nowMs, workflowDone],
+    () => calcAgentRuntimeBySourcePriority(mergedEvents, nowMs, workflowDone) as Record<FixedAgentId, AgentPhaseDurations>,
+    [mergedEvents, nowMs, workflowDone],
   );
 
   const activePhaseLabel = useMemo(() => {
@@ -1412,8 +1412,8 @@ export function AgentWorkflowPanel({
   const totalProgress = Math.round((completedCount / FIXED_AGENTS.length) * 100);
 
   const overallDuration = useMemo(
-    () => calcWallClockPhaseDuration(primaryPanelEvents, nowMs, workflowDone),
-    [primaryPanelEvents, nowMs, workflowDone],
+    () => calcWallClockPhaseDuration(mergedEvents, nowMs, workflowDone),
+    [mergedEvents, nowMs, workflowDone],
   );
 
   const displayConfidencePct =
