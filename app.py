@@ -1448,7 +1448,6 @@ def _resolve_confirm_choice_confidence(choice: str, previous_case_event: dict[st
             if disease == normalized_choice:
                 return float(prob)
 
-    fallback_zero: float | None = None
     for raw in (
         previous_case_event.get("final_confidence"),
         diagnosis_evidence.get("final_confidence"),
@@ -1461,8 +1460,70 @@ def _resolve_confirm_choice_confidence(choice: str, previous_case_event: dict[st
             continue
         if value > 0:
             return value
-        fallback_zero = value
-    return fallback_zero if fallback_zero is not None else 0.0
+    return None
+
+
+def _build_confirm_inherited_context(
+    previous_case_event: dict[str, Any] | None,
+    history_events: list[dict[str, Any]],
+) -> dict[str, Any]:
+    source = previous_case_event if isinstance(previous_case_event, dict) else {}
+    inherited: dict[str, Any] = dict(source)
+    keys = [
+        "fusion_top3",
+        "text_top3",
+        "diagnosis_evidence",
+        "final_confidence",
+        "image_confidence",
+        "text_confidence",
+        "modality_conflict_flag",
+        "image_reliable",
+        "text_reliable",
+        "reliability_issue_types",
+        "supplement_mode",
+    ]
+
+    image_result = source.get("image_result") if isinstance(source.get("image_result"), dict) else {}
+    if image_result:
+        inherited["image_result"] = dict(image_result)
+    image_diagnosis = source.get("image_diagnosis") if isinstance(source.get("image_diagnosis"), dict) else {}
+    if image_diagnosis:
+        inherited["image_diagnosis"] = dict(image_diagnosis)
+
+    def _has_value(value: Any) -> bool:
+        if value is None:
+            return False
+        if isinstance(value, str):
+            return bool(value.strip())
+        if isinstance(value, (list, tuple, dict, set)):
+            return len(value) > 0
+        return True
+
+    def _assign_if_missing(key: str, value: Any) -> None:
+        if _has_value(inherited.get(key)):
+            return
+        if _has_value(value):
+            inherited[key] = value
+
+    for event in reversed(history_events):
+        if not isinstance(event, dict):
+            continue
+        for section in ("outputs", "payload", "inputs"):
+            container = event.get(section)
+            if not isinstance(container, dict):
+                continue
+            for key in keys:
+                _assign_if_missing(key, container.get(key))
+            image_result_like = container.get("image_result")
+            if not _has_value(inherited.get("image_result")) and isinstance(image_result_like, dict):
+                inherited["image_result"] = dict(image_result_like)
+            image_diag_like = container.get("image_diagnosis")
+            if not _has_value(inherited.get("image_diagnosis")) and isinstance(image_diag_like, dict):
+                inherited["image_diagnosis"] = dict(image_diag_like)
+        if _has_value(inherited.get("fusion_top3")) and _has_value(inherited.get("image_result")):
+            break
+
+    return inherited
 
 
 def _inherit_previous_diagnosis_context(
@@ -2132,7 +2193,7 @@ async def diagnose_image(
             growth_stage=growth_stage,
             image_path=str(saved_path),
         )
-        initial_state = create_initial_state(query_text, farmer_id=farmer_id, base_id=base_id)
+        initial_state = create_initial_state(query_text, farmer_id=farmer_id, base_id=base_id, trace_id=trace_id)
         initial_state["diagnosis_model_id"] = resolved_model.model_id
         if personalization_context:
             initial_state["personalization_context"] = personalization_context
@@ -2597,6 +2658,7 @@ def _diagnose_confirm_core(request: Request, payload: dict) -> dict:
             confirm_round_index += 1
 
     state["step_count"] = previous_step_count
+    inherited_context = _build_confirm_inherited_context(previous_case_event, history_events)
     if is_expert_decision_stage:
         state["trace_id"] = trace_id
         state["crop_type"] = crop_type
@@ -2604,6 +2666,7 @@ def _diagnose_confirm_core(request: Request, payload: dict) -> dict:
         state["image_path"] = str(image_path)
         state["symptoms"] = merged_symptoms
         state["historical_symptoms"] = historical_symptoms
+        state["incoming_symptoms"] = incoming_symptoms
         state["confirm_round_index"] = confirm_round_index
         state["user_choice"] = "other"
         state["current_step"] = "confirm_input"
@@ -2624,90 +2687,51 @@ def _diagnose_confirm_core(request: Request, payload: dict) -> dict:
             state["verification_issues"] = list(previous_case_event.get("verification_issues") or [])
             state["verification_summary"] = previous_case_event.get("verification_summary")
     else:
-        state = resume_from_confirm_input(
-            state,
-            crop_type=crop_type,
-            growth_stage=growth_stage,
-            model_id=model_id,
-            image_path=str(image_path),
-            merged_symptoms=merged_symptoms,
-        )
+        state["trace_id"] = trace_id
+        state["crop_type"] = crop_type
+        state["crop_growth_stage"] = normalize_growth_stage_code(growth_stage)
+        state["image_path"] = str(image_path)
+        state["diagnosis_model_id"] = model_id
+        state["symptoms"] = merged_symptoms
         state["historical_symptoms"] = historical_symptoms
+        state["incoming_symptoms"] = incoming_symptoms
         state["confirm_round_index"] = confirm_round_index
-        state["user_choice"] = choice or None
-        state["current_step"] = "confirm_input"
-
-    append_trace(
-        state,
-        agent="confirm_input",
-        inputs={
-            "symptoms": state["symptoms"],
-            "historical_symptoms": historical_symptoms,
-            "incoming_symptoms": incoming_symptoms,
-            "crop_type": crop_type,
-            "growth_stage": normalize_growth_stage_code(growth_stage),
-            "image_id": image_id,
-            "previous_trace_id": previous_trace_id or trace_id,
-            "confirm_round_parent_trace_id": trace_id,
-            "model_id": model_id,
-            "choice": choice or ("other" if is_expert_decision_stage else None),
-            "final_decision": final_decision,
-            "farmer_id": farmer_id,
-            "base_id": base_id,
-            "confirm_round_index": confirm_round_index,
-        },
-        outputs={},
-    )
-    if (not is_expert_decision_stage) and choice and choice != "other":
-        inherited_context = _inherit_previous_diagnosis_context(
-            state,
-            choice=choice,
-            previous_case_event=previous_case_event,
-        )
-        flags = state.get("personalization_flags") or {}
-        flags["need_confirm"] = False
-        state["personalization_flags"] = flags
-        append_trace(
-            state,
-            agent="confirm_choice",
-            inputs={"choice": choice},
-            outputs={
-                "final_disease": choice,
-                "need_confirm": False,
-                "final_source": state.get("final_source"),
-                "final_confidence": state.get("final_confidence"),
-                "inherited_context": inherited_context,
-            },
-        )
+        state["user_choice"] = choice or "other"
+        state["current_step"] = "confirm_choice" if (choice and choice != "other") else "confirm_input"
+        state["previous_trace_id"] = previous_trace_id or trace_id
+        state["confirm_round_parent_trace_id"] = trace_id
+        state["selected_candidate"] = choice if (choice and choice != "other") else None
+        state["inherited_context"] = inherited_context
+        for key in (
+            "fusion_top3",
+            "text_top3",
+            "diagnosis_evidence",
+            "final_confidence",
+            "image_confidence",
+            "text_confidence",
+            "modality_conflict_flag",
+            "image_reliable",
+            "text_reliable",
+            "reliability_issue_types",
+            "supplement_mode",
+            "image_result",
+        ):
+            if state.get(key) in (None, [], {}):
+                value = inherited_context.get(key)
+                if value not in (None, [], {}):
+                    state[key] = value
+        state["next_action"] = "confirm_choice" if (choice and choice != "other") else "confirm_input"
+        graph = build_graph()
+        state = graph.invoke(state)
+        if (choice and choice != "other") and str(state.get("workflow_error") or "").strip() == "confirm_choice_confidence_missing":
+            raise HTTPException(status_code=400, detail="confirm_choice_confidence_missing")
 
     # 低置信度回退分支：由 supervisor 做统一路由决策，避免形成平行独立流程。
     terminal_action: str | None = None
     if is_expert_decision_stage:
         terminal_action = "expert_final_decision"
     else:
-        for _ in range(10):
-            state = supervisor_agent(state)
-            next_action = str(state.get("next_action") or "")
-            if next_action == "diagnosis":
-                state = diagnosis_agent(state)
-            elif next_action == "kb_retrieval":
-                state = kb_retrieval_agent(state)
-            elif next_action == "treatment":
-                state = treatment_agent(state)
-            elif next_action == "verification":
-                state = verification_agent(state)
-            elif next_action == "await_user_confirmation":
-                terminal_action = "await_user_confirmation"
-                break
-            elif next_action == "manual_review":
-                terminal_action = "manual_review"
-                break
-            elif next_action == "end":
-                terminal_action = "end"
-                break
-            else:
-                terminal_action = next_action or "end"
-                break
+        terminal_action = str(state.get("next_action") or "end")
 
     final_confidence = state.get("final_confidence")
     final_source = state.get("final_source")

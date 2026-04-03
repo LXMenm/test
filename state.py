@@ -50,6 +50,7 @@ class CropDiseaseState(TypedDict):
     diagnosis_model_id: Optional[str]  # 用户选择的模型ID
     diagnosis_model_meta: Optional[Dict[str, Any]]  # 最终使用模型信息
     image_diagnosis: Optional[Dict[str, Any]]
+    image_result: Optional[Dict[str, Any]]
 
     structured_symptoms: Optional[Dict[str, Any]]
     text_confidence: Optional[float]
@@ -61,6 +62,7 @@ class CropDiseaseState(TypedDict):
     text_reliable: Optional[bool]
     reliability_issue_types: Optional[List[str]]
     supplement_mode: Optional[str]
+    confirmation_mode: Optional[str]
     image_probs: Optional[Dict[str, float]]
     text_probs: Optional[Dict[str, float]]
     prior_probs: Optional[Dict[str, float]]
@@ -121,10 +123,21 @@ class CropDiseaseState(TypedDict):
     trace_id: str
     trace_events: List[Dict[str, Any]]
     debug_diagnosis: Dict[str, Any]
+    previous_trace_id: Optional[str]
+    confirm_round_parent_trace_id: Optional[str]
+    selected_candidate: Optional[str]
+    incoming_symptoms: Optional[List[str]]
+    historical_symptoms: Optional[List[str]]
+    inherited_context: Optional[Dict[str, Any]]
+    confirm_round_index: Optional[int]
+    user_choice: Optional[str]
 
 
 def create_initial_state(
-    user_query: str, farmer_id: Optional[str] = None, base_id: Optional[str] = None
+    user_query: str,
+    farmer_id: Optional[str] = None,
+    base_id: Optional[str] = None,
+    trace_id: Optional[str] = None,
 ) -> CropDiseaseState:
     """
     创建初始状态
@@ -155,6 +168,7 @@ def create_initial_state(
         diagnosis_model_id=None,
         diagnosis_model_meta=None,
         image_diagnosis=None,
+        image_result=None,
         structured_symptoms=None,
         text_confidence=None,
         text_top3=None,
@@ -165,6 +179,7 @@ def create_initial_state(
         text_reliable=None,
         reliability_issue_types=None,
         supplement_mode=None,
+        confirmation_mode=None,
         image_probs=None,
         text_probs=None,
         prior_probs=None,
@@ -187,7 +202,7 @@ def create_initial_state(
         humidity=None,
         precipitation_probability=None,
         current_step="start",
-        next_action=None,
+        next_action="reception",
         is_complete=False,
         step_count=0,
         workflow_error=None,
@@ -204,9 +219,17 @@ def create_initial_state(
         follow_up_questions=[],
         profile_follow_up_questions=[],
         diagnosis_follow_up_questions=[],
-        trace_id=uuid.uuid4().hex,
+        trace_id=str(trace_id).strip() if str(trace_id or "").strip() else uuid.uuid4().hex,
         trace_events=[],
         debug_diagnosis={},
+        previous_trace_id=None,
+        confirm_round_parent_trace_id=None,
+        selected_candidate=None,
+        incoming_symptoms=None,
+        historical_symptoms=None,
+        inherited_context=None,
+        confirm_round_index=None,
+        user_choice=None,
     )
 
     if farmer_id:

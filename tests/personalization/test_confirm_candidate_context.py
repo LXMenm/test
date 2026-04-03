@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 import app as app_module
 import event_store
 import trace_store
+import workflow as workflow_module
 
 
 def _setup_event_dirs(monkeypatch, tmp_path: Path) -> None:
@@ -153,6 +154,9 @@ def _install_stub_agents(monkeypatch):
     calls = {"diagnosis": 0}
 
     def _supervisor(state):
+        requested = str(state.get("next_action") or "")
+        if requested in {"confirm_input", "confirm_choice"}:
+            return {**state, "next_action": requested}
         if not (state.get("final_disease") or state.get("disease_type")):
             state["next_action"] = "diagnosis"
         elif not state.get("kb_snapshot"):
@@ -219,6 +223,11 @@ def _install_stub_agents(monkeypatch):
     monkeypatch.setattr(app_module, "kb_retrieval_agent", _kb_retrieval)
     monkeypatch.setattr(app_module, "treatment_agent", _treatment)
     monkeypatch.setattr(app_module, "verification_agent", _verification)
+    monkeypatch.setattr(workflow_module, "supervisor_agent", _supervisor)
+    monkeypatch.setattr(workflow_module, "diagnosis_agent", _diagnosis)
+    monkeypatch.setattr(workflow_module, "kb_retrieval_agent", _kb_retrieval)
+    monkeypatch.setattr(workflow_module, "treatment_agent", _treatment)
+    monkeypatch.setattr(workflow_module, "verification_agent", _verification)
     return calls
 
 
@@ -267,6 +276,9 @@ def _install_recommend_expert_review_agents(monkeypatch):
     calls = {"diagnosis": 0}
 
     def _supervisor(state):
+        requested = str(state.get("next_action") or "")
+        if requested in {"confirm_input", "confirm_choice"}:
+            return {**state, "next_action": requested}
         if not (state.get("final_disease") or state.get("disease_type")):
             state["next_action"] = "diagnosis"
         elif (state.get("personalization_flags") or {}).get("need_confirm"):
@@ -335,6 +347,11 @@ def _install_recommend_expert_review_agents(monkeypatch):
     monkeypatch.setattr(app_module, "kb_retrieval_agent", _kb_retrieval)
     monkeypatch.setattr(app_module, "treatment_agent", _treatment)
     monkeypatch.setattr(app_module, "verification_agent", _verification)
+    monkeypatch.setattr(workflow_module, "supervisor_agent", _supervisor)
+    monkeypatch.setattr(workflow_module, "diagnosis_agent", _diagnosis)
+    monkeypatch.setattr(workflow_module, "kb_retrieval_agent", _kb_retrieval)
+    monkeypatch.setattr(workflow_module, "treatment_agent", _treatment)
+    monkeypatch.setattr(workflow_module, "verification_agent", _verification)
     return calls
 
 
@@ -457,6 +474,7 @@ def test_confirm_top1_candidate_inherits_previous_context(monkeypatch, tmp_path)
     assert body["model_display_name"] == "ResNet50 Tomato v1"
     assert body["image_result"]["top3"][0]["disease"] == "早疫病"
     assert body["selected_branch"] == "FAMILY"
+    assert body["text_top3"]
 
 
 def test_confirm_non_top1_candidate_uses_candidate_probability(monkeypatch, tmp_path):
@@ -544,6 +562,56 @@ def test_confirm_candidate_falls_back_when_fusion_top3_missing(monkeypatch, tmp_
     assert body["final_confidence"] is not None
 
 
+def test_confirm_candidate_prefers_fusion_context_from_trace_history(monkeypatch, tmp_path):
+    _setup_event_dirs(monkeypatch, tmp_path)
+    upload_dir = _seed_upload(tmp_path, "confirm-fusion-from-trace.jpg")
+    monkeypatch.setattr(app_module, "UPLOAD_DIR", upload_dir)
+    _seed_previous_case_event(
+        "trace-fusion-from-trace",
+        "confirm-fusion-from-trace.jpg",
+        {
+            "fusion_top3": [],
+            "diagnosis_evidence": {},
+            "image_result": {
+                "disease": "早疫病",
+                "confidence": 0.0354,
+                "confidence_pct": 3.54,
+                "top3": [
+                    {"disease": "早疫病", "prob": 0.0354, "prob_pct": 3.54},
+                    {"disease": "晚疫病", "prob": 0.01, "prob_pct": 1.0},
+                ],
+            },
+        },
+    )
+    trace_store.append_trace_event(
+        "trace-fusion-from-trace",
+        {
+            "ts": "2026-03-19T00:00:01Z",
+            "agent": "diagnosis",
+            "outputs": {
+                "fusion_top3": [["早疫病", 0.3777], ["晚疫病", 0.12]],
+                "text_top3": [["早疫病", 0.35], ["晚疫病", 0.2]],
+                "diagnosis_evidence": {"fusion_top3": [["早疫病", 0.3777], ["晚疫病", 0.12]]},
+            },
+        },
+    )
+    _install_stub_agents(monkeypatch)
+
+    client = TestClient(app_module.app)
+    body = _post_confirm(
+        client,
+        trace_id="trace-fusion-from-trace",
+        image_id="confirm-fusion-from-trace.jpg",
+        choice="早疫病",
+    )
+
+    assert body["final_source"] == "user_confirmed_candidate"
+    assert body["final_confidence"] == pytest.approx(0.3777)
+    assert body["fusion_top3"]
+    assert body["text_top3"]
+    assert body["diagnosis_evidence"]
+
+
 def test_confirm_candidate_does_not_silently_zero_out_context(monkeypatch, tmp_path):
     _setup_event_dirs(monkeypatch, tmp_path)
     upload_dir = _seed_upload(tmp_path, "confirm-keep-context.jpg")
@@ -579,6 +647,81 @@ def test_confirm_candidate_does_not_silently_zero_out_context(monkeypatch, tmp_p
     assert body["diagnosis_evidence"]["final_confidence"] == pytest.approx(0.67)
     assert body["image_result"]["top3"]
     assert body["image_result"]["confidence"] > 0
+
+
+def test_confirm_choice_missing_confidence_returns_explicit_error(monkeypatch, tmp_path):
+    _setup_event_dirs(monkeypatch, tmp_path)
+    upload_dir = _seed_upload(tmp_path, "confirm-missing-confidence.jpg")
+    monkeypatch.setattr(app_module, "UPLOAD_DIR", upload_dir)
+    _seed_previous_case_event(
+        "trace-missing-confidence",
+        "confirm-missing-confidence.jpg",
+        {
+            "fusion_top3": [],
+            "text_top3": [],
+            "image_result": {"disease": "早疫病", "confidence": 0.0, "top3": []},
+            "image_diagnosis": {"top1": {"disease": "早疫病", "confidence": 0.0}, "top3": []},
+            "diagnosis_evidence": {},
+            "final_confidence": 0.0,
+            "image_confidence": 0.0,
+            "text_confidence": 0.0,
+        },
+    )
+    _install_stub_agents(monkeypatch)
+
+    client = TestClient(app_module.app)
+    resp = client.post(
+        "/api/diagnose-confirm",
+        json={
+            "trace_id": "trace-missing-confidence",
+            "previous_trace_id": "trace-missing-confidence",
+            "image_id": "confirm-missing-confidence.jpg",
+            "crop_type": "番茄",
+            "symptoms": ["叶片黄化"],
+            "choice": "早疫病",
+        },
+    )
+    assert resp.status_code == 400
+    assert "confirm_choice_confidence_missing" in str((resp.json() or {}).get("detail"))
+
+
+def test_confirm_choice_inherits_reliability_evidence_fields(monkeypatch, tmp_path):
+    _setup_event_dirs(monkeypatch, tmp_path)
+    upload_dir = _seed_upload(tmp_path, "confirm-inherit-evidence.jpg")
+    monkeypatch.setattr(app_module, "UPLOAD_DIR", upload_dir)
+    _seed_previous_case_event(
+        "trace-inherit-evidence",
+        "confirm-inherit-evidence.jpg",
+        {
+            "fusion_top3": [["早疫病", 0.88], ["晚疫病", 0.12]],
+            "text_top3": [["早疫病", 0.86], ["晚疫病", 0.14]],
+            "modality_conflict_flag": True,
+            "image_reliable": False,
+            "text_reliable": True,
+            "reliability_issue_types": ["image_text_conflict"],
+            "supplement_mode": "image_only",
+            "fusion_meta": {"weights": {"image": 0.7, "text": 0.3}},
+            "image_confidence": 0.88,
+            "text_confidence": 0.86,
+        },
+    )
+    _install_stub_agents(monkeypatch)
+
+    client = TestClient(app_module.app)
+    body = _post_confirm(
+        client,
+        trace_id="trace-inherit-evidence",
+        image_id="confirm-inherit-evidence.jpg",
+        choice="早疫病",
+    )
+    assert body["text_top3"]
+    assert body["modality_conflict_flag"] is True
+    assert body["image_reliable"] is False
+    assert body["text_reliable"] is True
+    assert body["reliability_issue_types"] == ["image_text_conflict"]
+    assert body["supplement_mode"] == "image_only"
+    assert body["image_confidence"] == pytest.approx(0.88)
+    assert body["text_confidence"] == pytest.approx(0.86)
 
 
 def test_confirm_other_keeps_original_rediagnosis_branch(monkeypatch, tmp_path):
