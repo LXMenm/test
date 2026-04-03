@@ -1,4 +1,5 @@
 export type TraceEventStatus = 'start' | 'end' | 'info' | 'error' | 'decision';
+type TraceSourceHint = 'start' | 'continue' | 'replay' | 'unknown';
 
 export type NormalizedTraceEvent = {
   traceId: string;
@@ -44,6 +45,19 @@ const pickStatus = (raw: Record<string, unknown>): TraceEventStatus => {
   return 'info';
 };
 
+const sourcePriority = (raw: Record<string, unknown>): number => {
+  const source = String(raw.__source ?? '').toLowerCase();
+  if (source === 'continue') return 30;
+  if (source === 'start') return 10;
+  if (source === 'replay') return 0;
+  return 1;
+};
+
+const keyFieldBonus = (bag: Record<string, unknown>): number => {
+  const keys = ['final_disease', 'disease_type', 'final_confidence', 'need_confirm', 'verification_result', 'treatment', 'selected_branch', 'actions'] as const;
+  return keys.reduce((acc, key) => (bag[key] !== undefined ? acc + 5 : acc), 0);
+};
+
 export const normalizeTraceEvent = (rawEvent: unknown): NormalizedTraceEvent => {
   const raw = isRecord(rawEvent) ? rawEvent : {};
   const payload = isRecord(raw.payload) ? raw.payload : {};
@@ -82,6 +96,15 @@ const infoScore = (event: NormalizedTraceEvent): number => {
   if (Object.keys(event.payload).length > 0) score += 2;
   if (Object.keys(event.raw).length > 0) score += 2;
   if (event.detail) score += 1;
+  if (isRecord(raw.outputs)) score += 6;
+  if (isRecord(raw.inputs)) score += 4;
+  if (isRecord(raw.decision)) score += 6;
+  if (asText(raw.step)) score += 4;
+  if (asText(raw.agent)) score += 4;
+  if (asText(raw.node) && !asText(raw.step) && !asText(raw.agent) && !isRecord(raw.outputs) && !isRecord(raw.inputs) && !isRecord(raw.decision)) score += 1;
+  score += keyFieldBonus(event.payload);
+  if (isRecord(raw.outputs)) score += keyFieldBonus(raw.outputs);
+  score += sourcePriority(raw);
   return score;
 };
 
@@ -109,8 +132,20 @@ export const mergeAndDedupeTraceEvents = (
     }
     const prevScore = infoScore(prev.event);
     const nextScore = infoScore(event);
+    const prevSource = String(prev.event.raw.__source ?? 'unknown') as TraceSourceHint;
+    const nextSource = String(event.raw.__source ?? 'unknown') as TraceSourceHint;
     if (nextScore > prevScore) {
       bestByKey.set(key, { event, index: prev.index });
+      if (typeof window !== 'undefined' && window?.location?.hostname === 'localhost') {
+        console.debug('[trace dedupe]', { key, seq: event.seq, oldSource: prevSource, newSource: nextSource, oldScore: prevScore, newScore: nextScore, kept: nextSource });
+      }
+      return;
+    }
+    if (nextScore === prevScore && sourcePriority(event.raw) > sourcePriority(prev.event.raw)) {
+      bestByKey.set(key, { event, index: prev.index });
+      if (typeof window !== 'undefined' && window?.location?.hostname === 'localhost') {
+        console.debug('[trace dedupe]', { key, seq: event.seq, oldSource: prevSource, newSource: nextSource, oldScore: prevScore, newScore: nextScore, kept: nextSource });
+      }
     }
   });
 

@@ -50,6 +50,7 @@ interface AgentWorkflowPanelProps {
 }
 
 interface RawTraceEvent {
+  __source?: 'start' | 'continue' | 'confirm' | 'replay' | string;
   trace_id?: string;
   seq?: number;
   ts?: string;
@@ -985,19 +986,18 @@ export function AgentWorkflowPanel({
       verification: [],
       final: [],
     };
-    allEventsRef.current = [];
     seededByInitialEventsRef.current = false;
-    queueMicrotask(() => setAllEvents([]));
-    if (!seededByInitialEventsRef.current) {
-      const seed = Array.isArray(initialEvents) ? initialEvents : [];
-      const normalizedSeed = seed
-        .map((evt) => normalizeEvent(evt as RawTraceEvent))
-        .filter((evt) => shouldIncludeEvent(evt.raw as RawTraceEvent, phaseStartMs));
-      if (normalizedSeed.length) {
-        allEventsRef.current = dedupBySeq(normalizedSeed);
-        queueMicrotask(() => setAllEvents(allEventsRef.current));
-        seededByInitialEventsRef.current = true;
-      }
+    const seed = Array.isArray(initialEvents) ? initialEvents : [];
+    const normalizedSeed = seed
+      .map((evt) => normalizeEvent(evt as RawTraceEvent))
+      .filter((evt) => shouldIncludeEvent(evt.raw as RawTraceEvent, phaseStartMs));
+    if (normalizedSeed.length) {
+      allEventsRef.current = dedupBySeq(normalizedSeed);
+      setAllEvents(allEventsRef.current);
+      seededByInitialEventsRef.current = true;
+    } else {
+      allEventsRef.current = [];
+      setAllEvents([]);
     }
 
     const openStream = () => {
@@ -1008,7 +1008,7 @@ export function AgentWorkflowPanel({
 
       es.addEventListener('trace', (messageEvent) => {
         if (cancelled || workflowDoneRef.current || updatesStoppedRef.current) return;
-        const raw = JSON.parse(messageEvent.data || '{}') as RawTraceEvent;
+        const raw = { ...(JSON.parse(messageEvent.data || '{}') as RawTraceEvent), __source: 'replay' } as RawTraceEvent;
         if (!shouldIncludeEvent(raw, phaseStartMs)) return;
         const normalized = normalizeEvent(raw);
         const seq = normalized.seq;
@@ -1070,7 +1070,7 @@ export function AgentWorkflowPanel({
         let replayPausedByUserInput = false;
         sorted.forEach((raw: RawTraceEvent, index: number) => {
           if (cancelled || workflowDoneRef.current || updatesStoppedRef.current || waitingStableRef.current) return;
-          const normalized = normalizeEvent(raw as RawTraceEvent);
+          const normalized = normalizeEvent({ ...(raw as RawTraceEvent), __source: 'replay' } as RawTraceEvent);
           const terminalWaitingEvent = isReplayTerminalWaitingEvent(sorted as RawTraceEvent[], index);
           if (terminalWaitingEvent) {
             replayPausedByUserInput = true;
@@ -1189,6 +1189,14 @@ export function AgentWorkflowPanel({
     () => allEvents.length > 0 && renderedRows.every((row) => row.steps.length === 0),
     [allEvents, renderedRows],
   );
+  const debugSourceCounts = useMemo(() => {
+    const primaryEvents = allEvents.filter((event) => {
+      const source = String(event.raw.__source ?? '');
+      return source === 'continue' || source === 'start' || source === 'confirm';
+    }).length;
+    const replayEvents = allEvents.filter((event) => String(event.raw.__source ?? '') === 'replay').length;
+    return { primaryEvents, replayEvents, mergedEvents: allEvents.length };
+  }, [allEvents]);
 
   const totalProgress = Math.round((completedCount / FIXED_AGENTS.length) * 100);
 
@@ -1429,6 +1437,7 @@ export function AgentWorkflowPanel({
       {showAgentDebug && (
         <div className="rounded-xl border border-sky-300/30 bg-sky-500/10 p-3 space-y-2">
           <p className="text-xs text-sky-100">调试：每个 fixed agent 实际聚合的事件（seq / semanticNode / fixedAgentId / message）。</p>
+          <p className="text-xs text-sky-200/90 font-mono">primaryEvents={debugSourceCounts.primaryEvents} / replayEvents={debugSourceCounts.replayEvents} / mergedEvents={debugSourceCounts.mergedEvents}</p>
           {FIXED_AGENTS.map((agent) => {
             const agentEvents = getEventsByAgent(allEvents, agent.id);
             return (

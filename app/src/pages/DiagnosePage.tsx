@@ -633,9 +633,27 @@ export function DiagnosePage() {
     };
   };
 
-  const normalizeTraceEvents = (eventsLike: unknown): TraceEvent[] => {
-    const normalized = normalizeRawTraceEvents(eventsLike);
+  const tagEventsSource = (eventsLike: unknown, source: 'start' | 'continue' | 'replay' | 'confirm'): unknown[] => {
+    if (!Array.isArray(eventsLike)) return [];
+    return eventsLike.map((item) => {
+      const raw = item && typeof item === 'object' ? item as Record<string, unknown> : {};
+      return { ...raw, __source: source };
+    });
+  };
+
+  const normalizeTraceEvents = (eventsLike: unknown, source: 'start' | 'continue' | 'replay' | 'confirm' = 'replay'): TraceEvent[] => {
+    const normalized = normalizeRawTraceEvents(tagEventsSource(eventsLike, source));
     return mergeAndDedupeTraceEvents([], normalized);
+  };
+
+  const mergePayloadEventsAsPrimary = (
+    existingEvents: TraceEvent[],
+    primaryEventsLike: unknown,
+    source: 'start' | 'continue' | 'replay' | 'confirm',
+  ): TraceEvent[] => {
+    const primaryEvents = normalizeTraceEvents(primaryEventsLike, source);
+    if (!primaryEvents.length) return existingEvents;
+    return mergeAndDedupeTraceEvents(existingEvents, primaryEvents);
   };
 
   const parseProfiles = (raw: unknown): ProfileListItem[] => {
@@ -797,7 +815,7 @@ export function DiagnosePage() {
         setImageId(String(payload.image_id));
       }
       if (Array.isArray(payload.events)) {
-        setTraceEvents((prev) => mergeAndDedupeTraceEvents(prev, normalizeTraceEvents(payload.events)));
+        setTraceEvents((prev) => mergePayloadEventsAsPrimary(prev, payload.events, 'start'));
       }
       setWorkflowRefreshToken((prev) => prev + 1);
 
@@ -825,10 +843,13 @@ export function DiagnosePage() {
         }
         if (continueData && typeof continueData === 'object') {
           const mergedPayload = { ...payload, ...(continueData as Record<string, unknown>) };
+          setLatestPayload(mergedPayload);
           const mergedResult = buildResultFromPayload(mergedPayload);
           syncConfirmStateFromPayload(mergedPayload, mergedResult);
           if (Array.isArray((continueData as Record<string, unknown>).events)) {
-            setTraceEvents((prev) => mergeAndDedupeTraceEvents(prev, normalizeTraceEvents((continueData as Record<string, unknown>).events)));
+            setTraceEvents((prev) => mergePayloadEventsAsPrimary(prev, (continueData as Record<string, unknown>).events, 'continue'));
+          } else if (Array.isArray(payload.events)) {
+            setTraceEvents((prev) => mergePayloadEventsAsPrimary(prev, payload.events, 'continue'));
           }
         }
       }
@@ -896,7 +917,7 @@ export function DiagnosePage() {
         setImageId('');
       }
       if (Array.isArray(payload.events)) {
-        setTraceEvents((prev) => mergeAndDedupeTraceEvents(prev, normalizeTraceEvents(payload.events)));
+        setTraceEvents((prev) => mergePayloadEventsAsPrimary(prev, payload.events, 'confirm'));
       } else {
         setTraceEvents([]);
       }
@@ -952,7 +973,7 @@ export function DiagnosePage() {
       const payload = normalizePayloadRecord(data);
       if (payload.trace_id) setTraceId(String(payload.trace_id));
       if (payload.image_id) setImageId(String(payload.image_id));
-      if (Array.isArray(payload.events)) setTraceEvents((prev) => mergeAndDedupeTraceEvents(prev, normalizeTraceEvents(payload.events)));
+      if (Array.isArray(payload.events)) setTraceEvents((prev) => mergePayloadEventsAsPrimary(prev, payload.events, 'confirm'));
       setWorkflowRefreshToken((prev) => prev + 1);
       const normalizedResult = buildResultFromPayload(payload);
       syncConfirmStateFromPayload(payload, normalizedResult, { defaultChoice: 'other', resetInputs: true, markResubmitSuccess: true });
@@ -997,7 +1018,7 @@ export function DiagnosePage() {
         setImageId(data.image_id);
       }
       if (Array.isArray(data?.events)) {
-        setTraceEvents((prev) => mergeAndDedupeTraceEvents(prev, normalizeTraceEvents(data.events)));
+        setTraceEvents((prev) => mergePayloadEventsAsPrimary(prev, data.events, 'confirm'));
       }
       setWorkflowRefreshToken((prev) => prev + 1);
 
@@ -1077,7 +1098,7 @@ export function DiagnosePage() {
         setImageId(data.image_id);
       }
       if (Array.isArray(data?.events)) {
-        setTraceEvents((prev) => mergeAndDedupeTraceEvents(prev, normalizeTraceEvents(data.events)));
+        setTraceEvents((prev) => mergePayloadEventsAsPrimary(prev, data.events, 'confirm'));
       }
       setWorkflowRefreshToken((prev) => prev + 1);
 
@@ -1210,7 +1231,7 @@ export function DiagnosePage() {
         traceFetchAbortRef.current = null;
       }
       if (Array.isArray(data?.events)) {
-        setTraceEvents((prev) => mergeAndDedupeTraceEvents(prev, normalizeTraceEvents(data.events)));
+        setTraceEvents((prev) => mergePayloadEventsAsPrimary(prev, data.events, 'replay'));
       }
     } catch (error) {
       if (traceFetchAbortRef.current === controller) {
@@ -1691,7 +1712,7 @@ export function DiagnosePage() {
                 traceId={traceId || undefined}
                 confidencePct={result?.displayConfidencePct ?? undefined}
                 refreshToken={workflowRefreshToken}
-                initialEvents={Array.isArray(latestPayload?.events) ? latestPayload.events as unknown[] : []}
+                initialEvents={Array.isArray(latestPayload?.events) ? latestPayload.events as unknown[] : (traceEvents as unknown[])}
                 initialPayload={latestPayload}
                 i18n={latestPayload && typeof latestPayload.i18n === 'object' ? latestPayload.i18n as Record<string, unknown> : null}
               />

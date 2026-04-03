@@ -73,3 +73,17 @@ test('mergeAndDedupeTraceEvents handles null node/status and fallback key', () =
   assert.equal(merged[0].stage, 'diag');
   assert.equal(merged[0].status, 'info');
 });
+
+test('mergeAndDedupeTraceEvents prefers continue source over replay on same seq', () => {
+  const merged = mergeAndDedupeTraceEvents(
+    normalizeTraceEvents([
+      { trace_id: 't-5', seq: 8, node: 'DiagnosisAgent', status: 'end', payload: { agent_id: 'diagnosis' }, __source: 'replay' },
+    ]),
+    normalizeTraceEvents([
+      { trace_id: 't-5', seq: 8, step: 'diagnosis_complete', agent: 'diagnosis', outputs: { final_disease: '灰霉病' }, __source: 'continue' },
+    ]),
+  );
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0].raw.__source, 'continue');
+  assert.equal(merged[0].stage, 'diagnosis_complete');
+});
