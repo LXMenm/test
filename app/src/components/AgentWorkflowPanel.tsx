@@ -29,8 +29,8 @@ import {
 } from '@/components/traceEvents';
 import type { LucideIcon } from 'lucide-react';
 import {
-  calcPhaseDurationsByAgent,
-  calcOverallPhaseDuration,
+  calcAgentRuntimeBySourcePriority,
+  calcWallClockPhaseDuration,
   formatDurationMs,
   isReplayTerminalWaitingEvent,
   isWaitingForUserInputEvent,
@@ -96,6 +96,8 @@ interface NormalizedEvent {
 interface AgentPhaseDurations {
   phase1Ms: number;
   phase2Ms: number;
+  totalMs: number;
+  missingStart?: boolean;
 }
 
 interface AgentRowDef {
@@ -610,7 +612,8 @@ const hasTreatmentOutputFields = (outputs: Record<string, unknown>): boolean => 
 const getPreferredTreatmentOutputs = (allEvents: NormalizedEvent[], fallbackOutputs: Record<string, unknown>): Record<string, unknown> => {
   const treatmentAgentEvents = allEvents.filter((event) => {
     const data = isRecord(event.data) ? event.data : {};
-    return String(data['agent'] ?? data['agent_id'] ?? '').toLowerCase() === 'treatment';
+    const rawAgent = String(data['agent'] ?? data['agent_id'] ?? '').toLowerCase();
+    return event.agentId === 'treatment' || rawAgent === 'treatment';
   });
   const treatmentFromAgent = [...treatmentAgentEvents].reverse().find((event) => hasTreatmentOutputFields(getOutputs(event)));
   if (treatmentFromAgent) return getOutputs(treatmentFromAgent);
@@ -914,6 +917,7 @@ export function AgentWorkflowPanel({
   });
   const mergedEventsRef = useRef<NormalizedEvent[]>([]);
   const seededByInitialEventsRef = useRef(false);
+  const runtimeGroupedCountsSignatureRef = useRef('');
 
   const clearTicker = useCallback(() => {
     if (tickerRef.current) {
@@ -1030,14 +1034,18 @@ export function AgentWorkflowPanel({
     setMergedEvents(mergedAllEvents);
     const runtimeBuckets = splitNormalizedEventsByProtocol(mergedAllEvents);
     const runtimeSelection = selectPrimaryPanelEvents(runtimeBuckets.workflowEvents, runtimeBuckets.compactEvents);
-    console.log('runtime grouped counts', runtimeSelection.primaryPanelEvents.map((e) => ({
-      seq: e.seq,
-      nodeName: e.nodeName,
-      semanticNode: e.semanticNode,
-      agentId: e.agentId,
-      status: e.status,
-      protocol: e.protocol,
-    })));
+    const runtimeSignature = runtimeSelection.primaryPanelEvents.map((e) => `${e.protocol}|${e.seq ?? 'na'}|${e.nodeName}|${e.semanticNode}|${e.agentId}|${e.status}`).join(';');
+    if (runtimeSignature !== runtimeGroupedCountsSignatureRef.current) {
+      runtimeGroupedCountsSignatureRef.current = runtimeSignature;
+      console.log('runtime grouped counts', runtimeSelection.primaryPanelEvents.map((e) => ({
+        seq: e.seq,
+        nodeName: e.nodeName,
+        semanticNode: e.semanticNode,
+        agentId: e.agentId,
+        status: e.status,
+        protocol: e.protocol,
+      })));
+    }
 
     if (waitingForUserInput && !options?.preserveReplayFlow) {
       waitingStableRef.current = true;
@@ -1054,50 +1062,15 @@ export function AgentWorkflowPanel({
       setTracePausedStable(false);
     }
 
-    const agentId = event.agentId;
-    eventHistoryRef.current[agentId] = dedupBySeq([...eventHistoryRef.current[agentId], event]).slice(-20);
-
-    if (agentId === 'diagnosis') {
-      const confidence = extractDiagnosisConfidence(event);
-      if (typeof confidence === 'number') {
-        setDiagnosisConfidencePct(confidence);
-      }
+    const hydrated = hydrateRowsFromEvents(runtimeSelection.primaryPanelEvents, initialPayload);
+    setRows(hydrated.rows);
+    setDiagnosisConfidencePct(hydrated.diagnosisConfidencePct);
+    if (typeof hydrated.finalTs === 'number') {
+      finalTsRef.current = hydrated.finalTs;
     }
+    maybeStartTicker(hydrated.rows, hydrated.workflowDone || workflowDoneRef.current, waitingForUserInput);
 
-    let markDone = false;
-    setRows((prev) => {
-      const next = { ...prev };
-      const current = { ...next[agentId] };
-
-      const fallbackMessage = event.status === 'completed'
-        ? `${agentId} 执行完成`
-        : event.status === 'error'
-          ? `${agentId} 执行错误`
-          : `${agentId} 执行中`;
-      const message = shortText(event.message || fallbackMessage, 140) || fallbackMessage;
-
-      const buckets = splitNormalizedEventsByProtocol(mergedEventsRef.current);
-      const selection = selectPrimaryPanelEvents(buckets.workflowEvents, buckets.compactEvents);
-      const fallbackEvents = selection.protocol === 'workflow_snapshot' ? buckets.compactEvents : buckets.workflowEvents;
-      current.steps = extractSubsteps(agentId, selection.primaryPanelEvents, initialPayload).slice(-5);
-      current.lastMessage = message;
-      current.highlights = extractHighlights(agentId, selection.primaryPanelEvents, fallbackEvents, initialPayload);
-
-      next[agentId] = applyEventToRowState(current, event);
-
-      const finalDone = agentId === 'final' && event.status === 'completed';
-      if (finalDone) {
-        markDone = true;
-        if (typeof event.tsMs === 'number') {
-          finalTsRef.current = event.tsMs;
-        }
-      }
-
-      maybeStartTicker(next, markDone || workflowDoneRef.current, waitingForUserInput);
-      return next;
-    });
-
-    if (markDone) {
+    if (hydrated.workflowDone) {
       workflowDoneRef.current = true;
       setWorkflowDone(true);
       stopPolling(false);
@@ -1128,6 +1101,7 @@ export function AgentWorkflowPanel({
       };
       mergedEventsRef.current = [];
       seededByInitialEventsRef.current = false;
+      runtimeGroupedCountsSignatureRef.current = '';
       queueMicrotask(() => setMergedEvents([]));
       return;
     }
@@ -1160,6 +1134,7 @@ export function AgentWorkflowPanel({
       final: [],
     };
     seededByInitialEventsRef.current = false;
+    runtimeGroupedCountsSignatureRef.current = '';
     const seed = Array.isArray(initialEvents) ? initialEvents : [];
     const normalizedSeed = seed
       .map((evt) => normalizeEvent(evt as RawTraceEvent))
@@ -1357,8 +1332,8 @@ export function AgentWorkflowPanel({
   );
 
   const phaseDurationsByAgent = useMemo(
-    () => calcPhaseDurationsByAgent(primaryPanelEvents, nowMs, workflowDone) as Record<FixedAgentId, AgentPhaseDurations>,
-    [primaryPanelEvents, nowMs, workflowDone],
+    () => calcAgentRuntimeBySourcePriority(mergedEvents, nowMs, workflowDone) as Record<FixedAgentId, AgentPhaseDurations>,
+    [mergedEvents, nowMs, workflowDone],
   );
 
   const activePhaseLabel = useMemo(() => {
@@ -1393,9 +1368,21 @@ export function AgentWorkflowPanel({
         ...row,
         progress,
         hasAgentEvents,
-        duration: formatDurationMs((phaseDurationsByAgent[def.id]?.phase1Ms ?? 0) + (phaseDurationsByAgent[def.id]?.phase2Ms ?? 0)),
-        phase1Duration: formatDurationMs(phaseDurationsByAgent[def.id]?.phase1Ms ?? 0),
-        phase2Duration: formatDurationMs(phaseDurationsByAgent[def.id]?.phase2Ms ?? 0),
+        duration: (() => {
+          const timing = phaseDurationsByAgent[def.id];
+          if (timing?.missingStart && (timing.totalMs ?? 0) === 0) return '—';
+          return formatDurationMs(timing?.totalMs ?? 0);
+        })(),
+        phase1Duration: (() => {
+          const timing = phaseDurationsByAgent[def.id];
+          if (timing?.missingStart && (timing.phase1Ms ?? 0) === 0) return '—';
+          return formatDurationMs(timing?.phase1Ms ?? 0);
+        })(),
+        phase2Duration: (() => {
+          const timing = phaseDurationsByAgent[def.id];
+          if (timing?.missingStart && (timing.phase2Ms ?? 0) === 0) return '—';
+          return formatDurationMs(timing?.phase2Ms ?? 0);
+        })(),
       };
     });
   }, [rows, nowMs, workflowDone, phaseDurationsByAgent, primaryPanelEvents]);
@@ -1425,8 +1412,8 @@ export function AgentWorkflowPanel({
   const totalProgress = Math.round((completedCount / FIXED_AGENTS.length) * 100);
 
   const overallDuration = useMemo(
-    () => calcOverallPhaseDuration(phaseDurationsByAgent),
-    [phaseDurationsByAgent],
+    () => calcWallClockPhaseDuration(mergedEvents, nowMs, workflowDone),
+    [mergedEvents, nowMs, workflowDone],
   );
 
   const displayConfidencePct =
