@@ -462,6 +462,7 @@ def reception_agent(state: CropDiseaseState) -> CropDiseaseState:
     state["normalized_symptoms"] = normalized_symptoms
     state["image_path"] = image_path
     state["current_step"] = "reception_complete"
+    state["next_action"] = None
     state["messages"] = [message]
     print(f"  - 作物类型: {crop_type}")
     print(f"  - 生长阶段: {crop_growth_stage}")
@@ -2064,7 +2065,10 @@ def verification_agent(state: CropDiseaseState) -> CropDiseaseState:
 def _deterministic_supervisor_decision(state: CropDiseaseState, flags: dict, missing_profile_fields: list[str]) -> tuple[str, bool, str, list[str]]:
     """确定性路由，增加 verification 闭环。"""
     requested_action = str(state.get("next_action") or "").strip()
-    if requested_action in {"reception", "diagnosis", "kb_retrieval", "treatment", "verification", "confirm_input", "confirm_choice"}:
+    current_step = str(state.get("current_step") or "")
+    if current_step == "start" and requested_action == "reception":
+        return "reception", False, "番茄病害监督智能体：初诊起始阶段，先进入接待智能体", ["initial_reception_entry"]
+    if requested_action in {"confirm_input", "confirm_choice"}:
         return requested_action, False, f"番茄病害监督智能体：按状态恢复请求继续执行 {requested_action}", ["resume_requested_action"]
 
     has_diagnosis = bool(state.get("final_disease") or state.get("disease_type"))
