@@ -127,6 +127,7 @@ interface TraceEvent {
 }
 
 type Top3Candidate = { disease: string; probPct: number };
+type ConfirmUiMode = 'none' | 'image' | 'text' | 'image_and_text';
 type PendingExpertItem = {
   trace_id: string;
   farmer_name?: string;
@@ -229,6 +230,7 @@ export function DiagnosePage() {
   const [showExpertInbox, setShowExpertInbox] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const traceFetchAbortRef = useRef<AbortController | null>(null);
+  const prevStatusRef = useRef<string | undefined>(undefined);
   const canViewExpertInbox = isAdmin;
   const toggleSection = useCallback((key: keyof SectionOpenState) => {
     setSectionOpen((prev) => ({ ...prev, [key]: !prev[key] }));
@@ -472,6 +474,58 @@ export function DiagnosePage() {
         source: typeof obj.source === 'string' ? obj.source : undefined,
       };
     });
+  };
+
+  const normalizePayloadRecord = (payloadLike: unknown): Record<string, unknown> => {
+    return payloadLike && typeof payloadLike === 'object' ? payloadLike as Record<string, unknown> : {};
+  };
+
+  const normalizeConfirmUiMode = (value: unknown): ConfirmUiMode => {
+    const raw = String(value ?? '').trim();
+    if (raw === 'image' || raw === 'text' || raw === 'image_and_text' || raw === 'none') return raw;
+    if (raw === 'image_only') return 'image';
+    if (raw === 'text_only') return 'text';
+    return 'none';
+  };
+
+  const resolveConfirmUiMode = (resultLike: DiagnosisResult | null): ConfirmUiMode => {
+    const fromConfirmMode = normalizeConfirmUiMode(resultLike?.confirm_ui_mode);
+    if (fromConfirmMode !== 'none') return fromConfirmMode;
+    const fromSupplementMode = normalizeConfirmUiMode(resultLike?.supplement_mode);
+    if (fromSupplementMode !== 'none') return fromSupplementMode;
+    return 'none';
+  };
+
+  const deriveConfirmNeeds = (
+    payloadLike: unknown,
+    normalizedResult: DiagnosisResult,
+  ): boolean => {
+    const payload = normalizePayloadRecord(payloadLike);
+    const candidates = parseTop3Candidates(payload, normalizedResult);
+    if (hasBackendExplain(payload)) {
+      return payload.need_confirm === true;
+    }
+    return payload.status === 'waiting_for_supplement' && payload.expert_review_recommended !== true && (
+      payload.need_confirm === true || deriveNeedConfirm(payload, candidates, normalizedResult.displayConfidencePct)
+    );
+  };
+
+  const syncConfirmStateFromPayload = (
+    payloadLike: unknown,
+    normalizedResult: DiagnosisResult,
+    options?: { resetInputs?: boolean; markResubmitSuccess?: boolean; defaultChoice?: string; },
+  ) => {
+    const payload = normalizePayloadRecord(payloadLike);
+    setResult(normalizedResult);
+    setLatestPayload(payload);
+    const needsConfirm = deriveConfirmNeeds(payload, normalizedResult);
+    setConfirmMode(needsConfirm);
+    setConfirmChoice(options?.defaultChoice ?? (needsConfirm ? 'other' : confirmChoice));
+    if (options?.resetInputs) {
+      setConfirmSymptoms('');
+      setResubmitFile(null);
+      setResubmitStatus(options?.markResubmitSuccess ? 'success' : 'idle');
+    }
   };
 
   const buildResultFromPayload = (payload: Record<string, unknown>): DiagnosisResult => {
@@ -770,7 +824,7 @@ export function DiagnosePage() {
         throw new Error('诊断接口返回格式非法');
       }
 
-      const payload = data as Record<string, unknown>;
+      const payload = normalizePayloadRecord(data);
 
       if (payload.trace_id) {
         setTraceId(String(payload.trace_id));
@@ -784,20 +838,7 @@ export function DiagnosePage() {
       setWorkflowRefreshToken((prev) => prev + 1);
 
       const normalizedResult = buildResultFromPayload(payload);
-      setResult(normalizedResult);
-      const payloadRecord = payload;
-      setLatestPayload(payloadRecord);
-
-      const candidates = parseTop3Candidates(payloadRecord, normalizedResult);
-      const needsConfirm = payload.status === 'waiting_for_supplement' && payload.expert_review_recommended !== true && (
-        hasBackendExplain(payloadRecord)
-          ? payload.need_confirm === true
-          : deriveNeedConfirm(payloadRecord, candidates, normalizedResult.displayConfidencePct)
-      );
-      console.log('[confirm] candidates=', candidates);
-      console.log('[confirm] derivedNeedConfirm=', needsConfirm);
-      setConfirmMode(needsConfirm);
-      setConfirmChoice(needsConfirm ? 'other' : confirmChoice);
+      syncConfirmStateFromPayload(payload, normalizedResult, { defaultChoice: 'other' });
 
       if (payload.status !== 'waiting_for_supplement') {
         const continueResp = await authFetch('/api/diagnose-image/continue', {
@@ -821,8 +862,7 @@ export function DiagnosePage() {
         if (continueData && typeof continueData === 'object') {
           const mergedPayload = { ...payload, ...(continueData as Record<string, unknown>) };
           const mergedResult = buildResultFromPayload(mergedPayload);
-          setResult(mergedResult);
-          setLatestPayload(mergedPayload);
+          syncConfirmStateFromPayload(mergedPayload, mergedResult);
           if (Array.isArray((continueData as Record<string, unknown>).events)) {
             setTraceEvents(normalizeTraceEvents((continueData as Record<string, unknown>).events));
           }
@@ -840,9 +880,6 @@ export function DiagnosePage() {
     if (usesImageSupplement && !resubmitFile) return;
     setResubmitSubmitting(true);
     setResubmitStatus('submitting');
-    setConfirmMode(false);
-    setConfirmSymptoms('');
-    setTraceEvents([]);
     const now = Date.now();
     setPhase1StartTime(now);
     setPhase2StartTime(null);
@@ -883,7 +920,7 @@ export function DiagnosePage() {
         throw new Error('重新诊断接口返回格式非法');
       }
 
-      const payload = data as Record<string, unknown>;
+      const payload = normalizePayloadRecord(data);
       if (payload.trace_id) {
         setTraceId(String(payload.trace_id));
       } else {
@@ -902,23 +939,62 @@ export function DiagnosePage() {
       setWorkflowRefreshToken((prev) => prev + 1);
 
       const normalizedResult = buildResultFromPayload(payload);
-      setResult(normalizedResult);
-      setLatestPayload(payload);
-
-      const candidates = parseTop3Candidates(payload, normalizedResult);
-      const needsConfirm = payload.status === 'waiting_for_supplement' && payload.expert_review_recommended !== true && (
-        hasBackendExplain(payload)
-          ? payload.need_confirm === true
-          : deriveNeedConfirm(payload, candidates, normalizedResult.displayConfidencePct)
-      );
-      setConfirmMode(needsConfirm);
-      setConfirmChoice('other');
-      setConfirmSymptoms('');
-      setResubmitFile(null);
-      setResubmitStatus('success');
+      syncConfirmStateFromPayload(payload, normalizedResult, { defaultChoice: 'other', resetInputs: true, markResubmitSuccess: true });
     } catch (error) {
       console.error('Resubmit diagnose failed:', error);
       setResubmitStatus(resubmitFile ? 'selected' : 'idle');
+    } finally {
+      setResubmitSubmitting(false);
+    }
+  };
+
+  const handleResubmitWithSymptomsOnly = async () => {
+    if (!selectedFarmerId || !traceId || !imageId) return;
+    if (!usesTextSupplement) return;
+    setResubmitSubmitting(true);
+    setResubmitStatus('submitting');
+    const now = Date.now();
+    setPhase1StartTime(now);
+    setPhase2StartTime(null);
+    setPhase1FrozenMs(null);
+    setWorkflowRefreshToken((prev) => prev + 1);
+    try {
+      const fd = new FormData();
+      fd.append('trace_id', traceId);
+      fd.append('previous_trace_id', traceId);
+      fd.append('image_id', imageId);
+      fd.append('crop_type', cropType || '番茄');
+      if (confirmSymptoms.trim()) fd.append('symptoms', confirmSymptoms.trim());
+      if (growthStage.trim()) fd.append('growth_stage', growthStage.trim());
+      if (modelId) fd.append('model_id', modelId);
+      fd.append('choice', 'other');
+      fd.append('farmer_id', selectedFarmerId);
+      if (selectedBaseId) fd.append('base_id', selectedBaseId);
+
+      const resp = await authFetch('/api/diagnose-retry', { method: 'POST', body: fd }, authUser);
+      const raw = await resp.text();
+      let data: unknown = null;
+      try {
+        data = raw ? JSON.parse(raw) : null;
+      } catch {
+        data = null;
+      }
+      if (!resp.ok) {
+        const detail = data && typeof data === 'object' && 'detail' in data
+          ? String((data as { detail?: unknown }).detail ?? '')
+          : '';
+        throw new Error(detail || raw || `补充症状复诊失败: ${resp.status}`);
+      }
+      const payload = normalizePayloadRecord(data);
+      if (payload.trace_id) setTraceId(String(payload.trace_id));
+      if (payload.image_id) setImageId(String(payload.image_id));
+      if (Array.isArray(payload.events)) setTraceEvents(normalizeTraceEvents(payload.events));
+      setWorkflowRefreshToken((prev) => prev + 1);
+      const normalizedResult = buildResultFromPayload(payload);
+      syncConfirmStateFromPayload(payload, normalizedResult, { defaultChoice: 'other', resetInputs: true, markResubmitSuccess: true });
+    } catch (error) {
+      console.error('Resubmit with symptoms failed:', error);
+      setResubmitStatus('idle');
     } finally {
       setResubmitSubmitting(false);
     }
@@ -970,20 +1046,7 @@ export function DiagnosePage() {
             : (result?.image_url || ''),
       };
       const nextResult = buildResultFromPayload(mergedPayload as Record<string, unknown>);
-      setResult(nextResult);
-      const payloadRecord = mergedPayload && typeof mergedPayload === 'object' ? mergedPayload as Record<string, unknown> : {};
-      setLatestPayload(payloadRecord);
-      const candidates = parseTop3Candidates(payloadRecord, nextResult);
-      const needsConfirm = data?.status === 'waiting_for_supplement' && data?.expert_review_recommended !== true && (
-        hasBackendExplain(payloadRecord)
-          ? data?.need_confirm === true
-          : deriveNeedConfirm(payloadRecord, candidates, nextResult.displayConfidencePct)
-      );
-      setConfirmMode(needsConfirm);
-      setConfirmChoice(needsConfirm ? 'other' : confirmChoice);
-      setConfirmSymptoms('');
-      setResubmitFile(null);
-      setResubmitStatus('idle');
+      syncConfirmStateFromPayload(mergedPayload, nextResult, { resetInputs: true });
     } catch (error) {
       console.error('Confirm candidate failed:', error);
     } finally {
@@ -996,8 +1059,12 @@ export function DiagnosePage() {
     if (!finalDecision) {
       if (confirmChoice !== 'other') {
         await handleConfirmCandidate();
-      } else {
+      } else if (usesImageSupplement) {
         await handleResubmitWithNewImage();
+      } else if (usesTextSupplement) {
+        await handleResubmitWithSymptomsOnly();
+      } else {
+        console.warn('waiting_for_supplement but no confirm_ui_mode available');
       }
       return;
     }
@@ -1059,19 +1126,7 @@ export function DiagnosePage() {
             : (result?.image_url || ''),
       };
       const nextResult = buildResultFromPayload(mergedPayload as Record<string, unknown>);
-      setResult(nextResult);
-      const payloadRecord = mergedPayload && typeof mergedPayload === 'object' ? mergedPayload as Record<string, unknown> : {};
-      setLatestPayload(payloadRecord);
-      const candidates = parseTop3Candidates(payloadRecord, nextResult);
-      const needsConfirm = data?.status === 'waiting_for_supplement' && data?.expert_review_recommended !== true && (
-        hasBackendExplain(payloadRecord)
-          ? data?.need_confirm === true
-          : deriveNeedConfirm(payloadRecord, candidates, nextResult.displayConfidencePct)
-      );
-      console.log('[confirm] candidates=', candidates);
-      console.log('[confirm] derivedNeedConfirm=', needsConfirm);
-      setConfirmMode(needsConfirm);
-      setConfirmChoice(needsConfirm ? 'other' : confirmChoice);
+      syncConfirmStateFromPayload(mergedPayload, nextResult);
     } catch (error) {
       console.error('Confirm diagnose failed:', error);
     } finally {
@@ -1117,20 +1172,11 @@ export function DiagnosePage() {
   const followUpQuestions = Array.isArray(result?.follow_up_questions)
     ? result.follow_up_questions.map((item) => String(item).trim()).filter(Boolean)
     : [];
-  const confirmUiMode = (() => {
-    if (typeof result?.confirm_ui_mode === 'string' && result.confirm_ui_mode.trim()) {
-      return result.confirm_ui_mode;
-    }
-    if (typeof result?.supplement_mode === 'string') {
-      if (result.supplement_mode === 'image_only') return 'image';
-      if (result.supplement_mode === 'image_and_text') return 'image_and_text';
-      if (result.supplement_mode === 'text_only') return 'text';
-    }
-    return confirmMode ? 'text' : 'none';
-  })();
+  const confirmUiMode = resolveConfirmUiMode(result);
   const usesTextSupplement = confirmUiMode === 'text' || confirmUiMode === 'image_and_text';
   const usesImageSupplement = confirmUiMode === 'image' || confirmUiMode === 'image_and_text';
-  const shouldShowSupplementSection = result?.status === 'waiting_for_supplement' && confirmUiMode !== 'none';
+  const shouldShowSupplementSection = result?.status === 'waiting_for_supplement';
+  const isNeedConfirm = confirmMode;
   const shouldShowFollowUps = confirmChoice === 'other' && followUpQuestions.length > 0;
   const { shouldShowExpertReviewDecision, shouldHideTreatment } = deriveDiagnoseReviewViewFlags(result, shouldShowSupplementSection);
   const confirmCopy = (() => {
@@ -1166,19 +1212,16 @@ export function DiagnosePage() {
 
   const hasTreatment = Boolean(result?.treatment);
   useEffect(() => {
+    const currentStatus = result?.status;
+    if (prevStatusRef.current === currentStatus) return;
+    prevStatusRef.current = currentStatus;
     setSectionOpen((prev) => {
       const nextConfirm = shouldShowSupplementSection;
       const nextTreatment = hasTreatment;
-      if (prev.confirm === nextConfirm && prev.treatment === nextTreatment) {
-        return prev;
-      }
-      return {
-        ...prev,
-        confirm: nextConfirm,
-        treatment: nextTreatment,
-      };
+      if (prev.confirm === nextConfirm && prev.treatment === nextTreatment) return prev;
+      return { ...prev, confirm: nextConfirm, treatment: nextTreatment };
     });
-  }, [shouldShowSupplementSection, hasTreatment]);
+  }, [result?.status, shouldShowSupplementSection, hasTreatment]);
 
   const refreshTrace = async (source: string = 'DiagnosePage.traceEffect') => {
     if (!traceId) return;
@@ -1235,8 +1278,7 @@ export function DiagnosePage() {
     if (!raw) return;
     const node = String(raw.node || '');
     const status = String(raw.status || '').toLowerCase();
-    const payload = raw.payload && typeof raw.payload === 'object' ? raw.payload as Record<string, unknown> : {};
-    if (!result) return;
+    const payload = normalizePayloadRecord(raw.payload);
     if (node === 'DiagnosisCompleted' || (node === 'DiagnosisAgent' && status === 'end')) {
       setResult((prev) => prev ? buildResultFromPayload({ ...prev, ...payload }) : prev);
     }
@@ -1250,7 +1292,7 @@ export function DiagnosePage() {
       setResult((prev) => (prev ? { ...prev, status: 'waiting_for_supplement' } : prev));
       setConfirmMode(true);
     }
-  }, [traceEvents, result]);
+  }, [traceEvents]);
 
   const rawTraceTimingEvents = traceEvents.map((event) => event.raw);
   const traceTiming = calcTracePhaseTiming(rawTraceTimingEvents, timingNowMs);
@@ -1551,7 +1593,12 @@ export function DiagnosePage() {
           </SectionCard>
 
           <SectionCard sectionKey="confirm" title="补充诊断信息" icon={<RefreshCw className="w-5 h-5 text-[#c8f7c5]" />} open={sectionOpen.confirm} onToggle={toggleSection}>
-            {shouldShowSupplementSection ? (
+            {shouldShowSupplementSection && confirmUiMode === 'none' ? (
+              <div className="bg-amber-500/10 border border-amber-400/30 rounded-xl p-4 text-sm text-amber-100">
+                当前需要补充信息，但补充模式未返回，请稍后重试或联系管理员。
+                {isNeedConfirm ? <span className="block mt-1 text-xs text-amber-200/80">系统已标记为待补充状态。</span> : null}
+              </div>
+            ) : shouldShowSupplementSection ? (
               <div className="bg-[#c8f7c5]/10 border border-[#c8f7c5]/30 rounded-xl p-4 space-y-4">
                 <h4 className="text-[#c8f7c5] font-medium">{confirmCopy.title}</h4>
                 <p className="text-sm text-white/80">{result?.confirm_reason_text || confirmCopy.body}</p>
@@ -1652,7 +1699,7 @@ export function DiagnosePage() {
           <SectionCard sectionKey="treatment" title="治疗建议" icon={<AlertCircle className="w-5 h-5 text-[#c8f7c5]" />} open={sectionOpen.treatment} onToggle={toggleSection}>
             {shouldHideTreatment ? (
               <div className="bg-yellow-500/10 border border-yellow-400/30 rounded-xl p-4 text-yellow-200 text-sm">当前阶段暂不下发治疗建议，请先完成确认/复核流程。</div>
-            ) : Boolean(result?.treatment) ? (
+            ) : result?.treatment ? (
               <div className="bg-white/5 rounded-xl p-4 text-white/80 text-sm leading-relaxed whitespace-pre-line">{renderTreatment(result?.treatment)}</div>
             ) : (loading || (result && result.status !== 'waiting_for_supplement')) ? (
               <p className="text-white/60">方案生成中...</p>
