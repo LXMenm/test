@@ -1752,6 +1752,152 @@ def _collect_runtime_debug() -> dict[str, Any]:
     }
 
 
+async def _save_uploaded_image(file: UploadFile, *, preferred_name: str | None = None) -> tuple[str, Path]:
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="文件名为空")
+    suffix = Path(file.filename).suffix.lower()
+    content_type = (file.content_type or "").lower()
+    if suffix not in IMAGE_EXTS and not content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="仅支持图片文件上传")
+    unique_name = preferred_name or f"{uuid.uuid4().hex}{suffix or '.jpg'}"
+    saved_path = UPLOAD_DIR / unique_name
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="上传文件为空")
+    if len(data) > MAX_UPLOAD_MB * 1024 * 1024:
+        raise HTTPException(status_code=413, detail=f"上传文件超过{MAX_UPLOAD_MB}MB限制")
+    try:
+        Image.open(BytesIO(data)).verify()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"上传文件不是有效图片: {exc}") from exc
+    saved_path.write_bytes(data)
+    cleanup_old_uploads()
+    return unique_name, saved_path
+
+
+def _lightweight_diagnosis_payload(
+    *,
+    image_id: str,
+    trace_id: str,
+    final_disease: str,
+    confidence_pct: float | None,
+    need_confirm: bool,
+    reason_code: str | None,
+    reason_text: str | None,
+    ui_mode: str,
+    symptoms_list: list[str],
+) -> dict[str, Any]:
+    status = "waiting_for_supplement" if need_confirm else "diagnosis_completed"
+    confirm_fields = ["symptoms"]
+    if ui_mode in {"image", "image_and_text"}:
+        confirm_fields.append("image")
+    return {
+        "trace_id": trace_id,
+        "image_id": image_id,
+        "image_url": f"/uploads/{image_id}",
+        "final_disease": final_disease,
+        "displayConfidencePct": confidence_pct,
+        "need_confirm": need_confirm,
+        "confirm_message": "当前信息不足，请补充诊断信息后继续" if need_confirm else None,
+        "confirm_reason_code": reason_code if need_confirm else None,
+        "confirm_reason_text": reason_text if need_confirm else None,
+        "confirm_ui_mode": ui_mode if need_confirm else None,
+        "confirm_fields": confirm_fields if need_confirm else [],
+        "follow_up_questions": symptoms_list[:3] if need_confirm else [],
+        "status": status,
+        "treatment": None,
+        "treatment_available": False,
+        "verification_available": False,
+        "verification_result": None,
+    }
+
+
+@app.post("/api/diagnose-image/start")
+async def diagnose_image_start(
+    request: Request,
+    file: UploadFile = File(...),
+    crop_type: str = Form("番茄"),
+    symptoms: str | None = Form(None),
+    growth_stage: str | None = Form(None),
+    model_id: str | None = Form(None),
+    farmer_id: str | None = Form(None),
+    base_id: str | None = Form(None),
+) -> dict[str, Any]:
+    actor = _get_request_actor(request)
+    farmer_id = _apply_farmer_scope(actor, farmer_id)
+    trace_id = uuid.uuid4().hex
+    emit_node_event(trace_id, node="ParseInput", status="start", message="开始解析上传请求")
+    image_id, saved_path = await _save_uploaded_image(file)
+    emit_node_event(trace_id, node="ParseInput", status="end", message="输入解析完成", payload={"image_path": str(saved_path)})
+
+    allow_torch = str(DIAGNOSIS_ALLOW_TORCH).lower() in {"1", "true", "yes"}
+    resolved_model, _ = resolve_model(model_id, allow_torch=allow_torch)
+    engine = get_diagnosis_engine(model_path=resolved_model.model_path, backend=resolved_model.backend, allow_torch=allow_torch)
+    emit_node_event(trace_id, node="DiagnosisAgent", status="start", message="正在进行图像诊断")
+    disease, conf, probs = engine.diagnose_from_image(str(saved_path))
+    disease = disease or "未知病害"
+    conf = float(conf or 0.0)
+    sorted_probs = sorted((probs or {}).items(), key=lambda x: x[1], reverse=True)
+    top1_conf = float(sorted_probs[0][1]) if sorted_probs else conf
+    top2_conf = float(sorted_probs[1][1]) if len(sorted_probs) > 1 else 0.0
+    thresholds = get_runtime_thresholds()
+    low_conf = top1_conf < float(thresholds["diagnosis_conf_threshold"])
+    low_margin = (top1_conf - top2_conf) < float(thresholds["low_margin_threshold"]) if len(sorted_probs) > 1 else False
+    need_confirm = bool(low_conf or low_margin)
+    reason_code = "LOW_DISCRIMINATION_NEED_KEY_FEATURES" if low_margin else ("IMAGE_QUALITY_LOW" if low_conf else None)
+    reason_text = "候选病害区分度不足，请补充关键特征信息" if low_margin else ("当前图像证据不足，请补充诊断信息" if low_conf else None)
+    ui_mode = "image_and_text" if need_confirm else "none"
+    emit_node_event(trace_id, node="DiagnosisCompleted", status="end", message="诊断阶段完成", payload={
+        "final_disease": disease,
+        "final_confidence": top1_conf,
+        "need_confirm": need_confirm,
+    })
+
+    payload = _lightweight_diagnosis_payload(
+        image_id=image_id,
+        trace_id=trace_id,
+        final_disease=disease,
+        confidence_pct=round(top1_conf * 100, 2),
+        need_confirm=need_confirm,
+        reason_code=reason_code,
+        reason_text=reason_text,
+        ui_mode=ui_mode,
+        symptoms_list=[s.strip() for s in (symptoms or "").split(",") if s.strip()],
+    )
+    if payload["status"] == "waiting_for_supplement":
+        emit_node_event(trace_id, node="AwaitUserConfirmation", status="end", message="等待用户补充诊断信息", payload=payload)
+    return payload
+
+
+@app.post("/api/diagnose-image/continue", response_model=DiagnoseResponse, response_model_exclude_none=True)
+async def diagnose_image_continue(
+    request: Request,
+    payload: dict = Body(...),
+) -> DiagnoseResponse:
+    image_id = str(payload.get("image_id") or "").strip()
+    trace_id = str(payload.get("trace_id") or "").strip()
+    if not image_id:
+        raise HTTPException(status_code=400, detail="image_id 不能为空")
+    image_path = UPLOAD_DIR / image_id
+    if not image_path.exists():
+        raise HTTPException(status_code=404, detail="未找到对应图片，请重新上传")
+    with image_path.open("rb") as f:
+        image_bytes = f.read()
+    upload_file = UploadFile(filename=image_id, file=BytesIO(image_bytes))
+    return await diagnose_image(
+        request=request,
+        file=upload_file,
+        crop_type=str(payload.get("crop_type") or "番茄"),
+        symptoms=str(payload.get("symptoms") or "") or None,
+        growth_stage=str(payload.get("growth_stage") or "") or None,
+        model_id=str(payload.get("model_id") or "") or None,
+        farmer_id=str(payload.get("farmer_id") or "") or None,
+        base_id=str(payload.get("base_id") or "") or None,
+        trace_id_override=trace_id or None,
+        image_id_override=image_id,
+    )
+
+
 @app.post("/api/diagnose-image", response_model=DiagnoseResponse, response_model_exclude_none=True)
 async def diagnose_image(
     request: Request,
@@ -1765,45 +1911,20 @@ async def diagnose_image(
     lat: float | None = Form(None),
     lon: float | None = Form(None),
     debug_runtime: bool | None = Form(None),
+    trace_id_override: str | None = Form(None),
+    image_id_override: str | None = Form(None),
 ) -> DiagnoseResponse:
     request_started = time.perf_counter()
     actor = _get_request_actor(request)
     farmer_id = _apply_farmer_scope(actor, farmer_id)
-    trace_id = uuid.uuid4().hex
+    trace_id = str(trace_id_override or "").strip() or uuid.uuid4().hex
     emit_node_event(trace_id, node="ParseInput", status="start", message="开始解析上传请求")
     debug_mode = bool(debug_runtime) or str(os.getenv("DIAG_DEBUG_RUNTIME", "0")).lower() in {"1", "true", "yes"}
     runtime_debug = _collect_runtime_debug() if debug_mode else None
     if debug_mode:
         print(f"[RuntimeDebug] {json.dumps(runtime_debug, ensure_ascii=False)}")
-    if not file.filename:
-        emit_node_event(trace_id, node="ParseInput", status="error", message="文件名为空")
-        emit_node_event(trace_id, node="Final", status="error", message="请求解析失败")
-        raise HTTPException(status_code=400, detail="文件名为空")
-
-    suffix = Path(file.filename).suffix.lower()
-    content_type = (file.content_type or "").lower()
-    if suffix not in IMAGE_EXTS and not content_type.startswith("image/"):
-        emit_node_event(trace_id, node="ParseInput", status="error", message="上传文件类型不支持")
-        emit_node_event(trace_id, node="Final", status="error", message="请求解析失败")
-        raise HTTPException(status_code=400, detail="仅支持图片文件上传")
-
-    unique_name = f"{uuid.uuid4().hex}{suffix or '.jpg'}"
-    saved_path = UPLOAD_DIR / unique_name
-
     try:
-        data = await file.read()
-        if not data:
-            raise HTTPException(status_code=400, detail="上传文件为空")
-        if len(data) > MAX_UPLOAD_MB * 1024 * 1024:
-            raise HTTPException(status_code=413, detail=f"上传文件超过{MAX_UPLOAD_MB}MB限制")
-
-        try:
-            Image.open(BytesIO(data)).verify()
-        except Exception as exc:
-            raise HTTPException(status_code=400, detail=f"上传文件不是有效图片: {exc}") from exc
-
-        saved_path.write_bytes(data)
-        cleanup_old_uploads()
+        unique_name, saved_path = await _save_uploaded_image(file, preferred_name=image_id_override)
         emit_node_event(trace_id, node="ParseInput", status="end", message="输入解析完成", payload={"image_path": str(saved_path)})
     except HTTPException:
         emit_node_event(trace_id, node="ParseInput", status="error", message="输入解析失败")
