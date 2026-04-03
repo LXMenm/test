@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 import app as app_module
 import event_store
 import trace_store
+import workflow as workflow_module
 
 
 def _setup_event_dirs(monkeypatch, tmp_path: Path) -> None:
@@ -153,6 +154,9 @@ def _install_stub_agents(monkeypatch):
     calls = {"diagnosis": 0}
 
     def _supervisor(state):
+        requested = str(state.get("next_action") or "")
+        if requested in {"confirm_input", "confirm_choice"}:
+            return {**state, "next_action": requested}
         if not (state.get("final_disease") or state.get("disease_type")):
             state["next_action"] = "diagnosis"
         elif not state.get("kb_snapshot"):
@@ -219,6 +223,11 @@ def _install_stub_agents(monkeypatch):
     monkeypatch.setattr(app_module, "kb_retrieval_agent", _kb_retrieval)
     monkeypatch.setattr(app_module, "treatment_agent", _treatment)
     monkeypatch.setattr(app_module, "verification_agent", _verification)
+    monkeypatch.setattr(workflow_module, "supervisor_agent", _supervisor)
+    monkeypatch.setattr(workflow_module, "diagnosis_agent", _diagnosis)
+    monkeypatch.setattr(workflow_module, "kb_retrieval_agent", _kb_retrieval)
+    monkeypatch.setattr(workflow_module, "treatment_agent", _treatment)
+    monkeypatch.setattr(workflow_module, "verification_agent", _verification)
     return calls
 
 
@@ -267,6 +276,9 @@ def _install_recommend_expert_review_agents(monkeypatch):
     calls = {"diagnosis": 0}
 
     def _supervisor(state):
+        requested = str(state.get("next_action") or "")
+        if requested in {"confirm_input", "confirm_choice"}:
+            return {**state, "next_action": requested}
         if not (state.get("final_disease") or state.get("disease_type")):
             state["next_action"] = "diagnosis"
         elif (state.get("personalization_flags") or {}).get("need_confirm"):
@@ -335,6 +347,11 @@ def _install_recommend_expert_review_agents(monkeypatch):
     monkeypatch.setattr(app_module, "kb_retrieval_agent", _kb_retrieval)
     monkeypatch.setattr(app_module, "treatment_agent", _treatment)
     monkeypatch.setattr(app_module, "verification_agent", _verification)
+    monkeypatch.setattr(workflow_module, "supervisor_agent", _supervisor)
+    monkeypatch.setattr(workflow_module, "diagnosis_agent", _diagnosis)
+    monkeypatch.setattr(workflow_module, "kb_retrieval_agent", _kb_retrieval)
+    monkeypatch.setattr(workflow_module, "treatment_agent", _treatment)
+    monkeypatch.setattr(workflow_module, "verification_agent", _verification)
     return calls
 
 
