@@ -846,6 +846,22 @@ export function DiagnosePage() {
           setLatestPayload(mergedPayload);
           const mergedResult = buildResultFromPayload(mergedPayload);
           syncConfirmStateFromPayload(mergedPayload, mergedResult);
+          
+          console.log('latestPayload.events.length', Array.isArray(mergedPayload?.events) ? mergedPayload.events.length : 'no-events');
+          console.log('latestPayload.events.sample', Array.isArray(mergedPayload?.events) ? mergedPayload.events.slice(0, 3) : null);
+          
+          console.log(
+            'continue events brief',
+            (continueData?.events || []).map((e: any) => ({
+              seq: e.seq,
+              node: e.node,
+              agent: e.agent,
+              agent_id: e.agent_id,
+              status: e.status,
+              message: e.message,
+            }))
+          );
+          
           if (Array.isArray((continueData as Record<string, unknown>).events)) {
             setTraceEvents((prev) => mergePayloadEventsAsPrimary(prev, (continueData as Record<string, unknown>).events, 'continue'));
           } else if (Array.isArray(payload.events)) {
@@ -1708,6 +1724,19 @@ export function DiagnosePage() {
                   <p className="text-xs text-white/65">耗时来源：{timingSourceLabel}。总耗时 {formatDurationMs(displayedTiming.totalMs)}（一诊 {formatDurationMs(displayedTiming.phase1Ms)} / 二诊 {formatDurationMs(displayedTiming.phase2Ms)}）</p>
                 </div>
               )}
+              {(() => {
+                const events = Array.isArray(latestPayload?.events) ? latestPayload.events : traceEvents;
+                console.log('panel initialEvents length', events.length);
+                console.log('panel initialEvents detail', events.map((e: any) => ({
+                  seq: e.seq,
+                  node: e.node,
+                  agent: e.agent,
+                  agent_id: e.agent_id,
+                  status: e.status,
+                  message: e.message,
+                })));
+                return null;
+              })()}
               <AgentWorkflowPanel
                 traceId={traceId || undefined}
                 confidencePct={result?.displayConfidencePct ?? undefined}

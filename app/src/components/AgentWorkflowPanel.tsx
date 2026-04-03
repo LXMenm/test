@@ -225,7 +225,7 @@ const normalizeEvent = (raw: RawTraceEvent): NormalizedEvent => {
   const outputs = isRecord(normalized.raw.outputs) ? normalized.raw.outputs : undefined;
   const inputs = isRecord(normalized.raw.inputs) ? normalized.raw.inputs : undefined;
 
-  return {
+  const result: NormalizedEvent = {
     traceId: normalized.traceId || String((raw as Record<string, unknown>).trace_id || ''),
     seq: Number.isFinite(normalized.seq) ? normalized.seq : undefined,
     ts,
@@ -236,7 +236,7 @@ const normalizeEvent = (raw: RawTraceEvent): NormalizedEvent => {
     detail: normalized.detail,
     raw: normalized.raw,
     semanticNode,
-    sourceKind: raw.node ? 'node_event' : 'agent_event',
+    sourceKind: (raw.node ? 'node_event' : 'agent_event') as 'node_event' | 'agent_event',
     agentId: agent,
     nodeName: normalized.stage,
     status: toPanelStatus(normalized.status),
@@ -255,6 +255,17 @@ const normalizeEvent = (raw: RawTraceEvent): NormalizedEvent => {
       decision_route: decision?.route,
     },
   };
+
+  console.log('normalized event', {
+    seq: result.seq,
+    nodeName: result.nodeName,
+    semanticNode: result.semanticNode,
+    agentId: result.agentId,
+    status: result.status,
+    message: result.message,
+  });
+
+  return result;
 };
 
 
@@ -293,6 +304,18 @@ const dedupBySeq = (events: NormalizedEvent[]): NormalizedEvent[] => {
   }));
   const deduped = mergeAndDedupeTraceEvents([], asTrace);
   const mapped = deduped.map((item) => normalizeEvent(item.raw as RawTraceEvent));
+  
+  console.log(
+    'workflow grouped counts',
+    mapped.map((e) => ({
+      seq: e.seq,
+      nodeName: e.nodeName,
+      semanticNode: e.semanticNode,
+      agentId: e.agentId,
+      status: e.status,
+    }))
+  );
+  
   return sortNormalizedEvents(mapped);
 };
 
@@ -779,6 +802,19 @@ export function AgentWorkflowPanel({
     });
   }, [connectionState, connectionHint, traceId, tracePausedStable, pausedByUserInput, workflowDone]);
 
+  useEffect(() => {
+    console.log('[AgentWorkflowPanel] initialEvents received:', {
+      length: initialEvents?.length ?? 0,
+      events: initialEvents?.map((e: any) => ({
+        seq: e.seq,
+        node: e.node,
+        agent: e.agent,
+        agent_id: e.agent_id,
+        status: e.status,
+      })),
+    });
+  }, [initialEvents]);
+
   const maybeStartTicker = useCallback((snapshot: Record<FixedAgentId, AgentRowState>, done: boolean, paused: boolean) => {
     const hasRunning = FIXED_AGENTS.some((agent) => snapshot[agent.id].status === 'running');
     const hasPhaseTimer = typeof phaseStartMs === 'number' && Number.isFinite(phaseStartMs);
@@ -991,6 +1027,18 @@ export function AgentWorkflowPanel({
     const normalizedSeed = seed
       .map((evt) => normalizeEvent(evt as RawTraceEvent))
       .filter((evt) => shouldIncludeEvent(evt.raw as RawTraceEvent, phaseStartMs));
+    
+    console.log(
+      'workflow grouped counts',
+      normalizedSeed.map((e) => ({
+        seq: e.seq,
+        nodeName: e.nodeName,
+        semanticNode: e.semanticNode,
+        agentId: e.agentId,
+        status: e.status,
+      }))
+    );
+    
     if (normalizedSeed.length) {
       allEventsRef.current = dedupBySeq(normalizedSeed);
       setAllEvents(allEventsRef.current);
