@@ -322,6 +322,20 @@ export function DiagnosePage() {
     return Boolean(reasonCode) && Boolean(uiMode);
   };
 
+  const resolveTraceAgentId = (eventLike: unknown): string => {
+    const event = eventLike && typeof eventLike === 'object' ? eventLike as Record<string, unknown> : {};
+    const payload = event.payload && typeof event.payload === 'object' ? event.payload as Record<string, unknown> : {};
+    const fallbackByNode = (() => {
+      const node = String(event.node ?? '').toLowerCase();
+      if (node.includes('diagnosis')) return 'diagnosis';
+      if (node.includes('parse')) return 'parse_input';
+      if (node.includes('confidence')) return 'confidence_gate';
+      if (node.includes('final')) return 'final';
+      return '';
+    })();
+    return String(event.agent_id ?? event.agent ?? payload.agent_id ?? payload.agent ?? fallbackByNode).toLowerCase();
+  };
+
   const parseTop3Candidates = (payloadLike: unknown, resultLike?: DiagnosisResult | null, sourceType: 'image' | 'text' | 'fusion' = 'image'): Top3Candidate[] => {
     const payload = payloadLike && typeof payloadLike === 'object' ? payloadLike as Record<string, unknown> : {};
     const imageResult = payload.image_result && typeof payload.image_result === 'object'
@@ -336,12 +350,15 @@ export function DiagnosePage() {
         .map((eventLike) => {
           if (!eventLike || typeof eventLike !== 'object') return undefined;
           const event = eventLike as Record<string, unknown>;
-          if (String(event.agent ?? '').toLowerCase() !== 'diagnosis') return undefined;
+          if (resolveTraceAgentId(event) !== 'diagnosis') return undefined;
           const outputs = event.outputs && typeof event.outputs === 'object' ? event.outputs as Record<string, unknown> : undefined;
+          const payload = event.payload && typeof event.payload === 'object' ? event.payload as Record<string, unknown> : undefined;
           const fromDiagnosis = outputs?.image_diagnosis && typeof outputs.image_diagnosis === 'object'
             ? outputs.image_diagnosis as Record<string, unknown>
-            : undefined;
-          return fromDiagnosis?.top3;
+            : (payload?.image_diagnosis && typeof payload.image_diagnosis === 'object'
+              ? payload.image_diagnosis as Record<string, unknown>
+              : undefined);
+          return fromDiagnosis?.top3 ?? payload?.top3;
         })
         .find((top3) => Array.isArray(top3))
       : undefined;
@@ -452,9 +469,13 @@ export function DiagnosePage() {
       const hasDiagnosisNeedConfirm = payload.events.some((eventLike) => {
         if (!eventLike || typeof eventLike !== 'object') return false;
         const event = eventLike as Record<string, unknown>;
-        if (String(event.agent ?? '').toLowerCase() !== 'diagnosis') return false;
+        if (resolveTraceAgentId(event) !== 'diagnosis') return false;
         const outputs = event.outputs && typeof event.outputs === 'object' ? event.outputs as Record<string, unknown> : undefined;
-        return outputs?.need_confirm === true || hasLowConfidenceReason(getConfirmReasons(outputs));
+        const payload = event.payload && typeof event.payload === 'object' ? event.payload as Record<string, unknown> : undefined;
+        return outputs?.need_confirm === true
+          || payload?.need_confirm === true
+          || hasLowConfidenceReason(getConfirmReasons(outputs))
+          || hasLowConfidenceReason(getConfirmReasons(payload));
       });
       if (hasDiagnosisNeedConfirm) return true;
     }
