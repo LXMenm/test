@@ -12,6 +12,8 @@ from agents import (
     supervisor_agent,
     kb_retrieval_agent,
     verification_agent,
+    confirm_input_step,
+    confirm_choice_step,
 )
 
 
@@ -31,6 +33,10 @@ def route_next_step(state: CropDiseaseState) -> str:
         return "treatment"
     elif next_action == "verification":
         return "verification"
+    elif next_action == "confirm_input":
+        return "confirm_input"
+    elif next_action == "confirm_choice":
+        return "confirm_choice"
     elif next_action == "await_user_confirmation":
         return END
     elif next_action == "manual_review":
@@ -63,8 +69,10 @@ def build_graph() -> StateGraph:
     workflow.add_node("kb_retrieval", kb_retrieval_agent)
     workflow.add_node("treatment", treatment_agent)
     workflow.add_node("verification", verification_agent)
+    workflow.add_node("confirm_input", confirm_input_step)
+    workflow.add_node("confirm_choice", confirm_choice_step)
 
-    workflow.set_entry_point("reception")
+    workflow.set_entry_point("supervisor")
 
     workflow.add_conditional_edges(
         "supervisor",
@@ -75,6 +83,8 @@ def build_graph() -> StateGraph:
             "kb_retrieval": "kb_retrieval",
             "treatment": "treatment",
             "verification": "verification",
+            "confirm_input": "confirm_input",
+            "confirm_choice": "confirm_choice",
             "await_user_confirmation": END,
             "manual_review": END,
             END: END
@@ -86,6 +96,8 @@ def build_graph() -> StateGraph:
     workflow.add_edge("kb_retrieval", "supervisor")
     workflow.add_edge("treatment", "supervisor")
     workflow.add_edge("verification", "supervisor")
+    workflow.add_edge("confirm_input", "supervisor")
+    workflow.add_edge("confirm_choice", "supervisor")
 
     app = workflow.compile()
     return app

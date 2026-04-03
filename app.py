@@ -2604,6 +2604,7 @@ def _diagnose_confirm_core(request: Request, payload: dict) -> dict:
         state["image_path"] = str(image_path)
         state["symptoms"] = merged_symptoms
         state["historical_symptoms"] = historical_symptoms
+        state["incoming_symptoms"] = incoming_symptoms
         state["confirm_round_index"] = confirm_round_index
         state["user_choice"] = "other"
         state["current_step"] = "confirm_input"
@@ -2624,90 +2625,31 @@ def _diagnose_confirm_core(request: Request, payload: dict) -> dict:
             state["verification_issues"] = list(previous_case_event.get("verification_issues") or [])
             state["verification_summary"] = previous_case_event.get("verification_summary")
     else:
-        state = resume_from_confirm_input(
-            state,
-            crop_type=crop_type,
-            growth_stage=growth_stage,
-            model_id=model_id,
-            image_path=str(image_path),
-            merged_symptoms=merged_symptoms,
-        )
+        state["trace_id"] = trace_id
+        state["crop_type"] = crop_type
+        state["crop_growth_stage"] = normalize_growth_stage_code(growth_stage)
+        state["image_path"] = str(image_path)
+        state["diagnosis_model_id"] = model_id
+        state["symptoms"] = merged_symptoms
         state["historical_symptoms"] = historical_symptoms
+        state["incoming_symptoms"] = incoming_symptoms
         state["confirm_round_index"] = confirm_round_index
-        state["user_choice"] = choice or None
-        state["current_step"] = "confirm_input"
-
-    append_trace(
-        state,
-        agent="confirm_input",
-        inputs={
-            "symptoms": state["symptoms"],
-            "historical_symptoms": historical_symptoms,
-            "incoming_symptoms": incoming_symptoms,
-            "crop_type": crop_type,
-            "growth_stage": normalize_growth_stage_code(growth_stage),
-            "image_id": image_id,
-            "previous_trace_id": previous_trace_id or trace_id,
-            "confirm_round_parent_trace_id": trace_id,
-            "model_id": model_id,
-            "choice": choice or ("other" if is_expert_decision_stage else None),
-            "final_decision": final_decision,
-            "farmer_id": farmer_id,
-            "base_id": base_id,
-            "confirm_round_index": confirm_round_index,
-        },
-        outputs={},
-    )
-    if (not is_expert_decision_stage) and choice and choice != "other":
-        inherited_context = _inherit_previous_diagnosis_context(
-            state,
-            choice=choice,
-            previous_case_event=previous_case_event,
-        )
-        flags = state.get("personalization_flags") or {}
-        flags["need_confirm"] = False
-        state["personalization_flags"] = flags
-        append_trace(
-            state,
-            agent="confirm_choice",
-            inputs={"choice": choice},
-            outputs={
-                "final_disease": choice,
-                "need_confirm": False,
-                "final_source": state.get("final_source"),
-                "final_confidence": state.get("final_confidence"),
-                "inherited_context": inherited_context,
-            },
-        )
+        state["user_choice"] = choice or "other"
+        state["current_step"] = "confirm_choice" if (choice and choice != "other") else "confirm_input"
+        state["previous_trace_id"] = previous_trace_id or trace_id
+        state["confirm_round_parent_trace_id"] = trace_id
+        state["selected_candidate"] = choice if (choice and choice != "other") else None
+        state["inherited_context"] = previous_case_event if isinstance(previous_case_event, dict) else {}
+        state["next_action"] = "confirm_choice" if (choice and choice != "other") else "confirm_input"
+        graph = build_graph()
+        state = graph.invoke(state)
 
     # 低置信度回退分支：由 supervisor 做统一路由决策，避免形成平行独立流程。
     terminal_action: str | None = None
     if is_expert_decision_stage:
         terminal_action = "expert_final_decision"
     else:
-        for _ in range(10):
-            state = supervisor_agent(state)
-            next_action = str(state.get("next_action") or "")
-            if next_action == "diagnosis":
-                state = diagnosis_agent(state)
-            elif next_action == "kb_retrieval":
-                state = kb_retrieval_agent(state)
-            elif next_action == "treatment":
-                state = treatment_agent(state)
-            elif next_action == "verification":
-                state = verification_agent(state)
-            elif next_action == "await_user_confirmation":
-                terminal_action = "await_user_confirmation"
-                break
-            elif next_action == "manual_review":
-                terminal_action = "manual_review"
-                break
-            elif next_action == "end":
-                terminal_action = "end"
-                break
-            else:
-                terminal_action = next_action or "end"
-                break
+        terminal_action = str(state.get("next_action") or "end")
 
     final_confidence = state.get("final_confidence")
     final_source = state.get("final_source")
