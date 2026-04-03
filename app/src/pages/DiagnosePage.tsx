@@ -21,6 +21,11 @@ import {
 } from '@/lib/profileLabels';
 import { resolveModelOptions } from '@/lib/modelOptions';
 import { fetchTraceEvents } from '@/lib/traceClient';
+import {
+  mergeAndDedupeTraceEvents,
+  normalizeTraceEvents as normalizeRawTraceEvents,
+  type NormalizedTraceEvent,
+} from '@/components/traceEvents';
 import { calcTracePhaseTiming, formatDurationMs } from '@/components/agentWorkflowTiming';
 import { authFetch, loadAuthUser } from '@/auth';
 
@@ -118,13 +123,7 @@ interface ProfileDetail {
 
 type BaseOption = { id: string; name?: string };
 
-interface TraceEvent {
-  timestamp: string;
-  agent: string;
-  status: string;
-  message?: string;
-  raw: Record<string, unknown>;
-}
+type TraceEvent = NormalizedTraceEvent;
 
 type Top3Candidate = { disease: string; probPct: number };
 type ConfirmUiMode = 'none' | 'image' | 'text' | 'image_and_text';
@@ -634,44 +633,27 @@ export function DiagnosePage() {
     };
   };
 
-  const normalizeTraceEvents = (eventsLike: unknown): TraceEvent[] => {
+  const tagEventsSource = (eventsLike: unknown, source: 'start' | 'continue' | 'replay' | 'confirm'): unknown[] => {
     if (!Array.isArray(eventsLike)) return [];
-    return eventsLike
-      .map((evt: unknown) => {
-        const event = evt && typeof evt === 'object' ? evt as Record<string, unknown> : {};
-        const decision = event.decision && typeof event.decision === 'object'
-          ? event.decision as Record<string, unknown>
-          : undefined;
-        const seq = typeof event.seq === 'number' && Number.isFinite(event.seq) ? event.seq : Number.MAX_SAFE_INTEGER;
-        return {
-          seq,
-          value: {
-            timestamp: typeof event.ts === 'string'
-              ? event.ts
-              : (typeof event.timestamp === 'string' ? event.timestamp : new Date().toISOString()),
-            agent: typeof event.agent_cn === 'string'
-              ? event.agent_cn
-              : (typeof event.agent_id === 'string'
-                ? event.agent_id
-                : (typeof event.agent === 'string'
-                  ? event.agent
-                  : String(event.node ?? ''))),
-            status: typeof event.step_cn === 'string'
-              ? event.step_cn
-              : (typeof event.step === 'string'
-                ? event.step
-                : (typeof event.status === 'string' ? event.status : '')),
-            message: typeof event.message === 'string'
-              ? event.message
-              : (typeof decision?.reason_str === 'string'
-                ? decision.reason_str
-                : (typeof decision?.reason === 'string' ? decision.reason : '')),
-            raw: event,
-          } as TraceEvent,
-        };
-      })
-      .sort((a, b) => a.seq - b.seq)
-      .map((item) => item.value);
+    return eventsLike.map((item) => {
+      const raw = item && typeof item === 'object' ? item as Record<string, unknown> : {};
+      return { ...raw, __source: source };
+    });
+  };
+
+  const normalizeTraceEvents = (eventsLike: unknown, source: 'start' | 'continue' | 'replay' | 'confirm' = 'replay'): TraceEvent[] => {
+    const normalized = normalizeRawTraceEvents(tagEventsSource(eventsLike, source));
+    return mergeAndDedupeTraceEvents([], normalized);
+  };
+
+  const mergePayloadEventsAsPrimary = (
+    existingEvents: TraceEvent[],
+    primaryEventsLike: unknown,
+    source: 'start' | 'continue' | 'replay' | 'confirm',
+  ): TraceEvent[] => {
+    const primaryEvents = normalizeTraceEvents(primaryEventsLike, source);
+    if (!primaryEvents.length) return existingEvents;
+    return mergeAndDedupeTraceEvents(existingEvents, primaryEvents);
   };
 
   const parseProfiles = (raw: unknown): ProfileListItem[] => {
@@ -833,7 +815,7 @@ export function DiagnosePage() {
         setImageId(String(payload.image_id));
       }
       if (Array.isArray(payload.events)) {
-        setTraceEvents(normalizeTraceEvents(payload.events));
+        setTraceEvents((prev) => mergePayloadEventsAsPrimary(prev, payload.events, 'start'));
       }
       setWorkflowRefreshToken((prev) => prev + 1);
 
@@ -861,10 +843,13 @@ export function DiagnosePage() {
         }
         if (continueData && typeof continueData === 'object') {
           const mergedPayload = { ...payload, ...(continueData as Record<string, unknown>) };
+          setLatestPayload(mergedPayload);
           const mergedResult = buildResultFromPayload(mergedPayload);
           syncConfirmStateFromPayload(mergedPayload, mergedResult);
           if (Array.isArray((continueData as Record<string, unknown>).events)) {
-            setTraceEvents(normalizeTraceEvents((continueData as Record<string, unknown>).events));
+            setTraceEvents((prev) => mergePayloadEventsAsPrimary(prev, (continueData as Record<string, unknown>).events, 'continue'));
+          } else if (Array.isArray(payload.events)) {
+            setTraceEvents((prev) => mergePayloadEventsAsPrimary(prev, payload.events, 'continue'));
           }
         }
       }
@@ -932,7 +917,7 @@ export function DiagnosePage() {
         setImageId('');
       }
       if (Array.isArray(payload.events)) {
-        setTraceEvents(normalizeTraceEvents(payload.events));
+        setTraceEvents((prev) => mergePayloadEventsAsPrimary(prev, payload.events, 'confirm'));
       } else {
         setTraceEvents([]);
       }
@@ -988,7 +973,7 @@ export function DiagnosePage() {
       const payload = normalizePayloadRecord(data);
       if (payload.trace_id) setTraceId(String(payload.trace_id));
       if (payload.image_id) setImageId(String(payload.image_id));
-      if (Array.isArray(payload.events)) setTraceEvents(normalizeTraceEvents(payload.events));
+      if (Array.isArray(payload.events)) setTraceEvents((prev) => mergePayloadEventsAsPrimary(prev, payload.events, 'confirm'));
       setWorkflowRefreshToken((prev) => prev + 1);
       const normalizedResult = buildResultFromPayload(payload);
       syncConfirmStateFromPayload(payload, normalizedResult, { defaultChoice: 'other', resetInputs: true, markResubmitSuccess: true });
@@ -1033,7 +1018,7 @@ export function DiagnosePage() {
         setImageId(data.image_id);
       }
       if (Array.isArray(data?.events)) {
-        setTraceEvents(normalizeTraceEvents(data.events));
+        setTraceEvents((prev) => mergePayloadEventsAsPrimary(prev, data.events, 'confirm'));
       }
       setWorkflowRefreshToken((prev) => prev + 1);
 
@@ -1113,7 +1098,7 @@ export function DiagnosePage() {
         setImageId(data.image_id);
       }
       if (Array.isArray(data?.events)) {
-        setTraceEvents(normalizeTraceEvents(data.events));
+        setTraceEvents((prev) => mergePayloadEventsAsPrimary(prev, data.events, 'confirm'));
       }
       setWorkflowRefreshToken((prev) => prev + 1);
 
@@ -1246,7 +1231,7 @@ export function DiagnosePage() {
         traceFetchAbortRef.current = null;
       }
       if (Array.isArray(data?.events)) {
-        setTraceEvents(normalizeTraceEvents(data.events));
+        setTraceEvents((prev) => mergePayloadEventsAsPrimary(prev, data.events, 'replay'));
       }
     } catch (error) {
       if (traceFetchAbortRef.current === controller) {
@@ -1273,12 +1258,11 @@ export function DiagnosePage() {
 
   useEffect(() => {
     if (!traceEvents.length) return;
-    const latest = [...traceEvents].reverse().find((item) => item.raw && typeof item.raw === 'object');
-    const raw = latest?.raw as Record<string, unknown> | undefined;
-    if (!raw) return;
-    const node = String(raw.node || '');
-    const status = String(raw.status || '').toLowerCase();
-    const payload = normalizePayloadRecord(raw.payload);
+    const latest = traceEvents[traceEvents.length - 1];
+    const raw = latest.raw;
+    const node = String(raw.node || latest.stage || '');
+    const status = String(raw.status || latest.status || '').toLowerCase();
+    const payload = normalizePayloadRecord(raw.payload ?? latest.payload);
     if (node === 'DiagnosisCompleted' || (node === 'DiagnosisAgent' && status === 'end')) {
       setResult((prev) => prev ? buildResultFromPayload({ ...prev, ...payload }) : prev);
     }
@@ -1308,6 +1292,10 @@ export function DiagnosePage() {
   }
   const displayedTiming = traceTiming.hasTraceTiming ? traceTiming : fallbackTiming;
   const timingSourceLabel = traceTiming.hasTraceTiming ? 'trace events' : (displayedTiming ? '本地提交兜底' : null);
+  const hasDownstreamTraceEvents = traceEvents.some((event) => {
+    const node = String(event.raw.node ?? event.stage ?? '').toLowerCase();
+    return node.includes('kbretrieval') || node.includes('prescription') || node.includes('personalization') || node.includes('validator') || node.includes('verification') || node === 'final';
+  });
   return (
     <div className="space-y-6 animate-fadeIn">
       {canViewExpertInbox && (
@@ -1710,13 +1698,24 @@ export function DiagnosePage() {
 
           <SectionCard sectionKey="workflow" title="多智能体流程" icon={<RefreshCw className="w-5 h-5 text-[#c8f7c5]" />} hidden={!isAdmin} open={sectionOpen.workflow} onToggle={toggleSection}>
             <div className="space-y-4">
-              <p className="text-xs text-white/60">当前流程包含：接待解析 → 病害诊断 → 知识检索 → 方案生成。</p>
+              <p className="text-xs text-white/60">
+                {hasDownstreamTraceEvents
+                  ? '当前流程包含：接待解析 → 病害诊断 → 知识检索 → 方案生成。'
+                  : '当前 trace 主要处于一诊阶段（接待解析 → 病害诊断），下游阶段将在后续事件到达后显示。'}
+              </p>
               {displayedTiming && timingSourceLabel && (
                 <div className="rounded-lg border border-white/10 bg-white/5 px-3 py-2">
                   <p className="text-xs text-white/65">耗时来源：{timingSourceLabel}。总耗时 {formatDurationMs(displayedTiming.totalMs)}（一诊 {formatDurationMs(displayedTiming.phase1Ms)} / 二诊 {formatDurationMs(displayedTiming.phase2Ms)}）</p>
                 </div>
               )}
-              <AgentWorkflowPanel traceId={traceId || undefined} confidencePct={result?.displayConfidencePct ?? undefined} refreshToken={workflowRefreshToken} />
+              <AgentWorkflowPanel
+                traceId={traceId || undefined}
+                confidencePct={result?.displayConfidencePct ?? undefined}
+                refreshToken={workflowRefreshToken}
+                initialEvents={Array.isArray(latestPayload?.events) ? latestPayload.events as unknown[] : (traceEvents as unknown[])}
+                initialPayload={latestPayload}
+                i18n={latestPayload && typeof latestPayload.i18n === 'object' ? latestPayload.i18n as Record<string, unknown> : null}
+              />
             </div>
           </SectionCard>
         </div>
