@@ -2167,6 +2167,10 @@ async def diagnose_image(
         trace_fallback_reason = flags.get("fallback_reason")
         final_confidence = final_state.get("final_confidence")
         final_source = final_state.get("final_source")
+        if final_state.get("workflow_degraded") is not None:
+            workflow_degraded = bool(final_state.get("workflow_degraded"))
+        if final_state.get("degraded_reason"):
+            degraded_reason = str(final_state.get("degraded_reason"))
         treatment_plan = (final_state.get("treatment_plan") or "").strip()
         prevention_advice = (final_state.get("prevention_advice") or "").strip()
         if treatment_plan or prevention_advice:
@@ -2201,7 +2205,11 @@ async def diagnose_image(
         workflow_degraded = False
         degraded_reason = None
 
-    follow_up_questions = normalize_follow_up_questions(flags.get("follow_up_questions") or [])
+    profile_follow_ups = normalize_follow_up_questions((final_state or {}).get("profile_follow_up_questions") or [])
+    diagnosis_follow_ups = normalize_follow_up_questions((final_state or {}).get("diagnosis_follow_up_questions") or [])
+    follow_up_questions = normalize_follow_up_questions(
+        list(flags.get("follow_up_questions") or []) + profile_follow_ups + diagnosis_follow_ups
+    )
     flags["follow_up_questions"] = follow_up_questions
     missing_profile_fields = sorted({str(item).strip() for item in (flags.get("missing_profile_fields") or []) if str(item).strip()})
     personalization_state = final_state if isinstance(final_state, dict) else {
@@ -2255,7 +2263,8 @@ async def diagnose_image(
         "model_fallback_reason": model_fallback_reason,
     }
 
-    response_status = "waiting_for_supplement" if need_confirm_waiting else "completed"
+    insufficient_waiting = bool(final_source == "insufficient_evidence" or "insufficient_evidence" in (trace_fallback_reason or []))
+    response_status = "waiting_for_supplement" if (need_confirm_waiting or insufficient_waiting) else "completed"
     expert_review_recommended = False
     expert_review_selected = False
     expert_review_status = "NONE"

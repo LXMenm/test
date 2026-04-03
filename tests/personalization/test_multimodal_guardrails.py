@@ -5,6 +5,22 @@ from knowledge_base import get_kb_manager
 from state import create_initial_state
 
 
+class _KBStub:
+    def normalize_symptoms(self, symptoms):
+        return list(symptoms or [])
+
+    def has_effective_text_evidence(self, symptoms, **kwargs):
+        return bool(symptoms)
+
+    def score_diseases_from_text(self, **kwargs):
+        return {"细菌性斑点病": 1.0}
+
+
+def _patch_kb(monkeypatch):
+    monkeypatch.setattr(agents_module, "kb_manager", _KBStub())
+    monkeypatch.setattr(agents_module, "append_trace", lambda *args, **kwargs: None)
+
+
 
 
 class _EngineImageTextActive:
@@ -17,7 +33,7 @@ class _EngineImageTextActive:
     def build_prior_proba(self, **kwargs):
         return {"细菌性斑点病": 1.0}
 
-    def fuse_multimodal_probs(self, image_probs, text_probs, prior_probs, image_confidence=0.0, text_confidence=0.0, text_evidence_active=None):
+    def fuse_multimodal_probs(self, image_probs, text_probs, prior_probs, image_confidence=0.0, text_confidence=0.0, text_evidence_active=None, **kwargs):
         assert text_evidence_active is True
         assert bool(text_probs) is True
         return {"细菌性斑点病": 0.85, "早疫病": 0.08, "晚疫病": 0.07}, {
@@ -46,7 +62,7 @@ class _EngineImageOnlyNoText:
     def build_prior_proba(self, **kwargs):
         return {"细菌性斑点病": 1.0}
 
-    def fuse_multimodal_probs(self, image_probs, text_probs, prior_probs, image_confidence=0.0, text_confidence=0.0, text_evidence_active=None):
+    def fuse_multimodal_probs(self, image_probs, text_probs, prior_probs, image_confidence=0.0, text_confidence=0.0, text_evidence_active=None, **kwargs):
         assert text_evidence_active is False
         assert text_probs == {}
         fused = {
@@ -70,7 +86,65 @@ class _EngineImageOnlyNoText:
         return disease_type
 
 
+class _EngineNoEvidence:
+    def build_prior_proba(self, **kwargs):
+        return {}
+
+    def fuse_multimodal_probs(self, image_probs, text_probs, prior_probs, image_confidence=0.0, text_confidence=0.0, text_evidence_active=None, **kwargs):
+        return {}, {
+            "has_image": False,
+            "has_text": False,
+            "has_prior": False,
+            "fusion_case": "prior_only",
+            "insufficient_evidence": True,
+            "degraded_reason": "no_active_evidence",
+            "normalized_weights": {"image": 0.0, "text": 0.0, "prior": 0.0},
+        }
+
+    def build_diagnosis_evidence(self, **kwargs):
+        return {"summary": "no-evidence"}
+
+    def _get_disease_description(self, disease_type, symptoms):
+        return disease_type
+
+
+class _EngineBranchFailure:
+    def __init__(self, fail_on: str):
+        self.fail_on = fail_on
+
+    def predict_image_proba(self, _):
+        if self.fail_on == "image":
+            raise RuntimeError("image_fail")
+        return {"细菌性斑点病": 1.0}
+
+    def predict_text_proba(self, **kwargs):
+        if self.fail_on == "text":
+            raise RuntimeError("text_fail")
+        return {"细菌性斑点病": 1.0}
+
+    def build_prior_proba(self, **kwargs):
+        if self.fail_on == "prior":
+            raise RuntimeError("prior_fail")
+        return {"细菌性斑点病": 1.0}
+
+    def fuse_multimodal_probs(self, image_probs, text_probs, prior_probs, image_confidence=0.0, text_confidence=0.0, text_evidence_active=None, **kwargs):
+        fused = {}
+        for probs in (image_probs, text_probs, prior_probs):
+            for k, v in probs.items():
+                fused[k] = fused.get(k, 0.0) + float(v)
+        total = sum(fused.values())
+        fused = {k: v / total for k, v in fused.items()} if total > 0 else {}
+        return fused, {"has_image": bool(image_probs), "has_text": bool(text_probs), "has_prior": bool(prior_probs), "normalized_weights": {"image": 0.4, "text": 0.4, "prior": 0.2}}
+
+    def build_diagnosis_evidence(self, **kwargs):
+        return {"summary": "branch-failure"}
+
+    def _get_disease_description(self, disease_type, symptoms):
+        return disease_type
+
+
 def test_image_only_empty_symptoms_has_no_text_branch(monkeypatch):
+    _patch_kb(monkeypatch)
     monkeypatch.setattr(agents_module, "get_diagnosis_engine", lambda **kwargs: _EngineImageOnlyNoText())
     state = create_initial_state("test")
     state["crop_type"] = "番茄"
@@ -143,3 +217,59 @@ def test_text_branch_activates_only_with_explicit_symptoms(monkeypatch):
     assert out["normalized_symptoms"]
     # 明确症状存在时，允许文本分支参与（此处引擎被 monkeypatch 为固定返回）
     assert out["fusion_meta"].get("has_text") is True
+
+
+def test_no_evidence_not_healthy(monkeypatch):
+    _patch_kb(monkeypatch)
+    monkeypatch.setattr(agents_module, "get_diagnosis_engine", lambda **kwargs: _EngineNoEvidence())
+    state = create_initial_state("test")
+    state["crop_type"] = "番茄"
+    state["symptoms"] = []
+    state["image_path"] = None
+    state["personalization_flags"] = {}
+
+    out = agents_module.diagnosis_agent(state)
+    assert out["final_disease"] != "健康"
+    assert out["final_source"] == "insufficient_evidence"
+    assert out["personalization_flags"]["need_confirm"] is True
+    assert "insufficient_evidence" in (out["personalization_flags"].get("fallback_reason") or [])
+    assert out.get("workflow_degraded") is True
+    assert "no_active_evidence" in str(out.get("degraded_reason") or "")
+
+
+def test_branch_failures_set_degraded_flags(monkeypatch):
+    _patch_kb(monkeypatch)
+    for fail_on, expected in [
+        ("image", "image_branch_failed"),
+        ("text", "text_branch_failed"),
+        ("prior", "prior_branch_failed"),
+    ]:
+        def _factory(_fail_on=fail_on, **kwargs):
+            return _EngineBranchFailure(_fail_on)
+        monkeypatch.setattr(agents_module, "get_diagnosis_engine", _factory)
+        state = create_initial_state("test")
+        state["crop_type"] = "番茄"
+        state["symptoms"] = ["叶片有斑点"]
+        state["image_path"] = "exam.JPG"
+        state["personalization_flags"] = {}
+        out = agents_module.diagnosis_agent(state)
+        assert out.get("workflow_degraded") is True
+        assert expected in str(out.get("degraded_reason") or "")
+        assert isinstance(out.get("diagnosis_evidence"), dict)
+
+
+def test_follow_up_questions_separated_and_merged(monkeypatch):
+    _patch_kb(monkeypatch)
+    monkeypatch.setattr(agents_module, "get_diagnosis_engine", lambda **kwargs: _EngineNoEvidence())
+    state = create_initial_state("图像路径: exam.JPG")
+    state["personalization_flags"] = {}
+    state = agents_module.reception_agent(state)
+    state["profile_follow_up_questions"] = ["请补充种植地区？"]
+    state["follow_up_questions"] = ["请补充种植地区？"]
+    state["symptoms"] = []
+    state["image_path"] = None
+
+    out = agents_module.diagnosis_agent(state)
+    assert out.get("profile_follow_up_questions") == ["请补充种植地区？"]
+    assert isinstance(out.get("diagnosis_follow_up_questions"), list)
+    assert "请补充种植地区？" in (out.get("follow_up_questions") or [])
