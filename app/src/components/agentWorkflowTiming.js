@@ -33,6 +33,28 @@ export const formatDurationMs = (ms) => {
   return `${seconds.toFixed(2)}s`;
 };
 
+export const getDurationDisplayMeta = (agentId, duration, scope = 'total') => {
+  const ms = scope === 'phase1' ? (duration.phase1Ms ?? 0) : scope === 'phase2' ? (duration.phase2Ms ?? 0) : (duration.totalMs ?? 0);
+  if (duration.displayKind === 'estimated' && ms > 0) {
+    const reason = duration.estimateReason ? `（${duration.estimateReason}）` : '';
+    return {
+      kind: 'estimated',
+      label: `~${formatDurationMs(ms)}`,
+      tooltip: `由相邻阶段里程碑估算${reason}`,
+    };
+  }
+  if (duration.displayKind === 'actual' && ms > 0) {
+    if (agentId === 'treatment') {
+      return { kind: 'actual', label: formatDurationMs(ms), tooltip: '方案生成与后处理相关耗时（实际运行时间）' };
+    }
+    return { kind: 'actual', label: formatDurationMs(ms), tooltip: '实际运行时间' };
+  }
+  if (agentId === 'supervisor') {
+    return { kind: 'none', label: '—', tooltip: '决策节点不单独计时（当前无可靠运行区间）' };
+  }
+  return { kind: 'none', label: '—', tooltip: '缺少可靠开始事件' };
+};
+
 export const compareEvents = (a, b) => {
   const aHasSeq = typeof a.seq === 'number' && Number.isFinite(a.seq);
   const bHasSeq = typeof b.seq === 'number' && Number.isFinite(b.seq);
@@ -195,14 +217,53 @@ export const isWaitingForUserInputEvent = (event) => {
   );
 };
 
-export const calcPhaseDurationsByAgent = (events, nowMs, workflowDone) => {
-  const sorted = [...events].sort((a, b) => {
-    const sa = typeof a.seq === 'number' ? a.seq : Number.MAX_SAFE_INTEGER;
-    const sb = typeof b.seq === 'number' ? b.seq : Number.MAX_SAFE_INTEGER;
-    if (sa !== sb) return sa - sb;
-    return (a.tsMs ?? Number.MAX_SAFE_INTEGER) - (b.tsMs ?? Number.MAX_SAFE_INTEGER);
+export const splitEventsForTiming = (events) => {
+  const workflowEvents = [];
+  const compactEvents = [];
+  const unknownEvents = [];
+  events.forEach((event) => {
+    if (event.protocol === 'workflow_snapshot') {
+      workflowEvents.push(event);
+      return;
+    }
+    if (event.protocol === 'compact_replay') {
+      compactEvents.push(event);
+      return;
+    }
+    unknownEvents.push(event);
   });
+  return { workflowEvents, compactEvents, unknownEvents };
+};
 
+const sortNormalizedEvents = (events) => [...events].sort((a, b) => {
+  const sa = typeof a.seq === 'number' ? a.seq : Number.MAX_SAFE_INTEGER;
+  const sb = typeof b.seq === 'number' ? b.seq : Number.MAX_SAFE_INTEGER;
+  if (sa !== sb) return sa - sb;
+  return (a.tsMs ?? Number.MAX_SAFE_INTEGER) - (b.tsMs ?? Number.MAX_SAFE_INTEGER);
+});
+
+const toStatusKind = (status) => {
+  const lower = String(status || '').toLowerCase();
+  if (['start', 'running'].includes(lower)) return 'start';
+  if (['end', 'completed', 'error'].includes(lower)) return 'end';
+  return 'other';
+};
+
+const mapReplayEventToAgent = (event) => {
+  const node = String(event.semanticNode || event.nodeName || '').toLowerCase();
+  if (node.includes('parse_input') || node.includes('parseinput')) return 'reception';
+  if (node.includes('diagnosis') || node.includes('confidence_gate') || node.includes('confidencegate')) return 'diagnosis';
+  return undefined;
+};
+
+const mapWorkflowEventToAgent = (event) => {
+  const data = event.data ?? {};
+  const hinted = String(data.agent_id ?? data.agent ?? '').toLowerCase();
+  return mapTimingAgentId(hinted || event.agentId, event.nodeName);
+};
+
+const calcRuntimeFromEvents = (events, nowMs, workflowDone, resolveAgent, source) => {
+  const sorted = sortNormalizedEvents(events);
   let phaseBoundaryIndex = -1;
   for (let i = 0; i < sorted.length; i += 1) {
     if (isSecondPhaseBoundaryEvent(sorted[i])) {
@@ -211,38 +272,168 @@ export const calcPhaseDurationsByAgent = (events, nowMs, workflowDone) => {
     }
   }
 
+  const totals = Object.fromEntries(
+    FIXED_AGENT_IDS.map((agentId) => [agentId, { phase1Ms: 0, phase2Ms: 0, totalMs: 0, missingStart: false, hasEvents: false, source }]),
+  );
+  const openStarts = Object.fromEntries(FIXED_AGENT_IDS.map((agentId) => [agentId, { phase1: undefined, phase2: undefined }]));
+
+  sorted.forEach((event, index) => {
+    if (typeof event.tsMs !== 'number') return;
+    const agentId = resolveAgent(event);
+    if (!agentId) return;
+    totals[agentId].hasEvents = true;
+    const phase = phaseBoundaryIndex >= 0 && index >= phaseBoundaryIndex ? 'phase2' : 'phase1';
+    const statusKind = toStatusKind(event.status);
+    if (statusKind === 'start') {
+      if (typeof openStarts[agentId][phase] !== 'number') openStarts[agentId][phase] = event.tsMs;
+      return;
+    }
+    if (statusKind === 'end') {
+      const startMs = openStarts[agentId][phase];
+      if (typeof startMs !== 'number') {
+        totals[agentId].missingStart = true;
+        return;
+      }
+      totals[agentId][phase === 'phase1' ? 'phase1Ms' : 'phase2Ms'] += Math.max(0, event.tsMs - startMs);
+      openStarts[agentId][phase] = undefined;
+    }
+  });
+
+  FIXED_AGENT_IDS.forEach((agentId) => {
+    ['phase1', 'phase2'].forEach((phase) => {
+      const startMs = openStarts[agentId][phase];
+      if (typeof startMs !== 'number') return;
+      if (!workflowDone) {
+        totals[agentId][phase === 'phase1' ? 'phase1Ms' : 'phase2Ms'] += Math.max(0, nowMs - startMs);
+        totals[agentId][phase === 'phase1' ? 'phase1Open' : 'phase2Open'] = true;
+        totals[agentId].open = true;
+      }
+    });
+    totals[agentId].totalMs = totals[agentId].phase1Ms + totals[agentId].phase2Ms;
+  });
+
+  return totals;
+};
+
+export const calcAgentRuntimeFromReplay = (compactEvents, nowMs, workflowDone) => (
+  calcRuntimeFromEvents(compactEvents, nowMs, workflowDone, mapReplayEventToAgent, 'replay')
+);
+
+export const calcAgentRuntimeFromWorkflowSnapshot = (workflowEvents, nowMs, workflowDone) => (
+  calcRuntimeFromEvents(workflowEvents, nowMs, workflowDone, mapWorkflowEventToAgent, 'workflow_snapshot')
+);
+
+export const calcAgentRuntimeBySourcePriority = (events, nowMs, workflowDone) => {
+  const { workflowEvents, compactEvents, unknownEvents } = splitEventsForTiming(events);
+  const replayRuntime = calcAgentRuntimeFromReplay(compactEvents, nowMs, workflowDone);
+  const snapshotRuntime = calcAgentRuntimeFromWorkflowSnapshot([...workflowEvents, ...unknownEvents], nowMs, workflowDone);
+  return Object.fromEntries(FIXED_AGENT_IDS.map((agentId) => {
+    const replay = replayRuntime[agentId];
+    const snapshot = snapshotRuntime[agentId];
+    const replayValid = (replay.totalMs > 0) || replay.open === true;
+    if (replayValid) return [agentId, { ...replay, source: 'replay' }];
+    const snapshotValid = (snapshot.totalMs > 0) || snapshot.open === true || snapshot.missingStart === true || snapshot.hasEvents;
+    if (snapshotValid) return [agentId, { ...snapshot, source: 'workflow_snapshot' }];
+    return [agentId, { phase1Ms: 0, phase2Ms: 0, totalMs: 0, missingStart: true, source: 'none' }];
+  }));
+};
+
+const detectMilestone = (event) => {
+  const node = `${String(event.semanticNode || '').toLowerCase()}|${String(event.nodeName || '').toLowerCase()}`;
+  if (node.includes('diagnosiscomplete') || node.includes('diagnosis_complete')) return 'diagnosis_complete';
+  if (node.includes('kb_retrieval_complete') || node.includes('kbretrieval_complete')) return 'kb_retrieval_complete';
+  if (node.includes('treatment_complete') || node.includes('prescription_complete') || node.includes('personalization_complete')) return 'treatment_complete';
+  if (node.includes('verification_complete') || node.includes('validator_complete')) return 'verification_complete';
+  if (node.includes('final')) return 'final';
+  return undefined;
+};
+
+const buildMilestoneMapByPhase = (workflowEvents) => {
+  const sorted = sortNormalizedEvents(workflowEvents.filter((event) => typeof event.tsMs === 'number'));
+  let phaseBoundaryIndex = -1;
+  for (let i = 0; i < sorted.length; i += 1) {
+    if (isSecondPhaseBoundaryEvent(sorted[i])) {
+      phaseBoundaryIndex = i;
+      break;
+    }
+  }
   const phase1 = phaseBoundaryIndex >= 0 ? sorted.slice(0, phaseBoundaryIndex) : sorted;
   const phase2 = phaseBoundaryIndex >= 0 ? sorted.slice(phaseBoundaryIndex) : [];
-
-  const calcForPhase = (phaseEvents) => {
-    const totals = Object.fromEntries(FIXED_AGENT_IDS.map((agentId) => [agentId, 0]));
-    if (!phaseEvents.length) return totals;
-
-    for (let i = 0; i < phaseEvents.length - 1; i += 1) {
-      const current = phaseEvents[i];
-      const next = phaseEvents[i + 1];
-      if (typeof current.tsMs !== 'number' || typeof next.tsMs !== 'number') continue;
-      totals[current.agentId] += Math.max(0, next.tsMs - current.tsMs);
-    }
-
-    const last = phaseEvents[phaseEvents.length - 1];
-    if (!workflowDone && typeof last.tsMs === 'number' && !isWaitingForUserInputEvent(last)) {
-      totals[last.agentId] += Math.max(0, nowMs - last.tsMs);
-    }
-
-    return totals;
+  const collect = (phaseEvents) => {
+    const map = new Map();
+    phaseEvents.forEach((event) => {
+      const milestone = detectMilestone(event);
+      if (!milestone || typeof event.tsMs !== 'number') return;
+      if (!map.has(milestone)) map.set(milestone, event.tsMs);
+    });
+    return map;
   };
+  return { phase1: collect(phase1), phase2: collect(phase2) };
+};
 
-  const phase1Totals = calcForPhase(phase1);
-  const phase2Totals = calcForPhase(phase2);
+export const calcAgentEstimatedDurations = (events) => {
+  const { workflowEvents } = splitEventsForTiming(events);
+  const milestones = buildMilestoneMapByPhase(workflowEvents);
+  const mapping = [
+    { agentId: 'kb_retrieval', start: 'diagnosis_complete', end: 'kb_retrieval_complete' },
+    { agentId: 'treatment', start: 'kb_retrieval_complete', end: 'treatment_complete' },
+    { agentId: 'verification', start: 'treatment_complete', end: 'verification_complete' },
+    { agentId: 'final', start: 'verification_complete', end: 'final' },
+  ];
+  const result = Object.fromEntries(FIXED_AGENT_IDS.map((agentId) => [agentId, { phase1Ms: 0, phase2Ms: 0, totalMs: 0 }]));
+  mapping.forEach(({ agentId, start, end }) => {
+    const p1Start = milestones.phase1.get(start);
+    const p1End = milestones.phase1.get(end);
+    const p2Start = milestones.phase2.get(start);
+    const p2End = milestones.phase2.get(end);
+    const phase1Ms = (typeof p1Start === 'number' && typeof p1End === 'number' && p1End >= p1Start) ? (p1End - p1Start) : 0;
+    const phase2Ms = (typeof p2Start === 'number' && typeof p2End === 'number' && p2End >= p2Start) ? (p2End - p2Start) : 0;
+    const totalMs = phase1Ms + phase2Ms;
+    if (totalMs > 0) {
+      result[agentId] = { phase1Ms, phase2Ms, totalMs, estimateReason: `${start} -> ${end}` };
+    }
+  });
+  return result;
+};
 
+export const calcResolvedAgentDurations = (events, nowMs, workflowDone) => {
+  const actual = calcAgentRuntimeBySourcePriority(events, nowMs, workflowDone);
+  const estimated = calcAgentEstimatedDurations(events);
+  return Object.fromEntries(FIXED_AGENT_IDS.map((agentId) => {
+    const actualDuration = actual[agentId];
+    const estimatedDuration = estimated[agentId];
+    const hasActual = (actualDuration.totalMs > 0) || actualDuration.phase1Open === true || actualDuration.phase2Open === true;
+    if (hasActual) {
+      return [agentId, { ...actualDuration, displayMs: actualDuration.totalMs, displayKind: 'actual' }];
+    }
+    if ((estimatedDuration?.totalMs ?? 0) > 0) {
+      return [agentId, {
+        ...actualDuration,
+        phase1Ms: estimatedDuration.phase1Ms,
+        phase2Ms: estimatedDuration.phase2Ms,
+        totalMs: estimatedDuration.totalMs,
+        displayMs: estimatedDuration.totalMs,
+        displayKind: 'estimated',
+        estimateReason: estimatedDuration.estimateReason,
+      }];
+    }
+    return [agentId, { ...actualDuration, phase1Ms: 0, phase2Ms: 0, totalMs: 0, displayMs: 0, displayKind: 'none' }];
+  }));
+};
+
+export const calcPhaseDurationsByAgent = (events, nowMs, workflowDone) => {
+  const runtime = calcAgentRuntimeBySourcePriority(events, nowMs, workflowDone);
   return Object.fromEntries(
     FIXED_AGENT_IDS.map((agentId) => [
       agentId,
-      { phase1Ms: phase1Totals[agentId], phase2Ms: phase2Totals[agentId] },
+      { phase1Ms: runtime[agentId].phase1Ms, phase2Ms: runtime[agentId].phase2Ms },
     ]),
   );
 };
+
+export const calcAgentRuntimeByIntervals = (events, nowMs, workflowDone) => (
+  calcAgentRuntimeBySourcePriority(events, nowMs, workflowDone)
+);
 
 export const calcOverallPhaseDuration = (phaseDurations) => {
   let phase1Ms = 0;
@@ -254,16 +445,56 @@ export const calcOverallPhaseDuration = (phaseDurations) => {
   return { phase1Ms, phase2Ms, totalMs: phase1Ms + phase2Ms };
 };
 
+export const calcWallClockPhaseDuration = (events, nowMs, workflowDone) => {
+  const sorted = [...events]
+    .filter((event) => typeof event.tsMs === 'number')
+    .sort((a, b) => {
+      const sa = typeof a.seq === 'number' ? a.seq : Number.MAX_SAFE_INTEGER;
+      const sb = typeof b.seq === 'number' ? b.seq : Number.MAX_SAFE_INTEGER;
+      if (sa !== sb) return sa - sb;
+      return (a.tsMs ?? Number.MAX_SAFE_INTEGER) - (b.tsMs ?? Number.MAX_SAFE_INTEGER);
+    });
+  if (!sorted.length) return { phase1Ms: 0, phase2Ms: 0, totalMs: 0 };
+
+  let phaseBoundaryIndex = -1;
+  for (let i = 0; i < sorted.length; i += 1) {
+    if (isSecondPhaseBoundaryEvent(sorted[i])) {
+      phaseBoundaryIndex = i;
+      break;
+    }
+  }
+
+  const phase1 = phaseBoundaryIndex >= 0 ? sorted.slice(0, phaseBoundaryIndex) : sorted;
+  const phase2 = phaseBoundaryIndex >= 0 ? sorted.slice(phaseBoundaryIndex) : [];
+  const lastEventTs = sorted[sorted.length - 1].tsMs;
+  const calcWindow = (phaseEvents) => {
+    if (!phaseEvents.length) return 0;
+    const firstTs = phaseEvents[0].tsMs;
+    const lastTs = phaseEvents[phaseEvents.length - 1].tsMs;
+    const isCurrentPhase = lastTs === lastEventTs;
+    if (!workflowDone && isCurrentPhase) return Math.max(0, nowMs - firstTs);
+    return Math.max(0, lastTs - firstTs);
+  };
+
+  const phase1Ms = calcWindow(phase1);
+  const phase2Ms = calcWindow(phase2);
+  const firstTs = sorted[0].tsMs;
+  const totalMs = workflowDone ? Math.max(0, lastEventTs - firstTs) : Math.max(0, nowMs - firstTs);
+
+  return { phase1Ms, phase2Ms, totalMs };
+};
+
 export const calcTracePhaseTiming = (events, nowMs) => {
   const normalized = events
     .map(normalizeRawEventForTiming)
     .filter((event) => typeof event.tsMs === 'number')
     .sort((a, b) => compareEvents(a, b));
   const workflowDone = events.some(isWorkflowTerminalRawEvent);
-  const byAgent = calcPhaseDurationsByAgent(normalized, nowMs, workflowDone);
+  const byAgentRuntime = calcAgentRuntimeByIntervals(normalized, nowMs, workflowDone);
   return {
-    ...calcOverallPhaseDuration(byAgent),
+    ...calcWallClockPhaseDuration(normalized, nowMs, workflowDone),
     workflowDone,
     hasTraceTiming: normalized.length > 0,
+    byAgentRuntime,
   };
 };
