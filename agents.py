@@ -120,6 +120,191 @@ def append_trace(
     state.setdefault("trace_events", []).append(event)
     if trace_id:
         append_trace_event(trace_id, dict(event))
+
+
+def _safe_float(value: Any) -> float | None:
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _normalize_top3_candidates(candidates: Any) -> list[tuple[str, float]]:
+    normalized: list[tuple[str, float]] = []
+    if not isinstance(candidates, list):
+        return normalized
+    for item in candidates:
+        disease = ""
+        prob = None
+        if isinstance(item, (list, tuple)) and len(item) >= 2:
+            disease = str(item[0] or "").strip()
+            prob = _safe_float(item[1])
+        elif isinstance(item, dict):
+            disease = str(item.get("disease") or item.get("label") or item.get("name") or "").strip()
+            prob = _safe_float(item.get("prob"))
+            if prob is None:
+                prob = _safe_float(item.get("confidence"))
+        if disease and prob is not None:
+            normalized.append((disease, float(prob)))
+    return normalized
+
+
+def confirm_input_step(state: CropDiseaseState) -> CropDiseaseState:
+    incoming_symptoms = [str(item).strip() for item in (state.get("incoming_symptoms") or state.get("symptoms") or []) if str(item).strip()]
+    historical_symptoms = [str(item).strip() for item in (state.get("historical_symptoms") or []) if str(item).strip()]
+    merged: list[str] = []
+    for symptom in [*historical_symptoms, *incoming_symptoms]:
+        if symptom and symptom not in merged:
+            merged.append(symptom)
+    image_path = state.get("image_path") or state.get("image")
+    state["symptoms"] = merged
+    try:
+        state["normalized_symptoms"] = kb_manager.normalize_symptoms(merged)
+    except Exception:
+        state["normalized_symptoms"] = list(merged)
+    if image_path:
+        state["image_path"] = str(image_path)
+    state["supplement_mode"] = "confirm_input"
+    state["current_step"] = "confirm_input"
+    state["next_action"] = "diagnosis"
+    append_trace(
+        state,
+        agent="confirm_input",
+        inputs={
+            "symptoms": state.get("symptoms"),
+            "incoming_symptoms": incoming_symptoms,
+            "historical_symptoms": historical_symptoms,
+            "image_path": state.get("image_path"),
+            "previous_trace_id": state.get("previous_trace_id"),
+            "confirm_round_parent_trace_id": state.get("confirm_round_parent_trace_id"),
+        },
+        outputs={
+            "symptoms": merged,
+            "normalized_symptoms": state.get("normalized_symptoms"),
+            "image_path": state.get("image_path"),
+            "next_action": "diagnosis",
+        },
+    )
+    return state
+
+
+def confirm_choice_step(state: CropDiseaseState) -> CropDiseaseState:
+    selected = str(state.get("selected_candidate") or state.get("user_choice") or "").strip()
+    inherited = state.get("inherited_context") if isinstance(state.get("inherited_context"), dict) else {}
+    fusion_top3 = _normalize_top3_candidates(state.get("fusion_top3")) or _normalize_top3_candidates(inherited.get("fusion_top3"))
+    image_result = state.get("image_result") if isinstance(state.get("image_result"), dict) else {}
+    inherited_image_result = inherited.get("image_result") if isinstance(inherited.get("image_result"), dict) else {}
+    inherited_image_diagnosis = inherited.get("image_diagnosis") if isinstance(inherited.get("image_diagnosis"), dict) else {}
+    image_top3 = (
+        _normalize_top3_candidates(image_result.get("top3"))
+        or _normalize_top3_candidates(inherited_image_result.get("top3"))
+        or _normalize_top3_candidates(inherited.get("image_top3"))
+        or _normalize_top3_candidates(inherited_image_diagnosis.get("top3"))
+    )
+    diagnosis_evidence = state.get("diagnosis_evidence") if isinstance(state.get("diagnosis_evidence"), dict) else {}
+    if not diagnosis_evidence and isinstance(inherited.get("diagnosis_evidence"), dict):
+        diagnosis_evidence = dict(inherited.get("diagnosis_evidence"))
+    text_top3 = _normalize_top3_candidates(state.get("text_top3")) or _normalize_top3_candidates(inherited.get("text_top3"))
+    evidence_top3 = (
+        _normalize_top3_candidates(diagnosis_evidence.get("fusion_top3"))
+        or _normalize_top3_candidates(diagnosis_evidence.get("image_top3"))
+        or _normalize_top3_candidates(diagnosis_evidence.get("text_top3"))
+        or text_top3
+    )
+    confidence = None
+    for candidates in (fusion_top3, image_top3, evidence_top3):
+        for disease, prob in candidates:
+            if disease == selected and prob > 0:
+                confidence = float(prob)
+                break
+        if confidence is not None:
+            break
+    if confidence is None:
+        for raw in (
+            state.get("final_confidence"),
+            inherited.get("final_confidence"),
+            image_result.get("confidence"),
+            inherited.get("image_confidence"),
+            state.get("image_confidence"),
+            inherited.get("text_confidence"),
+            state.get("text_confidence"),
+            diagnosis_evidence.get("final_confidence"),
+        ):
+            value = _safe_float(raw)
+            if value is not None and value > 0:
+                confidence = value
+                break
+    if confidence is None or confidence <= 0:
+        state["workflow_error"] = "confirm_choice_confidence_missing"
+        state["error"] = "confirm_choice_confidence_missing"
+        state["next_action"] = "end"
+        append_trace(
+            state,
+            agent="confirm_choice",
+            inputs={"selected_candidate": selected},
+            outputs={"error": "confirm_choice_confidence_missing"},
+            decision={"next_action": "end", "reason": "confirm_choice_confidence_missing"},
+        )
+        return state
+
+    state["final_disease"] = selected
+    state["disease_type"] = selected
+    state["final_source"] = "user_confirmed_candidate"
+    state["final_confidence"] = confidence
+    state["disease_confidence"] = confidence
+    if fusion_top3:
+        state["fusion_top3"] = fusion_top3
+    if text_top3:
+        state["text_top3"] = text_top3
+    if image_top3:
+        merged_image = dict(inherited_image_result)
+        merged_image.update(image_result)
+        merged_image["top3"] = [{"disease": d, "prob": p, "prob_pct": round(p * 100, 2)} for d, p in image_top3]
+        if not merged_image.get("disease"):
+            merged_image["disease"] = image_top3[0][0]
+        merged_confidence = _safe_float(merged_image.get("confidence"))
+        if merged_confidence is None or merged_confidence <= 0:
+            merged_image["confidence"] = image_top3[0][1]
+        state["image_result"] = merged_image
+    if diagnosis_evidence:
+        state["diagnosis_evidence"] = diagnosis_evidence
+    for field in ("modality_conflict_flag", "image_reliable", "text_reliable", "supplement_mode", "fusion_meta", "image_confidence", "text_confidence"):
+        if state.get(field) is None and inherited.get(field) is not None:
+            state[field] = inherited.get(field)
+    if not state.get("reliability_issue_types") and inherited.get("reliability_issue_types") is not None:
+        state["reliability_issue_types"] = list(inherited.get("reliability_issue_types") or [])
+    inherited_meta = inherited.get("meta") if isinstance(inherited.get("meta"), dict) else {}
+    model_meta = {
+        "model_id": inherited_meta.get("model_id") or inherited.get("model_id"),
+        "model_display_name": inherited_meta.get("model_display_name") or inherited.get("model_display_name"),
+        "backend": inherited_meta.get("model_backend") or inherited.get("model_backend"),
+        "resolved_model_path": inherited_meta.get("resolved_model_path") or inherited.get("resolved_model_path"),
+        "model_fallback_reason": inherited_meta.get("model_fallback_reason") or inherited.get("model_fallback_reason") or [],
+    }
+    if any(model_meta.values()):
+        state["diagnosis_model_meta"] = model_meta
+        if model_meta.get("model_id"):
+            state["diagnosis_model_id"] = model_meta.get("model_id")
+    flags = dict(state.get("personalization_flags") or {})
+    flags["need_confirm"] = False
+    state["personalization_flags"] = flags
+    state["confirmation_mode"] = "confirm_choice"
+    state["current_step"] = "confirm_choice"
+    state["next_action"] = "supervisor"
+    append_trace(
+        state,
+        agent="confirm_choice",
+        inputs={"selected_candidate": selected},
+        outputs={
+            "final_disease": selected,
+            "final_confidence": confidence,
+            "final_source": "user_confirmed_candidate",
+            "need_confirm": False,
+        },
+    )
+    return state
 def _clean_query_for_symptoms(query: str) -> tuple[str, list[str]]:
     cleaned = query
     removed: list[str] = []
@@ -277,6 +462,7 @@ def reception_agent(state: CropDiseaseState) -> CropDiseaseState:
     state["normalized_symptoms"] = normalized_symptoms
     state["image_path"] = image_path
     state["current_step"] = "reception_complete"
+    state["next_action"] = None
     state["messages"] = [message]
     print(f"  - 作物类型: {crop_type}")
     print(f"  - 生长阶段: {crop_growth_stage}")
@@ -823,6 +1009,8 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
     state["debug_diagnosis"] = debug_payload
     state["personalization_flags"] = flags
     state["current_step"] = "diagnosis_complete"
+    state["next_action"] = None
+    state["diagnosis_last_round_index"] = int(state.get("confirm_round_index") or 0)
     state["messages"] = [message]
 
     append_trace(
@@ -1878,10 +2066,25 @@ def verification_agent(state: CropDiseaseState) -> CropDiseaseState:
 
 def _deterministic_supervisor_decision(state: CropDiseaseState, flags: dict, missing_profile_fields: list[str]) -> tuple[str, bool, str, list[str]]:
     """确定性路由，增加 verification 闭环。"""
+    requested_action = str(state.get("next_action") or "").strip()
+    current_step = str(state.get("current_step") or "")
+    if current_step == "start" and requested_action == "reception":
+        return "reception", False, "番茄病害监督智能体：初诊起始阶段，先进入接待智能体", ["initial_reception_entry"]
+    if requested_action in {"confirm_input", "confirm_choice"}:
+        return requested_action, False, f"番茄病害监督智能体：按状态恢复请求继续执行 {requested_action}", ["resume_requested_action"]
 
     has_diagnosis = bool(state.get("final_disease") or state.get("disease_type"))
+    has_confidence = (_safe_float(state.get("final_confidence")) or _safe_float(state.get("disease_confidence")) or 0.0) > 0
+    current_round_index = int(state.get("confirm_round_index") or 0)
+    diagnosed_round_index = int(state.get("diagnosis_last_round_index") or -1)
     if not has_diagnosis:
+        if current_round_index > 0 and diagnosed_round_index == current_round_index:
+            return "await_user_confirmation", True, "番茄病害监督智能体：本轮补充诊断已执行，等待用户进入下一轮补充", ["round_diagnosis_already_consumed"]
         return "diagnosis", False, "番茄病害监督智能体：缺少诊断结果，先执行诊断智能体", ["missing_diagnosis"]
+    if not has_confidence and str(state.get("confirmation_mode") or "") != "confirm_choice":
+        if current_round_index > 0 and diagnosed_round_index == current_round_index:
+            return "await_user_confirmation", True, "番茄病害监督智能体：本轮补充诊断已执行且仍低置信，等待下一轮补充", ["round_low_confidence_already_consumed"]
+        return "diagnosis", False, "番茄病害监督智能体：置信度不足，先执行诊断智能体", ["missing_confidence"]
 
     if flags.get("need_confirm"):
         confirm_round_index = int(state.get("confirm_round_index") or 0)
