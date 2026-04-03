@@ -52,6 +52,12 @@ export interface AgentRuntimeDurations extends AgentPhaseDurations {
   missingStart?: boolean;
   source?: 'replay' | 'workflow_snapshot' | 'none';
 }
+export type AgentDurationKind = 'actual' | 'estimated' | 'none';
+export interface AgentResolvedDuration extends AgentRuntimeDurations {
+  displayMs: number;
+  displayKind: AgentDurationKind;
+  estimateReason?: string;
+}
 
 export const parseTsMs = (ts?: string): number | undefined => {
   if (!ts) return undefined;
@@ -384,6 +390,112 @@ export const calcAgentRuntimeBySourcePriority = (
     }
     return [agentId, { phase1Ms: 0, phase2Ms: 0, totalMs: 0, missingStart: true, source: 'none' as const }];
   })) as Record<FixedAgentId, AgentRuntimeDurations>;
+};
+
+const detectMilestone = (event: NormalizedEvent): 'diagnosis_complete' | 'kb_retrieval_complete' | 'treatment_complete' | 'verification_complete' | 'final' | undefined => {
+  const node = `${String(event.semanticNode || '').toLowerCase()}|${String(event.nodeName || '').toLowerCase()}`;
+  if (node.includes('diagnosiscomplete') || node.includes('diagnosis_complete')) return 'diagnosis_complete';
+  if (node.includes('kb_retrieval_complete') || node.includes('kbretrieval_complete')) return 'kb_retrieval_complete';
+  if (node.includes('treatment_complete') || node.includes('prescription_complete') || node.includes('personalization_complete')) return 'treatment_complete';
+  if (node.includes('verification_complete') || node.includes('validator_complete')) return 'verification_complete';
+  if (node.includes('final')) return 'final';
+  return undefined;
+};
+
+const buildMilestoneMapByPhase = (workflowEvents: NormalizedEvent[]) => {
+  const sorted = sortNormalizedEvents(workflowEvents.filter((event) => typeof event.tsMs === 'number'));
+  let phaseBoundaryIndex = -1;
+  for (let i = 0; i < sorted.length; i += 1) {
+    if (isSecondPhaseBoundaryEvent(sorted[i])) {
+      phaseBoundaryIndex = i;
+      break;
+    }
+  }
+  const phase1 = phaseBoundaryIndex >= 0 ? sorted.slice(0, phaseBoundaryIndex) : sorted;
+  const phase2 = phaseBoundaryIndex >= 0 ? sorted.slice(phaseBoundaryIndex) : [];
+  const collect = (phaseEvents: NormalizedEvent[]) => {
+    const map = new Map<string, number>();
+    phaseEvents.forEach((event) => {
+      const milestone = detectMilestone(event);
+      if (!milestone) return;
+      if (typeof event.tsMs !== 'number') return;
+      if (!map.has(milestone)) map.set(milestone, event.tsMs);
+    });
+    return map;
+  };
+  return { phase1: collect(phase1), phase2: collect(phase2) };
+};
+
+export const calcAgentEstimatedDurations = (
+  events: NormalizedEvent[],
+): Record<FixedAgentId, Pick<AgentResolvedDuration, 'phase1Ms' | 'phase2Ms' | 'totalMs' | 'estimateReason'>> => {
+  const { workflowEvents } = splitEventsForTiming(events);
+  const milestones = buildMilestoneMapByPhase(workflowEvents);
+  const mapping: Array<{ agentId: FixedAgentId; start: string; end: string }> = [
+    { agentId: 'kb_retrieval', start: 'diagnosis_complete', end: 'kb_retrieval_complete' },
+    { agentId: 'treatment', start: 'kb_retrieval_complete', end: 'treatment_complete' },
+    { agentId: 'verification', start: 'treatment_complete', end: 'verification_complete' },
+    { agentId: 'final', start: 'verification_complete', end: 'final' },
+  ];
+  const result = Object.fromEntries(FIXED_AGENT_IDS.map((agentId) => [agentId, { phase1Ms: 0, phase2Ms: 0, totalMs: 0 }])) as Record<FixedAgentId, Pick<AgentResolvedDuration, 'phase1Ms' | 'phase2Ms' | 'totalMs' | 'estimateReason'>>;
+  mapping.forEach(({ agentId, start, end }) => {
+    const p1Start = milestones.phase1.get(start);
+    const p1End = milestones.phase1.get(end);
+    const p2Start = milestones.phase2.get(start);
+    const p2End = milestones.phase2.get(end);
+    const phase1Ms = (typeof p1Start === 'number' && typeof p1End === 'number' && p1End >= p1Start) ? (p1End - p1Start) : 0;
+    const phase2Ms = (typeof p2Start === 'number' && typeof p2End === 'number' && p2End >= p2Start) ? (p2End - p2Start) : 0;
+    const totalMs = phase1Ms + phase2Ms;
+    if (totalMs > 0) {
+      result[agentId] = {
+        phase1Ms,
+        phase2Ms,
+        totalMs,
+        estimateReason: `${start} -> ${end}`,
+      };
+    }
+  });
+  return result;
+};
+
+export const calcResolvedAgentDurations = (
+  events: NormalizedEvent[],
+  nowMs: number,
+  workflowDone: boolean,
+): Record<FixedAgentId, AgentResolvedDuration> => {
+  const actual = calcAgentRuntimeBySourcePriority(events, nowMs, workflowDone);
+  const estimated = calcAgentEstimatedDurations(events);
+  return Object.fromEntries(FIXED_AGENT_IDS.map((agentId) => {
+    const actualDuration = actual[agentId];
+    const estimatedDuration = estimated[agentId];
+    const hasActual = (actualDuration.totalMs > 0) || actualDuration.phase1Open === true || actualDuration.phase2Open === true;
+    if (hasActual) {
+      return [agentId, {
+        ...actualDuration,
+        displayMs: actualDuration.totalMs,
+        displayKind: 'actual' as const,
+      }];
+    }
+    if ((estimatedDuration?.totalMs ?? 0) > 0) {
+      return [agentId, {
+        ...actualDuration,
+        phase1Ms: estimatedDuration.phase1Ms,
+        phase2Ms: estimatedDuration.phase2Ms,
+        totalMs: estimatedDuration.totalMs,
+        displayMs: estimatedDuration.totalMs,
+        displayKind: 'estimated' as const,
+        estimateReason: estimatedDuration.estimateReason,
+      }];
+    }
+    return [agentId, {
+      ...actualDuration,
+      phase1Ms: 0,
+      phase2Ms: 0,
+      totalMs: 0,
+      displayMs: 0,
+      displayKind: 'none' as const,
+    }];
+  })) as Record<FixedAgentId, AgentResolvedDuration>;
 };
 
 export const calcPhaseDurationsByAgent = (

@@ -29,7 +29,7 @@ import {
 } from '@/components/traceEvents';
 import type { LucideIcon } from 'lucide-react';
 import {
-  calcAgentRuntimeBySourcePriority,
+  calcResolvedAgentDurations,
   calcWallClockPhaseDuration,
   formatDurationMs,
   isReplayTerminalWaitingEvent,
@@ -98,6 +98,8 @@ interface AgentPhaseDurations {
   phase2Ms: number;
   totalMs: number;
   missingStart?: boolean;
+  displayKind?: 'actual' | 'estimated' | 'none';
+  estimateReason?: string;
 }
 
 interface AgentRowDef {
@@ -1332,7 +1334,7 @@ export function AgentWorkflowPanel({
   );
 
   const phaseDurationsByAgent = useMemo(
-    () => calcAgentRuntimeBySourcePriority(mergedEvents, nowMs, workflowDone) as Record<FixedAgentId, AgentPhaseDurations>,
+    () => calcResolvedAgentDurations(mergedEvents, nowMs, workflowDone) as Record<FixedAgentId, AgentPhaseDurations>,
     [mergedEvents, nowMs, workflowDone],
   );
 
@@ -1370,19 +1372,23 @@ export function AgentWorkflowPanel({
         hasAgentEvents,
         duration: (() => {
           const timing = phaseDurationsByAgent[def.id];
-          if (timing?.missingStart && (timing.totalMs ?? 0) === 0) return '—';
+          if (timing?.displayKind === 'estimated') return `~${formatDurationMs(timing?.totalMs ?? 0)}`;
+          if (timing?.displayKind === 'none' || (timing?.missingStart && (timing.totalMs ?? 0) === 0)) return '—';
           return formatDurationMs(timing?.totalMs ?? 0);
         })(),
         phase1Duration: (() => {
           const timing = phaseDurationsByAgent[def.id];
-          if (timing?.missingStart && (timing.phase1Ms ?? 0) === 0) return '—';
+          if ((timing?.phase1Ms ?? 0) <= 0) return '—';
+          if (timing?.displayKind === 'estimated') return `~${formatDurationMs(timing?.phase1Ms ?? 0)}`;
           return formatDurationMs(timing?.phase1Ms ?? 0);
         })(),
         phase2Duration: (() => {
           const timing = phaseDurationsByAgent[def.id];
-          if (timing?.missingStart && (timing.phase2Ms ?? 0) === 0) return '—';
+          if ((timing?.phase2Ms ?? 0) <= 0) return '—';
+          if (timing?.displayKind === 'estimated') return `~${formatDurationMs(timing?.phase2Ms ?? 0)}`;
           return formatDurationMs(timing?.phase2Ms ?? 0);
         })(),
+        durationHint: phaseDurationsByAgent[def.id]?.displayKind === 'estimated' ? '由相邻阶段里程碑估算' : '',
       };
     });
   }, [rows, nowMs, workflowDone, phaseDurationsByAgent, primaryPanelEvents]);
@@ -1537,16 +1543,17 @@ export function AgentWorkflowPanel({
                       </div>
                       <div className="text-xs text-white/50 flex items-center gap-1">
                         <Timer className="w-3 h-3" />
-                        {row.startTs
-                          ? row.status === 'completed'
-                            ? `✓ 完成 (${row.duration})`
-                            : row.status === 'running'
-                              ? `进行中 (${row.duration})`
-                              : row.status === 'error'
-                                ? `中断 (${row.duration})`
-                                : row.duration
-                          : '等待执行'}
+                        {row.status === 'completed'
+                          ? `✓ 完成 (${row.duration})`
+                          : row.status === 'running'
+                            ? `进行中 (${row.duration})`
+                            : row.status === 'error'
+                              ? `中断 (${row.duration})`
+                              : row.hasAgentEvents
+                                ? row.duration
+                                : '等待执行'}
                         <span className="text-white/35">（一诊 {row.phase1Duration} / 二诊 {row.phase2Duration}）</span>
+                        {row.durationHint ? <span className="text-white/35">· {row.durationHint}</span> : null}
                       </div>
                     </div>
 
