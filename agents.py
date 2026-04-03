@@ -152,7 +152,8 @@ def _normalize_top3_candidates(candidates: Any) -> list[tuple[str, float]]:
 
 
 def confirm_input_step(state: CropDiseaseState) -> CropDiseaseState:
-    incoming_symptoms = [str(item).strip() for item in (state.get("incoming_symptoms") or state.get("symptoms") or []) if str(item).strip()]
+    # 即使 incoming_symptoms 是空列表，也要使用它
+    incoming_symptoms = [str(item).strip() for item in (state.get("incoming_symptoms") or []) if str(item).strip()]
     historical_symptoms = [str(item).strip() for item in (state.get("historical_symptoms") or []) if str(item).strip()]
     merged: list[str] = []
     for symptom in [*historical_symptoms, *incoming_symptoms]:

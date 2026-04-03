@@ -1320,6 +1320,8 @@ def _latest_case_event_by_trace(trace_id: str) -> dict[str, Any]:
             or _as_clean_list(image_result_like.get("top3"))
             or _as_clean_list(image_diag_like.get("top3"))
             or diagnosis_evidence_like
+            # 对于 waiting_for_supplement 状态的事件，也要返回，因为它可能包含症状信息
+            or str(event_like.get("status") or "").strip().lower() == "waiting_for_supplement"
         )
 
     event = get_latest_event_by_trace(trace_id)
@@ -1920,9 +1922,28 @@ def _lightweight_diagnosis_payload(
     symptoms_list: list[str],
 ) -> dict[str, Any]:
     status = "waiting_for_supplement" if need_confirm else "diagnosis_completed"
-    confirm_fields = ["symptoms"]
-    if ui_mode in {"image", "image_and_text"}:
-        confirm_fields.append("image")
+    
+    if need_confirm and reason_code:
+        if reason_code == "IMAGE_QUALITY_LOW":
+            confirm_fields = ["image"]
+        elif reason_code == "SYMPTOM_TEXT_INSUFFICIENT":
+            confirm_fields = ["symptoms"]
+        elif reason_code in {"IMAGE_TEXT_CONFLICT", "BOTH_IMAGE_AND_TEXT_WEAK"}:
+            confirm_fields = ["image", "symptoms"]
+        elif reason_code == "LOW_DISCRIMINATION_NEED_KEY_FEATURES":
+            if ui_mode == "image":
+                confirm_fields = ["image"]
+            elif ui_mode == "text":
+                confirm_fields = ["symptoms"]
+            else:
+                confirm_fields = ["image", "symptoms"]
+        else:
+            confirm_fields = ["symptoms"]
+            if ui_mode in {"image", "image_and_text"}:
+                confirm_fields.append("image")
+    else:
+        confirm_fields = []
+    
     return {
         "trace_id": trace_id,
         "image_id": image_id,
@@ -1978,7 +1999,13 @@ async def diagnose_image_start(
     need_confirm = bool(low_conf or low_margin)
     reason_code = "LOW_DISCRIMINATION_NEED_KEY_FEATURES" if low_margin else ("IMAGE_QUALITY_LOW" if low_conf else None)
     reason_text = "候选病害区分度不足，请补充关键特征信息" if low_margin else ("当前图像证据不足，请补充诊断信息" if low_conf else None)
-    ui_mode = "image_and_text" if need_confirm else "none"
+    
+    if reason_code == "IMAGE_QUALITY_LOW":
+        ui_mode = "image"
+    elif reason_code == "LOW_DISCRIMINATION_NEED_KEY_FEATURES":
+        ui_mode = "text"
+    else:
+        ui_mode = "none"
     emit_node_event(trace_id, node="DiagnosisCompleted", status="end", message="诊断阶段完成", payload={
         "final_disease": disease,
         "final_confidence": top1_conf,
@@ -2602,16 +2629,61 @@ def _diagnose_confirm_core(request: Request, payload: dict) -> dict:
     elif final_decision is not None:
         raise HTTPException(status_code=400, detail="final_decision 仅允许在 waiting_for_expert_decision 阶段提交")
     historical_symptoms: list[str] = []
-    for event_like in reversed(history_events):
-        if not isinstance(event_like, dict):
-            continue
-        for section in ("outputs", "inputs", "payload"):
-            container = event_like.get(section)
-            if isinstance(container, dict) and isinstance(container.get("symptoms"), list):
-                historical_symptoms = [str(item).strip() for item in container.get("symptoms", []) if str(item).strip()]
+    
+    # 优先从 previous_case_event (events 表) 中提取症状
+    if isinstance(previous_case_event, dict):
+        for key in ("normalized_symptoms", "symptoms"):
+            raw_symptoms = previous_case_event.get(key)
+            if isinstance(raw_symptoms, list) and raw_symptoms:
+                historical_symptoms = [str(item).strip() for item in raw_symptoms if str(item).strip()]
                 break
-        if historical_symptoms:
-            break
+        
+        # 如果还没有找到，尝试从 diagnosis_evidence 中提取
+        if not historical_symptoms:
+            diagnosis_evidence = previous_case_event.get("diagnosis_evidence")
+            if isinstance(diagnosis_evidence, dict):
+                for key in ("normalized_symptoms", "raw_symptoms", "symptoms"):
+                    raw_symptoms = diagnosis_evidence.get(key)
+                    if isinstance(raw_symptoms, list) and raw_symptoms:
+                        historical_symptoms = [str(item).strip() for item in raw_symptoms if str(item).strip()]
+                        break
+        
+        # 如果还没有找到，尝试从 follow_up_questions 中提取
+        if not historical_symptoms:
+            follow_up_questions = previous_case_event.get("follow_up_questions")
+            if isinstance(follow_up_questions, list) and follow_up_questions:
+                # follow_up_questions 可能包含多个问题，需要合并
+                for question in follow_up_questions:
+                    if isinstance(question, str) and question.strip():
+                        # 将问题中的症状提取出来
+                        # 例如："同心纹，褐色斑点，斑点中心一圈圈很规整"
+                        symptoms_from_question = [s.strip() for s in question.split(",") if s.strip()]
+                        historical_symptoms.extend(symptoms_from_question)
+                # 去重
+                historical_symptoms = list(dict.fromkeys(historical_symptoms))
+    
+    # 如果还没有找到，从 history_events (trace_events 表) 中提取
+    if not historical_symptoms:
+        for event_like in reversed(history_events):
+            if not isinstance(event_like, dict):
+                continue
+            for section in ("outputs", "inputs", "payload"):
+                container = event_like.get(section)
+                if isinstance(container, dict):
+                    # 先尝试从 symptoms 中提取
+                    if isinstance(container.get("symptoms"), list):
+                        historical_symptoms = [str(item).strip() for item in container.get("symptoms", []) if str(item).strip()]
+                        break
+                    # 如果还没有找到，尝试从 follow_up_questions 中提取
+                    if not historical_symptoms and isinstance(container.get("follow_up_questions"), list):
+                        for question in container.get("follow_up_questions", []):
+                            if isinstance(question, str) and question.strip():
+                                symptoms_from_question = [s.strip() for s in question.split(",") if s.strip()]
+                                historical_symptoms.extend(symptoms_from_question)
+                        historical_symptoms = list(dict.fromkeys(historical_symptoms))
+                        break
+            if historical_symptoms:
+                break
     symptom_alias_map = {
         "病斑原形": "病斑圆形",
         "水渍壮": "水渍状",
