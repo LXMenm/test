@@ -1548,6 +1548,7 @@ export function AgentWorkflowPanel({
                                 ? row.duration
                                 : '等待执行'}
                         <span className="text-white/35">（一诊 {row.phase1Duration} / 二诊 {row.phase2Duration}）</span>
+                        {row.durationHint ? <span className="text-white/35">· {row.durationHint}</span> : null}
                       </div>
                     </div>
 
