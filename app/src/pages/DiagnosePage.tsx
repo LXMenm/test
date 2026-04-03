@@ -21,6 +21,11 @@ import {
 } from '@/lib/profileLabels';
 import { resolveModelOptions } from '@/lib/modelOptions';
 import { fetchTraceEvents } from '@/lib/traceClient';
+import {
+  mergeAndDedupeTraceEvents,
+  normalizeTraceEvents as normalizeRawTraceEvents,
+  type NormalizedTraceEvent,
+} from '@/components/traceEvents';
 import { calcTracePhaseTiming, formatDurationMs } from '@/components/agentWorkflowTiming';
 import { authFetch, loadAuthUser } from '@/auth';
 
@@ -118,13 +123,7 @@ interface ProfileDetail {
 
 type BaseOption = { id: string; name?: string };
 
-interface TraceEvent {
-  timestamp: string;
-  agent: string;
-  status: string;
-  message?: string;
-  raw: Record<string, unknown>;
-}
+type TraceEvent = NormalizedTraceEvent;
 
 type Top3Candidate = { disease: string; probPct: number };
 type ConfirmUiMode = 'none' | 'image' | 'text' | 'image_and_text';
@@ -635,43 +634,8 @@ export function DiagnosePage() {
   };
 
   const normalizeTraceEvents = (eventsLike: unknown): TraceEvent[] => {
-    if (!Array.isArray(eventsLike)) return [];
-    return eventsLike
-      .map((evt: unknown) => {
-        const event = evt && typeof evt === 'object' ? evt as Record<string, unknown> : {};
-        const decision = event.decision && typeof event.decision === 'object'
-          ? event.decision as Record<string, unknown>
-          : undefined;
-        const seq = typeof event.seq === 'number' && Number.isFinite(event.seq) ? event.seq : Number.MAX_SAFE_INTEGER;
-        return {
-          seq,
-          value: {
-            timestamp: typeof event.ts === 'string'
-              ? event.ts
-              : (typeof event.timestamp === 'string' ? event.timestamp : new Date().toISOString()),
-            agent: typeof event.agent_cn === 'string'
-              ? event.agent_cn
-              : (typeof event.agent_id === 'string'
-                ? event.agent_id
-                : (typeof event.agent === 'string'
-                  ? event.agent
-                  : String(event.node ?? ''))),
-            status: typeof event.step_cn === 'string'
-              ? event.step_cn
-              : (typeof event.step === 'string'
-                ? event.step
-                : (typeof event.status === 'string' ? event.status : '')),
-            message: typeof event.message === 'string'
-              ? event.message
-              : (typeof decision?.reason_str === 'string'
-                ? decision.reason_str
-                : (typeof decision?.reason === 'string' ? decision.reason : '')),
-            raw: event,
-          } as TraceEvent,
-        };
-      })
-      .sort((a, b) => a.seq - b.seq)
-      .map((item) => item.value);
+    const normalized = normalizeRawTraceEvents(eventsLike);
+    return mergeAndDedupeTraceEvents([], normalized);
   };
 
   const parseProfiles = (raw: unknown): ProfileListItem[] => {
@@ -833,7 +797,7 @@ export function DiagnosePage() {
         setImageId(String(payload.image_id));
       }
       if (Array.isArray(payload.events)) {
-        setTraceEvents(normalizeTraceEvents(payload.events));
+        setTraceEvents((prev) => mergeAndDedupeTraceEvents(prev, normalizeTraceEvents(payload.events)));
       }
       setWorkflowRefreshToken((prev) => prev + 1);
 
@@ -864,7 +828,7 @@ export function DiagnosePage() {
           const mergedResult = buildResultFromPayload(mergedPayload);
           syncConfirmStateFromPayload(mergedPayload, mergedResult);
           if (Array.isArray((continueData as Record<string, unknown>).events)) {
-            setTraceEvents(normalizeTraceEvents((continueData as Record<string, unknown>).events));
+            setTraceEvents((prev) => mergeAndDedupeTraceEvents(prev, normalizeTraceEvents((continueData as Record<string, unknown>).events)));
           }
         }
       }
@@ -932,7 +896,7 @@ export function DiagnosePage() {
         setImageId('');
       }
       if (Array.isArray(payload.events)) {
-        setTraceEvents(normalizeTraceEvents(payload.events));
+        setTraceEvents((prev) => mergeAndDedupeTraceEvents(prev, normalizeTraceEvents(payload.events)));
       } else {
         setTraceEvents([]);
       }
@@ -988,7 +952,7 @@ export function DiagnosePage() {
       const payload = normalizePayloadRecord(data);
       if (payload.trace_id) setTraceId(String(payload.trace_id));
       if (payload.image_id) setImageId(String(payload.image_id));
-      if (Array.isArray(payload.events)) setTraceEvents(normalizeTraceEvents(payload.events));
+      if (Array.isArray(payload.events)) setTraceEvents((prev) => mergeAndDedupeTraceEvents(prev, normalizeTraceEvents(payload.events)));
       setWorkflowRefreshToken((prev) => prev + 1);
       const normalizedResult = buildResultFromPayload(payload);
       syncConfirmStateFromPayload(payload, normalizedResult, { defaultChoice: 'other', resetInputs: true, markResubmitSuccess: true });
@@ -1033,7 +997,7 @@ export function DiagnosePage() {
         setImageId(data.image_id);
       }
       if (Array.isArray(data?.events)) {
-        setTraceEvents(normalizeTraceEvents(data.events));
+        setTraceEvents((prev) => mergeAndDedupeTraceEvents(prev, normalizeTraceEvents(data.events)));
       }
       setWorkflowRefreshToken((prev) => prev + 1);
 
@@ -1113,7 +1077,7 @@ export function DiagnosePage() {
         setImageId(data.image_id);
       }
       if (Array.isArray(data?.events)) {
-        setTraceEvents(normalizeTraceEvents(data.events));
+        setTraceEvents((prev) => mergeAndDedupeTraceEvents(prev, normalizeTraceEvents(data.events)));
       }
       setWorkflowRefreshToken((prev) => prev + 1);
 
@@ -1246,7 +1210,7 @@ export function DiagnosePage() {
         traceFetchAbortRef.current = null;
       }
       if (Array.isArray(data?.events)) {
-        setTraceEvents(normalizeTraceEvents(data.events));
+        setTraceEvents((prev) => mergeAndDedupeTraceEvents(prev, normalizeTraceEvents(data.events)));
       }
     } catch (error) {
       if (traceFetchAbortRef.current === controller) {
@@ -1273,12 +1237,11 @@ export function DiagnosePage() {
 
   useEffect(() => {
     if (!traceEvents.length) return;
-    const latest = [...traceEvents].reverse().find((item) => item.raw && typeof item.raw === 'object');
-    const raw = latest?.raw as Record<string, unknown> | undefined;
-    if (!raw) return;
-    const node = String(raw.node || '');
-    const status = String(raw.status || '').toLowerCase();
-    const payload = normalizePayloadRecord(raw.payload);
+    const latest = traceEvents[traceEvents.length - 1];
+    const raw = latest.raw;
+    const node = String(raw.node || latest.stage || '');
+    const status = String(raw.status || latest.status || '').toLowerCase();
+    const payload = normalizePayloadRecord(raw.payload ?? latest.payload);
     if (node === 'DiagnosisCompleted' || (node === 'DiagnosisAgent' && status === 'end')) {
       setResult((prev) => prev ? buildResultFromPayload({ ...prev, ...payload }) : prev);
     }
