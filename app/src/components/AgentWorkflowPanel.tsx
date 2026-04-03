@@ -23,15 +23,9 @@ import {
   calcPhaseDurationsByAgent,
   calcOverallPhaseDuration,
   formatDurationMs,
-  getTracePayload,
-  isWorkflowTerminalRawEvent,
   isReplayTerminalWaitingEvent,
-  isStructuredAgentTraceEvent,
   isWaitingForUserInputEvent,
   parseTsMs,
-  resolveTraceAgentId,
-  resolveTraceNode,
-  segmentTracePhases,
   shouldIncludeEvent,
   sliceCurrentPhaseEvents,
 } from './agentWorkflowTiming';
@@ -182,12 +176,9 @@ const mapToFixedAgent = (agentId: string | undefined, node: string | undefined):
 const normalizeEvent = (raw: RawTraceEvent): NormalizedEvent => {
   const ts = raw.ts;
   const tsMs = parseTsMs(ts);
-  const resolvedAgent = resolveTraceAgentId(raw);
-  const resolvedNode = resolveTraceNode(raw);
-  const payload = getTracePayload(raw);
 
-  if (isStructuredAgentTraceEvent(raw)) {
-    const agentId = mapToFixedAgent(resolvedAgent, resolvedNode);
+  if (raw.agent) {
+    const agentId = mapToFixedAgent(String(raw.agent_id || raw.agent), undefined);
     const outputs = isRecord(raw.outputs) ? raw.outputs : undefined;
     const decision = isRecord(raw.decision) ? raw.decision : undefined;
     const isComplete = String(raw.step || '').toLowerCase().endsWith('_complete') || outputs?.['is_complete'] === true;
@@ -206,27 +197,27 @@ const normalizeEvent = (raw: RawTraceEvent): NormalizedEvent => {
       status,
       message,
       data: {
-        agent: resolvedAgent,
+        agent: raw.agent,
         agent_cn: raw.agent_cn,
         step: raw.step,
         step_cn: raw.step_cn,
         inputs: isRecord(raw.inputs) ? raw.inputs : undefined,
         outputs,
         decision,
-        payload,
       },
     };
   }
 
+  const payload = isRecord(raw.payload) ? raw.payload : {};
   const status = normalizeStatus(raw.status);
   return {
     seq: raw.seq,
     ts,
     tsMs,
-    agentId: mapToFixedAgent(resolvedAgent, resolvedNode),
-    nodeName: resolvedNode,
+    agentId: mapToFixedAgent(String(payload['agent_id'] || raw.agent_id || ''), raw.node),
+    nodeName: String(raw.node || raw.agent || 'trace'),
     status,
-    message: shortText(raw.message || payload['message'] || resolvedNode || 'trace', 140),
+    message: shortText(raw.message || payload['message'] || raw.node || 'trace', 140),
     data: payload,
   };
 };
@@ -765,6 +756,7 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
       clearExternal();
       replayedCountRef.current = 0;
       workflowDoneRef.current = false;
+      setPausedByUserInput(false);
       lastSeqRef.current = -1;
       finalTsRef.current = undefined;
       eventHistoryRef.current = {
@@ -777,10 +769,7 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
         final: [],
       };
       allEventsRef.current = [];
-      queueMicrotask(() => {
-        setPausedByUserInput(false);
-        setAllEvents([]);
-      });
+      queueMicrotask(() => setAllEvents([]));
       return;
     }
 
@@ -877,7 +866,6 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
         const payload = await response.json();
         const events = Array.isArray(payload?.events) ? payload.events : [];
         const sorted = sliceCurrentPhaseEvents(events as RawTraceEvent[], phaseStartMs);
-        const segmentedPhases = segmentTracePhases(sorted as RawTraceEvent[]);
 
         if (cancelled || workflowDoneRef.current || updatesStoppedRef.current || waitingStableRef.current) return;
 
@@ -905,17 +893,6 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
 
         setReplayedCount(replayed);
         replayedCountRef.current = replayed;
-
-        const hasStructured = segmentedPhases.some((phase) => phase.kind === 'structured_workflow_phase');
-        const lightweightDone = !hasStructured && segmentedPhases.every((phase) => phase.raw_events.some(isWorkflowTerminalRawEvent));
-        if (lightweightDone) {
-          workflowDoneRef.current = true;
-          setWorkflowDone(true);
-          setConnectionState('disconnected');
-          setConnectionHint(`已回放 ${replayed} 条事件，轻量诊断流程已结束`);
-          stopPolling(false);
-          return;
-        }
 
         if (workflowDoneRef.current) {
           setConnectionState('disconnected');
@@ -972,25 +949,13 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
   );
 
   const activePhaseLabel = useMemo(() => {
-    const rawLikeEvents: RawTraceEvent[] = allEvents.map((event) => {
+    const hasSecondPhase = allEvents.some((event) => {
+      const node = String(event.nodeName || '').toLowerCase();
       const data = isRecord(event.data) ? event.data : {};
-      return {
-        seq: event.seq,
-        ts: event.ts,
-        node: event.nodeName,
-        status: event.status,
-        payload: data,
-        agent_id: String(data.agent_id ?? data.agent ?? ''),
-        agent: String(data.agent ?? data.agent_id ?? ''),
-        inputs: isRecord(data.inputs) ? data.inputs as Record<string, unknown> : undefined,
-        outputs: isRecord(data.outputs) ? data.outputs as Record<string, unknown> : undefined,
-        decision: isRecord(data.decision) ? data.decision as Record<string, unknown> : undefined,
-      };
+      const rawAgent = String(data['agent'] ?? data['agent_id'] ?? '').toLowerCase();
+      return rawAgent === 'confirm_input' || node === 'confirm_input' || (node === 'confirmflow' && event.status === 'running');
     });
-    const phases = segmentTracePhases(rawLikeEvents);
-    const hasStructured = phases.some((phase) => phase.kind === 'structured_workflow_phase');
-    if (!phases.length) return '等待 trace 事件';
-    return hasStructured ? '当前显示：一诊摘要 + 二诊多智能体流程' : '当前显示：轻量一诊流程';
+    return hasSecondPhase ? '当前显示二诊阶段链路' : '当前显示一诊阶段链路';
   }, [allEvents]);
 
   const receptionDebugSummary = useMemo(() => {
@@ -1000,25 +965,6 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
       count: receptionEvents.length,
       lastSeq: lastReceptionEvent?.seq,
     };
-  }, [allEvents]);
-
-  const phaseSummaries = useMemo(() => {
-    const rawLikeEvents: RawTraceEvent[] = allEvents.map((event) => {
-      const data = isRecord(event.data) ? event.data : {};
-      return {
-        seq: event.seq,
-        ts: event.ts,
-        node: event.nodeName,
-        status: event.status,
-        payload: data,
-        agent_id: String(data.agent_id ?? data.agent ?? ''),
-        agent: String(data.agent ?? data.agent_id ?? ''),
-        inputs: isRecord(data.inputs) ? data.inputs as Record<string, unknown> : undefined,
-        outputs: isRecord(data.outputs) ? data.outputs as Record<string, unknown> : undefined,
-        decision: isRecord(data.decision) ? data.decision as Record<string, unknown> : undefined,
-      };
-    });
-    return segmentTracePhases(rawLikeEvents);
   }, [allEvents]);
 
   const renderedRows = useMemo(() => {
@@ -1097,25 +1043,6 @@ export function AgentWorkflowPanel({ traceId, confidencePct, phaseStartMs, refre
           显示系统节点（校验/落盘）
         </button>
       </div>
-
-      {phaseSummaries.length > 0 && (
-        <div className="rounded-lg border border-white/10 bg-white/5 p-3 text-xs text-white/75 space-y-1">
-          {phaseSummaries.map((phase, idx) => (
-            <div key={`${phase.kind}-${idx}`} className="flex flex-wrap gap-2">
-              <Badge variant="outline" className="border-white/20 text-white/70">
-                {phase.kind === 'lightweight_diagnosis_phase' ? `一诊阶段 #${idx + 1}` : `二诊阶段 #${idx + 1}`}
-              </Badge>
-              {phase.kind === 'lightweight_diagnosis_phase' ? (
-                <span>
-                  disease={phase.disease || '-'} / confidence={toPercent(phase.confidence)} / need_confirm={phase.need_confirm === true ? 'true' : phase.need_confirm === false ? 'false' : '-'}
-                </span>
-              ) : (
-                <span>结构化事件数：{phase.raw_events.length}</span>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
 
       <div className="space-y-0">
         {renderedRows.map((row, idx) => {

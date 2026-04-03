@@ -31,34 +31,7 @@ export interface RawTraceEvent {
   status?: string;
   agent?: string;
   agent_id?: string;
-  step?: string;
-  message?: string;
-  payload?: Record<string, unknown>;
-  inputs?: Record<string, unknown>;
-  outputs?: Record<string, unknown>;
-  decision?: Record<string, unknown>;
 }
-
-export interface LightweightDiagnosisPhaseSummary {
-  kind: 'lightweight_diagnosis_phase';
-  started_at?: string;
-  ended_at?: string;
-  disease?: string;
-  confidence?: number;
-  need_confirm?: boolean;
-  image_path?: string;
-  confidence_gate_reasons: string[];
-  raw_events: RawTraceEvent[];
-}
-
-export interface StructuredWorkflowPhaseSummary {
-  kind: 'structured_workflow_phase';
-  started_at?: string;
-  ended_at?: string;
-  raw_events: RawTraceEvent[];
-}
-
-export type TracePhaseSummary = LightweightDiagnosisPhaseSummary | StructuredWorkflowPhaseSummary;
 
 export interface AgentPhaseDurations {
   phase1Ms: number;
@@ -139,205 +112,6 @@ const TIMING_AGENT_ALIAS_MAP: Record<string, FixedAgentId> = {
   final: 'final',
 };
 
-const isRecord = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
-
-export const getTracePayload = (event: RawTraceEvent): Record<string, unknown> => {
-  return isRecord(event?.payload) ? event.payload : {};
-};
-
-const toLower = (v: unknown): string => String(v ?? '').trim().toLowerCase();
-
-const inferAgentFromNode = (nodeName: string): string => {
-  const node = toLower(nodeName);
-  if (node.includes('parseinput') || node.includes('parse_input')) return 'parse_input';
-  if (node.includes('diagnosis')) return 'diagnosis';
-  if (node.includes('confidencegate') || node.includes('confidence_gate')) return 'confidence_gate';
-  if (node.includes('final')) return 'final';
-  if (node.includes('persist')) return 'persist';
-  if (node.includes('verification') || node.includes('validator')) return 'verification';
-  if (node.includes('treatment') || node.includes('prescription') || node.includes('personalization')) return 'treatment';
-  if (node.includes('retrieve') || node.includes('kb')) return 'kb_retrieval';
-  if (node.includes('confirm')) return 'confirm_input';
-  return '';
-};
-
-export const resolveTraceNode = (event: RawTraceEvent): string => {
-  return String(event.node || event.step || event.agent || 'trace');
-};
-
-export const resolveTraceAgentId = (event: RawTraceEvent): string => {
-  const payload = getTracePayload(event);
-  const resolved = String(
-    event.agent_id
-    || event.agent
-    || payload.agent_id
-    || payload.agent
-    || inferAgentFromNode(resolveTraceNode(event)),
-  ).trim();
-  return resolved.toLowerCase();
-};
-
-export const isStructuredAgentTraceEvent = (event: RawTraceEvent): boolean => {
-  return Boolean(event.agent || event.agent_id || event.step || isRecord(event.inputs) || isRecord(event.outputs) || isRecord(event.decision));
-};
-
-export const isLightweightTraceEvent = (event: RawTraceEvent): boolean => {
-  if (!event) return false;
-  if (isStructuredAgentTraceEvent(event)) return false;
-  const node = toLower(resolveTraceNode(event));
-  return Boolean(node) || isRecord(event.payload);
-};
-
-const readDisease = (payload: Record<string, unknown>): string => {
-  return String(payload.final_disease || payload.disease || '').trim();
-};
-
-const readConfidence = (payload: Record<string, unknown>): number | undefined => {
-  const raw = Number(payload.final_confidence ?? payload.confidence ?? payload.confidence_pct);
-  if (!Number.isFinite(raw)) return undefined;
-  return raw;
-};
-
-const lightweightSignature = (event: RawTraceEvent): string => {
-  const payload = getTracePayload(event);
-  return JSON.stringify({
-    node: toLower(resolveTraceNode(event)),
-    status: toLower(event.status),
-    message: String(event.message || ''),
-    agent: resolveTraceAgentId(event),
-    disease: readDisease(payload),
-    confidence: readConfidence(payload),
-  });
-};
-
-const dedupRawTraceEvents = (events: RawTraceEvent[]): RawTraceEvent[] => {
-  const sorted = [...events].sort(compareEvents);
-  const seenSeq = new Set<number>();
-  const seenSig = new Set<string>();
-  const result: RawTraceEvent[] = [];
-  sorted.forEach((event) => {
-    if (typeof event.seq === 'number' && Number.isFinite(event.seq)) {
-      if (seenSeq.has(event.seq)) return;
-      seenSeq.add(event.seq);
-    }
-    const sig = lightweightSignature(event);
-    if (seenSig.has(sig)) return;
-    seenSig.add(sig);
-    result.push(event);
-  });
-  return result;
-};
-
-export const collapseLightweightDiagnosisPhase = (events: RawTraceEvent[]): LightweightDiagnosisPhaseSummary[] => {
-  const deduped = dedupRawTraceEvents(events).filter(isLightweightTraceEvent);
-  const chunks: RawTraceEvent[][] = [];
-  let current: RawTraceEvent[] = [];
-  const flush = () => {
-    if (current.length) chunks.push(current);
-    current = [];
-  };
-  deduped.forEach((event) => {
-    const node = toLower(resolveTraceNode(event));
-    const status = toLower(event.status);
-    const isStart = (node.includes('parseinput') || node.includes('parse_input') || node.includes('diagnosisagent') || node.includes('diagnosis_agent')) && status === 'start';
-    if (isStart && current.length) flush();
-    current.push(event);
-    const isEnd = (node.includes('confidencegate') && status === 'end')
-      || (node.includes('diagnosiscompleted') && status === 'end')
-      || (node === 'final' && status === 'end');
-    if (isEnd) flush();
-  });
-  flush();
-
-  const phases = chunks.map((chunk): LightweightDiagnosisPhaseSummary => {
-    const first = chunk[0];
-    const last = chunk[chunk.length - 1];
-    const payloadList = chunk.map(getTracePayload);
-    const reversePayloads = [...payloadList].reverse();
-    const disease = reversePayloads.map(readDisease).find(Boolean);
-    const confidence = reversePayloads.map(readConfidence).find((v) => typeof v === 'number');
-    const needConfirmPayload = reversePayloads.find((p) => typeof p.need_confirm === 'boolean');
-    const imagePath = reversePayloads.map((p) => String(p.image_path || '')).find(Boolean);
-    const confidenceReasons = reversePayloads
-      .flatMap((p) => (Array.isArray(p.reasons) ? p.reasons : []))
-      .map((r) => String(r).trim())
-      .filter(Boolean);
-    return {
-      kind: 'lightweight_diagnosis_phase',
-      started_at: first?.ts,
-      ended_at: last?.ts,
-      disease,
-      confidence,
-      need_confirm: needConfirmPayload ? Boolean(needConfirmPayload.need_confirm) : undefined,
-      image_path: imagePath,
-      confidence_gate_reasons: Array.from(new Set(confidenceReasons)),
-      raw_events: chunk,
-    };
-  });
-
-  const merged: LightweightDiagnosisPhaseSummary[] = [];
-  phases.forEach((phase) => {
-    const prev = merged[merged.length - 1];
-    if (!prev) {
-      merged.push(phase);
-      return;
-    }
-    const sameDisease = prev.disease && phase.disease && prev.disease === phase.disease;
-    const prevConf = typeof prev.confidence === 'number' ? prev.confidence : undefined;
-    const phaseConf = typeof phase.confidence === 'number' ? phase.confidence : undefined;
-    const closeConfidence = typeof prevConf === 'number' && typeof phaseConf === 'number' && Math.abs(prevConf - phaseConf) <= 0.03;
-    if (sameDisease || closeConfidence) {
-      merged[merged.length - 1] = {
-        ...prev,
-        ended_at: phase.ended_at || prev.ended_at,
-        confidence_gate_reasons: Array.from(new Set([...prev.confidence_gate_reasons, ...phase.confidence_gate_reasons])),
-        need_confirm: phase.need_confirm ?? prev.need_confirm,
-        image_path: phase.image_path || prev.image_path,
-        raw_events: [...prev.raw_events, ...phase.raw_events],
-        confidence: phase.confidence ?? prev.confidence,
-        disease: phase.disease || prev.disease,
-      };
-      return;
-    }
-    merged.push(phase);
-  });
-  return merged;
-};
-
-export const segmentTracePhases = (events: RawTraceEvent[]): TracePhaseSummary[] => {
-  const deduped = dedupRawTraceEvents(events);
-  const phases: TracePhaseSummary[] = [];
-  let lightweightBuffer: RawTraceEvent[] = [];
-  let structuredBuffer: RawTraceEvent[] = [];
-  const flushLightweight = () => {
-    if (!lightweightBuffer.length) return;
-    phases.push(...collapseLightweightDiagnosisPhase(lightweightBuffer));
-    lightweightBuffer = [];
-  };
-  const flushStructured = () => {
-    if (!structuredBuffer.length) return;
-    phases.push({
-      kind: 'structured_workflow_phase',
-      started_at: structuredBuffer[0]?.ts,
-      ended_at: structuredBuffer[structuredBuffer.length - 1]?.ts,
-      raw_events: structuredBuffer,
-    });
-    structuredBuffer = [];
-  };
-  deduped.forEach((event) => {
-    if (isStructuredAgentTraceEvent(event)) {
-      flushLightweight();
-      structuredBuffer.push(event);
-      return;
-    }
-    flushStructured();
-    lightweightBuffer.push(event);
-  });
-  flushLightweight();
-  flushStructured();
-  return phases;
-};
-
 const mapTimingAgentId = (agentId?: string, nodeName?: string): FixedAgentId => {
   const agent = String(agentId || '').toLowerCase();
   if ((FIXED_AGENT_IDS as readonly string[]).includes(agent)) return agent as FixedAgentId;
@@ -355,17 +129,17 @@ const mapTimingAgentId = (agentId?: string, nodeName?: string): FixedAgentId => 
 };
 
 export const normalizeRawEventForTiming = (event: RawTraceEvent): NormalizedEvent => {
-  const payload = getTracePayload(event);
-  const inputs = event.inputs;
-  const outputs = event.outputs;
+  const payload = (event as RawTraceEvent & { payload?: Record<string, unknown> }).payload;
+  const inputs = (event as RawTraceEvent & { inputs?: Record<string, unknown> }).inputs;
+  const outputs = (event as RawTraceEvent & { outputs?: Record<string, unknown> }).outputs;
   const ts = event.ts;
   const tsMs = parseTsMs(ts);
-  const agentHint = resolveTraceAgentId(event);
-  const nodeName = resolveTraceNode(event);
+  const agentHint = String(event.agent_id || event.agent || payload?.agent_id || payload?.agent || '');
+  const nodeName = String(event.node || agentHint || 'trace');
 
   let status = String(event.status || payload?.status || '').toLowerCase();
   if (!status && agentHint) {
-    const step = String(event.step || '').toLowerCase();
+    const step = String((event as RawTraceEvent & { step?: string }).step || '').toLowerCase();
     const isComplete = step.endsWith('_complete') || outputs?.is_complete === true;
     status = isComplete ? 'completed' : 'running';
   }
@@ -388,24 +162,12 @@ export const normalizeRawEventForTiming = (event: RawTraceEvent): NormalizedEven
 };
 
 export const isWorkflowTerminalRawEvent = (event: RawTraceEvent): boolean => {
-  const node = toLower(resolveTraceNode(event));
-  const status = toLower(event.status);
-  const payload = getTracePayload(event);
-  const agent = resolveTraceAgentId(event);
-  if (isLightweightTraceEvent(event)) {
-    const hasDiagnosisCompleted = node.includes('diagnosiscompleted') && status === 'end' && Boolean(readDisease(payload));
-    const hasConfidenceGateEnd = node.includes('confidencegate') && status === 'end';
-    const hasDiagnosisEnd = node.includes('diagnosisagent') && status === 'end' && Boolean(readDisease(payload));
-    return hasDiagnosisCompleted || hasConfidenceGateEnd || hasDiagnosisEnd;
-  }
+  const node = String(event.node || '').toLowerCase();
+  const status = String(event.status || '').toLowerCase();
+  const payload = (event as RawTraceEvent & { payload?: Record<string, unknown> }).payload;
   const payloadStatus = String(payload?.status || '').toLowerCase();
-  const outputs = isRecord(event.outputs) ? event.outputs : {};
-  const isSupervisorTerminal = agent === 'supervisor' && outputs.is_complete === true && String(outputs.next_action || '').toLowerCase() === 'end';
-  const verificationCompleteToEnd = String(event.step || '').toLowerCase() === 'verification_complete' && String(outputs.next_action || '').toLowerCase() === 'end';
   return (
     (node === 'final' && ['end', 'error', 'completed', 'done'].includes(status))
-    || isSupervisorTerminal
-    || verificationCompleteToEnd
     || ['completed', 'pending_expert_review', 'manual_review_recommended', 'failed', 'cancelled'].includes(payloadStatus)
   );
 };
@@ -536,13 +298,11 @@ export const calcOverallPhaseDuration = (
 };
 
 export const calcTracePhaseTiming = (events: RawTraceEvent[], nowMs: number): OverallPhaseDurations & { workflowDone: boolean; hasTraceTiming: boolean } => {
-  const segmented = segmentTracePhases(events);
-  const normalized = segmented
-    .flatMap((phase) => phase.raw_events)
+  const normalized = events
     .map(normalizeRawEventForTiming)
     .filter((event) => typeof event.tsMs === 'number')
     .sort((a, b) => compareEvents(a, b));
-  const workflowDone = segmented.every((phase) => phase.raw_events.some(isWorkflowTerminalRawEvent));
+  const workflowDone = events.some(isWorkflowTerminalRawEvent);
   const byAgent = calcPhaseDurationsByAgent(normalized, nowMs, workflowDone);
   return {
     ...calcOverallPhaseDuration(byAgent),
