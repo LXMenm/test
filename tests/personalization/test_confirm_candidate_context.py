@@ -12,6 +12,10 @@ import trace_store
 
 
 def _setup_event_dirs(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("EVENT_STORE_MODE", "file")
+    monkeypatch.setattr(event_store, "EVENT_STORE_MODE", "file")
+    monkeypatch.setenv("TRACE_STORE_MODE", "file")
+    monkeypatch.setattr(trace_store, "TRACE_STORE_MODE", "file")
     events_dir = tmp_path / ".cache" / "events"
     events_dir.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(event_store, "_EVENTS_DIR", str(events_dir))
@@ -90,6 +94,51 @@ def _seed_previous_case(trace_id: str, image_id: str) -> None:
         "status": "waiting_for_supplement",
     }
     event_store.append_event(app_module.serialize_final_response(previous_event))
+    trace_store.append_trace_event(
+        trace_id,
+        {
+            "ts": "2026-03-19T00:00:00Z",
+            "agent": "diagnosis",
+            "outputs": {"symptoms": ["叶片黄化"]},
+        },
+    )
+
+
+def _seed_previous_case_event(trace_id: str, image_id: str, event_patch: dict) -> None:
+    base_event = {
+        "id": "case-prev-custom",
+        "ts": "2026-03-19T00:00:00Z",
+        "trace_id": trace_id,
+        "image_id": image_id,
+        "image_url": f"/uploads/{image_id}",
+        "status": "waiting_for_supplement",
+        "final_disease": "早疫病",
+        "need_confirm": True,
+        "final_confidence": 0.82,
+        "final_source": "fusion",
+        "image_confidence": 0.76,
+        "text_confidence": 0.82,
+        "image_result": {
+            "disease": "早疫病",
+            "confidence": 0.76,
+            "confidence_pct": 76.0,
+            "top3": [
+                {"disease": "早疫病", "prob": 0.76, "prob_pct": 76.0},
+                {"disease": "晚疫病", "prob": 0.18, "prob_pct": 18.0},
+            ],
+        },
+        "text_top3": [["早疫病", 0.82], ["晚疫病", 0.11]],
+        "fusion_top3": [["早疫病", 0.82], ["晚疫病", 0.12]],
+        "diagnosis_evidence": {
+            "final_disease": "早疫病",
+            "final_confidence": 0.82,
+            "text_top3": [["早疫病", 0.82], ["晚疫病", 0.11]],
+            "fusion_top3": [["早疫病", 0.82], ["晚疫病", 0.12]],
+        },
+    }
+    merged = dict(base_event)
+    merged.update(event_patch)
+    event_store.append_event(app_module.serialize_final_response(merged))
     trace_store.append_trace_event(
         trace_id,
         {
@@ -423,6 +472,113 @@ def test_confirm_non_top1_candidate_uses_candidate_probability(monkeypatch, tmp_
     assert body["final_confidence"] == pytest.approx(0.12)
     assert body["final_confidence"] > 0
     assert body["final_source"] == "user_confirmed_candidate"
+
+
+def test_confirm_candidate_keeps_fusion_confidence(monkeypatch, tmp_path):
+    _setup_event_dirs(monkeypatch, tmp_path)
+    upload_dir = _seed_upload(tmp_path, "confirm-keep-fusion.jpg")
+    monkeypatch.setattr(app_module, "UPLOAD_DIR", upload_dir)
+    _seed_previous_case_event(
+        "trace-keep-fusion",
+        "confirm-keep-fusion.jpg",
+        {
+            "final_disease": "早疫病",
+            "fusion_top3": [["早疫病", 0.91], ["晚疫病", 0.07], ["灰霉病", 0.02]],
+            "image_result": {
+                "disease": "早疫病",
+                "confidence": 0.88,
+                "confidence_pct": 88.0,
+                "top3": [
+                    {"disease": "早疫病", "prob": 0.88, "prob_pct": 88.0},
+                    {"disease": "晚疫病", "prob": 0.09, "prob_pct": 9.0},
+                    {"disease": "灰霉病", "prob": 0.03, "prob_pct": 3.0},
+                ],
+            },
+        },
+    )
+    _install_stub_agents(monkeypatch)
+
+    client = TestClient(app_module.app)
+    body = _post_confirm(client, trace_id="trace-keep-fusion", image_id="confirm-keep-fusion.jpg", choice="早疫病")
+
+    assert body["final_source"] == "user_confirmed_candidate"
+    assert body["final_confidence"] == pytest.approx(0.91)
+    assert body["final_confidence"] > 0
+    assert body["fusion_top3"]
+    assert body["image_result"]["top3"]
+
+
+def test_confirm_candidate_falls_back_when_fusion_top3_missing(monkeypatch, tmp_path):
+    _setup_event_dirs(monkeypatch, tmp_path)
+    upload_dir = _seed_upload(tmp_path, "confirm-fallback-image-top3.jpg")
+    monkeypatch.setattr(app_module, "UPLOAD_DIR", upload_dir)
+    _seed_previous_case_event(
+        "trace-fallback-image-top3",
+        "confirm-fallback-image-top3.jpg",
+        {
+            "fusion_top3": [],
+            "image_result": {
+                "disease": "早疫病",
+                "confidence": 0.55,
+                "confidence_pct": 55.0,
+                "top3": [
+                    {"disease": "早疫病", "prob": 0.55, "prob_pct": 55.0},
+                    {"disease": "晚疫病", "prob": 0.30, "prob_pct": 30.0},
+                    {"disease": "灰霉病", "prob": 0.15, "prob_pct": 15.0},
+                ],
+            },
+        },
+    )
+    _install_stub_agents(monkeypatch)
+
+    client = TestClient(app_module.app)
+    body = _post_confirm(
+        client,
+        trace_id="trace-fallback-image-top3",
+        image_id="confirm-fallback-image-top3.jpg",
+        choice="晚疫病",
+    )
+
+    assert body["final_source"] == "user_confirmed_candidate"
+    assert body["final_confidence"] == pytest.approx(0.30)
+    assert body["final_confidence"] is not None
+
+
+def test_confirm_candidate_does_not_silently_zero_out_context(monkeypatch, tmp_path):
+    _setup_event_dirs(monkeypatch, tmp_path)
+    upload_dir = _seed_upload(tmp_path, "confirm-keep-context.jpg")
+    monkeypatch.setattr(app_module, "UPLOAD_DIR", upload_dir)
+    _seed_previous_case_event(
+        "trace-keep-context",
+        "confirm-keep-context.jpg",
+        {
+            "fusion_top3": [],
+            "text_top3": [],
+            "final_confidence": 0.67,
+            "diagnosis_evidence": {"final_confidence": 0.67, "weights": {"image": 1.0}},
+            "image_result": {
+                "disease": "早疫病",
+                "confidence": 0.0,
+                "confidence_pct": 0.0,
+                "top3": [],
+            },
+            "image_diagnosis": {
+                "top1": {"disease": "早疫病", "confidence": 0.67},
+                "top3": [["早疫病", 0.67], ["晚疫病", 0.22], ["灰霉病", 0.11]],
+            },
+        },
+    )
+    _install_stub_agents(monkeypatch)
+
+    client = TestClient(app_module.app)
+    body = _post_confirm(client, trace_id="trace-keep-context", image_id="confirm-keep-context.jpg", choice="早疫病")
+
+    assert body["final_source"] == "user_confirmed_candidate"
+    assert body["final_confidence"] == pytest.approx(0.67)
+    assert body["diagnosis_evidence"]
+    assert body["diagnosis_evidence"]["final_confidence"] == pytest.approx(0.67)
+    assert body["image_result"]["top3"]
+    assert body["image_result"]["confidence"] > 0
 
 
 def test_confirm_other_keeps_original_rediagnosis_branch(monkeypatch, tmp_path):

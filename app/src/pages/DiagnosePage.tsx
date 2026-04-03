@@ -283,16 +283,26 @@ export function DiagnosePage() {
       return evidenceFinalConfidence <= 1 ? evidenceFinalConfidence * 100 : evidenceFinalConfidence;
     }
 
+    const hasAnyCandidates = (value: unknown): boolean => Array.isArray(value) && value.length > 0;
     const imageResult = payload.image_result && typeof payload.image_result === 'object'
       ? payload.image_result as Record<string, unknown>
       : {};
+    const missingConfirmedCandidateContext = !hasAnyCandidates(payload.fusion_top3)
+      && !hasAnyCandidates(payload.text_top3)
+      && !hasAnyCandidates(imageResult.top3);
 
     const imageConfidencePct = toNumber(imageResult.confidence_pct);
+    if (missingConfirmedCandidateContext && imageConfidencePct === 0) {
+      return null;
+    }
     if (imageConfidencePct !== null) {
       return imageConfidencePct;
     }
 
     const imageConfidence = toNumber(imageResult.confidence);
+    if (missingConfirmedCandidateContext && imageConfidence === 0) {
+      return null;
+    }
     if (imageConfidence !== null) {
       return imageConfidence * 100;
     }

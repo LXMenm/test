@@ -1306,7 +1306,36 @@ def _resolve_profile_and_base(
 
 
 def _latest_case_event_by_trace(trace_id: str) -> dict[str, Any]:
+    def _has_diagnosis_context(event_like: dict[str, Any]) -> bool:
+        if not isinstance(event_like, dict):
+            return False
+        image_result_like = _safe_record(event_like.get("image_result"))
+        image_diag_like = _safe_record(event_like.get("image_diagnosis"))
+        diagnosis_evidence_like = _safe_record(event_like.get("diagnosis_evidence"))
+        return bool(
+            event_like.get("final_disease")
+            or event_like.get("final_confidence") is not None
+            or _as_clean_list(event_like.get("fusion_top3"))
+            or _as_clean_list(event_like.get("text_top3"))
+            or _as_clean_list(image_result_like.get("top3"))
+            or _as_clean_list(image_diag_like.get("top3"))
+            or diagnosis_evidence_like
+        )
+
     event = get_latest_event_by_trace(trace_id)
+    if isinstance(event, dict) and _has_diagnosis_context(event):
+        return event
+
+    normalized_trace_id = str(trace_id or "").strip()
+    if not normalized_trace_id:
+        return event if isinstance(event, dict) else {}
+    for item in list_events(5000):
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("trace_id") or "").strip() != normalized_trace_id:
+            continue
+        if _has_diagnosis_context(item):
+            return item
     return event if isinstance(event, dict) else {}
 
 
@@ -1350,12 +1379,23 @@ def _normalize_top3_candidates(value: Any) -> list[tuple[str, float]]:
 
 def _build_image_diagnosis_from_event(event: dict[str, Any]) -> dict[str, Any]:
     image_result = _safe_record(event.get("image_result"))
+    image_diagnosis = _safe_record(event.get("image_diagnosis"))
     top3 = _normalize_top3_candidates(image_result.get("top3"))
+    if not top3:
+        top3 = _normalize_top3_candidates(image_diagnosis.get("top3"))
     top1_disease = str(image_result.get("disease") or "").strip()
     top1_confidence = _safe_float(image_result.get("confidence"))
     if top1_confidence is None:
         confidence_pct = _safe_float(image_result.get("confidence_pct"))
         top1_confidence = (confidence_pct / 100.0) if confidence_pct is not None else None
+    if not top1_disease:
+        top1_disease = str(_safe_record(image_diagnosis.get("top1")).get("disease") or "").strip()
+    if top1_confidence is None:
+        top1_confidence = _safe_float(_safe_record(image_diagnosis.get("top1")).get("confidence"))
+    elif top1_confidence <= 0:
+        image_diag_conf = _safe_float(_safe_record(image_diagnosis.get("top1")).get("confidence"))
+        if image_diag_conf is not None and image_diag_conf > 0:
+            top1_confidence = image_diag_conf
 
     if not top3 and top1_disease and top1_confidence is not None:
         top3 = [(top1_disease, top1_confidence)]
@@ -1395,16 +1435,19 @@ def _resolve_confirm_choice_confidence(choice: str, previous_case_event: dict[st
     if not normalized_choice:
         return None
 
+    diagnosis_evidence = _safe_record(previous_case_event.get("diagnosis_evidence"))
     for candidates in (
         _normalize_top3_candidates(previous_case_event.get("fusion_top3")),
         _normalize_top3_candidates(_safe_record(previous_case_event.get("image_result")).get("top3")),
+        _normalize_top3_candidates(_safe_record(previous_case_event.get("image_diagnosis")).get("top3")),
         _normalize_top3_candidates(previous_case_event.get("text_top3")),
+        _normalize_top3_candidates(diagnosis_evidence.get("fusion_top3")),
+        _normalize_top3_candidates(diagnosis_evidence.get("text_top3")),
     ):
         for disease, prob in candidates:
             if disease == normalized_choice:
                 return float(prob)
 
-    diagnosis_evidence = _safe_record(previous_case_event.get("diagnosis_evidence"))
     fallback_zero: float | None = None
     for raw in (
         previous_case_event.get("final_confidence"),
@@ -1419,7 +1462,7 @@ def _resolve_confirm_choice_confidence(choice: str, previous_case_event: dict[st
         if value > 0:
             return value
         fallback_zero = value
-    return fallback_zero
+    return fallback_zero if fallback_zero is not None else 0.0
 
 
 def _inherit_previous_diagnosis_context(
@@ -1434,7 +1477,16 @@ def _inherit_previous_diagnosis_context(
     text_top3 = _normalize_top3_candidates(previous_case_event.get("text_top3"))
     fusion_top3 = _normalize_top3_candidates(previous_case_event.get("fusion_top3"))
     diagnosis_evidence = previous_case_event.get("diagnosis_evidence")
+    diagnosis_evidence_record = diagnosis_evidence if isinstance(diagnosis_evidence, dict) else {}
+    if not text_top3:
+        text_top3 = _normalize_top3_candidates(diagnosis_evidence_record.get("text_top3"))
+    if not fusion_top3:
+        fusion_top3 = _normalize_top3_candidates(diagnosis_evidence_record.get("fusion_top3"))
     resolved_confidence = _resolve_confirm_choice_confidence(choice, previous_case_event)
+    if resolved_confidence is None:
+        resolved_confidence = _safe_float(state.get("final_confidence"))
+    if resolved_confidence is None:
+        resolved_confidence = _safe_float(previous_case_event.get("final_confidence"))
     image_confidence = _safe_float(previous_case_event.get("image_confidence"))
     if image_confidence is None:
         image_confidence = _safe_float(previous_image_result.get("confidence"))
@@ -1443,20 +1495,39 @@ def _inherit_previous_diagnosis_context(
     state["final_disease"] = choice
     state["disease_type"] = choice
     state["final_source"] = "user_confirmed_candidate"
-    state["final_confidence"] = resolved_confidence
-    state["disease_confidence"] = resolved_confidence
+    if resolved_confidence is not None:
+        state["final_confidence"] = resolved_confidence
+        state["disease_confidence"] = resolved_confidence
     state["image_confidence"] = image_confidence
     state["text_confidence"] = text_confidence
-    state["text_top3"] = text_top3
-    state["fusion_top3"] = fusion_top3
-    state["diagnosis_evidence"] = diagnosis_evidence if isinstance(diagnosis_evidence, dict) else None
+    if text_top3:
+        state["text_top3"] = text_top3
+    if fusion_top3:
+        state["fusion_top3"] = fusion_top3
+    if isinstance(diagnosis_evidence, dict) and diagnosis_evidence:
+        state["diagnosis_evidence"] = diagnosis_evidence
     state["modality_conflict_flag"] = previous_case_event.get("modality_conflict_flag")
     state["image_reliable"] = previous_case_event.get("image_reliable")
     state["text_reliable"] = previous_case_event.get("text_reliable")
     state["reliability_issue_types"] = list(previous_case_event.get("reliability_issue_types") or [])
     state["supplement_mode"] = str(previous_case_event.get("supplement_mode") or "none")
-    state["image_diagnosis"] = image_diagnosis
-    state["image_result"] = previous_image_result
+    merged_image_result = dict(previous_image_result)
+    if not _as_clean_list(merged_image_result.get("top3")) and image_diagnosis.get("top3"):
+        merged_image_result["top3"] = [
+            {"disease": name, "prob": float(prob), "prob_pct": round(float(prob) * 100, 2)}
+            for name, prob in list(image_diagnosis.get("top3") or [])
+        ]
+    if not merged_image_result.get("disease"):
+        merged_image_result["disease"] = _safe_record(image_diagnosis.get("top1")).get("disease")
+    if _safe_float(merged_image_result.get("confidence")) is None:
+        top1_conf = _safe_float(_safe_record(image_diagnosis.get("top1")).get("confidence"))
+        if top1_conf is not None:
+            merged_image_result["confidence"] = top1_conf
+            merged_image_result["confidence_pct"] = round(top1_conf * 100, 2)
+    if image_diagnosis:
+        state["image_diagnosis"] = image_diagnosis
+    if merged_image_result:
+        state["image_result"] = merged_image_result
     state["diagnosis_model_meta"] = model_meta
     if not state.get("diagnosis_model_id") and model_meta.get("model_id"):
         state["diagnosis_model_id"] = model_meta.get("model_id")
@@ -2643,8 +2714,16 @@ def _diagnose_confirm_core(request: Request, payload: dict) -> dict:
     supplement_mode = str(state.get("supplement_mode") or "none")
 
     image_diagnosis = state.get("image_diagnosis") or {}
+    inherited_image_result = _safe_record(state.get("image_result"))
     image_top1 = image_diagnosis.get("top1") or {}
     top3 = image_diagnosis.get("top3") or []
+    if not top3:
+        top3 = _normalize_top3_candidates(inherited_image_result.get("top3"))
+    if not image_top1:
+        image_top1 = {
+            "disease": inherited_image_result.get("disease"),
+            "confidence": _safe_float(inherited_image_result.get("confidence")),
+        }
     image_result = {
         "disease": image_top1.get("disease"),
         "confidence": float(image_top1.get("confidence") or 0.0),
