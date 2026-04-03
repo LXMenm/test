@@ -206,11 +206,17 @@ def confirm_choice_step(state: CropDiseaseState) -> CropDiseaseState:
     diagnosis_evidence = state.get("diagnosis_evidence") if isinstance(state.get("diagnosis_evidence"), dict) else {}
     if not diagnosis_evidence and isinstance(inherited.get("diagnosis_evidence"), dict):
         diagnosis_evidence = dict(inherited.get("diagnosis_evidence"))
-    evidence_top3 = _normalize_top3_candidates(diagnosis_evidence.get("fusion_top3")) or _normalize_top3_candidates(diagnosis_evidence.get("image_top3"))
+    text_top3 = _normalize_top3_candidates(state.get("text_top3")) or _normalize_top3_candidates(inherited.get("text_top3"))
+    evidence_top3 = (
+        _normalize_top3_candidates(diagnosis_evidence.get("fusion_top3"))
+        or _normalize_top3_candidates(diagnosis_evidence.get("image_top3"))
+        or _normalize_top3_candidates(diagnosis_evidence.get("text_top3"))
+        or text_top3
+    )
     confidence = None
     for candidates in (fusion_top3, image_top3, evidence_top3):
         for disease, prob in candidates:
-            if disease == selected:
+            if disease == selected and prob > 0:
                 confidence = float(prob)
                 break
         if confidence is not None:
@@ -221,14 +227,27 @@ def confirm_choice_step(state: CropDiseaseState) -> CropDiseaseState:
             inherited.get("final_confidence"),
             image_result.get("confidence"),
             inherited.get("image_confidence"),
+            state.get("image_confidence"),
+            inherited.get("text_confidence"),
+            state.get("text_confidence"),
             diagnosis_evidence.get("final_confidence"),
         ):
             value = _safe_float(raw)
             if value is not None and value > 0:
                 confidence = value
                 break
-    if confidence is None:
-        confidence = 0.0
+    if confidence is None or confidence <= 0:
+        state["workflow_error"] = "confirm_choice_confidence_missing"
+        state["error"] = "confirm_choice_confidence_missing"
+        state["next_action"] = "end"
+        append_trace(
+            state,
+            agent="confirm_choice",
+            inputs={"selected_candidate": selected},
+            outputs={"error": "confirm_choice_confidence_missing"},
+            decision={"next_action": "end", "reason": "confirm_choice_confidence_missing"},
+        )
+        return state
 
     state["final_disease"] = selected
     state["disease_type"] = selected
@@ -237,6 +256,8 @@ def confirm_choice_step(state: CropDiseaseState) -> CropDiseaseState:
     state["disease_confidence"] = confidence
     if fusion_top3:
         state["fusion_top3"] = fusion_top3
+    if text_top3:
+        state["text_top3"] = text_top3
     if image_top3:
         merged_image = dict(inherited_image_result)
         merged_image.update(image_result)
@@ -249,6 +270,11 @@ def confirm_choice_step(state: CropDiseaseState) -> CropDiseaseState:
         state["image_result"] = merged_image
     if diagnosis_evidence:
         state["diagnosis_evidence"] = diagnosis_evidence
+    for field in ("modality_conflict_flag", "image_reliable", "text_reliable", "supplement_mode", "fusion_meta", "image_confidence", "text_confidence"):
+        if state.get(field) is None and inherited.get(field) is not None:
+            state[field] = inherited.get(field)
+    if not state.get("reliability_issue_types") and inherited.get("reliability_issue_types") is not None:
+        state["reliability_issue_types"] = list(inherited.get("reliability_issue_types") or [])
     inherited_meta = inherited.get("meta") if isinstance(inherited.get("meta"), dict) else {}
     model_meta = {
         "model_id": inherited_meta.get("model_id") or inherited.get("model_id"),

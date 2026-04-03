@@ -1448,7 +1448,6 @@ def _resolve_confirm_choice_confidence(choice: str, previous_case_event: dict[st
             if disease == normalized_choice:
                 return float(prob)
 
-    fallback_zero: float | None = None
     for raw in (
         previous_case_event.get("final_confidence"),
         diagnosis_evidence.get("final_confidence"),
@@ -1461,8 +1460,7 @@ def _resolve_confirm_choice_confidence(choice: str, previous_case_event: dict[st
             continue
         if value > 0:
             return value
-        fallback_zero = value
-    return fallback_zero if fallback_zero is not None else 0.0
+    return None
 
 
 def _inherit_previous_diagnosis_context(
@@ -2643,6 +2641,8 @@ def _diagnose_confirm_core(request: Request, payload: dict) -> dict:
         state["next_action"] = "confirm_choice" if (choice and choice != "other") else "confirm_input"
         graph = build_graph()
         state = graph.invoke(state)
+        if (choice and choice != "other") and str(state.get("workflow_error") or "").strip() == "confirm_choice_confidence_missing":
+            raise HTTPException(status_code=400, detail="confirm_choice_confidence_missing")
 
     # 低置信度回退分支：由 supervisor 做统一路由决策，避免形成平行独立流程。
     terminal_action: str | None = None
