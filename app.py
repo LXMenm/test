@@ -1463,6 +1463,69 @@ def _resolve_confirm_choice_confidence(choice: str, previous_case_event: dict[st
     return None
 
 
+def _build_confirm_inherited_context(
+    previous_case_event: dict[str, Any] | None,
+    history_events: list[dict[str, Any]],
+) -> dict[str, Any]:
+    source = previous_case_event if isinstance(previous_case_event, dict) else {}
+    inherited: dict[str, Any] = dict(source)
+    keys = [
+        "fusion_top3",
+        "text_top3",
+        "diagnosis_evidence",
+        "final_confidence",
+        "image_confidence",
+        "text_confidence",
+        "modality_conflict_flag",
+        "image_reliable",
+        "text_reliable",
+        "reliability_issue_types",
+        "supplement_mode",
+    ]
+
+    image_result = source.get("image_result") if isinstance(source.get("image_result"), dict) else {}
+    if image_result:
+        inherited["image_result"] = dict(image_result)
+    image_diagnosis = source.get("image_diagnosis") if isinstance(source.get("image_diagnosis"), dict) else {}
+    if image_diagnosis:
+        inherited["image_diagnosis"] = dict(image_diagnosis)
+
+    def _has_value(value: Any) -> bool:
+        if value is None:
+            return False
+        if isinstance(value, str):
+            return bool(value.strip())
+        if isinstance(value, (list, tuple, dict, set)):
+            return len(value) > 0
+        return True
+
+    def _assign_if_missing(key: str, value: Any) -> None:
+        if _has_value(inherited.get(key)):
+            return
+        if _has_value(value):
+            inherited[key] = value
+
+    for event in reversed(history_events):
+        if not isinstance(event, dict):
+            continue
+        for section in ("outputs", "payload", "inputs"):
+            container = event.get(section)
+            if not isinstance(container, dict):
+                continue
+            for key in keys:
+                _assign_if_missing(key, container.get(key))
+            image_result_like = container.get("image_result")
+            if not _has_value(inherited.get("image_result")) and isinstance(image_result_like, dict):
+                inherited["image_result"] = dict(image_result_like)
+            image_diag_like = container.get("image_diagnosis")
+            if not _has_value(inherited.get("image_diagnosis")) and isinstance(image_diag_like, dict):
+                inherited["image_diagnosis"] = dict(image_diag_like)
+        if _has_value(inherited.get("fusion_top3")) and _has_value(inherited.get("image_result")):
+            break
+
+    return inherited
+
+
 def _inherit_previous_diagnosis_context(
     state: dict[str, Any],
     *,
@@ -2130,7 +2193,7 @@ async def diagnose_image(
             growth_stage=growth_stage,
             image_path=str(saved_path),
         )
-        initial_state = create_initial_state(query_text, farmer_id=farmer_id, base_id=base_id)
+        initial_state = create_initial_state(query_text, farmer_id=farmer_id, base_id=base_id, trace_id=trace_id)
         initial_state["diagnosis_model_id"] = resolved_model.model_id
         if personalization_context:
             initial_state["personalization_context"] = personalization_context
@@ -2595,6 +2658,7 @@ def _diagnose_confirm_core(request: Request, payload: dict) -> dict:
             confirm_round_index += 1
 
     state["step_count"] = previous_step_count
+    inherited_context = _build_confirm_inherited_context(previous_case_event, history_events)
     if is_expert_decision_stage:
         state["trace_id"] = trace_id
         state["crop_type"] = crop_type
@@ -2637,7 +2701,25 @@ def _diagnose_confirm_core(request: Request, payload: dict) -> dict:
         state["previous_trace_id"] = previous_trace_id or trace_id
         state["confirm_round_parent_trace_id"] = trace_id
         state["selected_candidate"] = choice if (choice and choice != "other") else None
-        state["inherited_context"] = previous_case_event if isinstance(previous_case_event, dict) else {}
+        state["inherited_context"] = inherited_context
+        for key in (
+            "fusion_top3",
+            "text_top3",
+            "diagnosis_evidence",
+            "final_confidence",
+            "image_confidence",
+            "text_confidence",
+            "modality_conflict_flag",
+            "image_reliable",
+            "text_reliable",
+            "reliability_issue_types",
+            "supplement_mode",
+            "image_result",
+        ):
+            if state.get(key) in (None, [], {}):
+                value = inherited_context.get(key)
+                if value not in (None, [], {}):
+                    state[key] = value
         state["next_action"] = "confirm_choice" if (choice and choice != "other") else "confirm_input"
         graph = build_graph()
         state = graph.invoke(state)

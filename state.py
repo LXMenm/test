@@ -134,7 +134,10 @@ class CropDiseaseState(TypedDict):
 
 
 def create_initial_state(
-    user_query: str, farmer_id: Optional[str] = None, base_id: Optional[str] = None
+    user_query: str,
+    farmer_id: Optional[str] = None,
+    base_id: Optional[str] = None,
+    trace_id: Optional[str] = None,
 ) -> CropDiseaseState:
     """
     创建初始状态
@@ -216,7 +219,7 @@ def create_initial_state(
         follow_up_questions=[],
         profile_follow_up_questions=[],
         diagnosis_follow_up_questions=[],
-        trace_id=uuid.uuid4().hex,
+        trace_id=str(trace_id).strip() if str(trace_id or "").strip() else uuid.uuid4().hex,
         trace_events=[],
         debug_diagnosis={},
         previous_trace_id=None,

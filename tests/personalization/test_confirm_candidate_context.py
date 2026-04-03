@@ -562,6 +562,56 @@ def test_confirm_candidate_falls_back_when_fusion_top3_missing(monkeypatch, tmp_
     assert body["final_confidence"] is not None
 
 
+def test_confirm_candidate_prefers_fusion_context_from_trace_history(monkeypatch, tmp_path):
+    _setup_event_dirs(monkeypatch, tmp_path)
+    upload_dir = _seed_upload(tmp_path, "confirm-fusion-from-trace.jpg")
+    monkeypatch.setattr(app_module, "UPLOAD_DIR", upload_dir)
+    _seed_previous_case_event(
+        "trace-fusion-from-trace",
+        "confirm-fusion-from-trace.jpg",
+        {
+            "fusion_top3": [],
+            "diagnosis_evidence": {},
+            "image_result": {
+                "disease": "早疫病",
+                "confidence": 0.0354,
+                "confidence_pct": 3.54,
+                "top3": [
+                    {"disease": "早疫病", "prob": 0.0354, "prob_pct": 3.54},
+                    {"disease": "晚疫病", "prob": 0.01, "prob_pct": 1.0},
+                ],
+            },
+        },
+    )
+    trace_store.append_trace_event(
+        "trace-fusion-from-trace",
+        {
+            "ts": "2026-03-19T00:00:01Z",
+            "agent": "diagnosis",
+            "outputs": {
+                "fusion_top3": [["早疫病", 0.3777], ["晚疫病", 0.12]],
+                "text_top3": [["早疫病", 0.35], ["晚疫病", 0.2]],
+                "diagnosis_evidence": {"fusion_top3": [["早疫病", 0.3777], ["晚疫病", 0.12]]},
+            },
+        },
+    )
+    _install_stub_agents(monkeypatch)
+
+    client = TestClient(app_module.app)
+    body = _post_confirm(
+        client,
+        trace_id="trace-fusion-from-trace",
+        image_id="confirm-fusion-from-trace.jpg",
+        choice="早疫病",
+    )
+
+    assert body["final_source"] == "user_confirmed_candidate"
+    assert body["final_confidence"] == pytest.approx(0.3777)
+    assert body["fusion_top3"]
+    assert body["text_top3"]
+    assert body["diagnosis_evidence"]
+
+
 def test_confirm_candidate_does_not_silently_zero_out_context(monkeypatch, tmp_path):
     _setup_event_dirs(monkeypatch, tmp_path)
     upload_dir = _seed_upload(tmp_path, "confirm-keep-context.jpg")
