@@ -32,6 +32,7 @@ import {
   calcResolvedAgentDurations,
   calcWallClockPhaseDuration,
   formatDurationMs,
+  getDurationDisplayMeta,
   isReplayTerminalWaitingEvent,
   isWaitingForUserInputEvent,
   parseTsMs,
@@ -98,7 +99,7 @@ interface AgentPhaseDurations {
   phase2Ms: number;
   totalMs: number;
   missingStart?: boolean;
-  displayKind?: 'actual' | 'estimated' | 'none';
+  displayKind: 'actual' | 'estimated' | 'none';
   estimateReason?: string;
 }
 
@@ -1372,23 +1373,17 @@ export function AgentWorkflowPanel({
         hasAgentEvents,
         duration: (() => {
           const timing = phaseDurationsByAgent[def.id];
-          if (timing?.displayKind === 'estimated') return `~${formatDurationMs(timing?.totalMs ?? 0)}`;
-          if (timing?.displayKind === 'none' || (timing?.missingStart && (timing.totalMs ?? 0) === 0)) return '—';
-          return formatDurationMs(timing?.totalMs ?? 0);
+          return getDurationDisplayMeta(def.id, timing, 'total').label;
         })(),
         phase1Duration: (() => {
           const timing = phaseDurationsByAgent[def.id];
-          if ((timing?.phase1Ms ?? 0) <= 0) return '—';
-          if (timing?.displayKind === 'estimated') return `~${formatDurationMs(timing?.phase1Ms ?? 0)}`;
-          return formatDurationMs(timing?.phase1Ms ?? 0);
+          return getDurationDisplayMeta(def.id, timing, 'phase1').label;
         })(),
         phase2Duration: (() => {
           const timing = phaseDurationsByAgent[def.id];
-          if ((timing?.phase2Ms ?? 0) <= 0) return '—';
-          if (timing?.displayKind === 'estimated') return `~${formatDurationMs(timing?.phase2Ms ?? 0)}`;
-          return formatDurationMs(timing?.phase2Ms ?? 0);
+          return getDurationDisplayMeta(def.id, timing, 'phase2').label;
         })(),
-        durationHint: phaseDurationsByAgent[def.id]?.displayKind === 'estimated' ? '由相邻阶段里程碑估算' : '',
+        durationHint: getDurationDisplayMeta(def.id, phaseDurationsByAgent[def.id], 'total').tooltip,
       };
     });
   }, [rows, nowMs, workflowDone, phaseDurationsByAgent, primaryPanelEvents]);
@@ -1541,7 +1536,7 @@ export function AgentWorkflowPanel({
                           {row.lastMessage.includes('决策') ? 'decision' : row.status}
                         </Badge>
                       </div>
-                      <div className="text-xs text-white/50 flex items-center gap-1">
+                      <div className="text-xs text-white/50 flex items-center gap-1" title={row.durationHint}>
                         <Timer className="w-3 h-3" />
                         {row.status === 'completed'
                           ? `✓ 完成 (${row.duration})`
@@ -1686,6 +1681,9 @@ export function AgentWorkflowPanel({
         </div>
         <p className="text-xs text-white/50 mt-2">
           总耗时：{formatDurationMs(overallDuration.totalMs)}（一诊 {formatDurationMs(overallDuration.phase1Ms)} + 二诊 {formatDurationMs(overallDuration.phase2Ms)}） {workflowDone ? '· 已结束' : ''}
+        </p>
+        <p className="text-[11px] text-white/35 mt-1" title="时间口径说明">
+          总耗时为全流程墙钟时间；一诊/二诊为阶段运行时间，不一定与总耗时简单相加。数字=实际，~数字=估算，—=缺少可靠开始事件。
         </p>
       </div>
     </div>

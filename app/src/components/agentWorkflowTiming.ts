@@ -58,6 +58,11 @@ export interface AgentResolvedDuration extends AgentRuntimeDurations {
   displayKind: AgentDurationKind;
   estimateReason?: string;
 }
+export interface DurationDisplayMeta {
+  kind: AgentDurationKind;
+  label: string;
+  tooltip: string;
+}
 
 export const parseTsMs = (ts?: string): number | undefined => {
   if (!ts) return undefined;
@@ -77,6 +82,32 @@ export const formatDurationMs = (ms: number): string => {
   }
 
   return `${seconds.toFixed(2)}s`;
+};
+
+export const getDurationDisplayMeta = (
+  agentId: FixedAgentId,
+  duration: Pick<AgentResolvedDuration, 'displayKind' | 'estimateReason' | 'phase1Ms' | 'phase2Ms' | 'totalMs'>,
+  scope: 'total' | 'phase1' | 'phase2' = 'total',
+): DurationDisplayMeta => {
+  const ms = scope === 'phase1' ? (duration.phase1Ms ?? 0) : scope === 'phase2' ? (duration.phase2Ms ?? 0) : (duration.totalMs ?? 0);
+  if (duration.displayKind === 'estimated' && ms > 0) {
+    const reason = duration.estimateReason ? `（${duration.estimateReason}）` : '';
+    return {
+      kind: 'estimated',
+      label: `~${formatDurationMs(ms)}`,
+      tooltip: `由相邻阶段里程碑估算${reason}`,
+    };
+  }
+  if (duration.displayKind === 'actual' && ms > 0) {
+    if (agentId === 'treatment') {
+      return { kind: 'actual', label: formatDurationMs(ms), tooltip: '方案生成与后处理相关耗时（实际运行时间）' };
+    }
+    return { kind: 'actual', label: formatDurationMs(ms), tooltip: '实际运行时间' };
+  }
+  if (agentId === 'supervisor') {
+    return { kind: 'none', label: '—', tooltip: '决策节点不单独计时（当前无可靠运行区间）' };
+  }
+  return { kind: 'none', label: '—', tooltip: '缺少可靠开始事件' };
 };
 
 export const compareEvents = (a: RawTraceEvent, b: RawTraceEvent): number => {
