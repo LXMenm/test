@@ -235,6 +235,19 @@ export function DiagnosePage() {
   const toggleSection = useCallback((key: keyof SectionOpenState) => {
     setSectionOpen((prev) => ({ ...prev, [key]: !prev[key] }));
   }, []);
+  const payloadTraceId = typeof latestPayload?.trace_id === 'string' ? latestPayload.trace_id : '';
+  const payloadImageId = typeof latestPayload?.image_id === 'string' ? latestPayload.image_id : '';
+  const activeTraceId = payloadTraceId || result?.trace_id || traceId || '';
+  const activeImageId = payloadImageId || imageId || '';
+
+  useEffect(() => {
+    if (payloadTraceId && traceId && payloadTraceId !== traceId) {
+      console.warn('[DiagnosePage] trace mismatch: latestPayload.trace_id != traceId', { payloadTraceId, traceId });
+    }
+    if (payloadImageId && imageId && payloadImageId !== imageId) {
+      console.warn('[DiagnosePage] image mismatch: latestPayload.image_id != imageId', { payloadImageId, imageId });
+    }
+  }, [payloadTraceId, payloadImageId, traceId, imageId]);
 
   const navigateToKbDisease = (disease: string) => {
     const name = disease.trim();
@@ -894,7 +907,7 @@ export function DiagnosePage() {
   };
 
   const handleResubmitWithNewImage = async () => {
-    if (!selectedFarmerId || !traceId || !imageId) return;
+    if (!selectedFarmerId || !activeTraceId || !activeImageId) return;
     if (usesImageSupplement && !resubmitFile) return;
     setResubmitSubmitting(true);
     setResubmitStatus('submitting');
@@ -905,9 +918,9 @@ export function DiagnosePage() {
     setWorkflowRefreshToken((prev) => prev + 1);
     try {
       const fd = new FormData();
-      fd.append('trace_id', traceId);
-      fd.append('previous_trace_id', traceId);
-      fd.append('image_id', imageId);
+      fd.append('trace_id', activeTraceId);
+      fd.append('previous_trace_id', activeTraceId);
+      fd.append('image_id', activeImageId);
       fd.append('crop_type', cropType || '番茄');
       if (usesImageSupplement && resubmitFile) fd.append('file', resubmitFile);
       if (usesTextSupplement && confirmSymptoms.trim()) fd.append('symptoms', confirmSymptoms.trim());
@@ -967,7 +980,7 @@ export function DiagnosePage() {
   };
 
   const handleResubmitWithSymptomsOnly = async () => {
-    if (!selectedFarmerId || !traceId || !imageId) return;
+    if (!selectedFarmerId || !activeTraceId || !activeImageId) return;
     if (!usesTextSupplement) return;
     setResubmitSubmitting(true);
     setResubmitStatus('submitting');
@@ -978,9 +991,9 @@ export function DiagnosePage() {
     setWorkflowRefreshToken((prev) => prev + 1);
     try {
       const fd = new FormData();
-      fd.append('trace_id', traceId);
-      fd.append('previous_trace_id', traceId);
-      fd.append('image_id', imageId);
+      fd.append('trace_id', activeTraceId);
+      fd.append('previous_trace_id', activeTraceId);
+      fd.append('image_id', activeImageId);
       fd.append('crop_type', cropType || '番茄');
       if (confirmSymptoms.trim()) fd.append('symptoms', confirmSymptoms.trim());
       if (growthStage.trim()) fd.append('growth_stage', growthStage.trim());
@@ -1019,7 +1032,27 @@ export function DiagnosePage() {
   };
 
   const handleConfirmCandidate = async () => {
-    if (!traceId || !imageId || !confirmChoice || confirmChoice === 'other') return;
+    if (!confirmChoice || confirmChoice === 'other') return;
+    const payload = latestPayload && typeof latestPayload === 'object'
+      ? latestPayload as Record<string, unknown>
+      : {};
+    const imageResult = payload.image_result && typeof payload.image_result === 'object'
+      ? payload.image_result as Record<string, unknown>
+      : {};
+    const diagnosisEvidence = payload.diagnosis_evidence && typeof payload.diagnosis_evidence === 'object'
+      ? payload.diagnosis_evidence as Record<string, unknown>
+      : {};
+    const hasConfirmEvidence =
+      (Array.isArray(payload.fusion_top3) && payload.fusion_top3.length > 0)
+      || (Array.isArray(imageResult.top3) && imageResult.top3.length > 0)
+      || (Array.isArray(diagnosisEvidence.fusion_top3) && diagnosisEvidence.fusion_top3.length > 0)
+      || (Array.isArray(diagnosisEvidence.image_top3) && diagnosisEvidence.image_top3.length > 0)
+      || (Array.isArray(payload.text_top3) && payload.text_top3.length > 0);
+    if (hasConfirmEvidence && !activeTraceId) {
+      console.error('missing active trace context for confirm_choice');
+      return;
+    }
+    if (!activeTraceId || !activeImageId) return;
     setPhase2StartTime(Date.now());
     setConfirmSubmitting(true);
     try {
@@ -1027,8 +1060,8 @@ export function DiagnosePage() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          trace_id: traceId,
-          image_id: imageId,
+          trace_id: activeTraceId,
+          image_id: activeImageId,
           crop_type: cropType || '番茄',
           symptoms: [],
           growth_stage: growthStage || null,
@@ -1073,7 +1106,7 @@ export function DiagnosePage() {
   };
 
   const handleConfirmSubmit = async (finalDecision?: 'use_current_result' | 'request_expert_review') => {
-    if (!traceId || !imageId) return;
+    if (!activeTraceId || !activeImageId) return;
     if (!finalDecision) {
       if (confirmChoice !== 'other') {
         await handleConfirmCandidate();
@@ -1106,8 +1139,8 @@ export function DiagnosePage() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          trace_id: traceId,
-          image_id: imageId,
+          trace_id: activeTraceId,
+          image_id: activeImageId,
           crop_type: cropType || '番茄',
           symptoms: symptomsForConfirm,
           growth_stage: growthStage || null,
@@ -1691,14 +1724,14 @@ export function DiagnosePage() {
                     将按你选择的候选病害“{confirmChoice}”直接继续后续流程。
                   </div>
                 )}
-                <Button onClick={() => handleConfirmSubmit()} disabled={confirmSubmitting || resubmitSubmitting || !traceId || !imageId || (confirmChoice === 'other' && usesImageSupplement && !resubmitFile)} className="bg-[#c8f7c5] text-black hover:bg-[#b8e7b5]">{(confirmSubmitting || resubmitSubmitting) ? '提交中...' : (confirmChoice !== 'other' ? '确认该病害并继续' : confirmCopy.cta)}</Button>
+                <Button onClick={() => handleConfirmSubmit()} disabled={confirmSubmitting || resubmitSubmitting || !activeTraceId || !activeImageId || (confirmChoice === 'other' && usesImageSupplement && !resubmitFile)} className="bg-[#c8f7c5] text-black hover:bg-[#b8e7b5]">{(confirmSubmitting || resubmitSubmitting) ? '提交中...' : (confirmChoice !== 'other' ? '确认该病害并继续' : confirmCopy.cta)}</Button>
               </div>
             ) : shouldShowExpertReviewDecision ? (
               <div className="bg-amber-500/10 border border-amber-400/30 rounded-xl p-4 space-y-4">
                 <p className="text-sm text-white/80">{result?.confirm_message || '多次补充后仍存在不确定性。'}</p>
                 <div className="flex flex-col sm:flex-row gap-3">
-                  <Button onClick={() => handleConfirmSubmit('use_current_result')} disabled={confirmSubmitting || !traceId || !imageId} className="bg-[#c8f7c5] text-black hover:bg-[#b8e7b5]">使用当前结果结束</Button>
-                  <Button onClick={() => handleConfirmSubmit('request_expert_review')} disabled={confirmSubmitting || !traceId || !imageId} variant="outline" className="border-amber-300/50 text-amber-100 hover:bg-amber-500/10">转入专家复核</Button>
+                  <Button onClick={() => handleConfirmSubmit('use_current_result')} disabled={confirmSubmitting || !activeTraceId || !activeImageId} className="bg-[#c8f7c5] text-black hover:bg-[#b8e7b5]">使用当前结果结束</Button>
+                  <Button onClick={() => handleConfirmSubmit('request_expert_review')} disabled={confirmSubmitting || !activeTraceId || !activeImageId} variant="outline" className="border-amber-300/50 text-amber-100 hover:bg-amber-500/10">转入专家复核</Button>
                 </div>
               </div>
             ) : <p className="text-white/60">当前无需补充信息。</p>}
