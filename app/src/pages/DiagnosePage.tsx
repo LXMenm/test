@@ -198,6 +198,7 @@ export function DiagnosePage() {
   const [result, setResult] = useState<DiagnosisResult | null>(null);
   const [traceEvents, setTraceEvents] = useState<TraceEvent[]>([]);
   const [latestPayload, setLatestPayload] = useState<Record<string, unknown> | null>(null);
+  const [phase1Payload, setPhase1Payload] = useState<Record<string, unknown> | null>(null);
   const [traceId, setTraceId] = useState('');
   const [imageId, setImageId] = useState('');
   const [confirmMode, setConfirmMode] = useState<boolean>(false);
@@ -525,6 +526,11 @@ export function DiagnosePage() {
     options?: { resetInputs?: boolean; markResubmitSuccess?: boolean; defaultChoice?: string; },
   ) => {
     const payload = normalizePayloadRecord(payloadLike);
+    const payloadStatus = typeof payload.status === 'string' ? payload.status : '';
+    const isConfirmRoundPayload = payload.confirm_round === true || String(payload.source_stage ?? '') === 'confirm';
+    if (payloadStatus === 'waiting_for_supplement' && !isConfirmRoundPayload && !phase1Payload) {
+      setPhase1Payload(payload);
+    }
     setResult(normalizedResult);
     setLatestPayload(payload);
     const needsConfirm = deriveConfirmNeeds(payload, normalizedResult);
@@ -771,6 +777,7 @@ export function DiagnosePage() {
     setLoading(true);
     setResult(null);
     setTraceEvents([]);
+    setPhase1Payload(null);
     setConfirmMode(false);
     setConfirmChoice('other');
     setConfirmSymptoms('');
@@ -1740,6 +1747,7 @@ export function DiagnosePage() {
                 refreshToken={workflowRefreshToken}
                 initialEvents={Array.isArray(latestPayload?.events) ? tagEventsSource(latestPayload.events as unknown[], 'continue') : (traceEvents as unknown[])}
                 initialPayload={latestPayload}
+                phase1Payload={phase1Payload}
                 i18n={latestPayload && typeof latestPayload.i18n === 'object' ? latestPayload.i18n as Record<string, unknown> : null}
               />
             </div>

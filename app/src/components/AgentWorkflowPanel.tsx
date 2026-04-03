@@ -30,8 +30,6 @@ import {
 import type { LucideIcon } from 'lucide-react';
 import {
   calcResolvedAgentDurations,
-  calcWallClockPhaseDuration,
-  formatDurationMs,
   getDurationDisplayMeta,
   isReplayTerminalWaitingEvent,
   isWaitingForUserInputEvent,
@@ -50,6 +48,7 @@ interface AgentWorkflowPanelProps {
   refreshToken?: number;
   initialEvents?: unknown[];
   initialPayload?: Record<string, unknown> | null;
+  phase1Payload?: Record<string, unknown> | null;
   i18n?: Record<string, unknown> | null;
 }
 
@@ -199,6 +198,20 @@ const shortText = (value: unknown, max = 80): string => {
 const toArray = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
 
 const isRecord = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
+const normalizeSymptomList = (value: unknown): string[] => (
+  toArray(value)
+    .map((item) => String(item ?? '').trim())
+    .filter(Boolean)
+);
+const uniqueSymptoms = (...groups: Array<unknown>): string[] => {
+  const merged: string[] = [];
+  groups.forEach((group) => {
+    normalizeSymptomList(group).forEach((symptom) => {
+      if (!merged.includes(symptom)) merged.push(symptom);
+    });
+  });
+  return merged;
+};
 
 const mapToFixedAgent = (agentId: string | undefined, node: string | undefined): FixedAgentId => {
   const aid = String(agentId || '').toLowerCase();
@@ -456,6 +469,7 @@ const applyEventToRowState = (
 const hydrateRowsFromEvents = (
   events: NormalizedEvent[],
   initialPayload?: Record<string, unknown> | null,
+  phase1Payload?: Record<string, unknown> | null,
 ): {
   rows: Record<FixedAgentId, AgentRowState>;
   mergedEvents: NormalizedEvent[];
@@ -480,7 +494,7 @@ const hydrateRowsFromEvents = (
     row.lastMessage = shortText(event.message || fallbackMessage, 140) || fallbackMessage;
     rows[event.agentId] = applyEventToRowState(row, event);
     rows[event.agentId].steps = extractSubsteps(event.agentId, currentEvents, initialPayload).slice(-5);
-    rows[event.agentId].highlights = extractHighlights(event.agentId, currentEvents, [], initialPayload);
+    rows[event.agentId].highlights = extractHighlights(event.agentId, currentEvents, [], initialPayload, phase1Payload);
 
     const confidence = event.agentId === 'diagnosis' ? extractDiagnosisConfidence(event) : undefined;
     if (typeof confidence === 'number') diagnosisConfidencePct = confidence;
@@ -638,6 +652,7 @@ const extractHighlights = (
   panelEvents: NormalizedEvent[],
   fallbackEvents: NormalizedEvent[],
   initialPayload?: Record<string, unknown> | null,
+  phase1Payload?: Record<string, unknown> | null,
 ): string[] => {
   const events = getEventsByAgent(panelEvents, agentId);
   if (!events.length && !initialPayload) return [];
@@ -666,14 +681,54 @@ const extractHighlights = (
   }
 
   if (agentId === 'reception') {
+    const latestConfirmInputEvent = [...panelEvents].reverse().find((event) => {
+      const semanticNode = String(event.semanticNode || '').toLowerCase();
+      const rawAgent = String((event.raw as RawTraceEvent).agent ?? '').toLowerCase();
+      return semanticNode === 'confirm_input' || rawAgent === 'confirm_input';
+    });
+    const confirmInputs = isRecord(latestConfirmInputEvent?.data?.inputs)
+      ? latestConfirmInputEvent?.data?.inputs as Record<string, unknown>
+      : {};
+    const phase1Evidence = isRecord(phase1Payload?.diagnosis_evidence)
+      ? phase1Payload?.diagnosis_evidence as Record<string, unknown>
+      : {};
+    const currentEvidence = isRecord(initialPayload?.diagnosis_evidence)
+      ? initialPayload?.diagnosis_evidence as Record<string, unknown>
+      : {};
+    const phase1Symptoms = uniqueSymptoms(
+      phase1Evidence.normalized_symptoms,
+      phase1Payload?.normalized_symptoms,
+      phase1Evidence.raw_symptoms,
+      phase1Payload?.symptoms,
+    );
+    const historicalSymptoms = normalizeSymptomList(confirmInputs.historical_symptoms);
+    const phase2CurrentSymptoms = uniqueSymptoms(
+      confirmInputs.incoming_symptoms,
+      confirmInputs.symptoms,
+      currentEvidence.normalized_symptoms,
+      initialPayload?.normalized_symptoms,
+      initialPayload?.symptoms,
+    );
+    const cumulativeSymptoms = uniqueSymptoms(phase1Symptoms, historicalSymptoms, phase2CurrentSymptoms);
+    const isConfirmRound = Boolean(
+      initialPayload?.confirm_round
+      || String(initialPayload?.source_stage ?? '') === 'confirm'
+      || latestConfirmInputEvent,
+    );
+
     const cropType = String(outputs['crop_type'] ?? '-');
     const imagePath = String(outputs['image_path'] ?? '').trim();
-    const symptoms = toArray(outputs['symptoms']).length;
+    const outputSymptoms = normalizeSymptomList(outputs['symptoms']);
+    const cumulativeCount = cumulativeSymptoms.length || outputSymptoms.length;
+    const incomingCount = phase2CurrentSymptoms.length;
     const missing = toStringArray(outputs['missing_profile_fields']);
     const followUps = toArray(outputs['follow_up_questions']).length;
     const src = source === 'mixed' || source === 'initial_payload' ? '（含诊断首包补充）' : '';
+    const symptomText = isConfirmRound
+      ? `累计症状=${cumulativeCount}项 / 本轮新增=${incomingCount}项`
+      : `症状=${cumulativeCount}项`;
     return [
-      `结构化抽取${src}：作物=${cropType} / 图像=${imagePath ? '已识别' : '未识别'} / 症状=${symptoms}项`,
+      `结构化抽取${src}：作物=${cropType} / 图像=${imagePath ? '已识别' : '未识别'} / ${symptomText}`,
       `缺失字段=${missing.length ? `${missing.join(',')}（${missing.length}项）` : '0项'} / follow_up=${followUps}条`,
     ];
   }
@@ -876,6 +931,7 @@ export function AgentWorkflowPanel({
   refreshToken,
   initialEvents,
   initialPayload,
+  phase1Payload,
 }: AgentWorkflowPanelProps) {
   const [rows, setRows] = useState<Record<FixedAgentId, AgentRowState>>(buildInitialState());
   const [connectionState, setConnectionState] = useState<'idle' | 'connecting' | 'connected' | 'disconnected'>('idle');
@@ -1065,7 +1121,7 @@ export function AgentWorkflowPanel({
       setTracePausedStable(false);
     }
 
-    const hydrated = hydrateRowsFromEvents(runtimeSelection.primaryPanelEvents, initialPayload);
+    const hydrated = hydrateRowsFromEvents(runtimeSelection.primaryPanelEvents, initialPayload, phase1Payload);
     setRows(hydrated.rows);
     setDiagnosisConfidencePct(hydrated.diagnosisConfidencePct);
     if (typeof hydrated.finalTs === 'number') {
@@ -1082,7 +1138,7 @@ export function AgentWorkflowPanel({
 
     return true;
 
-  }, [maybeStartTicker, stopPolling, closeStream, clearTicker, completeSupervisorOnDone, initialPayload]);
+  }, [maybeStartTicker, stopPolling, closeStream, clearTicker, completeSupervisorOnDone, initialPayload, phase1Payload]);
 
 
   useEffect(() => {
@@ -1159,7 +1215,7 @@ export function AgentWorkflowPanel({
     );
 
     if (seedSelection.primaryPanelEvents.length) {
-      const hydrated = hydrateRowsFromEvents(seedSelection.primaryPanelEvents, initialPayload);
+      const hydrated = hydrateRowsFromEvents(seedSelection.primaryPanelEvents, initialPayload, phase1Payload);
       mergedEventsRef.current = hydrated.mergedEvents;
       setMergedEvents(hydrated.mergedEvents);
       setRows(hydrated.rows);
@@ -1411,11 +1467,6 @@ export function AgentWorkflowPanel({
   }, [mergedEvents, workflowEvents, compactEvents, primaryPanelProtocol, primaryPanelEvents]);
 
   const totalProgress = Math.round((completedCount / FIXED_AGENTS.length) * 100);
-
-  const overallDuration = useMemo(
-    () => calcWallClockPhaseDuration(mergedEvents, nowMs, workflowDone),
-    [mergedEvents, nowMs, workflowDone],
-  );
 
   const displayConfidencePct =
     (typeof confidencePct === 'number' && Number.isFinite(confidencePct)) ? confidencePct : diagnosisConfidencePct;
@@ -1679,12 +1730,6 @@ export function AgentWorkflowPanel({
         <div className="h-2 rounded-full bg-white/10 overflow-hidden">
           <div className="h-full bg-[#4ade80] transition-all duration-500 progress-shine" style={{ width: `${totalProgress}%` }} />
         </div>
-        <p className="text-xs text-white/50 mt-2">
-          总耗时：{formatDurationMs(overallDuration.totalMs)}（一诊 {formatDurationMs(overallDuration.phase1Ms)} + 二诊 {formatDurationMs(overallDuration.phase2Ms)}） {workflowDone ? '· 已结束' : ''}
-        </p>
-        <p className="text-[11px] text-white/35 mt-1" title="时间口径说明">
-          总耗时为全流程墙钟时间；一诊/二诊为阶段运行时间，不一定与总耗时简单相加。数字=实际，~数字=估算，—=缺少可靠开始事件。
-        </p>
       </div>
     </div>
   );
