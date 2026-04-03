@@ -35,12 +35,20 @@ const toSeq = (value: unknown): number => {
 };
 
 const pickStatus = (raw: Record<string, unknown>): TraceEventStatus => {
+  const protocol = detectTraceProtocol(raw);
   const rawStatus = asText(raw.status).toLowerCase();
   if (rawStatus === 'decision') return 'decision';
   if (['start', 'started', 'begin', 'running'].includes(rawStatus)) return 'start';
   if (['end', 'done', 'completed', 'finish'].includes(rawStatus)) return 'end';
   if (['error', 'failed', 'fail'].includes(rawStatus)) return 'error';
   if (rawStatus) return 'info';
+
+  if (protocol === 'workflow_snapshot') {
+    if (raw.outputs !== undefined) return 'end';
+    if (isRecord(raw.decision)) return 'decision';
+    if (raw.inputs !== undefined) return 'info';
+    return 'info';
+  }
 
   if (isRecord(raw.decision)) return 'decision';
   if (raw.outputs !== undefined) return 'end';

@@ -29,8 +29,8 @@ import {
 } from '@/components/traceEvents';
 import type { LucideIcon } from 'lucide-react';
 import {
-  calcPhaseDurationsByAgent,
-  calcOverallPhaseDuration,
+  calcAgentRuntimeByIntervals,
+  calcWallClockPhaseDuration,
   formatDurationMs,
   isReplayTerminalWaitingEvent,
   isWaitingForUserInputEvent,
@@ -96,6 +96,8 @@ interface NormalizedEvent {
 interface AgentPhaseDurations {
   phase1Ms: number;
   phase2Ms: number;
+  totalMs: number;
+  missingStart?: boolean;
 }
 
 interface AgentRowDef {
@@ -1330,7 +1332,7 @@ export function AgentWorkflowPanel({
   );
 
   const phaseDurationsByAgent = useMemo(
-    () => calcPhaseDurationsByAgent(primaryPanelEvents, nowMs, workflowDone) as Record<FixedAgentId, AgentPhaseDurations>,
+    () => calcAgentRuntimeByIntervals(primaryPanelEvents, nowMs, workflowDone) as Record<FixedAgentId, AgentPhaseDurations>,
     [primaryPanelEvents, nowMs, workflowDone],
   );
 
@@ -1366,9 +1368,21 @@ export function AgentWorkflowPanel({
         ...row,
         progress,
         hasAgentEvents,
-        duration: formatDurationMs((phaseDurationsByAgent[def.id]?.phase1Ms ?? 0) + (phaseDurationsByAgent[def.id]?.phase2Ms ?? 0)),
-        phase1Duration: formatDurationMs(phaseDurationsByAgent[def.id]?.phase1Ms ?? 0),
-        phase2Duration: formatDurationMs(phaseDurationsByAgent[def.id]?.phase2Ms ?? 0),
+        duration: (() => {
+          const timing = phaseDurationsByAgent[def.id];
+          if (timing?.missingStart && (timing.totalMs ?? 0) === 0) return '—';
+          return formatDurationMs(timing?.totalMs ?? 0);
+        })(),
+        phase1Duration: (() => {
+          const timing = phaseDurationsByAgent[def.id];
+          if (timing?.missingStart && (timing.phase1Ms ?? 0) === 0) return '—';
+          return formatDurationMs(timing?.phase1Ms ?? 0);
+        })(),
+        phase2Duration: (() => {
+          const timing = phaseDurationsByAgent[def.id];
+          if (timing?.missingStart && (timing.phase2Ms ?? 0) === 0) return '—';
+          return formatDurationMs(timing?.phase2Ms ?? 0);
+        })(),
       };
     });
   }, [rows, nowMs, workflowDone, phaseDurationsByAgent, primaryPanelEvents]);
@@ -1398,8 +1412,8 @@ export function AgentWorkflowPanel({
   const totalProgress = Math.round((completedCount / FIXED_AGENTS.length) * 100);
 
   const overallDuration = useMemo(
-    () => calcOverallPhaseDuration(phaseDurationsByAgent),
-    [phaseDurationsByAgent],
+    () => calcWallClockPhaseDuration(primaryPanelEvents, nowMs, workflowDone),
+    [primaryPanelEvents, nowMs, workflowDone],
   );
 
   const displayConfidencePct =
