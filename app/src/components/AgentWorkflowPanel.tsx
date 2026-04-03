@@ -21,8 +21,11 @@ import { fetchTraceEvents } from '@/lib/traceClient';
 import {
   mergeAndDedupeTraceEvents,
   normalizeTraceEvent,
+  splitTraceEventsByProtocol,
   type NormalizedTraceEvent,
   type TraceEventStatus,
+  type TraceProtocol,
+  type TraceSourceHint,
 } from '@/components/traceEvents';
 import type { LucideIcon } from 'lucide-react';
 import {
@@ -80,6 +83,8 @@ interface NormalizedEvent {
   raw: Record<string, unknown>;
   semanticNode: string;
   sourceKind: 'node_event' | 'agent_event';
+  protocol: TraceProtocol;
+  sourceHint: TraceSourceHint;
   agentId: FixedAgentId;
   nodeName: string;
   status: AgentStatus | 'info' | 'decision';
@@ -237,6 +242,8 @@ const normalizeEvent = (raw: RawTraceEvent): NormalizedEvent => {
     raw: normalized.raw,
     semanticNode,
     sourceKind: (raw.node ? 'node_event' : 'agent_event') as 'node_event' | 'agent_event',
+    protocol: normalized.protocol,
+    sourceHint: normalized.sourceHint,
     agentId: agent,
     nodeName: normalized.stage,
     status: toPanelStatus(normalized.status),
@@ -262,6 +269,8 @@ const normalizeEvent = (raw: RawTraceEvent): NormalizedEvent => {
     semanticNode: result.semanticNode,
     agentId: result.agentId,
     status: result.status,
+    protocol: result.protocol,
+    sourceHint: result.sourceHint,
     message: result.message,
   });
 
@@ -301,27 +310,187 @@ const dedupBySeq = (events: NormalizedEvent[]): NormalizedEvent[] => {
     detail: event.detail,
     payload: isRecord(event.data.payload) ? event.data.payload as Record<string, unknown> : event.data,
     raw: event.raw,
+    protocol: event.protocol,
+    sourceHint: event.sourceHint,
   }));
   const deduped = mergeAndDedupeTraceEvents([], asTrace);
   const mapped = deduped.map((item) => normalizeEvent(item.raw as RawTraceEvent));
-  
-  console.log(
-    'workflow grouped counts',
-    mapped.map((e) => ({
-      seq: e.seq,
-      nodeName: e.nodeName,
-      semanticNode: e.semanticNode,
-      agentId: e.agentId,
-      status: e.status,
-    }))
-  );
-  
   return sortNormalizedEvents(mapped);
 };
 
+
+
+const splitNormalizedEventsByProtocol = (events: NormalizedEvent[]) => {
+  const asTrace: NormalizedTraceEvent[] = events.map((event) => ({
+    traceId: event.traceId,
+    seq: typeof event.seq === 'number' && Number.isFinite(event.seq) ? event.seq : Number.POSITIVE_INFINITY,
+    ts: event.ts ?? null,
+    stage: event.stage,
+    stageCn: event.stageCn,
+    agentId: event.raw.agent_id ? String(event.raw.agent_id) : event.agentId,
+    agentLabel: String(event.raw.agent_cn ?? event.raw.agent ?? event.agentId),
+    status: (event.status === 'running' ? 'start' : event.status === 'completed' ? 'end' : event.status === 'error' ? 'error' : event.status === 'decision' ? 'decision' : 'info') as TraceEventStatus,
+    title: event.title || event.message,
+    detail: event.detail,
+    payload: isRecord(event.data.payload) ? event.data.payload as Record<string, unknown> : event.data,
+    raw: event.raw,
+    protocol: event.protocol,
+    sourceHint: event.sourceHint,
+  }));
+
+  const buckets = splitTraceEventsByProtocol(asTrace);
+  const traceToPanel = (bucket: NormalizedTraceEvent[]) => bucket.map((item) => normalizeEvent(item.raw as RawTraceEvent));
+  return {
+    workflowEvents: sortNormalizedEvents(traceToPanel(buckets.workflowSnapshotEvents)),
+    compactEvents: sortNormalizedEvents(traceToPanel(buckets.compactReplayEvents)),
+    unknownEvents: sortNormalizedEvents(traceToPanel(buckets.unknownEvents)),
+  };
+};
+
+const hasCompleteWorkflowSnapshot = (workflowEvents: NormalizedEvent[]): boolean => {
+  if (!workflowEvents.length) return false;
+  const stages = new Set<string>();
+  workflowEvents.forEach((event) => {
+    const v = `${event.semanticNode}|${String(event.stage || '').toLowerCase()}|${String(event.nodeName || '').toLowerCase()}`;
+    if (v.includes('kb_retrieval') || v.includes('kbretrieval')) stages.add('kb_retrieval');
+    if (v.includes('treatment') || v.includes('personalization') || v.includes('persist') || v.includes('prescription')) stages.add('treatment');
+    if (v.includes('verification') || v.includes('validator')) stages.add('verification');
+    if (v.includes('final')) stages.add('final');
+  });
+  if (stages.size >= 2) return true;
+
+  const richWorkflow = workflowEvents.filter((event) => {
+    const raw = event.raw;
+    return raw.agent !== undefined || raw.step !== undefined || raw.outputs !== undefined || raw.decision !== undefined;
+  });
+  if (richWorkflow.length >= 5) return true;
+
+  return workflowEvents.some((event) => {
+    const text = `${event.stage}|${event.nodeName}|${event.title}`.toLowerCase();
+    return text.includes('treatment_complete') || text.includes('verification_complete') || text.includes('final');
+  });
+};
+
+const selectPrimaryPanelEvents = (workflowEvents: NormalizedEvent[], compactEvents: NormalizedEvent[]) => {
+  if (hasCompleteWorkflowSnapshot(workflowEvents)) {
+    return { primaryPanelEvents: workflowEvents, protocol: 'workflow_snapshot' as TraceProtocol };
+  }
+  if (compactEvents.length) {
+    return { primaryPanelEvents: compactEvents, protocol: 'compact_replay' as TraceProtocol };
+  }
+  return { primaryPanelEvents: workflowEvents, protocol: 'unknown' as TraceProtocol };
+};
+
+
+const extractDiagnosisConfidence = (event: NormalizedEvent): number | undefined => {
+  const data = isRecord(event.data) ? event.data : undefined;
+  const outputs = isRecord(data?.['outputs']) ? data['outputs'] : undefined;
+  const rawConfidence = Number(
+    (isRecord(data) ? data['confidence_pct'] : undefined)
+    ?? (isRecord(data) ? data['confidence'] : undefined)
+    ?? (isRecord(outputs) ? outputs['confidence_pct'] : undefined)
+    ?? (isRecord(outputs) ? outputs['confidence'] : undefined),
+  );
+  if (!Number.isFinite(rawConfidence)) return undefined;
+  return rawConfidence <= 1 ? rawConfidence * 100 : rawConfidence;
+};
+
+const applyEventToRowState = (
+  current: AgentRowState,
+  event: NormalizedEvent,
+): AgentRowState => {
+  const next = { ...current };
+  if (event.status === 'running') {
+    next.status = 'running';
+    if (typeof event.tsMs === 'number') {
+      next.startTs = next.startTs ?? event.tsMs;
+    }
+    const data = isRecord(event.data) ? event.data : undefined;
+    const outputs = isRecord(data?.['outputs']) ? data['outputs'] : undefined;
+    const explicit = Number(
+      (isRecord(data) ? data['progress'] : undefined)
+      ?? (isRecord(outputs) ? outputs['progress'] : undefined),
+    );
+    if (Number.isFinite(explicit)) {
+      next.progress = clamp(explicit, 0, 90);
+    } else if (typeof event.tsMs === 'number' && typeof next.startTs === 'number') {
+      next.progress = Math.max(next.progress, softProgress(Math.max(0, event.tsMs - next.startTs)));
+    } else {
+      next.progress = Math.max(next.progress, 5);
+    }
+    return next;
+  }
+  if (event.status === 'completed') {
+    next.status = 'completed';
+    if (typeof event.tsMs === 'number') {
+      next.startTs = next.startTs ?? event.tsMs;
+      next.endTs = event.tsMs;
+    }
+    next.progress = 100;
+    return next;
+  }
+  if (event.status === 'error') {
+    next.status = 'error';
+    if (typeof event.tsMs === 'number') {
+      next.startTs = next.startTs ?? event.tsMs;
+      next.endTs = event.tsMs;
+    }
+    next.progress = 100;
+    return next;
+  }
+  if (event.status === 'decision' || event.status === 'info') {
+    next.status = next.status === 'pending' ? 'running' : next.status;
+    if (typeof event.tsMs === 'number') {
+      next.startTs = next.startTs ?? event.tsMs;
+    }
+    next.progress = Math.max(next.progress, 5);
+  }
+  return next;
+};
+
+const hydrateRowsFromEvents = (
+  events: NormalizedEvent[],
+  initialPayload?: Record<string, unknown> | null,
+): {
+  rows: Record<FixedAgentId, AgentRowState>;
+  mergedEvents: NormalizedEvent[];
+  diagnosisConfidencePct?: number;
+  workflowDone: boolean;
+  finalTs?: number;
+} => {
+  const mergedEvents = sortNormalizedEvents(events);
+  const rows = buildInitialState();
+  let diagnosisConfidencePct: number | undefined;
+  let workflowDone = false;
+  let finalTs: number | undefined;
+
+  mergedEvents.forEach((event, index) => {
+    const currentEvents = mergedEvents.slice(0, index + 1);
+    const row = rows[event.agentId];
+    const fallbackMessage = event.status === 'completed'
+      ? `${event.agentId} 执行完成`
+      : event.status === 'error'
+        ? `${event.agentId} 执行错误`
+        : `${event.agentId} 执行中`;
+    row.lastMessage = shortText(event.message || fallbackMessage, 140) || fallbackMessage;
+    rows[event.agentId] = applyEventToRowState(row, event);
+    rows[event.agentId].steps = extractSubsteps(event.agentId, currentEvents, initialPayload).slice(-5);
+    rows[event.agentId].highlights = extractHighlights(event.agentId, currentEvents, [], initialPayload);
+
+    const confidence = event.agentId === 'diagnosis' ? extractDiagnosisConfidence(event) : undefined;
+    if (typeof confidence === 'number') diagnosisConfidencePct = confidence;
+
+    if (event.agentId === 'final' && event.status === 'completed') {
+      workflowDone = true;
+      if (typeof event.tsMs === 'number') finalTs = event.tsMs;
+    }
+  });
+
+  return { rows, mergedEvents, diagnosisConfidencePct, workflowDone, finalTs };
+};
 const getEventsByAgent = (events: NormalizedEvent[], agentId: FixedAgentId): NormalizedEvent[] => {
   const target = agentId.toLowerCase();
-  return dedupBySeq(events).filter((event) => {
+  return events.filter((event) => {
     const data = isRecord(event.data) ? event.data : {};
     const rawAgent = String(data['agent_id'] ?? data['agent'] ?? '').toLowerCase();
     return event.agentId === agentId || rawAgent === target;
@@ -330,7 +499,7 @@ const getEventsByAgent = (events: NormalizedEvent[], agentId: FixedAgentId): Nor
 
 const getSystemNodeEvents = (events: NormalizedEvent[], nodeName: string): NormalizedEvent[] => {
   const target = nodeName.toLowerCase();
-  return dedupBySeq(events).filter((event) => String(event.nodeName || '').toLowerCase() === target);
+  return events.filter((event) => String(event.nodeName || '').toLowerCase() === target);
 };
 
 const getOutputs = (event: NormalizedEvent): Record<string, unknown> => {
@@ -439,16 +608,14 @@ const hasTreatmentOutputFields = (outputs: Record<string, unknown>): boolean => 
 };
 
 const getPreferredTreatmentOutputs = (allEvents: NormalizedEvent[], fallbackOutputs: Record<string, unknown>): Record<string, unknown> => {
-  const deduped = dedupBySeq(allEvents);
-
-  const treatmentAgentEvents = deduped.filter((event) => {
+  const treatmentAgentEvents = allEvents.filter((event) => {
     const data = isRecord(event.data) ? event.data : {};
     return String(data['agent'] ?? data['agent_id'] ?? '').toLowerCase() === 'treatment';
   });
   const treatmentFromAgent = [...treatmentAgentEvents].reverse().find((event) => hasTreatmentOutputFields(getOutputs(event)));
   if (treatmentFromAgent) return getOutputs(treatmentFromAgent);
 
-  const personalizationEvent = [...deduped].reverse().find((event) => {
+  const personalizationEvent = [...allEvents].reverse().find((event) => {
     const node = String(event.nodeName || '').toLowerCase();
     return node === 'personalizationagent' || node === 'personalization';
   });
@@ -462,10 +629,11 @@ const getPreferredTreatmentOutputs = (allEvents: NormalizedEvent[], fallbackOutp
 
 const extractHighlights = (
   agentId: FixedAgentId,
-  allEvents: NormalizedEvent[],
+  panelEvents: NormalizedEvent[],
+  fallbackEvents: NormalizedEvent[],
   initialPayload?: Record<string, unknown> | null,
 ): string[] => {
-  const events = getEventsByAgent(allEvents, agentId);
+  const events = getEventsByAgent(panelEvents, agentId);
   if (!events.length && !initialPayload) return [];
   const latest = events[events.length - 1];
   const bestEvent = pickBestEventForSummary(events, agentId) ?? latest;
@@ -509,7 +677,8 @@ const extractHighlights = (
     const confidence = toPercent(outputs['final_confidence'] ?? outputs['disease_confidence'] ?? outputs['confidence_pct'] ?? outputs['confidence']);
     const source = String(outputs['final_source'] ?? '-');
     const needConfirm = outputs['need_confirm'] === true ? '是' : '否';
-    const gateEvent = [...events].reverse().find((event) => event.semanticNode === 'confidence_gate');
+    const gateEvent = [...events].reverse().find((event) => event.semanticNode === 'confidence_gate')
+      ?? [...getEventsByAgent(fallbackEvents, agentId)].reverse().find((event) => event.semanticNode === 'confidence_gate');
     const gateOutputs = gateEvent ? getOutputs(gateEvent) : {};
     const gateReason = String(gateOutputs['gate_reason'] ?? gateOutputs['need_confirm_reason'] ?? gateEvent?.message ?? '').trim();
     const gateText = outputs['need_confirm'] === true ? `低置信需确认${gateReason ? `（${gateReason}）` : ''}` : '通过/无需回退';
@@ -529,7 +698,7 @@ const extractHighlights = (
   }
 
   if (agentId === 'treatment') {
-    const treatmentOutputs = getPreferredTreatmentOutputs(allEvents, outputs);
+    const treatmentOutputs = getPreferredTreatmentOutputs(panelEvents, outputs);
     const selectedBranch = String(treatmentOutputs['selected_branch'] ?? '-').trim() || '-';
     const llmFailed = treatmentOutputs['llm_failed'] === true;
     const personalizationApplied = treatmentOutputs['personalization_applied'] === true;
@@ -580,10 +749,10 @@ const extractHighlights = (
 
 const extractSubsteps = (
   agentId: FixedAgentId,
-  allEvents: NormalizedEvent[],
+  panelEvents: NormalizedEvent[],
   initialPayload?: Record<string, unknown> | null,
 ): Array<{ seq?: number; node: string; message: string }> => {
-  const events = getEventsByAgent(allEvents, agentId);
+  const events = getEventsByAgent(panelEvents, agentId);
   if (!events.length && !initialPayload) return [];
   const map = new Map<string, { seq?: number; node: string; message: string }>();
   const push = (key: string, item: { seq?: number; node: string; message: string }) => {
@@ -643,7 +812,7 @@ const extractSubsteps = (
     }
 
     if (agentId === 'treatment') {
-      const personalizationOutputs = getOutputs(getSystemNodeEvents(allEvents, 'personalization').slice(-1)[0] ?? event);
+      const personalizationOutputs = getOutputs(getSystemNodeEvents(panelEvents, 'personalization').slice(-1)[0] ?? event);
       const merged = { ...personalizationOutputs, ...outputs };
       const flags = isRecord(merged['personalization_flags_summary']) ? merged['personalization_flags_summary'] : {};
       const selectedBranch = String(merged['selected_branch'] ?? '-');
@@ -711,7 +880,7 @@ export function AgentWorkflowPanel({
   const [pausedByUserInput, setPausedByUserInput] = useState(false);
   const [tracePausedStable, setTracePausedStable] = useState(false);
   const [diagnosisConfidencePct, setDiagnosisConfidencePct] = useState<number | undefined>(undefined);
-  const [allEvents, setAllEvents] = useState<NormalizedEvent[]>([]);
+  const [mergedEvents, setMergedEvents] = useState<NormalizedEvent[]>([]);
   const [showSystemNodes, setShowSystemNodes] = useState(false);
   const [showAgentDebug, setShowAgentDebug] = useState(false);
   const [debugOpen, setDebugOpen] = useState<Record<FixedAgentId, boolean>>({
@@ -743,7 +912,7 @@ export function AgentWorkflowPanel({
     verification: [],
     final: [],
   });
-  const allEventsRef = useRef<NormalizedEvent[]>([]);
+  const mergedEventsRef = useRef<NormalizedEvent[]>([]);
   const seededByInitialEventsRef = useRef(false);
 
   const clearTicker = useCallback(() => {
@@ -805,13 +974,16 @@ export function AgentWorkflowPanel({
   useEffect(() => {
     console.log('[AgentWorkflowPanel] initialEvents received:', {
       length: initialEvents?.length ?? 0,
-      events: initialEvents?.map((e: any) => ({
-        seq: e.seq,
-        node: e.node,
-        agent: e.agent,
-        agent_id: e.agent_id,
-        status: e.status,
-      })),
+      events: initialEvents?.map((eventLike) => {
+        const e = isRecord(eventLike) ? eventLike : {};
+        return {
+          seq: e.seq,
+          node: e.node,
+          agent: e.agent,
+          agent_id: e.agent_id,
+          status: e.status,
+        };
+      }),
     });
   }, [initialEvents]);
 
@@ -853,9 +1025,19 @@ export function AgentWorkflowPanel({
     }
 
     const waitingForUserInput = isWaitingForUserInputEvent(event);
-    const mergedAllEvents = dedupBySeq([...allEventsRef.current, event]);
-    allEventsRef.current = mergedAllEvents;
-    setAllEvents(mergedAllEvents);
+    const mergedAllEvents = dedupBySeq([...mergedEventsRef.current, event]);
+    mergedEventsRef.current = mergedAllEvents;
+    setMergedEvents(mergedAllEvents);
+    const runtimeBuckets = splitNormalizedEventsByProtocol(mergedAllEvents);
+    const runtimeSelection = selectPrimaryPanelEvents(runtimeBuckets.workflowEvents, runtimeBuckets.compactEvents);
+    console.log('runtime grouped counts', runtimeSelection.primaryPanelEvents.map((e) => ({
+      seq: e.seq,
+      nodeName: e.nodeName,
+      semanticNode: e.semanticNode,
+      agentId: e.agentId,
+      status: e.status,
+      protocol: e.protocol,
+    })));
 
     if (waitingForUserInput && !options?.preserveReplayFlow) {
       waitingStableRef.current = true;
@@ -867,7 +1049,6 @@ export function AgentWorkflowPanel({
       clearTicker();
       closeStream();
       stopPolling(true);
-    } else if (waitingForUserInput) {
     } else if (event.status === 'running') {
       setPausedByUserInput(false);
       setTracePausedStable(false);
@@ -877,16 +1058,9 @@ export function AgentWorkflowPanel({
     eventHistoryRef.current[agentId] = dedupBySeq([...eventHistoryRef.current[agentId], event]).slice(-20);
 
     if (agentId === 'diagnosis') {
-      const data = isRecord(event.data) ? event.data : undefined;
-      const outputs = isRecord(data?.['outputs']) ? data['outputs'] : undefined;
-      const rawConfidence = Number(
-        (isRecord(data) ? data['confidence_pct'] : undefined)
-        ?? (isRecord(data) ? data['confidence'] : undefined)
-        ?? (isRecord(outputs) ? outputs['confidence_pct'] : undefined)
-        ?? (isRecord(outputs) ? outputs['confidence'] : undefined),
-      );
-      if (Number.isFinite(rawConfidence)) {
-        setDiagnosisConfidencePct(rawConfidence <= 1 ? rawConfidence * 100 : rawConfidence);
+      const confidence = extractDiagnosisConfidence(event);
+      if (typeof confidence === 'number') {
+        setDiagnosisConfidencePct(confidence);
       }
     }
 
@@ -902,51 +1076,14 @@ export function AgentWorkflowPanel({
           : `${agentId} 执行中`;
       const message = shortText(event.message || fallbackMessage, 140) || fallbackMessage;
 
-      current.steps = extractSubsteps(agentId, allEventsRef.current, initialPayload).slice(-5);
+      const buckets = splitNormalizedEventsByProtocol(mergedEventsRef.current);
+      const selection = selectPrimaryPanelEvents(buckets.workflowEvents, buckets.compactEvents);
+      const fallbackEvents = selection.protocol === 'workflow_snapshot' ? buckets.compactEvents : buckets.workflowEvents;
+      current.steps = extractSubsteps(agentId, selection.primaryPanelEvents, initialPayload).slice(-5);
       current.lastMessage = message;
-      current.highlights = extractHighlights(agentId, allEventsRef.current, initialPayload);
+      current.highlights = extractHighlights(agentId, selection.primaryPanelEvents, fallbackEvents, initialPayload);
 
-      if (event.status === 'running') {
-        current.status = 'running';
-        if (typeof event.tsMs === 'number') {
-          current.startTs = current.startTs ?? event.tsMs;
-        }
-        const data = isRecord(event.data) ? event.data : undefined;
-        const outputs = isRecord(data?.['outputs']) ? data['outputs'] : undefined;
-        const explicit = Number(
-          (isRecord(data) ? data['progress'] : undefined)
-          ?? (isRecord(outputs) ? outputs['progress'] : undefined),
-        );
-        if (Number.isFinite(explicit)) {
-          current.progress = clamp(explicit, 0, 90);
-        } else if (typeof event.tsMs === 'number' && typeof current.startTs === 'number') {
-          current.progress = Math.max(current.progress, softProgress(Math.max(0, event.tsMs - current.startTs)));
-        } else {
-          current.progress = Math.max(current.progress, 5);
-        }
-      } else if (event.status === 'completed') {
-        current.status = 'completed';
-        if (typeof event.tsMs === 'number') {
-          current.startTs = current.startTs ?? event.tsMs;
-          current.endTs = event.tsMs;
-        }
-        current.progress = 100;
-      } else if (event.status === 'error') {
-        current.status = 'error';
-        if (typeof event.tsMs === 'number') {
-          current.startTs = current.startTs ?? event.tsMs;
-          current.endTs = event.tsMs;
-        }
-        current.progress = 100;
-      } else if (event.status === 'decision' || event.status === 'info') {
-        current.status = current.status === 'pending' ? 'running' : current.status;
-        if (typeof event.tsMs === 'number') {
-          current.startTs = current.startTs ?? event.tsMs;
-        }
-        current.progress = Math.max(current.progress, 5);
-      }
-
-      next[agentId] = current;
+      next[agentId] = applyEventToRowState(current, event);
 
       const finalDone = agentId === 'final' && event.status === 'completed';
       if (finalDone) {
@@ -977,7 +1114,7 @@ export function AgentWorkflowPanel({
       clearExternal();
       replayedCountRef.current = 0;
       workflowDoneRef.current = false;
-      setPausedByUserInput(false);
+      queueMicrotask(() => setPausedByUserInput(false));
       lastSeqRef.current = -1;
       finalTsRef.current = undefined;
       eventHistoryRef.current = {
@@ -989,9 +1126,9 @@ export function AgentWorkflowPanel({
         verification: [],
         final: [],
       };
-      allEventsRef.current = [];
+      mergedEventsRef.current = [];
       seededByInitialEventsRef.current = false;
-      queueMicrotask(() => setAllEvents([]));
+      queueMicrotask(() => setMergedEvents([]));
       return;
     }
 
@@ -1027,25 +1164,46 @@ export function AgentWorkflowPanel({
     const normalizedSeed = seed
       .map((evt) => normalizeEvent(evt as RawTraceEvent))
       .filter((evt) => shouldIncludeEvent(evt.raw as RawTraceEvent, phaseStartMs));
-    
+
+    const seedBuckets = splitNormalizedEventsByProtocol(normalizedSeed);
+    const seedSelection = selectPrimaryPanelEvents(seedBuckets.workflowEvents, seedBuckets.compactEvents);
+
     console.log(
-      'workflow grouped counts',
-      normalizedSeed.map((e) => ({
+      'seed grouped counts',
+      seedSelection.primaryPanelEvents.map((e) => ({
         seq: e.seq,
         nodeName: e.nodeName,
         semanticNode: e.semanticNode,
         agentId: e.agentId,
         status: e.status,
+        protocol: e.protocol,
       }))
     );
-    
-    if (normalizedSeed.length) {
-      allEventsRef.current = dedupBySeq(normalizedSeed);
-      setAllEvents(allEventsRef.current);
+
+    if (seedSelection.primaryPanelEvents.length) {
+      const hydrated = hydrateRowsFromEvents(seedSelection.primaryPanelEvents, initialPayload);
+      mergedEventsRef.current = hydrated.mergedEvents;
+      setMergedEvents(hydrated.mergedEvents);
+      setRows(hydrated.rows);
+      setWorkflowDone(hydrated.workflowDone);
+      workflowDoneRef.current = hydrated.workflowDone;
+      finalTsRef.current = hydrated.finalTs;
+      setDiagnosisConfidencePct(hydrated.diagnosisConfidencePct);
       seededByInitialEventsRef.current = true;
+      const maxSeedSeq = hydrated.mergedEvents.reduce((max, evt) => (
+        typeof evt.seq === 'number' && Number.isFinite(evt.seq) ? Math.max(max, evt.seq) : max
+      ), -1);
+      lastSeqRef.current = Math.max(lastSeqRef.current, maxSeedSeq);
     } else {
-      allEventsRef.current = [];
-      setAllEvents([]);
+      const emptyRows = buildInitialState();
+      mergedEventsRef.current = [];
+      setMergedEvents([]);
+      setRows(emptyRows);
+      setWorkflowDone(false);
+      workflowDoneRef.current = false;
+      finalTsRef.current = undefined;
+      setDiagnosisConfidencePct(undefined);
+      seededByInitialEventsRef.current = false;
     }
 
     const openStream = () => {
@@ -1188,34 +1346,44 @@ export function AgentWorkflowPanel({
   }, [phaseStartMs, workflowDone, pausedByUserInput, tracePausedStable]);
 
 
+
+  const { workflowEvents, compactEvents } = useMemo(() => {
+    return splitNormalizedEventsByProtocol(mergedEvents);
+  }, [mergedEvents]);
+
+  const { primaryPanelEvents, protocol: primaryPanelProtocol } = useMemo(
+    () => selectPrimaryPanelEvents(workflowEvents, compactEvents),
+    [workflowEvents, compactEvents],
+  );
+
   const phaseDurationsByAgent = useMemo(
-    () => calcPhaseDurationsByAgent(allEvents, nowMs, workflowDone) as Record<FixedAgentId, AgentPhaseDurations>,
-    [allEvents, nowMs, workflowDone],
+    () => calcPhaseDurationsByAgent(primaryPanelEvents, nowMs, workflowDone) as Record<FixedAgentId, AgentPhaseDurations>,
+    [primaryPanelEvents, nowMs, workflowDone],
   );
 
   const activePhaseLabel = useMemo(() => {
-    const hasSecondPhase = allEvents.some((event) => {
+    const hasSecondPhase = mergedEvents.some((event) => {
       const node = String(event.nodeName || '').toLowerCase();
       const data = isRecord(event.data) ? event.data : {};
       const rawAgent = String(data['agent'] ?? data['agent_id'] ?? '').toLowerCase();
       return rawAgent === 'confirm_input' || node === 'confirm_input' || (node === 'confirmflow' && event.status === 'running');
     });
     return hasSecondPhase ? '当前显示二诊阶段链路' : '当前显示一诊阶段链路';
-  }, [allEvents]);
+  }, [mergedEvents]);
 
   const receptionDebugSummary = useMemo(() => {
-    const receptionEvents = getEventsByAgent(allEvents, 'reception');
+    const receptionEvents = getEventsByAgent(primaryPanelEvents, 'reception');
     const lastReceptionEvent = receptionEvents[receptionEvents.length - 1];
     return {
       count: receptionEvents.length,
       lastSeq: lastReceptionEvent?.seq,
     };
-  }, [allEvents]);
+  }, [primaryPanelEvents]);
 
   const renderedRows = useMemo(() => {
     return FIXED_AGENTS.map((def) => {
       const row = rows[def.id];
-      const hasAgentEvents = getEventsByAgent(allEvents, def.id).length > 0;
+      const hasAgentEvents = getEventsByAgent(primaryPanelEvents, def.id).length > 0;
       const elapsedMs = row.startTs ? Math.max(0, (row.endTs ?? nowMs) - row.startTs) : 0;
       const progress = row.status === 'running' && !workflowDone
         ? Math.max(row.progress, softProgress(elapsedMs))
@@ -1230,21 +1398,29 @@ export function AgentWorkflowPanel({
         phase2Duration: formatDurationMs(phaseDurationsByAgent[def.id]?.phase2Ms ?? 0),
       };
     });
-  }, [rows, nowMs, workflowDone, phaseDurationsByAgent]);
+  }, [rows, nowMs, workflowDone, phaseDurationsByAgent, primaryPanelEvents]);
 
   const completedCount = useMemo(() => renderedRows.filter((row) => row.status === 'completed').length, [renderedRows]);
   const showDebugFallback = useMemo(
-    () => allEvents.length > 0 && renderedRows.every((row) => row.steps.length === 0),
-    [allEvents, renderedRows],
+    () => primaryPanelEvents.length > 0 && renderedRows.every((row) => row.steps.length === 0),
+    [primaryPanelEvents, renderedRows],
   );
   const debugSourceCounts = useMemo(() => {
-    const primaryEvents = allEvents.filter((event) => {
+    const primaryEvents = mergedEvents.filter((event) => {
       const source = String(event.raw.__source ?? '');
       return source === 'continue' || source === 'start' || source === 'confirm';
     }).length;
-    const replayEvents = allEvents.filter((event) => String(event.raw.__source ?? '') === 'replay').length;
-    return { primaryEvents, replayEvents, mergedEvents: allEvents.length };
-  }, [allEvents]);
+    const replayEvents = mergedEvents.filter((event) => String(event.raw.__source ?? '') === 'replay').length;
+    return {
+      primaryEvents,
+      replayEvents,
+      mergedEvents: mergedEvents.length,
+      workflowEvents: workflowEvents.length,
+      compactEvents: compactEvents.length,
+      primaryPanelProtocol,
+      primaryPanelCount: primaryPanelEvents.length,
+    };
+  }, [mergedEvents, workflowEvents, compactEvents, primaryPanelProtocol, primaryPanelEvents]);
 
   const totalProgress = Math.round((completedCount / FIXED_AGENTS.length) * 100);
 
@@ -1468,9 +1644,9 @@ export function AgentWorkflowPanel({
         <div className="rounded-xl border border-amber-300/40 bg-amber-500/10 p-3 space-y-2">
           <p className="text-xs text-amber-100">调试视图：标准分组暂无可展示步骤，已回退到事件列表。</p>
           <div className="space-y-1 max-h-48 overflow-auto">
-            {allEvents.map((event, index) => {
+            {primaryPanelEvents.map((event, index) => {
               const rowKey = (typeof event.seq === 'number' && Number.isFinite(event.seq))
-                ? `${event.traceId}-${event.seq}`
+                ? `${event.traceId}-${event.protocol}-${event.seq}-${event.stage}`
                 : `${event.traceId}-${event.ts ?? 'na'}-${event.stage}-${index}`;
               return (
                 <div key={rowKey} className="text-xs text-white/75 font-mono border border-white/10 rounded px-2 py-1">
@@ -1484,10 +1660,10 @@ export function AgentWorkflowPanel({
 
       {showAgentDebug && (
         <div className="rounded-xl border border-sky-300/30 bg-sky-500/10 p-3 space-y-2">
-          <p className="text-xs text-sky-100">调试：每个 fixed agent 实际聚合的事件（seq / semanticNode / fixedAgentId / message）。</p>
-          <p className="text-xs text-sky-200/90 font-mono">primaryEvents={debugSourceCounts.primaryEvents} / replayEvents={debugSourceCounts.replayEvents} / mergedEvents={debugSourceCounts.mergedEvents}</p>
+          <p className="text-xs text-sky-100">调试：主面板按协议分层后，每个 fixed agent 实际聚合的事件（seq / protocol / semanticNode / fixedAgentId / message）。</p>
+          <p className="text-xs text-sky-200/90 font-mono">primaryEvents={debugSourceCounts.primaryEvents} / replayEvents={debugSourceCounts.replayEvents} / mergedEvents={debugSourceCounts.mergedEvents} / workflowEvents={debugSourceCounts.workflowEvents} / compactEvents={debugSourceCounts.compactEvents} / primaryProtocol={debugSourceCounts.primaryPanelProtocol} / primaryCount={debugSourceCounts.primaryPanelCount}</p>
           {FIXED_AGENTS.map((agent) => {
-            const agentEvents = getEventsByAgent(allEvents, agent.id);
+            const agentEvents = getEventsByAgent(primaryPanelEvents, agent.id);
             return (
               <div key={`debug-${agent.id}`} className="text-xs">
                 <p className="text-sky-200 mb-1">{agent.id}（{agentEvents.length}）</p>
@@ -1495,7 +1671,7 @@ export function AgentWorkflowPanel({
                   <div className="space-y-1 max-h-24 overflow-auto">
                     {agentEvents.map((event, index) => (
                       <div key={`${event.traceId}-${event.seq ?? `na-${index}`}`} className="font-mono text-white/75">
-                        {event.seq ?? '∞'} | {event.semanticNode} | {event.agentId} | {shortText(event.message, 80)}
+                        {event.seq ?? '∞'} | {event.protocol} | {event.semanticNode} | {event.agentId} | {shortText(event.message, 80)}
                       </div>
                     ))}
                   </div>

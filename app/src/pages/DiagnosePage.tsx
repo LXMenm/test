@@ -1724,24 +1724,11 @@ export function DiagnosePage() {
                   <p className="text-xs text-white/65">耗时来源：{timingSourceLabel}。总耗时 {formatDurationMs(displayedTiming.totalMs)}（一诊 {formatDurationMs(displayedTiming.phase1Ms)} / 二诊 {formatDurationMs(displayedTiming.phase2Ms)}）</p>
                 </div>
               )}
-              {(() => {
-                const events = Array.isArray(latestPayload?.events) ? latestPayload.events : traceEvents;
-                console.log('panel initialEvents length', events.length);
-                console.log('panel initialEvents detail', events.map((e: any) => ({
-                  seq: e.seq,
-                  node: e.node,
-                  agent: e.agent,
-                  agent_id: e.agent_id,
-                  status: e.status,
-                  message: e.message,
-                })));
-                return null;
-              })()}
               <AgentWorkflowPanel
                 traceId={traceId || undefined}
                 confidencePct={result?.displayConfidencePct ?? undefined}
                 refreshToken={workflowRefreshToken}
-                initialEvents={Array.isArray(latestPayload?.events) ? latestPayload.events as unknown[] : (traceEvents as unknown[])}
+                initialEvents={Array.isArray(latestPayload?.events) ? tagEventsSource(latestPayload.events as unknown[], 'continue') : (traceEvents as unknown[])}
                 initialPayload={latestPayload}
                 i18n={latestPayload && typeof latestPayload.i18n === 'object' ? latestPayload.i18n as Record<string, unknown> : null}
               />

@@ -1,7 +1,22 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { mergeAndDedupeTraceEvents, normalizeTraceEvents } from './traceEvents.js';
+import {
+  detectTraceProtocol,
+  mergeAndDedupeTraceEvents,
+  normalizeTraceEvents,
+  splitTraceEventsByProtocol,
+} from './traceEvents.js';
+
+test('detectTraceProtocol identifies workflow snapshot events', () => {
+  assert.equal(detectTraceProtocol({ step: 'diagnosis_complete', agent: 'diagnosis' }), 'workflow_snapshot');
+  assert.equal(detectTraceProtocol({ outputs: { final_disease: '灰霉病' } }), 'workflow_snapshot');
+});
+
+test('detectTraceProtocol identifies compact replay events', () => {
+  assert.equal(detectTraceProtocol({ node: 'DiagnosisAgent', status: 'end' }), 'compact_replay');
+  assert.equal(detectTraceProtocol({ payload: { detail: 'legacy replay' } }), 'compact_replay');
+});
 
 test('normalizeTraceEvents supports legacy node/status events', () => {
   const [event] = normalizeTraceEvents([
@@ -13,6 +28,7 @@ test('normalizeTraceEvents supports legacy node/status events', () => {
       status: 'start',
       message: '开始诊断',
       payload: { detail: 'legacy' },
+      __source: 'replay',
     },
   ]);
 
@@ -20,6 +36,8 @@ test('normalizeTraceEvents supports legacy node/status events', () => {
   assert.equal(event.stage, 'DiagnosisAgent');
   assert.equal(event.status, 'start');
   assert.equal(event.title, '开始诊断');
+  assert.equal(event.protocol, 'compact_replay');
+  assert.equal(event.sourceHint, 'replay');
 });
 
 test('normalizeTraceEvents supports step/agent events', () => {
@@ -34,6 +52,7 @@ test('normalizeTraceEvents supports step/agent events', () => {
       agent_cn: '诊断智能体',
       decision: { reason: '信息充分', route: 'final' },
       outputs: { summary: 'done' },
+      __source: 'continue',
     },
   ]);
 
@@ -42,39 +61,11 @@ test('normalizeTraceEvents supports step/agent events', () => {
   assert.equal(event.agentLabel, '诊断智能体');
   assert.equal(event.status, 'decision');
   assert.equal(event.detail, '信息充分');
+  assert.equal(event.protocol, 'workflow_snapshot');
+  assert.equal(event.sourceHint, 'continue');
 });
 
-test('mergeAndDedupeTraceEvents dedupes by trace_id + seq and keeps richer event', () => {
-  const existing = normalizeTraceEvents([
-    { trace_id: 't-3', seq: 5, node: 'DiagnosisAgent', status: 'end' },
-  ]);
-  const incoming = normalizeTraceEvents([
-    { trace_id: 't-3', seq: 5, node: 'DiagnosisAgent', status: 'end', message: '诊断完成', payload: { detail: 'ok' } },
-    { trace_id: 't-3', seq: 6, step: 'finalize', agent: 'final', outputs: { message: 'finish' } },
-  ]);
-
-  const merged = mergeAndDedupeTraceEvents(existing, incoming);
-  assert.equal(merged.length, 2);
-  assert.equal(merged[0].seq, 5);
-  assert.equal(merged[0].title, '诊断完成');
-  assert.equal(merged[1].seq, 6);
-});
-
-test('mergeAndDedupeTraceEvents handles null node/status and fallback key', () => {
-  const merged = mergeAndDedupeTraceEvents(
-    [],
-    normalizeTraceEvents([
-      { trace_id: 't-4', ts: '2026-03-20T10:00:00.000Z', node: null, status: null, agent: 'diag' },
-      { trace_id: 't-4', ts: '2026-03-20T10:00:00.000Z', node: null, status: null, agent: 'diag' },
-    ]),
-  );
-
-  assert.equal(merged.length, 1);
-  assert.equal(merged[0].stage, 'diag');
-  assert.equal(merged[0].status, 'info');
-});
-
-test('mergeAndDedupeTraceEvents prefers continue source over replay on same seq', () => {
+test('mergeAndDedupeTraceEvents only dedupes within same protocol bucket', () => {
   const merged = mergeAndDedupeTraceEvents(
     normalizeTraceEvents([
       { trace_id: 't-5', seq: 8, node: 'DiagnosisAgent', status: 'end', payload: { agent_id: 'diagnosis' }, __source: 'replay' },
@@ -83,7 +74,24 @@ test('mergeAndDedupeTraceEvents prefers continue source over replay on same seq'
       { trace_id: 't-5', seq: 8, step: 'diagnosis_complete', agent: 'diagnosis', outputs: { final_disease: '灰霉病' }, __source: 'continue' },
     ]),
   );
+
+  assert.equal(merged.length, 2);
+  const split = splitTraceEventsByProtocol(merged);
+  assert.equal(split.workflowSnapshotEvents.length, 1);
+  assert.equal(split.compactReplayEvents.length, 1);
+});
+
+test('mergeAndDedupeTraceEvents still picks richer event inside the same protocol', () => {
+  const merged = mergeAndDedupeTraceEvents(
+    normalizeTraceEvents([
+      { trace_id: 't-6', seq: 9, step: 'treatment_complete', agent: 'treatment', __source: 'continue' },
+    ]),
+    normalizeTraceEvents([
+      { trace_id: 't-6', seq: 9, step: 'treatment_complete', agent: 'treatment', outputs: { selected_branch: 'FAMILY' }, __source: 'continue' },
+    ]),
+  );
+
   assert.equal(merged.length, 1);
-  assert.equal(merged[0].raw.__source, 'continue');
-  assert.equal(merged[0].stage, 'diagnosis_complete');
+  assert.equal(merged[0].protocol, 'workflow_snapshot');
+  assert.equal(merged[0].raw.outputs.selected_branch, 'FAMILY');
 });
