@@ -49,6 +49,7 @@ class CropDiseaseState(TypedDict):
     final_source: Optional[str]  # 最终结论来源
     diagnosis_model_id: Optional[str]  # 用户选择的模型ID
     diagnosis_model_meta: Optional[Dict[str, Any]]  # 最终使用模型信息
+    image_diagnosis: Optional[Dict[str, Any]]
 
     structured_symptoms: Optional[Dict[str, Any]]
     text_confidence: Optional[float]
@@ -66,6 +67,8 @@ class CropDiseaseState(TypedDict):
     fusion_probs: Optional[Dict[str, float]]
     normalized_symptoms: Optional[List[str]]
     fusion_meta: Optional[Dict[str, Any]]
+    workflow_degraded: Optional[bool]
+    degraded_reason: Optional[str]
 
     # 治疗方案
     treatment_plan: Optional[str]  # 具体治疗方案
@@ -111,6 +114,8 @@ class CropDiseaseState(TypedDict):
     personalization_policy: Optional[Dict[str, Any]]
     personalization_reasons: List[str]
     follow_up_questions: List[str]
+    profile_follow_up_questions: List[str]
+    diagnosis_follow_up_questions: List[str]
 
     # Trace信息
     trace_id: str
@@ -149,6 +154,7 @@ def create_initial_state(
         final_source=None,
         diagnosis_model_id=None,
         diagnosis_model_meta=None,
+        image_diagnosis=None,
         structured_symptoms=None,
         text_confidence=None,
         text_top3=None,
@@ -165,6 +171,8 @@ def create_initial_state(
         fusion_probs=None,
         normalized_symptoms=None,
         fusion_meta=None,
+        workflow_degraded=None,
+        degraded_reason=None,
         treatment_plan=None,
         prevention_advice=None,
         kb_snapshot=None,
@@ -194,6 +202,8 @@ def create_initial_state(
         personalization_policy=None,
         personalization_reasons=[],
         follow_up_questions=[],
+        profile_follow_up_questions=[],
+        diagnosis_follow_up_questions=[],
         trace_id=uuid.uuid4().hex,
         trace_events=[],
         debug_diagnosis={},

@@ -260,8 +260,12 @@ def reception_agent(state: CropDiseaseState) -> CropDiseaseState:
             _build_profile_follow_up_questions(missing_profile_fields, profile, base_profile, policy)
         )
         if follow_ups:
-            flags["follow_up_questions"] = follow_ups[:3]
-            state["follow_up_questions"] = follow_ups[:3]
+            profile_follow_ups = follow_ups[:3]
+            state["profile_follow_up_questions"] = profile_follow_ups
+            state["follow_up_questions"] = normalize_follow_up_questions(
+                list(state.get("diagnosis_follow_up_questions") or []) + profile_follow_ups
+            )
+            flags["follow_up_questions"] = state["follow_up_questions"]
         state["personalization_flags"] = flags
     message = "，".join(message_parts)
     # 更新状态
@@ -330,6 +334,14 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
     image_path = state.get("image_path")
     flags = state.get("personalization_flags", {}) or {}
     flags["need_confirm"] = False
+    diagnosis_reasons = {"low_confidence", "low_margin", "insufficient_evidence", "weak_image_text_conflict", "image_text_conflict", "both_modalities_weak"}
+    existing_reasons = [str(item).strip() for item in (flags.get("fallback_reason") or []) if str(item).strip()]
+    flags["fallback_reason"] = [reason for reason in existing_reasons if reason not in diagnosis_reasons]
+    state["diagnosis_follow_up_questions"] = []
+    state["follow_up_questions"] = normalize_follow_up_questions(
+        list(state.get("profile_follow_up_questions") or [])
+    )
+    degraded_reasons: list[str] = []
     runtime_enable_personalization = bool(get_admin_flag("workflow.enable_personalization_agent", True))
     thresholds = get_runtime_thresholds()
     if not runtime_enable_personalization:
@@ -410,6 +422,8 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
         except Exception as e:
             print(f"[番茄病害诊断智能体] 图像分支失败: {e}")
             image_probs = {}
+            state["image_diagnosis"] = None
+            degraded_reasons.append("image_branch_failed")
     elif not enable_image_model:
         image_probs = {}
         image_confidence = 0.0
@@ -451,6 +465,7 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
         print(f"[番茄病害诊断智能体] 文本分支失败: {e}")
         text_probs = {}
         text_probs_source = "exception"
+        degraded_reasons.append("text_branch_failed")
 
     if not text_evidence_active:
         text_probs = {}
@@ -466,6 +481,7 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
             )
     except Exception:
         prior_probs = {}
+        degraded_reasons.append("prior_branch_failed")
 
     image_top3 = sorted(image_probs.items(), key=lambda x: x[1], reverse=True)[:3]
     text_top3 = sorted(text_probs.items(), key=lambda x: x[1], reverse=True)[:3]
@@ -493,15 +509,30 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
                 text_confidence=text_confidence,
             )
     else:
-        fusion_probs = image_probs or text_probs or prior_probs or {"健康": 1.0}
+        fusion_probs = image_probs or text_probs or prior_probs or {}
         fusion_meta = {"normalized_weights": {"image": 1.0 if image_probs else 0.0, "text": 1.0 if text_probs and not image_probs else 0.0, "prior": 0.0}}
 
     fusion_top3 = sorted(fusion_probs.items(), key=lambda x: x[1], reverse=True)[:3]
 
     image_top1 = image_top3[0][0] if image_top3 else None
     text_top1 = text_top3[0][0] if text_top3 else None
-    final_disease = fusion_top3[0][0] if fusion_top3 else (image_top1 or text_top1 or "健康")
+    final_disease = fusion_top3[0][0] if fusion_top3 else (image_top1 or text_top1 or "未知待确认")
     final_confidence = float(fusion_top3[0][1]) if fusion_top3 else max(image_confidence, text_confidence, 0.0)
+    final_source = "fusion"
+    insufficient_evidence = bool(
+        not fusion_probs
+        or (isinstance(fusion_meta, dict) and bool(fusion_meta.get("insufficient_evidence")))
+    )
+    if insufficient_evidence:
+        final_disease = "未知待确认"
+        final_confidence = 0.0
+        final_source = "insufficient_evidence"
+        flags["need_confirm"] = True
+        flags.setdefault("fallback_reason", [])
+        if "insufficient_evidence" not in flags["fallback_reason"]:
+            flags["fallback_reason"].append("insufficient_evidence")
+        if "no_active_evidence" not in degraded_reasons:
+            degraded_reasons.append("no_active_evidence")
 
     fusion_conflict_reason = (fusion_meta.get("confidence_drop_reason") if isinstance(fusion_meta, dict) else None)
     has_image_active = (
@@ -573,6 +604,7 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
             "fusion_weights": (fusion_meta.get("normalized_weights") if isinstance(fusion_meta, dict) else {}),
             "confidence_drop_reason": fusion_conflict_reason,
             "fusion_case": fusion_case,
+            "insufficient_evidence": insufficient_evidence,
             "fuse_version": (fusion_meta.get("fuse_version") if isinstance(fusion_meta, dict) else None),
             "modality_conflict_flag": modality_conflict_flag,
             "image_reliable": image_reliable,
@@ -584,6 +616,10 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
             "final_confidence": float(final_confidence),
         }
     )
+    state["workflow_degraded"] = bool(degraded_reasons)
+    state["degraded_reason"] = ",".join(dict.fromkeys(degraded_reasons)) or None
+    debug_payload["workflow_degraded"] = state["workflow_degraded"]
+    debug_payload["degraded_reason"] = state["degraded_reason"]
     # 记录易混淆处理结果
     image_confusion_result = fusion_meta.get("image_confusion_result") if isinstance(fusion_meta, dict) else None
     text_confusion_result = fusion_meta.get("text_confusion_result") if isinstance(fusion_meta, dict) else None
@@ -643,7 +679,10 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
     )
     if confidence_policy.get("need_confirm"):
         flags["need_confirm"] = True
-        flags["fallback_reason"] = list(confidence_policy.get("reasons") or [])
+        flags.setdefault("fallback_reason", [])
+        for reason in list(confidence_policy.get("reasons") or []):
+            if reason not in flags["fallback_reason"]:
+                flags["fallback_reason"].append(reason)
 
     # 使用纯函数评估确认决策（线上/离线共用逻辑）
     confirmation_result = evaluate_confirmation_decision(
@@ -726,12 +765,16 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
             ] + follow_ups
         follow_ups = normalize_follow_up_questions(follow_ups)
         if follow_ups:
-            flags["follow_up_questions"] = follow_ups
-            state["follow_up_questions"] = follow_ups
+            state["diagnosis_follow_up_questions"] = follow_ups
         flags["need_confirm"] = True
         flags.setdefault("fallback_reason", [])
         if "low_confidence" not in flags["fallback_reason"]:
             flags["fallback_reason"].append("low_confidence")
+
+    state["follow_up_questions"] = normalize_follow_up_questions(
+        list(state.get("profile_follow_up_questions") or []) + list(state.get("diagnosis_follow_up_questions") or [])
+    )
+    flags["follow_up_questions"] = state["follow_up_questions"]
 
     message = f"番茄病害诊断智能体：诊断为{final_disease}，置信度={final_confidence:.2%}"
     if image_path and state.get("image_diagnosis"):
@@ -747,7 +790,7 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
     state["image_confidence"] = image_confidence
     state["text_confidence"] = text_confidence
     state["final_confidence"] = final_confidence
-    state["final_source"] = "fusion"
+    state["final_source"] = final_source
     state["fusion_mode"] = "gated_image_only" if (
         isinstance(fusion_meta, dict)
         and float(((fusion_meta.get("normalized_weights") or {}).get("image") or 0.0)) >= 0.999
