@@ -315,19 +315,6 @@ const dedupBySeq = (events: NormalizedEvent[]): NormalizedEvent[] => {
   }));
   const deduped = mergeAndDedupeTraceEvents([], asTrace);
   const mapped = deduped.map((item) => normalizeEvent(item.raw as RawTraceEvent));
-  
-  console.log(
-    'workflow grouped counts',
-    mapped.map((e) => ({
-      seq: e.seq,
-      nodeName: e.nodeName,
-      semanticNode: e.semanticNode,
-      agentId: e.agentId,
-      status: e.status,
-      protocol: e.protocol,
-    }))
-  );
-  
   return sortNormalizedEvents(mapped);
 };
 
@@ -393,9 +380,117 @@ const selectPrimaryPanelEvents = (workflowEvents: NormalizedEvent[], compactEven
   }
   return { primaryPanelEvents: workflowEvents, protocol: 'unknown' as TraceProtocol };
 };
+
+
+const extractDiagnosisConfidence = (event: NormalizedEvent): number | undefined => {
+  const data = isRecord(event.data) ? event.data : undefined;
+  const outputs = isRecord(data?.['outputs']) ? data['outputs'] : undefined;
+  const rawConfidence = Number(
+    (isRecord(data) ? data['confidence_pct'] : undefined)
+    ?? (isRecord(data) ? data['confidence'] : undefined)
+    ?? (isRecord(outputs) ? outputs['confidence_pct'] : undefined)
+    ?? (isRecord(outputs) ? outputs['confidence'] : undefined),
+  );
+  if (!Number.isFinite(rawConfidence)) return undefined;
+  return rawConfidence <= 1 ? rawConfidence * 100 : rawConfidence;
+};
+
+const applyEventToRowState = (
+  current: AgentRowState,
+  event: NormalizedEvent,
+): AgentRowState => {
+  const next = { ...current };
+  if (event.status === 'running') {
+    next.status = 'running';
+    if (typeof event.tsMs === 'number') {
+      next.startTs = next.startTs ?? event.tsMs;
+    }
+    const data = isRecord(event.data) ? event.data : undefined;
+    const outputs = isRecord(data?.['outputs']) ? data['outputs'] : undefined;
+    const explicit = Number(
+      (isRecord(data) ? data['progress'] : undefined)
+      ?? (isRecord(outputs) ? outputs['progress'] : undefined),
+    );
+    if (Number.isFinite(explicit)) {
+      next.progress = clamp(explicit, 0, 90);
+    } else if (typeof event.tsMs === 'number' && typeof next.startTs === 'number') {
+      next.progress = Math.max(next.progress, softProgress(Math.max(0, event.tsMs - next.startTs)));
+    } else {
+      next.progress = Math.max(next.progress, 5);
+    }
+    return next;
+  }
+  if (event.status === 'completed') {
+    next.status = 'completed';
+    if (typeof event.tsMs === 'number') {
+      next.startTs = next.startTs ?? event.tsMs;
+      next.endTs = event.tsMs;
+    }
+    next.progress = 100;
+    return next;
+  }
+  if (event.status === 'error') {
+    next.status = 'error';
+    if (typeof event.tsMs === 'number') {
+      next.startTs = next.startTs ?? event.tsMs;
+      next.endTs = event.tsMs;
+    }
+    next.progress = 100;
+    return next;
+  }
+  if (event.status === 'decision' || event.status === 'info') {
+    next.status = next.status === 'pending' ? 'running' : next.status;
+    if (typeof event.tsMs === 'number') {
+      next.startTs = next.startTs ?? event.tsMs;
+    }
+    next.progress = Math.max(next.progress, 5);
+  }
+  return next;
+};
+
+const hydrateRowsFromEvents = (
+  events: NormalizedEvent[],
+  initialPayload?: Record<string, unknown> | null,
+): {
+  rows: Record<FixedAgentId, AgentRowState>;
+  mergedEvents: NormalizedEvent[];
+  diagnosisConfidencePct?: number;
+  workflowDone: boolean;
+  finalTs?: number;
+} => {
+  const mergedEvents = sortNormalizedEvents(events);
+  const rows = buildInitialState();
+  let diagnosisConfidencePct: number | undefined;
+  let workflowDone = false;
+  let finalTs: number | undefined;
+
+  mergedEvents.forEach((event, index) => {
+    const currentEvents = mergedEvents.slice(0, index + 1);
+    const row = rows[event.agentId];
+    const fallbackMessage = event.status === 'completed'
+      ? `${event.agentId} 执行完成`
+      : event.status === 'error'
+        ? `${event.agentId} 执行错误`
+        : `${event.agentId} 执行中`;
+    row.lastMessage = shortText(event.message || fallbackMessage, 140) || fallbackMessage;
+    rows[event.agentId] = applyEventToRowState(row, event);
+    rows[event.agentId].steps = extractSubsteps(event.agentId, currentEvents, initialPayload).slice(-5);
+    rows[event.agentId].highlights = extractHighlights(event.agentId, currentEvents, [], initialPayload);
+
+    const confidence = event.agentId === 'diagnosis' ? extractDiagnosisConfidence(event) : undefined;
+    if (typeof confidence === 'number') diagnosisConfidencePct = confidence;
+
+    if (event.agentId === 'final' && event.status === 'completed') {
+      workflowDone = true;
+      if (typeof event.tsMs === 'number') finalTs = event.tsMs;
+    }
+  });
+
+  return { rows, mergedEvents, diagnosisConfidencePct, workflowDone, finalTs };
+};
 const getEventsByAgent = (events: NormalizedEvent[], agentId: FixedAgentId): NormalizedEvent[] => {
   const target = agentId.toLowerCase();
-  return dedupBySeq(events).filter((event) => {
+  return events.filter((event) => {
     const data = isRecord(event.data) ? event.data : {};
     const rawAgent = String(data['agent_id'] ?? data['agent'] ?? '').toLowerCase();
     return event.agentId === agentId || rawAgent === target;
@@ -404,7 +499,7 @@ const getEventsByAgent = (events: NormalizedEvent[], agentId: FixedAgentId): Nor
 
 const getSystemNodeEvents = (events: NormalizedEvent[], nodeName: string): NormalizedEvent[] => {
   const target = nodeName.toLowerCase();
-  return dedupBySeq(events).filter((event) => String(event.nodeName || '').toLowerCase() === target);
+  return events.filter((event) => String(event.nodeName || '').toLowerCase() === target);
 };
 
 const getOutputs = (event: NormalizedEvent): Record<string, unknown> => {
@@ -513,16 +608,14 @@ const hasTreatmentOutputFields = (outputs: Record<string, unknown>): boolean => 
 };
 
 const getPreferredTreatmentOutputs = (allEvents: NormalizedEvent[], fallbackOutputs: Record<string, unknown>): Record<string, unknown> => {
-  const deduped = dedupBySeq(allEvents);
-
-  const treatmentAgentEvents = deduped.filter((event) => {
+  const treatmentAgentEvents = allEvents.filter((event) => {
     const data = isRecord(event.data) ? event.data : {};
     return String(data['agent'] ?? data['agent_id'] ?? '').toLowerCase() === 'treatment';
   });
   const treatmentFromAgent = [...treatmentAgentEvents].reverse().find((event) => hasTreatmentOutputFields(getOutputs(event)));
   if (treatmentFromAgent) return getOutputs(treatmentFromAgent);
 
-  const personalizationEvent = [...deduped].reverse().find((event) => {
+  const personalizationEvent = [...allEvents].reverse().find((event) => {
     const node = String(event.nodeName || '').toLowerCase();
     return node === 'personalizationagent' || node === 'personalization';
   });
@@ -935,6 +1028,16 @@ export function AgentWorkflowPanel({
     const mergedAllEvents = dedupBySeq([...mergedEventsRef.current, event]);
     mergedEventsRef.current = mergedAllEvents;
     setMergedEvents(mergedAllEvents);
+    const runtimeBuckets = splitNormalizedEventsByProtocol(mergedAllEvents);
+    const runtimeSelection = selectPrimaryPanelEvents(runtimeBuckets.workflowEvents, runtimeBuckets.compactEvents);
+    console.log('runtime grouped counts', runtimeSelection.primaryPanelEvents.map((e) => ({
+      seq: e.seq,
+      nodeName: e.nodeName,
+      semanticNode: e.semanticNode,
+      agentId: e.agentId,
+      status: e.status,
+      protocol: e.protocol,
+    })));
 
     if (waitingForUserInput && !options?.preserveReplayFlow) {
       waitingStableRef.current = true;
@@ -955,16 +1058,9 @@ export function AgentWorkflowPanel({
     eventHistoryRef.current[agentId] = dedupBySeq([...eventHistoryRef.current[agentId], event]).slice(-20);
 
     if (agentId === 'diagnosis') {
-      const data = isRecord(event.data) ? event.data : undefined;
-      const outputs = isRecord(data?.['outputs']) ? data['outputs'] : undefined;
-      const rawConfidence = Number(
-        (isRecord(data) ? data['confidence_pct'] : undefined)
-        ?? (isRecord(data) ? data['confidence'] : undefined)
-        ?? (isRecord(outputs) ? outputs['confidence_pct'] : undefined)
-        ?? (isRecord(outputs) ? outputs['confidence'] : undefined),
-      );
-      if (Number.isFinite(rawConfidence)) {
-        setDiagnosisConfidencePct(rawConfidence <= 1 ? rawConfidence * 100 : rawConfidence);
+      const confidence = extractDiagnosisConfidence(event);
+      if (typeof confidence === 'number') {
+        setDiagnosisConfidencePct(confidence);
       }
     }
 
@@ -987,47 +1083,7 @@ export function AgentWorkflowPanel({
       current.lastMessage = message;
       current.highlights = extractHighlights(agentId, selection.primaryPanelEvents, fallbackEvents, initialPayload);
 
-      if (event.status === 'running') {
-        current.status = 'running';
-        if (typeof event.tsMs === 'number') {
-          current.startTs = current.startTs ?? event.tsMs;
-        }
-        const data = isRecord(event.data) ? event.data : undefined;
-        const outputs = isRecord(data?.['outputs']) ? data['outputs'] : undefined;
-        const explicit = Number(
-          (isRecord(data) ? data['progress'] : undefined)
-          ?? (isRecord(outputs) ? outputs['progress'] : undefined),
-        );
-        if (Number.isFinite(explicit)) {
-          current.progress = clamp(explicit, 0, 90);
-        } else if (typeof event.tsMs === 'number' && typeof current.startTs === 'number') {
-          current.progress = Math.max(current.progress, softProgress(Math.max(0, event.tsMs - current.startTs)));
-        } else {
-          current.progress = Math.max(current.progress, 5);
-        }
-      } else if (event.status === 'completed') {
-        current.status = 'completed';
-        if (typeof event.tsMs === 'number') {
-          current.startTs = current.startTs ?? event.tsMs;
-          current.endTs = event.tsMs;
-        }
-        current.progress = 100;
-      } else if (event.status === 'error') {
-        current.status = 'error';
-        if (typeof event.tsMs === 'number') {
-          current.startTs = current.startTs ?? event.tsMs;
-          current.endTs = event.tsMs;
-        }
-        current.progress = 100;
-      } else if (event.status === 'decision' || event.status === 'info') {
-        current.status = current.status === 'pending' ? 'running' : current.status;
-        if (typeof event.tsMs === 'number') {
-          current.startTs = current.startTs ?? event.tsMs;
-        }
-        current.progress = Math.max(current.progress, 5);
-      }
-
-      next[agentId] = current;
+      next[agentId] = applyEventToRowState(current, event);
 
       const finalDone = agentId === 'final' && event.status === 'completed';
       if (finalDone) {
@@ -1108,25 +1164,46 @@ export function AgentWorkflowPanel({
     const normalizedSeed = seed
       .map((evt) => normalizeEvent(evt as RawTraceEvent))
       .filter((evt) => shouldIncludeEvent(evt.raw as RawTraceEvent, phaseStartMs));
-    
+
+    const seedBuckets = splitNormalizedEventsByProtocol(normalizedSeed);
+    const seedSelection = selectPrimaryPanelEvents(seedBuckets.workflowEvents, seedBuckets.compactEvents);
+
     console.log(
-      'workflow grouped counts',
-      normalizedSeed.map((e) => ({
+      'seed grouped counts',
+      seedSelection.primaryPanelEvents.map((e) => ({
         seq: e.seq,
         nodeName: e.nodeName,
         semanticNode: e.semanticNode,
         agentId: e.agentId,
         status: e.status,
+        protocol: e.protocol,
       }))
     );
-    
-    if (normalizedSeed.length) {
-      mergedEventsRef.current = dedupBySeq(normalizedSeed);
-      setMergedEvents(mergedEventsRef.current);
+
+    if (seedSelection.primaryPanelEvents.length) {
+      const hydrated = hydrateRowsFromEvents(seedSelection.primaryPanelEvents, initialPayload);
+      mergedEventsRef.current = hydrated.mergedEvents;
+      setMergedEvents(hydrated.mergedEvents);
+      setRows(hydrated.rows);
+      setWorkflowDone(hydrated.workflowDone);
+      workflowDoneRef.current = hydrated.workflowDone;
+      finalTsRef.current = hydrated.finalTs;
+      setDiagnosisConfidencePct(hydrated.diagnosisConfidencePct);
       seededByInitialEventsRef.current = true;
+      const maxSeedSeq = hydrated.mergedEvents.reduce((max, evt) => (
+        typeof evt.seq === 'number' && Number.isFinite(evt.seq) ? Math.max(max, evt.seq) : max
+      ), -1);
+      lastSeqRef.current = Math.max(lastSeqRef.current, maxSeedSeq);
     } else {
+      const emptyRows = buildInitialState();
       mergedEventsRef.current = [];
       setMergedEvents([]);
+      setRows(emptyRows);
+      setWorkflowDone(false);
+      workflowDoneRef.current = false;
+      finalTsRef.current = undefined;
+      setDiagnosisConfidencePct(undefined);
+      seededByInitialEventsRef.current = false;
     }
 
     const openStream = () => {
