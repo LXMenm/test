@@ -27,6 +27,7 @@ import {
   type TraceProtocol,
   type TraceSourceHint,
 } from '@/components/traceEvents';
+import { resolveReceptionSymptomStats } from '@/components/receptionSummary';
 import type { LucideIcon } from 'lucide-react';
 import {
   calcResolvedAgentDurations,
@@ -709,26 +710,28 @@ const extractHighlights = (
       initialPayload?.normalized_symptoms,
       initialPayload?.symptoms,
     );
-    const cumulativeSymptoms = uniqueSymptoms(phase1Symptoms, historicalSymptoms, phase2CurrentSymptoms);
     const isConfirmRound = Boolean(
       initialPayload?.confirm_round
       || String(initialPayload?.source_stage ?? '') === 'confirm'
       || latestConfirmInputEvent,
     );
 
-    const cropType = String(outputs['crop_type'] ?? '-');
-    const imagePath = String(outputs['image_path'] ?? '').trim();
-    const outputSymptoms = normalizeSymptomList(outputs['symptoms']);
-    const cumulativeCount = cumulativeSymptoms.length || outputSymptoms.length;
+    const receptionOutputs = getOutputs(bestEvent ?? latest);
+    const symptomStats = resolveReceptionSymptomStats(receptionOutputs, 'AgentWorkflowPanel.reception');
+    const cropType = String(receptionOutputs['crop_type'] ?? '-');
+    const imagePath = String(receptionOutputs['image_path'] ?? '').trim();
+    const cumulativeCount = symptomStats.symptomCount;
     const incomingCount = phase2CurrentSymptoms.length;
-    const missing = toStringArray(outputs['missing_profile_fields']);
-    const followUps = toArray(outputs['follow_up_questions']).length;
-    const src = source === 'mixed' || source === 'initial_payload' ? '（含诊断首包补充）' : '';
+    const missing = toStringArray(receptionOutputs['missing_profile_fields']);
+    const followUps = toArray(receptionOutputs['follow_up_questions']).length;
+    const removedCount = symptomStats.removedNonSymptomCount;
+    const src = source === 'mixed' || source === 'initial_payload' ? '（仅展示 reception 最终输出）' : '';
     const symptomText = isConfirmRound
       ? `累计症状=${cumulativeCount}项 / 本轮新增=${incomingCount}项`
       : `症状=${cumulativeCount}项`;
     return [
       `结构化抽取${src}：作物=${cropType} / 图像=${imagePath ? '已识别' : '未识别'} / ${symptomText}`,
+      `剔除非症状=${removedCount}项`,
       `缺失字段=${missing.length ? `${missing.join(',')}（${missing.length}项）` : '0项'} / follow_up=${followUps}条`,
     ];
   }
