@@ -30,6 +30,7 @@ import os
 from pathlib import Path
 from follow_up_rules import FOLLOW_UP_RULES
 from symptom_pipeline import build_symptom_evidence_profile, get_text_evidence_level
+from symptom_parsing import parse_symptoms_input
 class _LazyKBManagerProxy:
     def __getattr__(self, item: str):
         return getattr(get_kb_manager(), item)
@@ -272,6 +273,55 @@ def confirm_choice_step(state: CropDiseaseState) -> CropDiseaseState:
         state["image_result"] = merged_image
     if diagnosis_evidence:
         state["diagnosis_evidence"] = diagnosis_evidence
+
+    inherited_symptoms = parse_symptoms_input(inherited.get("symptoms"))
+    evidence_raw_symptoms = parse_symptoms_input(diagnosis_evidence.get("raw_symptoms")) if diagnosis_evidence else []
+    current_symptoms = parse_symptoms_input(state.get("symptoms"))
+    resolved_symptoms = inherited_symptoms or evidence_raw_symptoms or current_symptoms
+
+    inherited_normalized = parse_symptoms_input(inherited.get("normalized_symptoms"))
+    evidence_normalized = parse_symptoms_input(diagnosis_evidence.get("normalized_symptoms")) if diagnosis_evidence else []
+    current_normalized = parse_symptoms_input(state.get("normalized_symptoms"))
+    resolved_normalized = inherited_normalized or evidence_normalized or current_normalized
+
+    inherited_profile = inherited.get("symptom_evidence_profile") if isinstance(inherited.get("symptom_evidence_profile"), dict) else {}
+    current_profile = state.get("symptom_evidence_profile") if isinstance(state.get("symptom_evidence_profile"), dict) else {}
+    resolved_profile = dict(inherited_profile or current_profile or {})
+    if not resolved_profile and (resolved_symptoms or resolved_normalized):
+        resolved_profile = build_symptom_evidence_profile(resolved_symptoms or resolved_normalized, kb_manager)
+
+    if not resolved_symptoms:
+        resolved_symptoms = parse_symptoms_input(resolved_profile.get("raw_tokens")) if resolved_profile else []
+    if not resolved_normalized:
+        resolved_normalized = parse_symptoms_input(resolved_profile.get("normalized_tokens")) if resolved_profile else []
+    if not resolved_normalized and resolved_symptoms:
+        try:
+            resolved_normalized = kb_manager.normalize_symptoms(resolved_symptoms)
+        except Exception:
+            resolved_normalized = list(resolved_symptoms)
+    if not resolved_profile:
+        resolved_profile = {
+            "raw_tokens": list(resolved_symptoms),
+            "normalized_tokens": list(resolved_normalized),
+            "unknown_tokens": [],
+            "generic_tokens": [],
+            "discriminative_tokens": [],
+            "has_any_text_evidence": bool(resolved_symptoms),
+            "has_discriminative_text_evidence": False,
+            "candidate_diseases": [],
+            "follow_up_hints": [],
+        }
+
+    if diagnosis_evidence is not None:
+        if resolved_symptoms:
+            diagnosis_evidence["raw_symptoms"] = list(resolved_symptoms)
+        if resolved_normalized:
+            diagnosis_evidence["normalized_symptoms"] = list(resolved_normalized)
+        state["diagnosis_evidence"] = diagnosis_evidence
+    state["symptoms"] = list(resolved_symptoms)
+    state["normalized_symptoms"] = list(resolved_normalized)
+    state["symptom_evidence_profile"] = resolved_profile
+
     for field in ("modality_conflict_flag", "image_reliable", "text_reliable", "supplement_mode", "fusion_meta", "image_confidence", "text_confidence"):
         if state.get(field) is None and inherited.get(field) is not None:
             state[field] = inherited.get(field)
@@ -304,6 +354,9 @@ def confirm_choice_step(state: CropDiseaseState) -> CropDiseaseState:
             "final_confidence": confidence,
             "final_source": "user_confirmed_candidate",
             "need_confirm": False,
+            "symptoms": state.get("symptoms") or [],
+            "normalized_symptoms": state.get("normalized_symptoms") or [],
+            "symptom_evidence_profile": state.get("symptom_evidence_profile") or {},
         },
     )
     return state
