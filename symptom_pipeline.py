@@ -61,3 +61,32 @@ def build_symptom_evidence_profile(symptoms: list[str], kb_manager: Any) -> dict
         "candidate_diseases": candidate_diseases,
         "follow_up_hints": follow_up_hints,
     }
+
+
+def get_text_evidence_level(symptoms_profile: dict, kb_manager: Any) -> str:
+    normalized_tokens = [str(item).strip() for item in (symptoms_profile or {}).get("normalized_tokens", []) if str(item).strip()]
+    if not normalized_tokens:
+        return "none"
+
+    try:
+        if kb_manager.has_discriminative_text_evidence(normalized_tokens):
+            return "strong"
+    except Exception:
+        pass
+
+    discriminative_tokens = [str(item).strip() for item in (symptoms_profile or {}).get("discriminative_tokens", []) if str(item).strip()]
+    if discriminative_tokens:
+        return "strong"
+
+    candidate_diseases = [str(item).strip() for item in (symptoms_profile or {}).get("candidate_diseases", []) if str(item).strip()]
+    if len(candidate_diseases) >= 2:
+        return "medium"
+    if len(candidate_diseases) == 1:
+        return "medium"
+
+    generic_tokens = [str(item).strip() for item in (symptoms_profile or {}).get("generic_tokens", []) if str(item).strip()]
+    unknown_tokens = [str(item).strip() for item in (symptoms_profile or {}).get("unknown_tokens", []) if str(item).strip()]
+    if generic_tokens or unknown_tokens:
+        return "weak"
+
+    return "weak"

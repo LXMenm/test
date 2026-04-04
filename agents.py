@@ -29,7 +29,7 @@ import json
 import os
 from pathlib import Path
 from follow_up_rules import FOLLOW_UP_RULES
-from symptom_pipeline import build_symptom_evidence_profile
+from symptom_pipeline import build_symptom_evidence_profile, get_text_evidence_level
 class _LazyKBManagerProxy:
     def __getattr__(self, item: str):
         return getattr(get_kb_manager(), item)
@@ -624,16 +624,14 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
         image_confidence = 0.0
 
     # 文本分支（KB 驱动）
-    text_evidence_active = enable_text_model and kb_manager.has_effective_text_evidence(
-        normalized_symptoms,
-        growth_stage=crop_growth_stage,
-        environment=environment,
-        facility=facility,
-        province=province,
-    )
+    text_evidence_level = "none"
+    if enable_text_model:
+        text_evidence_level = get_text_evidence_level(symptom_profile, kb_manager)
+    text_evidence_active = text_evidence_level != "none"
     text_probs_source = "none"
+    text_weight_multiplier = 1.0
     try:
-        if text_evidence_active and hasattr(diagnosis_engine, "predict_text_proba"):
+        if text_evidence_level != "none" and hasattr(diagnosis_engine, "predict_text_proba"):
             text_probs_source = "predict_text_proba"
             text_probs = diagnosis_engine.predict_text_proba(
                 raw_text=state.get("user_query"),
@@ -643,7 +641,7 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
                 facility=facility,
                 province=province,
             )
-        elif text_evidence_active:
+        elif text_evidence_level != "none":
             text_probs_source = "kb_score_diseases_from_text"
             text_probs = kb_manager.score_diseases_from_text(
                 crop_type=crop_type,
@@ -662,9 +660,21 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
         text_probs_source = "exception"
         degraded_reasons.append("text_branch_failed")
 
-    if not text_evidence_active:
+    if text_evidence_level == "none":
         text_probs = {}
         text_probs_source = "none_no_effective_text_evidence"
+    elif text_evidence_level == "weak":
+        text_weight_multiplier = 0.35
+        text_probs = {disease: float(prob) * text_weight_multiplier for disease, prob in (text_probs or {}).items()}
+    elif text_evidence_level == "strong":
+        text_weight_multiplier = 1.1
+        text_probs = {disease: float(prob) * text_weight_multiplier for disease, prob in (text_probs or {}).items()}
+
+    if text_probs and normalized_symptoms and hasattr(kb_manager, "rerank_text_candidates_with_discriminators"):
+        try:
+            text_probs = kb_manager.rerank_text_candidates_with_discriminators(dict(text_probs), normalized_symptoms)
+        except Exception:
+            pass
 
     # 先验分支
     try:
@@ -792,6 +802,8 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
     debug_payload.update(
         {
             "text_evidence_active": bool(text_evidence_active),
+            "text_evidence_level": text_evidence_level,
+            "text_weight_multiplier": text_weight_multiplier,
             "text_probs_source": text_probs_source,
             "text_probs": dict(text_probs),
             "has_text": has_text_active,
@@ -917,6 +929,23 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
             flags["fallback_reason"] = reasons
         else:
             flags.pop("fallback_reason", None)
+
+    if text_evidence_level == "weak":
+        weak_follow_ups = normalize_follow_up_questions(
+            list(symptom_profile.get("follow_up_hints") or [])
+            or _build_follow_up_questions(normalized_symptoms, flags, state)
+            or ["请问病斑边缘、叶背与湿度变化分别是什么情况？"]
+        )
+        if not weak_follow_ups:
+            weak_follow_ups = ["请问病斑边缘、叶背与湿度变化分别是什么情况？"]
+        if weak_follow_ups:
+            state["diagnosis_follow_up_questions"] = normalize_follow_up_questions(
+                list(state.get("diagnosis_follow_up_questions") or []) + weak_follow_ups
+            )
+        flags["need_confirm"] = True
+        flags.setdefault("fallback_reason", [])
+        if "weak_text_evidence" not in flags["fallback_reason"]:
+            flags["fallback_reason"].append("weak_text_evidence")
 
     disease_description = diagnosis_engine._get_disease_description(final_disease, normalized_symptoms)
 
