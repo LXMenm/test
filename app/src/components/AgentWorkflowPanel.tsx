@@ -470,7 +470,6 @@ const applyEventToRowState = (
 const hydrateRowsFromEvents = (
   events: NormalizedEvent[],
   initialPayload?: Record<string, unknown> | null,
-  phase1Payload?: Record<string, unknown> | null,
 ): {
   rows: Record<FixedAgentId, AgentRowState>;
   mergedEvents: NormalizedEvent[];
@@ -495,7 +494,7 @@ const hydrateRowsFromEvents = (
     row.lastMessage = shortText(event.message || fallbackMessage, 140) || fallbackMessage;
     rows[event.agentId] = applyEventToRowState(row, event);
     rows[event.agentId].steps = extractSubsteps(event.agentId, currentEvents, initialPayload).slice(-5);
-    rows[event.agentId].highlights = extractHighlights(event.agentId, currentEvents, [], initialPayload, phase1Payload);
+    rows[event.agentId].highlights = extractHighlights(event.agentId, currentEvents, [], initialPayload);
 
     const confidence = event.agentId === 'diagnosis' ? extractDiagnosisConfidence(event) : undefined;
     if (typeof confidence === 'number') diagnosisConfidencePct = confidence;
@@ -653,7 +652,6 @@ const extractHighlights = (
   panelEvents: NormalizedEvent[],
   fallbackEvents: NormalizedEvent[],
   initialPayload?: Record<string, unknown> | null,
-  phase1Payload?: Record<string, unknown> | null,
 ): string[] => {
   const events = getEventsByAgent(panelEvents, agentId);
   if (!events.length && !initialPayload) return [];
@@ -690,19 +688,11 @@ const extractHighlights = (
     const confirmInputs = isRecord(latestConfirmInputEvent?.data?.inputs)
       ? latestConfirmInputEvent?.data?.inputs as Record<string, unknown>
       : {};
-    const phase1Evidence = isRecord(phase1Payload?.diagnosis_evidence)
-      ? phase1Payload?.diagnosis_evidence as Record<string, unknown>
-      : {};
+
     const currentEvidence = isRecord(initialPayload?.diagnosis_evidence)
       ? initialPayload?.diagnosis_evidence as Record<string, unknown>
       : {};
-    const phase1Symptoms = uniqueSymptoms(
-      phase1Evidence.normalized_symptoms,
-      phase1Payload?.normalized_symptoms,
-      phase1Evidence.raw_symptoms,
-      phase1Payload?.symptoms,
-    );
-    const historicalSymptoms = normalizeSymptomList(confirmInputs.historical_symptoms);
+
     const phase2CurrentSymptoms = uniqueSymptoms(
       confirmInputs.incoming_symptoms,
       confirmInputs.symptoms,
@@ -1124,7 +1114,7 @@ export function AgentWorkflowPanel({
       setTracePausedStable(false);
     }
 
-    const hydrated = hydrateRowsFromEvents(runtimeSelection.primaryPanelEvents, initialPayload, phase1Payload);
+    const hydrated = hydrateRowsFromEvents(runtimeSelection.primaryPanelEvents, initialPayload);
     setRows(hydrated.rows);
     setDiagnosisConfidencePct(hydrated.diagnosisConfidencePct);
     if (typeof hydrated.finalTs === 'number') {
@@ -1218,7 +1208,7 @@ export function AgentWorkflowPanel({
     );
 
     if (seedSelection.primaryPanelEvents.length) {
-      const hydrated = hydrateRowsFromEvents(seedSelection.primaryPanelEvents, initialPayload, phase1Payload);
+      const hydrated = hydrateRowsFromEvents(seedSelection.primaryPanelEvents, initialPayload);
       mergedEventsRef.current = hydrated.mergedEvents;
       setMergedEvents(hydrated.mergedEvents);
       setRows(hydrated.rows);
