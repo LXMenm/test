@@ -77,6 +77,8 @@ from runtime_settings import get_admin_llm_runtime_snapshot, get_runtime_thresho
 from runtime_fallback_stats import get_fallback_readiness, get_fallback_stats, record_fallback_hit
 from db import engine as db_engine, get_db_session
 from mysql_models import FarmerProfileORM, UserAccountORM
+from symptom_parsing import parse_symptoms_input
+from symptom_pipeline import build_symptom_evidence_profile
 
 
 @asynccontextmanager
@@ -1708,20 +1710,7 @@ def _rebuild_final_snapshot_from_expert_review(
 
 
 def _normalize_symptoms_input(symptoms: Any) -> list[str]:
-    if isinstance(symptoms, list):
-        return [str(item).strip() for item in symptoms if str(item).strip()]
-    if isinstance(symptoms, str):
-        text = symptoms.strip()
-        if not text:
-            return []
-        try:
-            parsed = json.loads(text)
-            if isinstance(parsed, list):
-                return [str(item).strip() for item in parsed if str(item).strip()]
-        except Exception:
-            pass
-        return [item.strip() for item in text.split(",") if item.strip()]
-    return []
+    return parse_symptoms_input(symptoms)
 
 
 def _build_personalization_meta(flags: dict, farmer_id: str | None, base_id: str | None) -> dict:
@@ -1913,13 +1902,16 @@ def _lightweight_diagnosis_payload(
     *,
     image_id: str,
     trace_id: str,
-    final_disease: str,
-    confidence_pct: float | None,
+    preliminary_disease: str,
+    preliminary_confidence_pct: float | None,
+    image_top3: list[dict[str, Any]],
     need_confirm: bool,
+    need_multimodal_confirmation: bool,
+    recommended_next_step: str,
     reason_code: str | None,
     reason_text: str | None,
     ui_mode: str,
-    symptoms_list: list[str],
+    follow_up_questions: list[str],
 ) -> dict[str, Any]:
     status = "waiting_for_supplement" if need_confirm else "diagnosis_completed"
     
@@ -1948,15 +1940,22 @@ def _lightweight_diagnosis_payload(
         "trace_id": trace_id,
         "image_id": image_id,
         "image_url": f"/uploads/{image_id}",
-        "final_disease": final_disease,
-        "displayConfidencePct": confidence_pct,
+        "result_stage": "image_precheck",
+        "preliminary_disease": preliminary_disease,
+        "preliminary_confidence_pct": preliminary_confidence_pct,
+        "image_top3": image_top3,
+        "need_multimodal_confirmation": need_multimodal_confirmation,
+        "recommended_next_step": recommended_next_step,
+        # 兼容历史字段：明确声明当前仅为 image_precheck 阶段
+        "final_disease": preliminary_disease,
+        "displayConfidencePct": preliminary_confidence_pct,
         "need_confirm": need_confirm,
         "confirm_message": "当前信息不足，请补充诊断信息后继续" if need_confirm else None,
         "confirm_reason_code": reason_code if need_confirm else None,
         "confirm_reason_text": reason_text if need_confirm else None,
         "confirm_ui_mode": ui_mode if need_confirm else None,
         "confirm_fields": confirm_fields if need_confirm else [],
-        "follow_up_questions": symptoms_list[:3] if need_confirm else [],
+        "follow_up_questions": follow_up_questions if need_confirm else [],
         "status": status,
         "treatment": None,
         "treatment_available": False,
@@ -1991,6 +1990,14 @@ async def diagnose_image_start(
     disease = disease or "未知病害"
     conf = float(conf or 0.0)
     sorted_probs = sorted((probs or {}).items(), key=lambda x: x[1], reverse=True)
+    image_top3 = [
+        {
+            "disease": str(name),
+            "prob": float(prob),
+            "prob_pct": round(float(prob) * 100, 2),
+        }
+        for name, prob in sorted_probs[:3]
+    ]
     top1_conf = float(sorted_probs[0][1]) if sorted_probs else conf
     top2_conf = float(sorted_probs[1][1]) if len(sorted_probs) > 1 else 0.0
     thresholds = get_runtime_thresholds()
@@ -2012,16 +2019,31 @@ async def diagnose_image_start(
         "need_confirm": need_confirm,
     })
 
+    symptom_profile = build_symptom_evidence_profile(parse_symptoms_input(symptoms), get_kb_manager())
+    follow_up_questions = list(symptom_profile.get("follow_up_hints") or [])
+    if not follow_up_questions and need_confirm:
+        follow_up_questions = normalize_follow_up_questions(
+            get_kb_manager().generate_text_follow_up_questions(
+                symptom_profile.get("normalized_tokens") or [],
+                text_probs={str(item.get("disease")): float(item.get("prob") or 0.0) for item in image_top3},
+            )
+        )
+    if not follow_up_questions and need_confirm:
+        follow_up_questions = ["请补充病斑形态、分布位置与叶背特征，继续多模态确认。"]
+
     payload = _lightweight_diagnosis_payload(
         image_id=image_id,
         trace_id=trace_id,
-        final_disease=disease,
-        confidence_pct=round(top1_conf * 100, 2),
+        preliminary_disease=disease,
+        preliminary_confidence_pct=round(top1_conf * 100, 2),
+        image_top3=image_top3,
         need_confirm=need_confirm,
+        need_multimodal_confirmation=True,
+        recommended_next_step="continue_to_multimodal_diagnosis",
         reason_code=reason_code,
         reason_text=reason_text,
         ui_mode=ui_mode,
-        symptoms_list=[s.strip() for s in (symptoms or "").split(",") if s.strip()],
+        follow_up_questions=follow_up_questions[:3],
     )
     if payload["status"] == "waiting_for_supplement":
         emit_node_event(trace_id, node="AwaitUserConfirmation", status="end", message="等待用户补充诊断信息", payload=payload)
@@ -2136,7 +2158,7 @@ async def diagnose_image(
     if top2_conf is not None and (top1_conf - top2_conf) < float(runtime_thresholds["low_margin_threshold"]):
         fallback_reasons.append("low_margin")
 
-    symptoms_list = [s.strip() for s in (symptoms or "").split(",") if s.strip()]
+    symptoms_list = parse_symptoms_input(symptoms)
     fallback_condition = bool(fallback_reasons)
 
     fallback_used = False
@@ -2655,9 +2677,7 @@ def _diagnose_confirm_core(request: Request, payload: dict) -> dict:
                 # follow_up_questions 可能包含多个问题，需要合并
                 for question in follow_up_questions:
                     if isinstance(question, str) and question.strip():
-                        # 将问题中的症状提取出来
-                        # 例如："同心纹，褐色斑点，斑点中心一圈圈很规整"
-                        symptoms_from_question = [s.strip() for s in question.split(",") if s.strip()]
+                        symptoms_from_question = parse_symptoms_input(question)
                         historical_symptoms.extend(symptoms_from_question)
                 # 去重
                 historical_symptoms = list(dict.fromkeys(historical_symptoms))
@@ -2678,24 +2698,20 @@ def _diagnose_confirm_core(request: Request, payload: dict) -> dict:
                     if not historical_symptoms and isinstance(container.get("follow_up_questions"), list):
                         for question in container.get("follow_up_questions", []):
                             if isinstance(question, str) and question.strip():
-                                symptoms_from_question = [s.strip() for s in question.split(",") if s.strip()]
+                                symptoms_from_question = parse_symptoms_input(question)
                                 historical_symptoms.extend(symptoms_from_question)
                         historical_symptoms = list(dict.fromkeys(historical_symptoms))
                         break
             if historical_symptoms:
                 break
-    symptom_alias_map = {
-        "病斑原形": "病斑圆形",
-        "水渍壮": "水渍状",
-        "卷叶": "叶片卷曲",
-    }
-    incoming_symptoms = [str(item).strip() for item in symptoms if str(item).strip()]
-    incoming_symptoms = [symptom_alias_map.get(item, item) for item in incoming_symptoms]
-    historical_symptoms = [symptom_alias_map.get(item, item) for item in historical_symptoms]
-    merged_symptoms: list[str] = []
-    for symptom in [*historical_symptoms, *incoming_symptoms]:
-        if symptom and symptom not in merged_symptoms:
-            merged_symptoms.append(symptom)
+    incoming_symptoms = parse_symptoms_input(symptoms)
+    kb = get_kb_manager()
+    merged_profile = build_symptom_evidence_profile([*historical_symptoms, *incoming_symptoms], kb)
+    merged_symptoms = list(merged_profile.get("raw_tokens") or [])
+    historical_profile = build_symptom_evidence_profile(historical_symptoms, kb)
+    incoming_profile = build_symptom_evidence_profile(incoming_symptoms, kb)
+    historical_symptoms = list(historical_profile.get("raw_tokens") or [])
+    incoming_symptoms = list(incoming_profile.get("raw_tokens") or [])
 
     image_path = (UPLOAD_DIR / image_id).resolve()
     if not image_path.exists():
