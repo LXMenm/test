@@ -77,6 +77,7 @@ from runtime_settings import get_admin_llm_runtime_snapshot, get_runtime_thresho
 from runtime_fallback_stats import get_fallback_readiness, get_fallback_stats, record_fallback_hit
 from db import engine as db_engine, get_db_session
 from mysql_models import FarmerProfileORM, UserAccountORM
+from symptom_parsing import parse_symptoms_input
 
 
 @asynccontextmanager
@@ -1708,20 +1709,7 @@ def _rebuild_final_snapshot_from_expert_review(
 
 
 def _normalize_symptoms_input(symptoms: Any) -> list[str]:
-    if isinstance(symptoms, list):
-        return [str(item).strip() for item in symptoms if str(item).strip()]
-    if isinstance(symptoms, str):
-        text = symptoms.strip()
-        if not text:
-            return []
-        try:
-            parsed = json.loads(text)
-            if isinstance(parsed, list):
-                return [str(item).strip() for item in parsed if str(item).strip()]
-        except Exception:
-            pass
-        return [item.strip() for item in text.split(",") if item.strip()]
-    return []
+    return parse_symptoms_input(symptoms)
 
 
 def _build_personalization_meta(flags: dict, farmer_id: str | None, base_id: str | None) -> dict:
@@ -2021,7 +2009,7 @@ async def diagnose_image_start(
         reason_code=reason_code,
         reason_text=reason_text,
         ui_mode=ui_mode,
-        symptoms_list=[s.strip() for s in (symptoms or "").split(",") if s.strip()],
+        symptoms_list=parse_symptoms_input(symptoms),
     )
     if payload["status"] == "waiting_for_supplement":
         emit_node_event(trace_id, node="AwaitUserConfirmation", status="end", message="等待用户补充诊断信息", payload=payload)
@@ -2136,7 +2124,7 @@ async def diagnose_image(
     if top2_conf is not None and (top1_conf - top2_conf) < float(runtime_thresholds["low_margin_threshold"]):
         fallback_reasons.append("low_margin")
 
-    symptoms_list = [s.strip() for s in (symptoms or "").split(",") if s.strip()]
+    symptoms_list = parse_symptoms_input(symptoms)
     fallback_condition = bool(fallback_reasons)
 
     fallback_used = False
