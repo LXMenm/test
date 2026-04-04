@@ -29,6 +29,7 @@ import json
 import os
 from pathlib import Path
 from follow_up_rules import FOLLOW_UP_RULES
+from symptom_pipeline import build_symptom_evidence_profile
 class _LazyKBManagerProxy:
     def __getattr__(self, item: str):
         return getattr(get_kb_manager(), item)
@@ -159,12 +160,11 @@ def confirm_input_step(state: CropDiseaseState) -> CropDiseaseState:
     for symptom in [*historical_symptoms, *incoming_symptoms]:
         if symptom and symptom not in merged:
             merged.append(symptom)
+    symptom_profile = build_symptom_evidence_profile(merged, kb_manager)
     image_path = state.get("image_path") or state.get("image")
-    state["symptoms"] = merged
-    try:
-        state["normalized_symptoms"] = kb_manager.normalize_symptoms(merged)
-    except Exception:
-        state["normalized_symptoms"] = list(merged)
+    state["symptoms"] = symptom_profile["raw_tokens"]
+    state["normalized_symptoms"] = symptom_profile["normalized_tokens"]
+    state["symptom_evidence_profile"] = symptom_profile
     if image_path:
         state["image_path"] = str(image_path)
     state["supplement_mode"] = "confirm_input"
@@ -182,8 +182,9 @@ def confirm_input_step(state: CropDiseaseState) -> CropDiseaseState:
             "confirm_round_parent_trace_id": state.get("confirm_round_parent_trace_id"),
         },
         outputs={
-            "symptoms": merged,
+            "symptoms": state.get("symptoms"),
             "normalized_symptoms": state.get("normalized_symptoms"),
+            "symptom_evidence_profile": state.get("symptom_evidence_profile"),
             "image_path": state.get("image_path"),
             "next_action": "diagnosis",
         },
@@ -457,10 +458,12 @@ def reception_agent(state: CropDiseaseState) -> CropDiseaseState:
     # 更新状态
     state["crop_type"] = crop_type
     state["crop_growth_stage"] = _canonicalize_growth_stage(crop_growth_stage)
-    normalized_symptoms = kb_manager.normalize_symptoms(symptoms)
-    state["symptoms"] = symptoms
+    symptom_profile = build_symptom_evidence_profile(symptoms, kb_manager)
+    normalized_symptoms = symptom_profile["normalized_tokens"]
+    state["symptoms"] = symptom_profile["raw_tokens"]
     state["structured_symptoms"] = {"normalized_symptoms": normalized_symptoms}
     state["normalized_symptoms"] = normalized_symptoms
+    state["symptom_evidence_profile"] = symptom_profile
     state["image_path"] = image_path
     state["current_step"] = "reception_complete"
     state["next_action"] = None
@@ -477,8 +480,9 @@ def reception_agent(state: CropDiseaseState) -> CropDiseaseState:
         outputs={
             "crop_type": crop_type,
             "crop_growth_stage": _canonicalize_growth_stage(crop_growth_stage),
-            "symptoms": symptoms,
+            "symptoms": state.get("symptoms"),
             "normalized_symptoms": normalized_symptoms,
+            "symptom_evidence_profile": symptom_profile,
             "image_path": image_path,
             "missing_profile_fields": missing_profile_fields,
             "removed_tokens": removed_tokens,
@@ -564,9 +568,13 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
     }
     state["diagnosis_model_meta"] = model_meta
 
-    normalized_symptoms = kb_manager.normalize_symptoms(symptoms)
+    symptom_profile = build_symptom_evidence_profile(symptoms, kb_manager)
+    symptoms = symptom_profile["raw_tokens"]
+    normalized_symptoms = symptom_profile["normalized_tokens"]
+    state["symptoms"] = symptoms
     state["structured_symptoms"] = {"normalized_symptoms": normalized_symptoms}
     state["normalized_symptoms"] = normalized_symptoms
+    state["symptom_evidence_profile"] = symptom_profile
     debug_enabled = _diag_debug_enabled(state)
     diagnosis_model_module = __import__("diagnosis_model")
     debug_payload: dict[str, object] = {

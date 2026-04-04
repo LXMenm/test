@@ -83,11 +83,34 @@ def test_create_initial_state_uses_provided_trace_id():
 
 
 def test_start_continue_reuses_same_trace_id(monkeypatch, tmp_path):
+    class _KB:
+        @staticmethod
+        def normalize_symptoms(symptoms):
+            return [str(item).strip() for item in (symptoms or []) if str(item).strip()]
+
+        @staticmethod
+        def has_effective_text_evidence(symptoms, **_kwargs):
+            return bool(symptoms)
+
+        @staticmethod
+        def has_discriminative_text_evidence(_symptoms):
+            return False
+
+        @staticmethod
+        def get_candidate_diseases_from_symptoms(_symptoms):
+            return []
+
+        @staticmethod
+        def generate_text_follow_up_questions(_symptoms, text_probs=None):
+            _ = text_probs
+            return ["请补充关键症状"]
+
     _setup_event_dirs(monkeypatch, tmp_path)
     monkeypatch.setattr(app_module, "Image", type("PIL", (), {"open": staticmethod(lambda *_args, **_kwargs: type("X", (), {"verify": staticmethod(lambda: None)})())}))
     monkeypatch.setattr(app_module, "resolve_model", lambda *_args, **_kwargs: (type("M", (), {"model_id": "m", "display_name": "m", "backend": "mock", "model_path": "/tmp/m"})(), []))
     monkeypatch.setattr(app_module, "get_diagnosis_engine", lambda **_kwargs: type("E", (), {"diagnose_from_image": staticmethod(lambda *_: ("早疫病", 0.9, {"早疫病": 0.9})), "diagnose_from_symptoms": staticmethod(lambda **_: ("早疫病", 0.8, "rule")), "_get_disease_description": staticmethod(lambda *_: "desc")})())
     monkeypatch.setattr(app_module, "build_graph", lambda: _EchoGraph())
+    monkeypatch.setattr(app_module, "get_kb_manager", lambda: _KB())
     monkeypatch.setattr(app_module, "UPLOAD_DIR", tmp_path / "uploads")
     (tmp_path / "uploads").mkdir(parents=True, exist_ok=True)
 

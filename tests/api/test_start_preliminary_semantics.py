@@ -1,0 +1,103 @@
+from __future__ import annotations
+
+from types import SimpleNamespace
+
+from fastapi.testclient import TestClient
+
+import app as app_module
+
+
+class _StartKB:
+    symptom_tiers = {"叶片黄化": "generic", "叶背白霉": "discriminative"}
+    symptom_candidates = {"叶片黄化": ["黄化曲叶病毒病"], "叶背白霉": ["晚疫病"]}
+
+    @staticmethod
+    def normalize_symptoms(symptoms):
+        return [str(item).strip() for item in (symptoms or []) if str(item).strip()]
+
+    @staticmethod
+    def has_effective_text_evidence(symptoms, **_kwargs):
+        return bool(symptoms)
+
+    @staticmethod
+    def has_discriminative_text_evidence(symptoms):
+        return "叶背白霉" in (symptoms or [])
+
+    @staticmethod
+    def get_candidate_diseases_from_symptoms(symptoms):
+        if "叶背白霉" in (symptoms or []):
+            return ["晚疫病"]
+        return ["黄化曲叶病毒病"] if symptoms else []
+
+    @staticmethod
+    def generate_text_follow_up_questions(symptoms, text_probs=None):
+        _ = text_probs
+        if not symptoms:
+            return []
+        return ["请补充病斑是否同心轮纹", "请描述叶背是否有霉层"]
+
+
+def _prepare_start_mocks(monkeypatch, *, probs):
+    monkeypatch.setattr(app_module, "emit_node_event", lambda *args, **kwargs: None)
+
+    async def _fake_save_uploaded_image(*_args, **_kwargs):
+        return "img-start.jpg", app_module.UPLOAD_DIR / "img-start.jpg"
+
+    monkeypatch.setattr(app_module, "_save_uploaded_image", _fake_save_uploaded_image)
+    monkeypatch.setattr(
+        app_module,
+        "resolve_model",
+        lambda model_id, allow_torch=False: (SimpleNamespace(model_path="/tmp/mock.bin", backend="mock", model_id="mock", display_name="mock"), []),
+    )
+    monkeypatch.setattr(app_module, "get_diagnosis_engine", lambda **kwargs: SimpleNamespace(diagnose_from_image=lambda _path: ("早疫病", 0.78, probs)))
+    monkeypatch.setattr(app_module, "get_kb_manager", lambda: _StartKB())
+
+
+def test_start_interface_returns_preliminary_not_final_semantics(monkeypatch):
+    _prepare_start_mocks(monkeypatch, probs={"早疫病": 0.78, "晚疫病": 0.22})
+    client = TestClient(app_module.app)
+
+    resp = client.post(
+        "/api/diagnose-image/start",
+        files={"file": ("case.jpg", b"fake-jpeg-content", "image/jpeg")},
+        data={"crop_type": "番茄", "symptoms": "叶片黄化，叶背白霉"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["result_stage"] == "image_precheck"
+    assert body["preliminary_disease"] == "早疫病"
+    assert body["preliminary_confidence_pct"] == 78.0
+    assert isinstance(body["image_top3"], list)
+    assert body["need_multimodal_confirmation"] is True
+    assert body["recommended_next_step"] == "continue_to_multimodal_diagnosis"
+
+
+def test_start_interface_does_not_expose_image_only_result_as_final(monkeypatch):
+    _prepare_start_mocks(monkeypatch, probs={"早疫病": 0.93, "晚疫病": 0.07})
+    client = TestClient(app_module.app)
+
+    resp = client.post(
+        "/api/diagnose-image/start",
+        files={"file": ("case.jpg", b"fake-jpeg-content", "image/jpeg")},
+        data={"crop_type": "番茄"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["result_stage"] == "image_precheck"
+    assert body["need_multimodal_confirmation"] is True
+    assert body["preliminary_disease"] == body["final_disease"]
+
+
+def test_start_interface_generates_real_follow_up_questions(monkeypatch):
+    _prepare_start_mocks(monkeypatch, probs={"早疫病": 0.2, "晚疫病": 0.19})
+    client = TestClient(app_module.app)
+
+    resp = client.post(
+        "/api/diagnose-image/start",
+        files={"file": ("case.jpg", b"fake-jpeg-content", "image/jpeg")},
+        data={"crop_type": "番茄", "symptoms": "叶片黄化，叶背白霉"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["follow_up_questions"] == ["请补充病斑是否同心轮纹", "请描述叶背是否有霉层"]
+    assert body["follow_up_questions"] != ["叶片黄化", "叶背白霉"]
