@@ -77,6 +77,8 @@ from runtime_settings import get_admin_llm_runtime_snapshot, get_runtime_thresho
 from runtime_fallback_stats import get_fallback_readiness, get_fallback_stats, record_fallback_hit
 from db import engine as db_engine, get_db_session
 from mysql_models import FarmerProfileORM, UserAccountORM
+from symptom_parsing import parse_symptoms_input
+from symptom_pipeline import build_symptom_evidence_profile
 
 
 @asynccontextmanager
@@ -1708,20 +1710,7 @@ def _rebuild_final_snapshot_from_expert_review(
 
 
 def _normalize_symptoms_input(symptoms: Any) -> list[str]:
-    if isinstance(symptoms, list):
-        return [str(item).strip() for item in symptoms if str(item).strip()]
-    if isinstance(symptoms, str):
-        text = symptoms.strip()
-        if not text:
-            return []
-        try:
-            parsed = json.loads(text)
-            if isinstance(parsed, list):
-                return [str(item).strip() for item in parsed if str(item).strip()]
-        except Exception:
-            pass
-        return [item.strip() for item in text.split(",") if item.strip()]
-    return []
+    return parse_symptoms_input(symptoms)
 
 
 def _build_personalization_meta(flags: dict, farmer_id: str | None, base_id: str | None) -> dict:
@@ -2021,7 +2010,7 @@ async def diagnose_image_start(
         reason_code=reason_code,
         reason_text=reason_text,
         ui_mode=ui_mode,
-        symptoms_list=[s.strip() for s in (symptoms or "").split(",") if s.strip()],
+        symptoms_list=parse_symptoms_input(symptoms),
     )
     if payload["status"] == "waiting_for_supplement":
         emit_node_event(trace_id, node="AwaitUserConfirmation", status="end", message="等待用户补充诊断信息", payload=payload)
@@ -2136,7 +2125,7 @@ async def diagnose_image(
     if top2_conf is not None and (top1_conf - top2_conf) < float(runtime_thresholds["low_margin_threshold"]):
         fallback_reasons.append("low_margin")
 
-    symptoms_list = [s.strip() for s in (symptoms or "").split(",") if s.strip()]
+    symptoms_list = parse_symptoms_input(symptoms)
     fallback_condition = bool(fallback_reasons)
 
     fallback_used = False
@@ -2655,9 +2644,7 @@ def _diagnose_confirm_core(request: Request, payload: dict) -> dict:
                 # follow_up_questions 可能包含多个问题，需要合并
                 for question in follow_up_questions:
                     if isinstance(question, str) and question.strip():
-                        # 将问题中的症状提取出来
-                        # 例如："同心纹，褐色斑点，斑点中心一圈圈很规整"
-                        symptoms_from_question = [s.strip() for s in question.split(",") if s.strip()]
+                        symptoms_from_question = parse_symptoms_input(question)
                         historical_symptoms.extend(symptoms_from_question)
                 # 去重
                 historical_symptoms = list(dict.fromkeys(historical_symptoms))
@@ -2678,24 +2665,20 @@ def _diagnose_confirm_core(request: Request, payload: dict) -> dict:
                     if not historical_symptoms and isinstance(container.get("follow_up_questions"), list):
                         for question in container.get("follow_up_questions", []):
                             if isinstance(question, str) and question.strip():
-                                symptoms_from_question = [s.strip() for s in question.split(",") if s.strip()]
+                                symptoms_from_question = parse_symptoms_input(question)
                                 historical_symptoms.extend(symptoms_from_question)
                         historical_symptoms = list(dict.fromkeys(historical_symptoms))
                         break
             if historical_symptoms:
                 break
-    symptom_alias_map = {
-        "病斑原形": "病斑圆形",
-        "水渍壮": "水渍状",
-        "卷叶": "叶片卷曲",
-    }
-    incoming_symptoms = [str(item).strip() for item in symptoms if str(item).strip()]
-    incoming_symptoms = [symptom_alias_map.get(item, item) for item in incoming_symptoms]
-    historical_symptoms = [symptom_alias_map.get(item, item) for item in historical_symptoms]
-    merged_symptoms: list[str] = []
-    for symptom in [*historical_symptoms, *incoming_symptoms]:
-        if symptom and symptom not in merged_symptoms:
-            merged_symptoms.append(symptom)
+    incoming_symptoms = parse_symptoms_input(symptoms)
+    kb = get_kb_manager()
+    merged_profile = build_symptom_evidence_profile([*historical_symptoms, *incoming_symptoms], kb)
+    merged_symptoms = list(merged_profile.get("raw_tokens") or [])
+    historical_profile = build_symptom_evidence_profile(historical_symptoms, kb)
+    incoming_profile = build_symptom_evidence_profile(incoming_symptoms, kb)
+    historical_symptoms = list(historical_profile.get("raw_tokens") or [])
+    incoming_symptoms = list(incoming_profile.get("raw_tokens") or [])
 
     image_path = (UPLOAD_DIR / image_id).resolve()
     if not image_path.exists():
