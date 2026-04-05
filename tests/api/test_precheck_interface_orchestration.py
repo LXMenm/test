@@ -113,6 +113,8 @@ def test_start_precheck_is_not_used_as_first_user_visible_diagnosis_result(monke
     body = resp.json()
     assert body["result_stage"] == "precheck_internal"
     assert body["user_visible"] is False
+    assert body["first_user_visible_result"] is False
+    assert body["interface_role"] == "internal_precheck"
     assert "preliminary_disease" not in body
     assert "final_disease" not in body
 
@@ -130,6 +132,10 @@ def test_formal_diagnosis_returns_fusion_top1_as_first_visible_result(monkeypatc
     body = resp.json()
     assert body["final_disease"] == "晚疫病"
     assert body["final_source"] == "fusion"
+    assert body["result_stage"] == "diagnosis_completed"
+    assert body["first_user_visible_result"] is True
+    assert body["precheck_semantics_exposed"] is False
+    assert body["entrypoint"] == "diagnose_image"
     assert "preliminary_disease" not in body
 
 
@@ -145,4 +151,9 @@ def test_continue_or_equivalent_path_does_not_duplicate_image_only_diagnosis(mon
         json={"image_id": image_id, "trace_id": "trace-continue", "crop_type": "番茄"},
     )
     assert resp.status_code == 200
+    body = resp.json()
+    assert body["entrypoint"] == "diagnose_image_continue"
+    assert body["first_user_visible_result"] is True
+    assert body["precheck_semantics_exposed"] is False
+    assert body["result_stage"] == "diagnosis_completed"
     assert counter["diagnose_from_image"] == 0
