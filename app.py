@@ -582,6 +582,10 @@ class DiagnoseResponse(BaseModel):
     verification_summary: str | None = None
     status: str = "completed"
     result_stage: str | None = None
+    interface_role: str | None = None
+    entrypoint: str | None = None
+    first_user_visible_result: bool | None = None
+    precheck_semantics_exposed: bool | None = None
     is_final_result: bool | None = None
     final_result_authoritative: bool | None = None
     provisional_disease: str | None = None
@@ -625,6 +629,33 @@ class RegisterRequest(BaseModel):
     username: str
     display_name: str
     password: str
+
+
+class DiagnoseStartResponse(BaseModel):
+    trace_id: str
+    image_id: str
+    image_url: str
+    result_stage: str
+    interface_role: str
+    entrypoint: str
+    first_user_visible_result: bool
+    precheck_semantics_exposed: bool
+    user_visible: bool
+    recommended_next_step: str
+    recommended_next_endpoint: str
+    contract_version: str = "diagnose-v2"
+    status: str = "ready_for_formal_diagnosis"
+
+
+class DiagnoseContinueRequest(BaseModel):
+    image_id: str
+    trace_id: str
+    crop_type: str = "番茄"
+    symptoms: str | None = None
+    growth_stage: str | None = None
+    model_id: str | None = None
+    farmer_id: str | None = None
+    base_id: str | None = None
 
 
 class ChangePasswordRequest(BaseModel):
@@ -1162,6 +1193,15 @@ def _derive_result_stage(*, status: Any, need_confirm: Any) -> str:
     if status_text == "pending_expert_review":
         return "pending_expert_review"
     return "diagnosis_completed"
+
+
+def _interface_contract(*, entrypoint: str, user_visible: bool, precheck_semantics_exposed: bool) -> dict[str, Any]:
+    return {
+        "interface_role": "formal_diagnosis" if user_visible else "internal_precheck",
+        "entrypoint": entrypoint,
+        "first_user_visible_result": user_visible,
+        "precheck_semantics_exposed": precheck_semantics_exposed,
+    }
 
 
 def _apply_result_semantics(payload: dict[str, Any]) -> dict[str, Any]:
@@ -1979,7 +2019,7 @@ async def _save_uploaded_image(file: UploadFile, *, preferred_name: str | None =
     return unique_name, saved_path
 
 
-@app.post("/api/diagnose-image/start")
+@app.post("/api/diagnose-image/start", response_model=DiagnoseStartResponse, response_model_exclude_none=True)
 async def diagnose_image_start(
     request: Request,
     file: UploadFile = File(...),
@@ -1989,7 +2029,7 @@ async def diagnose_image_start(
     model_id: str | None = Form(None),
     farmer_id: str | None = Form(None),
     base_id: str | None = Form(None),
-) -> dict[str, Any]:
+) -> DiagnoseStartResponse:
     actor = _get_request_actor(request)
     farmer_id = _apply_farmer_scope(actor, farmer_id)
     trace_id = uuid.uuid4().hex
@@ -2002,23 +2042,31 @@ async def diagnose_image_start(
         "image_url": f"/uploads/{image_id}",
         "result_stage": "precheck_internal",
         "status": "ready_for_formal_diagnosis",
-        "need_multimodal_confirmation": True,
         "recommended_next_step": "continue_to_formal_graph_diagnosis",
+        "recommended_next_endpoint": "/api/diagnose-image/continue",
         "user_visible": False,
+        "contract_version": "diagnose-v2",
+        **_interface_contract(
+            entrypoint="diagnose_image_start",
+            user_visible=False,
+            precheck_semantics_exposed=True,
+        ),
     }
     emit_node_event(trace_id, node="PrecheckReady", status="end", message="预检查完成，等待正式诊断", payload=payload)
-    return payload
+    return DiagnoseStartResponse(**payload)
 
 
 @app.post("/api/diagnose-image/continue", response_model=DiagnoseResponse, response_model_exclude_none=True)
 async def diagnose_image_continue(
     request: Request,
-    payload: dict = Body(...),
+    payload: DiagnoseContinueRequest = Body(...),
 ) -> DiagnoseResponse:
-    image_id = str(payload.get("image_id") or "").strip()
-    trace_id = str(payload.get("trace_id") or "").strip()
+    image_id = str(payload.image_id or "").strip()
+    trace_id = str(payload.trace_id or "").strip()
     if not image_id:
         raise HTTPException(status_code=400, detail="image_id 不能为空")
+    if not trace_id:
+        raise HTTPException(status_code=400, detail="trace_id 不能为空")
     image_path = UPLOAD_DIR / image_id
     if not image_path.exists():
         raise HTTPException(status_code=404, detail="未找到对应图片，请重新上传")
@@ -2028,14 +2076,18 @@ async def diagnose_image_continue(
     return await diagnose_image(
         request=request,
         file=upload_file,
-        crop_type=str(payload.get("crop_type") or "番茄"),
-        symptoms=str(payload.get("symptoms") or "") or None,
-        growth_stage=str(payload.get("growth_stage") or "") or None,
-        model_id=str(payload.get("model_id") or "") or None,
-        farmer_id=str(payload.get("farmer_id") or "") or None,
-        base_id=str(payload.get("base_id") or "") or None,
+        crop_type=str(payload.crop_type or "番茄"),
+        symptoms=str(payload.symptoms or "") or None,
+        growth_stage=str(payload.growth_stage or "") or None,
+        model_id=str(payload.model_id or "") or None,
+        farmer_id=str(payload.farmer_id or "") or None,
+        base_id=str(payload.base_id or "") or None,
+        lat=None,
+        lon=None,
+        debug_runtime=None,
         trace_id_override=trace_id or None,
         image_id_override=image_id,
+        entrypoint="diagnose_image_continue",
     )
 
 
@@ -2054,11 +2106,13 @@ async def diagnose_image(
     debug_runtime: bool | None = Form(None),
     trace_id_override: str | None = Form(None),
     image_id_override: str | None = Form(None),
+    entrypoint: str | None = Form(None),
 ) -> DiagnoseResponse:
     request_started = time.perf_counter()
     actor = _get_request_actor(request)
     farmer_id = _apply_farmer_scope(actor, farmer_id)
     trace_id = str(trace_id_override or "").strip() or uuid.uuid4().hex
+    resolved_entrypoint = str(entrypoint or "diagnose_image").strip() or "diagnose_image"
     emit_node_event(trace_id, node="ParseInput", status="start", message="开始解析上传请求")
     debug_mode = bool(debug_runtime) or str(os.getenv("DIAG_DEBUG_RUNTIME", "0")).lower() in {"1", "true", "yes"}
     runtime_debug = _collect_runtime_debug() if debug_mode else None
@@ -2208,6 +2262,8 @@ async def diagnose_image(
                     for name, prob in resolved_top3
                 ],
             }
+    if not image_result_dict.get("disease"):
+        image_result_dict["disease"] = str(final_disease or "未知病害")
 
     verification_result = (final_state or {}).get("verification_result")
     verification_passed = (final_state or {}).get("verification_passed")
@@ -2386,6 +2442,11 @@ async def diagnose_image(
         "reliability_issue_types": list((final_state or {}).get("reliability_issue_types") or []),
         "supplement_mode": str((final_state or {}).get("supplement_mode") or "none"),
         "status": response_status,
+        **_interface_contract(
+            entrypoint=resolved_entrypoint,
+            user_visible=True,
+            precheck_semantics_exposed=False,
+        ),
         "treatment_skipped_due_need_confirm": need_confirm_waiting,
         "treatment_available": treatment_available,
         "verification_available": verification_available,
@@ -2493,6 +2554,11 @@ async def diagnose_image(
         "verification_issues": verification_issues,
         "verification_summary": verification_summary,
         "status": response_status,
+        **_interface_contract(
+            entrypoint=resolved_entrypoint,
+            user_visible=True,
+            precheck_semantics_exposed=False,
+        ),
         "expert_review_recommended": expert_review_recommended,
         "expert_review_selected": expert_review_selected,
         "expert_review_status": expert_review_status,

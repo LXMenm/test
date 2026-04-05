@@ -84,6 +84,7 @@ def test_diagnose_image_start_accepts_mixed_punctuation_symptoms(monkeypatch) ->
     assert resp.status_code == 200
     body = resp.json()
     assert body["result_stage"] == "precheck_internal"
-    assert body["need_multimodal_confirmation"] is True
+    assert body["interface_role"] == "internal_precheck"
+    assert body["first_user_visible_result"] is False
     assert body["recommended_next_step"] == "continue_to_formal_graph_diagnosis"
     assert "follow_up_questions" not in body

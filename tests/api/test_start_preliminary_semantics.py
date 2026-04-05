@@ -68,8 +68,13 @@ def test_start_interface_returns_preliminary_not_final_semantics(monkeypatch):
     assert body["result_stage"] == "precheck_internal"
     assert "preliminary_disease" not in body
     assert "final_disease" not in body
-    assert body["need_multimodal_confirmation"] is True
+    assert body["interface_role"] == "internal_precheck"
+    assert body["entrypoint"] == "diagnose_image_start"
+    assert body["first_user_visible_result"] is False
+    assert body["precheck_semantics_exposed"] is True
+    assert body["user_visible"] is False
     assert body["recommended_next_step"] == "continue_to_formal_graph_diagnosis"
+    assert body["recommended_next_endpoint"] == "/api/diagnose-image/continue"
 
 
 def test_start_interface_does_not_expose_image_only_result_as_final(monkeypatch):
@@ -84,7 +89,8 @@ def test_start_interface_does_not_expose_image_only_result_as_final(monkeypatch)
     assert resp.status_code == 200
     body = resp.json()
     assert body["result_stage"] == "precheck_internal"
-    assert body["need_multimodal_confirmation"] is True
+    assert body["first_user_visible_result"] is False
+    assert body["precheck_semantics_exposed"] is True
     assert "preliminary_disease" not in body
     assert "final_disease" not in body
 
