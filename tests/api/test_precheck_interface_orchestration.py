@@ -130,6 +130,7 @@ def test_formal_diagnosis_returns_fusion_top1_as_first_visible_result(monkeypatc
     body = resp.json()
     assert body["final_disease"] == "晚疫病"
     assert body["final_source"] == "fusion"
+    assert body["result_stage"] == "diagnosis_completed"
     assert "preliminary_disease" not in body
 
 
