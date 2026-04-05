@@ -138,6 +138,7 @@ def create_initial_state(
     farmer_id: Optional[str] = None,
     base_id: Optional[str] = None,
     trace_id: Optional[str] = None,
+    image_path: Optional[str] = None,
 ) -> CropDiseaseState:
     """
     创建初始状态
@@ -157,7 +158,7 @@ def create_initial_state(
         facility=None,
         environment=None,
         symptoms=[],
-        image_path=None,
+        image_path=str(image_path).strip() if str(image_path or "").strip() else None,
         disease_type=None,
         disease_confidence=None,
         disease_description=None,
