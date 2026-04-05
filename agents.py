@@ -153,6 +153,44 @@ def _normalize_top3_candidates(candidates: Any) -> list[tuple[str, float]]:
     return normalized
 
 
+def _build_consistent_symptom_profile(
+    symptoms: Any,
+    *,
+    fallback_raw_text: str | None = None,
+) -> dict[str, Any]:
+    parsed_symptoms = parse_symptoms_input(symptoms)
+    if not parsed_symptoms and fallback_raw_text:
+        parsed_symptoms = parse_symptoms_input(fallback_raw_text)
+    profile = build_symptom_evidence_profile(parsed_symptoms, kb_manager)
+    profile["text_evidence_level"] = get_text_evidence_level(profile, kb_manager)
+    return profile
+
+
+def _profile_tokens(profile: Any) -> tuple[list[str], list[str]]:
+    if not isinstance(profile, dict):
+        return [], []
+    raw_tokens = parse_symptoms_input(profile.get("raw_tokens"))
+    normalized_tokens = parse_symptoms_input(profile.get("normalized_tokens"))
+    return raw_tokens, normalized_tokens
+
+
+def _profile_is_usable(profile: Any) -> bool:
+    raw_tokens, normalized_tokens = _profile_tokens(profile)
+    if not raw_tokens and not normalized_tokens:
+        return False
+    if raw_tokens and not normalized_tokens:
+        return False
+    required_keys = {
+        "unknown_tokens",
+        "generic_tokens",
+        "discriminative_tokens",
+        "has_any_text_evidence",
+        "has_discriminative_text_evidence",
+        "candidate_diseases",
+    }
+    return isinstance(profile, dict) and required_keys.issubset(set(profile.keys()))
+
+
 def confirm_input_step(state: CropDiseaseState) -> CropDiseaseState:
     # 即使 incoming_symptoms 是空列表，也要使用它
     incoming_symptoms = [str(item).strip() for item in (state.get("incoming_symptoms") or []) if str(item).strip()]
@@ -161,7 +199,7 @@ def confirm_input_step(state: CropDiseaseState) -> CropDiseaseState:
     for symptom in [*historical_symptoms, *incoming_symptoms]:
         if symptom and symptom not in merged:
             merged.append(symptom)
-    symptom_profile = build_symptom_evidence_profile(merged, kb_manager)
+    symptom_profile = _build_consistent_symptom_profile(merged)
     image_path = state.get("image_path") or state.get("image")
     state["symptoms"] = symptom_profile["raw_tokens"]
     state["normalized_symptoms"] = symptom_profile["normalized_tokens"]
@@ -274,21 +312,30 @@ def confirm_choice_step(state: CropDiseaseState) -> CropDiseaseState:
     if diagnosis_evidence:
         state["diagnosis_evidence"] = diagnosis_evidence
 
-    inherited_symptoms = parse_symptoms_input(inherited.get("symptoms"))
-    evidence_raw_symptoms = parse_symptoms_input(diagnosis_evidence.get("raw_symptoms")) if diagnosis_evidence else []
-    current_symptoms = parse_symptoms_input(state.get("symptoms"))
-    resolved_symptoms = inherited_symptoms or evidence_raw_symptoms or current_symptoms
-
-    inherited_normalized = parse_symptoms_input(inherited.get("normalized_symptoms"))
-    evidence_normalized = parse_symptoms_input(diagnosis_evidence.get("normalized_symptoms")) if diagnosis_evidence else []
-    current_normalized = parse_symptoms_input(state.get("normalized_symptoms"))
-    resolved_normalized = inherited_normalized or evidence_normalized or current_normalized
-
     inherited_profile = inherited.get("symptom_evidence_profile") if isinstance(inherited.get("symptom_evidence_profile"), dict) else {}
     current_profile = state.get("symptom_evidence_profile") if isinstance(state.get("symptom_evidence_profile"), dict) else {}
-    resolved_profile = dict(inherited_profile or current_profile or {})
+    inherited_symptoms = parse_symptoms_input(inherited.get("symptoms"))
+    inherited_normalized = parse_symptoms_input(inherited.get("normalized_symptoms"))
+    current_symptoms = parse_symptoms_input(state.get("symptoms"))
+    current_normalized = parse_symptoms_input(state.get("normalized_symptoms"))
+    evidence_raw_symptoms = parse_symptoms_input(diagnosis_evidence.get("raw_symptoms")) if diagnosis_evidence else []
+    evidence_normalized = parse_symptoms_input(diagnosis_evidence.get("normalized_symptoms")) if diagnosis_evidence else []
+
+    if _profile_is_usable(inherited_profile):
+        resolved_profile = dict(inherited_profile)
+        resolved_symptoms = parse_symptoms_input(resolved_profile.get("raw_tokens")) or inherited_symptoms
+        resolved_normalized = parse_symptoms_input(resolved_profile.get("normalized_tokens")) or inherited_normalized
+    elif _profile_is_usable(current_profile):
+        resolved_profile = dict(current_profile)
+        resolved_symptoms = parse_symptoms_input(resolved_profile.get("raw_tokens")) or current_symptoms
+        resolved_normalized = parse_symptoms_input(resolved_profile.get("normalized_tokens")) or current_normalized
+    else:
+        resolved_profile = {}
+        resolved_symptoms = inherited_symptoms or current_symptoms or evidence_raw_symptoms
+        resolved_normalized = inherited_normalized or current_normalized or evidence_normalized
+
     if not resolved_profile and (resolved_symptoms or resolved_normalized):
-        resolved_profile = build_symptom_evidence_profile(resolved_symptoms or resolved_normalized, kb_manager)
+        resolved_profile = _build_consistent_symptom_profile(resolved_symptoms or resolved_normalized)
 
     if not resolved_symptoms:
         resolved_symptoms = parse_symptoms_input(resolved_profile.get("raw_tokens")) if resolved_profile else []
@@ -415,8 +462,8 @@ def reception_agent(state: CropDiseaseState) -> CropDiseaseState:
     query = state["user_query"]
     profile, base_profile = _get_profile_from_state(state)
     
-    # 提取图像路径（如果用户查询中包含）
-    image_path = None
+    # 优先使用 ParseInput/上游显式写入的 image_path，仅在缺失时回退到 query 解析
+    image_path = _resolve_image_path_fast(str(state.get("image_path") or ""))
     import re
     
     # 支持多种图像路径格式
@@ -428,18 +475,16 @@ def reception_agent(state: CropDiseaseState) -> CropDiseaseState:
         r'path[:：]\s*(.+)'  
     ]
     
-    for pattern in image_patterns:
-        match = re.search(pattern, query)
-        if match:
-            image_path = match.group(1).strip()
-            # 从查询中移除图像路径部分
-            query = re.sub(pattern, '', query).strip()
-            break
-    
-    # 快速解析图像路径，避免全量 glob 导致接待阶段耗时飙升
-    image_path = _resolve_image_path_fast(image_path)
-    if not image_path and state.get("image_path"):
-        image_path = _resolve_image_path_fast(str(state.get("image_path")))
+    if not image_path:
+        for pattern in image_patterns:
+            match = re.search(pattern, query)
+            if match:
+                image_path = match.group(1).strip()
+                # 从查询中移除图像路径部分
+                query = re.sub(pattern, '', query).strip()
+                break
+        # 快速解析图像路径，避免全量 glob 导致接待阶段耗时飙升
+        image_path = _resolve_image_path_fast(image_path)
     if not image_path:
         print("警告：图像路径不存在或不可解析")
     
@@ -511,7 +556,7 @@ def reception_agent(state: CropDiseaseState) -> CropDiseaseState:
     # 更新状态
     state["crop_type"] = crop_type
     state["crop_growth_stage"] = _canonicalize_growth_stage(crop_growth_stage)
-    symptom_profile = build_symptom_evidence_profile(symptoms, kb_manager)
+    symptom_profile = _build_consistent_symptom_profile(symptoms, fallback_raw_text=cleaned_query)
     normalized_symptoms = symptom_profile["normalized_tokens"]
     state["symptoms"] = symptom_profile["raw_tokens"]
     state["structured_symptoms"] = {"normalized_symptoms": normalized_symptoms}
@@ -621,7 +666,16 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
     }
     state["diagnosis_model_meta"] = model_meta
 
-    symptom_profile = build_symptom_evidence_profile(symptoms, kb_manager)
+    existing_profile = state.get("symptom_evidence_profile") if isinstance(state.get("symptom_evidence_profile"), dict) else {}
+    if _profile_is_usable(existing_profile):
+        symptom_profile = dict(existing_profile)
+        raw_tokens, normalized_tokens = _profile_tokens(symptom_profile)
+        symptom_profile["raw_tokens"] = raw_tokens
+        symptom_profile["normalized_tokens"] = normalized_tokens
+        if not symptom_profile.get("text_evidence_level"):
+            symptom_profile["text_evidence_level"] = get_text_evidence_level(symptom_profile, kb_manager)
+    else:
+        symptom_profile = _build_consistent_symptom_profile(symptoms)
     symptoms = symptom_profile["raw_tokens"]
     normalized_symptoms = symptom_profile["normalized_tokens"]
     state["symptoms"] = symptoms
@@ -677,9 +731,9 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
         image_confidence = 0.0
 
     # 文本分支（KB 驱动）
-    text_evidence_level = "none"
-    if enable_text_model:
-        text_evidence_level = get_text_evidence_level(symptom_profile, kb_manager)
+    text_evidence_level = str(symptom_profile.get("text_evidence_level") or "none")
+    if not enable_text_model:
+        text_evidence_level = "none"
     text_evidence_active = text_evidence_level != "none"
     text_probs_source = "none"
     text_weight_multiplier = 1.0
