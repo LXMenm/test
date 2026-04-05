@@ -268,3 +268,134 @@ def test_same_input_yields_same_unknown_generic_discriminative_buckets_across_st
     diagnosis_out = agents_module.diagnosis_agent(diagnosis_state)
 
     assert _profile_buckets(reception_out) == _profile_buckets(confirm_out) == _profile_buckets(diagnosis_out)
+
+
+def test_diagnosis_agent_prefers_existing_symptom_profile(monkeypatch) -> None:
+    fake_kb = _FakeKB()
+    _prepare_diagnosis_agent_mocks(monkeypatch, fake_kb)
+    existing_profile = build_symptom_evidence_profile(["卷叶", "叶子发黄"], fake_kb)
+    calls = {"rebuild": 0}
+
+    def _should_not_rebuild(_symptoms, fallback_raw_text=None):
+        _ = fallback_raw_text
+        calls["rebuild"] += 1
+        return build_symptom_evidence_profile(_symptoms, fake_kb)
+
+    monkeypatch.setattr(agents_module, "_build_consistent_symptom_profile", _should_not_rebuild)
+
+    state = create_initial_state("番茄叶片异常")
+    state["crop_type"] = "番茄"
+    state["symptoms"] = ["未知输入"]
+    state["symptom_evidence_profile"] = dict(existing_profile)
+    out = agents_module.diagnosis_agent(state)
+
+    assert calls["rebuild"] == 0
+    assert out["normalized_symptoms"] == existing_profile["normalized_tokens"]
+
+
+def test_confirm_choice_prefers_inherited_profile_over_reparse(monkeypatch) -> None:
+    monkeypatch.setattr(agents_module, "append_trace_event", lambda *_args, **_kwargs: None)
+    inherited_profile = {
+        "raw_tokens": ["卷叶"],
+        "normalized_tokens": ["叶片卷曲"],
+        "unknown_tokens": [],
+        "generic_tokens": [],
+        "discriminative_tokens": ["叶片卷曲"],
+        "has_any_text_evidence": True,
+        "has_discriminative_text_evidence": True,
+        "candidate_diseases": ["黄化曲叶病毒病"],
+        "follow_up_hints": [],
+        "text_evidence_level": "strong",
+    }
+    state = create_initial_state("confirm-choice")
+    state["selected_candidate"] = "晚疫病"
+    state["user_choice"] = "晚疫病"
+    state["fusion_top3"] = [("晚疫病", 0.72)]
+    state["symptoms"] = ["叶子发黄"]
+    state["normalized_symptoms"] = ["发黄"]
+    state["diagnosis_evidence"] = {"raw_symptoms": ["叶子发黄"], "normalized_symptoms": ["发黄"]}
+    state["inherited_context"] = {
+        "symptom_evidence_profile": inherited_profile,
+        "symptoms": ["卷叶"],
+        "normalized_symptoms": ["叶片卷曲"],
+        "final_confidence": 0.72,
+    }
+
+    out = agents_module.confirm_choice_step(state)
+    assert out["normalized_symptoms"] == ["叶片卷曲"]
+    assert out["symptoms"] == ["卷叶"]
+    assert out["confirmation_mode"] == "confirm_choice"
+    assert out["next_action"] == "supervisor"
+
+
+def test_profile_fallback_rebuild_only_when_missing_or_invalid(monkeypatch) -> None:
+    fake_kb = _FakeKB()
+    _prepare_diagnosis_agent_mocks(monkeypatch, fake_kb)
+    calls = {"rebuild": 0}
+
+    def _counting_rebuild(symptoms, fallback_raw_text=None):
+        _ = fallback_raw_text
+        calls["rebuild"] += 1
+        return build_symptom_evidence_profile(symptoms, fake_kb)
+
+    monkeypatch.setattr(agents_module, "_build_consistent_symptom_profile", _counting_rebuild)
+
+    valid_profile = build_symptom_evidence_profile(["卷叶"], fake_kb)
+    valid_state = create_initial_state("valid")
+    valid_state["crop_type"] = "番茄"
+    valid_state["symptom_evidence_profile"] = dict(valid_profile)
+    valid_state["symptoms"] = ["随便写一个"]
+    agents_module.diagnosis_agent(valid_state)
+    assert calls["rebuild"] == 0
+
+    invalid_state = create_initial_state("invalid")
+    invalid_state["crop_type"] = "番茄"
+    invalid_state["symptoms"] = ["卷叶"]
+    invalid_state["symptom_evidence_profile"] = {"raw_tokens": ["卷叶"], "normalized_tokens": []}
+    agents_module.diagnosis_agent(invalid_state)
+    assert calls["rebuild"] == 1
+
+
+def test_confirm_and_retry_semantics_are_preserved_after_profile_source_unification(monkeypatch) -> None:
+    monkeypatch.setattr(agents_module, "append_trace_event", lambda *_args, **_kwargs: None)
+    # confirm_choice 仍是“继承后直达后续流程”
+    inherited_profile = {
+        "raw_tokens": ["卷叶"],
+        "normalized_tokens": ["叶片卷曲"],
+        "unknown_tokens": [],
+        "generic_tokens": [],
+        "discriminative_tokens": ["叶片卷曲"],
+        "has_any_text_evidence": True,
+        "has_discriminative_text_evidence": True,
+        "candidate_diseases": ["黄化曲叶病毒病"],
+        "follow_up_hints": [],
+    }
+    state = create_initial_state("confirm-choice")
+    state["selected_candidate"] = "晚疫病"
+    state["user_choice"] = "晚疫病"
+    state["fusion_top3"] = [("晚疫病", 0.66)]
+    state["inherited_context"] = {
+        "symptom_evidence_profile": inherited_profile,
+        "symptoms": ["卷叶"],
+        "normalized_symptoms": ["叶片卷曲"],
+    }
+    out = agents_module.confirm_choice_step(state)
+    assert out["next_action"] == "supervisor"
+    assert out["final_disease"] == "晚疫病"
+
+    # retry 的入口语义不变：仍转发到 _diagnose_confirm_core
+    captured = {}
+
+    def _fake_confirm_core(_request, payload):
+        captured["payload"] = dict(payload)
+        return {"ok": True, "trace_id": payload.get("trace_id")}
+
+    monkeypatch.setattr(app_module, "_diagnose_confirm_core", _fake_confirm_core)
+    client = TestClient(app_module.app)
+    resp = client.post(
+        "/api/diagnose-retry",
+        data={"trace_id": "retry-t", "image_id": "img-1.jpg", "choice": "晚疫病", "symptoms": "卷叶"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["ok"] is True
+    assert captured["payload"]["choice"] == "晚疫病"

@@ -166,6 +166,31 @@ def _build_consistent_symptom_profile(
     return profile
 
 
+def _profile_tokens(profile: Any) -> tuple[list[str], list[str]]:
+    if not isinstance(profile, dict):
+        return [], []
+    raw_tokens = parse_symptoms_input(profile.get("raw_tokens"))
+    normalized_tokens = parse_symptoms_input(profile.get("normalized_tokens"))
+    return raw_tokens, normalized_tokens
+
+
+def _profile_is_usable(profile: Any) -> bool:
+    raw_tokens, normalized_tokens = _profile_tokens(profile)
+    if not raw_tokens and not normalized_tokens:
+        return False
+    if raw_tokens and not normalized_tokens:
+        return False
+    required_keys = {
+        "unknown_tokens",
+        "generic_tokens",
+        "discriminative_tokens",
+        "has_any_text_evidence",
+        "has_discriminative_text_evidence",
+        "candidate_diseases",
+    }
+    return isinstance(profile, dict) and required_keys.issubset(set(profile.keys()))
+
+
 def confirm_input_step(state: CropDiseaseState) -> CropDiseaseState:
     # 即使 incoming_symptoms 是空列表，也要使用它
     incoming_symptoms = [str(item).strip() for item in (state.get("incoming_symptoms") or []) if str(item).strip()]
@@ -287,21 +312,30 @@ def confirm_choice_step(state: CropDiseaseState) -> CropDiseaseState:
     if diagnosis_evidence:
         state["diagnosis_evidence"] = diagnosis_evidence
 
-    inherited_symptoms = parse_symptoms_input(inherited.get("symptoms"))
-    evidence_raw_symptoms = parse_symptoms_input(diagnosis_evidence.get("raw_symptoms")) if diagnosis_evidence else []
-    current_symptoms = parse_symptoms_input(state.get("symptoms"))
-    resolved_symptoms = inherited_symptoms or evidence_raw_symptoms or current_symptoms
-
-    inherited_normalized = parse_symptoms_input(inherited.get("normalized_symptoms"))
-    evidence_normalized = parse_symptoms_input(diagnosis_evidence.get("normalized_symptoms")) if diagnosis_evidence else []
-    current_normalized = parse_symptoms_input(state.get("normalized_symptoms"))
-    resolved_normalized = inherited_normalized or evidence_normalized or current_normalized
-
     inherited_profile = inherited.get("symptom_evidence_profile") if isinstance(inherited.get("symptom_evidence_profile"), dict) else {}
     current_profile = state.get("symptom_evidence_profile") if isinstance(state.get("symptom_evidence_profile"), dict) else {}
-    resolved_profile = dict(inherited_profile or current_profile or {})
+    inherited_symptoms = parse_symptoms_input(inherited.get("symptoms"))
+    inherited_normalized = parse_symptoms_input(inherited.get("normalized_symptoms"))
+    current_symptoms = parse_symptoms_input(state.get("symptoms"))
+    current_normalized = parse_symptoms_input(state.get("normalized_symptoms"))
+    evidence_raw_symptoms = parse_symptoms_input(diagnosis_evidence.get("raw_symptoms")) if diagnosis_evidence else []
+    evidence_normalized = parse_symptoms_input(diagnosis_evidence.get("normalized_symptoms")) if diagnosis_evidence else []
+
+    if _profile_is_usable(inherited_profile):
+        resolved_profile = dict(inherited_profile)
+        resolved_symptoms = parse_symptoms_input(resolved_profile.get("raw_tokens")) or inherited_symptoms
+        resolved_normalized = parse_symptoms_input(resolved_profile.get("normalized_tokens")) or inherited_normalized
+    elif _profile_is_usable(current_profile):
+        resolved_profile = dict(current_profile)
+        resolved_symptoms = parse_symptoms_input(resolved_profile.get("raw_tokens")) or current_symptoms
+        resolved_normalized = parse_symptoms_input(resolved_profile.get("normalized_tokens")) or current_normalized
+    else:
+        resolved_profile = {}
+        resolved_symptoms = inherited_symptoms or current_symptoms or evidence_raw_symptoms
+        resolved_normalized = inherited_normalized or current_normalized or evidence_normalized
+
     if not resolved_profile and (resolved_symptoms or resolved_normalized):
-        resolved_profile = build_symptom_evidence_profile(resolved_symptoms or resolved_normalized, kb_manager)
+        resolved_profile = _build_consistent_symptom_profile(resolved_symptoms or resolved_normalized)
 
     if not resolved_symptoms:
         resolved_symptoms = parse_symptoms_input(resolved_profile.get("raw_tokens")) if resolved_profile else []
@@ -632,7 +666,16 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
     }
     state["diagnosis_model_meta"] = model_meta
 
-    symptom_profile = _build_consistent_symptom_profile(symptoms)
+    existing_profile = state.get("symptom_evidence_profile") if isinstance(state.get("symptom_evidence_profile"), dict) else {}
+    if _profile_is_usable(existing_profile):
+        symptom_profile = dict(existing_profile)
+        raw_tokens, normalized_tokens = _profile_tokens(symptom_profile)
+        symptom_profile["raw_tokens"] = raw_tokens
+        symptom_profile["normalized_tokens"] = normalized_tokens
+        if not symptom_profile.get("text_evidence_level"):
+            symptom_profile["text_evidence_level"] = get_text_evidence_level(symptom_profile, kb_manager)
+    else:
+        symptom_profile = _build_consistent_symptom_profile(symptoms)
     symptoms = symptom_profile["raw_tokens"]
     normalized_symptoms = symptom_profile["normalized_tokens"]
     state["symptoms"] = symptoms
