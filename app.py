@@ -1981,72 +1981,17 @@ async def diagnose_image_start(
     emit_node_event(trace_id, node="ParseInput", status="start", message="开始解析上传请求")
     image_id, saved_path = await _save_uploaded_image(file)
     emit_node_event(trace_id, node="ParseInput", status="end", message="输入解析完成", payload={"image_path": str(saved_path)})
-
-    allow_torch = str(DIAGNOSIS_ALLOW_TORCH).lower() in {"1", "true", "yes"}
-    resolved_model, _ = resolve_model(model_id, allow_torch=allow_torch)
-    engine = get_diagnosis_engine(model_path=resolved_model.model_path, backend=resolved_model.backend, allow_torch=allow_torch)
-    emit_node_event(trace_id, node="DiagnosisAgent", status="start", message="正在进行图像诊断")
-    disease, conf, probs = engine.diagnose_from_image(str(saved_path))
-    disease = disease or "未知病害"
-    conf = float(conf or 0.0)
-    sorted_probs = sorted((probs or {}).items(), key=lambda x: x[1], reverse=True)
-    image_top3 = [
-        {
-            "disease": str(name),
-            "prob": float(prob),
-            "prob_pct": round(float(prob) * 100, 2),
-        }
-        for name, prob in sorted_probs[:3]
-    ]
-    top1_conf = float(sorted_probs[0][1]) if sorted_probs else conf
-    top2_conf = float(sorted_probs[1][1]) if len(sorted_probs) > 1 else 0.0
-    thresholds = get_runtime_thresholds()
-    low_conf = top1_conf < float(thresholds["diagnosis_conf_threshold"])
-    low_margin = (top1_conf - top2_conf) < float(thresholds["low_margin_threshold"]) if len(sorted_probs) > 1 else False
-    need_confirm = bool(low_conf or low_margin)
-    reason_code = "LOW_DISCRIMINATION_NEED_KEY_FEATURES" if low_margin else ("IMAGE_QUALITY_LOW" if low_conf else None)
-    reason_text = "候选病害区分度不足，请补充关键特征信息" if low_margin else ("当前图像证据不足，请补充诊断信息" if low_conf else None)
-    
-    if reason_code == "IMAGE_QUALITY_LOW":
-        ui_mode = "image"
-    elif reason_code == "LOW_DISCRIMINATION_NEED_KEY_FEATURES":
-        ui_mode = "text"
-    else:
-        ui_mode = "none"
-    emit_node_event(trace_id, node="DiagnosisCompleted", status="end", message="诊断阶段完成", payload={
-        "final_disease": disease,
-        "final_confidence": top1_conf,
-        "need_confirm": need_confirm,
-    })
-
-    symptom_profile = build_symptom_evidence_profile(parse_symptoms_input(symptoms), get_kb_manager())
-    follow_up_questions = list(symptom_profile.get("follow_up_hints") or [])
-    if not follow_up_questions and need_confirm:
-        follow_up_questions = normalize_follow_up_questions(
-            get_kb_manager().generate_text_follow_up_questions(
-                symptom_profile.get("normalized_tokens") or [],
-                text_probs={str(item.get("disease")): float(item.get("prob") or 0.0) for item in image_top3},
-            )
-        )
-    if not follow_up_questions and need_confirm:
-        follow_up_questions = ["请补充病斑形态、分布位置与叶背特征，继续多模态确认。"]
-
-    payload = _lightweight_diagnosis_payload(
-        image_id=image_id,
-        trace_id=trace_id,
-        preliminary_disease=disease,
-        preliminary_confidence_pct=round(top1_conf * 100, 2),
-        image_top3=image_top3,
-        need_confirm=need_confirm,
-        need_multimodal_confirmation=True,
-        recommended_next_step="continue_to_multimodal_diagnosis",
-        reason_code=reason_code,
-        reason_text=reason_text,
-        ui_mode=ui_mode,
-        follow_up_questions=follow_up_questions[:3],
-    )
-    if payload["status"] == "waiting_for_supplement":
-        emit_node_event(trace_id, node="AwaitUserConfirmation", status="end", message="等待用户补充诊断信息", payload=payload)
+    payload = {
+        "trace_id": trace_id,
+        "image_id": image_id,
+        "image_url": f"/uploads/{image_id}",
+        "result_stage": "precheck_internal",
+        "status": "ready_for_formal_diagnosis",
+        "need_multimodal_confirmation": True,
+        "recommended_next_step": "continue_to_formal_graph_diagnosis",
+        "user_visible": False,
+    }
+    emit_node_event(trace_id, node="PrecheckReady", status="end", message="预检查完成，等待正式诊断", payload=payload)
     return payload
 
 
@@ -2117,84 +2062,15 @@ async def diagnose_image(
         raise HTTPException(status_code=400, detail=f"读取或保存图片失败: {exc}") from exc
 
     allow_torch = str(DIAGNOSIS_ALLOW_TORCH).lower() in {"1", "true", "yes"}
-    emit_node_event(trace_id, node="DiagnosisAgent", status="start", message="正在进行图像诊断")
     resolved_model, model_fallback_reason = resolve_model(model_id, allow_torch=allow_torch)
-    engine = get_diagnosis_engine(
-        model_path=resolved_model.model_path,
-        backend=resolved_model.backend,
-        allow_torch=allow_torch,
-    )
-    disease, conf, probs = engine.diagnose_from_image(str(saved_path))
-    disease = disease or "未知病害"
-    conf = float(conf or 0.0)
-
-    if disease == "模型未部署":
-        emit_node_event(trace_id, node="DiagnosisAgent", status="error", message="模型未部署")
-        emit_node_event(trace_id, node="Final", status="error", message="诊断失败")
-        raise HTTPException(status_code=500, detail="模型未部署，请先配置并加载模型")
-    if probs is None:
-        probs = {}
-
-    sorted_probs = sorted(probs.items(), key=lambda x: x[1], reverse=True)
-    top3_pairs = sorted_probs[:3]
-    top3 = [
-        {
-            "disease": name,
-            "prob": float(prob),
-            "prob_pct": round(float(prob) * 100, 2),
-        }
-        for name, prob in top3_pairs
-    ]
-
-    top1_conf = float(top3_pairs[0][1]) if top3_pairs else conf
-    top2_conf = float(top3_pairs[1][1]) if len(top3_pairs) > 1 else None
-
     fallback_reasons: list[str] = []
-    emit_node_event(trace_id, node="DiagnosisAgent", status="end", message="图像诊断完成", payload={"disease": disease, "confidence": conf})
-    emit_node_event(trace_id, node="ConfidenceGate", status="start", message="评估置信度")
-    runtime_thresholds = get_runtime_thresholds()
-    if top1_conf < float(runtime_thresholds["diagnosis_conf_threshold"]):
-        fallback_reasons.append("low_confidence")
-    if top2_conf is not None and (top1_conf - top2_conf) < float(runtime_thresholds["low_margin_threshold"]):
-        fallback_reasons.append("low_margin")
 
     symptoms_list = parse_symptoms_input(symptoms)
-    fallback_condition = bool(fallback_reasons)
+    fallback_condition = False
 
     fallback_used = False
     rule_result: RuleResult | None = None
-
-    if fallback_condition and symptoms_list:
-        try:
-            rule_disease, rule_confidence, rule_description = engine.diagnose_from_symptoms(
-                crop_type=crop_type,
-                symptoms=symptoms_list,
-                growth_stage=growth_stage,
-            )
-            fallback_used = True
-            emit_node_event(trace_id, node="ConfidenceGate", status="end", message="触发症状回退", payload={"reasons": fallback_reasons})
-            rule_result = RuleResult(
-                rule_disease=rule_disease,
-                rule_confidence=float(rule_confidence),
-                rule_confidence_pct=round(float(rule_confidence) * 100, 2),
-                rule_description=rule_description,
-            )
-        except Exception as exc:
-            rule_result = RuleResult(
-                rule_disease=None,
-                rule_confidence=0.0,
-                rule_confidence_pct=0.0,
-                rule_description=f"症状回退诊断失败: {exc}",
-            )
-            fallback_used = True
-            emit_node_event(trace_id, node="ConfidenceGate", status="error", message=f"症状回退失败: {exc}")
-
-    if not (fallback_condition and symptoms_list):
-        emit_node_event(trace_id, node="ConfidenceGate", status="end", message="无需回退", payload={"reasons": fallback_reasons})
-
-    final_disease = disease
-    if fallback_used and rule_result and rule_result.rule_disease:
-        final_disease = rule_result.rule_disease
+    final_disease = "未知病害"
 
     treatment: TreatmentPlan | None = None
 
@@ -2210,10 +2086,10 @@ async def diagnose_image(
     personalization_reasons: list[str] = []
 
     image_result_dict = {
-        "disease": disease,
-        "confidence": conf,
-        "confidence_pct": round(conf * 100, 2),
-        "top3": top3,
+        "disease": None,
+        "confidence": 0.0,
+        "confidence_pct": 0.0,
+        "top3": [],
     }
     rule_result_dict = rule_result.model_dump() if rule_result else None
     image_refs = _build_image_refs(unique_name)
@@ -2293,6 +2169,26 @@ async def diagnose_image(
             treatment = TreatmentPlan(plan=treatment_plan, prevention=prevention_advice)
             graph_treatment_generated = True
         personalization_reasons = dedupe_reasons(final_state.get("personalization_reasons") or [])
+        image_result_from_state = _safe_record(final_state.get("image_result"))
+        image_diagnosis_from_state = _safe_record(final_state.get("image_diagnosis"))
+        resolved_top3 = (
+            _normalize_top3_candidates(image_result_from_state.get("top3"))
+            or _normalize_top3_candidates(image_diagnosis_from_state.get("top3"))
+        )
+        top1_name = str(image_result_from_state.get("disease") or "").strip() if image_result_from_state else ""
+        top1_conf = _safe_float(image_result_from_state.get("confidence")) if image_result_from_state else None
+        if (not top1_name or top1_conf is None) and resolved_top3:
+            top1_name, top1_conf = resolved_top3[0]
+        if top1_name or resolved_top3:
+            image_result_dict = {
+                "disease": top1_name or (resolved_top3[0][0] if resolved_top3 else None),
+                "confidence": float(top1_conf or 0.0),
+                "confidence_pct": round(float(top1_conf or 0.0) * 100, 2),
+                "top3": [
+                    {"disease": name, "prob": float(prob), "prob_pct": round(float(prob) * 100, 2)}
+                    for name, prob in resolved_top3
+                ],
+            }
 
     verification_result = (final_state or {}).get("verification_result")
     verification_passed = (final_state or {}).get("verification_passed")
