@@ -157,13 +157,22 @@ def _build_consistent_symptom_profile(
     symptoms: Any,
     *,
     fallback_raw_text: str | None = None,
+    allow_fallback: bool = True,
 ) -> dict[str, Any]:
     parsed_symptoms = parse_symptoms_input(symptoms)
-    if not parsed_symptoms and fallback_raw_text:
+    if allow_fallback and not parsed_symptoms and fallback_raw_text:
         parsed_symptoms = parse_symptoms_input(fallback_raw_text)
     profile = build_symptom_evidence_profile(parsed_symptoms, kb_manager)
     profile["text_evidence_level"] = get_text_evidence_level(profile, kb_manager)
     return profile
+
+
+def _is_system_context_text(text: str) -> bool:
+    cleaned = str(text or "").strip()
+    if not cleaned:
+        return False
+    system_markers = ("作物类型：", "生长阶段：", "图片路径：", "图像路径：", "图像=", "图片=")
+    return any(marker in cleaned for marker in system_markers)
 
 
 def _profile_tokens(profile: Any) -> tuple[list[str], list[str]]:
@@ -172,6 +181,26 @@ def _profile_tokens(profile: Any) -> tuple[list[str], list[str]]:
     raw_tokens = parse_symptoms_input(profile.get("raw_tokens"))
     normalized_tokens = parse_symptoms_input(profile.get("normalized_tokens"))
     return raw_tokens, normalized_tokens
+
+
+def _profile_bucket_snapshot(profile: Any) -> dict[str, Any]:
+    if not isinstance(profile, dict):
+        return {
+            "raw_tokens": [],
+            "normalized_tokens": [],
+            "unknown_tokens": [],
+            "generic_tokens": [],
+            "discriminative_tokens": [],
+            "text_evidence_level": "none",
+        }
+    return {
+        "raw_tokens": parse_symptoms_input(profile.get("raw_tokens")),
+        "normalized_tokens": parse_symptoms_input(profile.get("normalized_tokens")),
+        "unknown_tokens": parse_symptoms_input(profile.get("unknown_tokens")),
+        "generic_tokens": parse_symptoms_input(profile.get("generic_tokens")),
+        "discriminative_tokens": parse_symptoms_input(profile.get("discriminative_tokens")),
+        "text_evidence_level": str(profile.get("text_evidence_level") or "none"),
+    }
 
 
 def _profile_is_usable(profile: Any) -> bool:
@@ -224,6 +253,7 @@ def confirm_input_step(state: CropDiseaseState) -> CropDiseaseState:
             "symptoms": state.get("symptoms"),
             "normalized_symptoms": state.get("normalized_symptoms"),
             "symptom_evidence_profile": state.get("symptom_evidence_profile"),
+            "symptom_profile_buckets": _profile_bucket_snapshot(symptom_profile),
             "image_path": state.get("image_path"),
             "next_action": "diagnosis",
         },
@@ -520,7 +550,7 @@ def reception_agent(state: CropDiseaseState) -> CropDiseaseState:
         except Exception as e:
             print(f"大模型调用失败，使用规则匹配: {e}")
             _, crop_growth_stage, symptoms = _fallback_extraction(query_for_extract)
-    crop_growth_stage = _canonicalize_growth_stage(crop_growth_stage)
+    crop_growth_stage = _canonicalize_growth_stage(crop_growth_stage) or _canonicalize_growth_stage(state.get("crop_growth_stage"))
     # 强制设置作物类型为番茄
     crop_type = "番茄"
     _fill_missing_from_profile(state, base_profile)
@@ -529,7 +559,7 @@ def reception_agent(state: CropDiseaseState) -> CropDiseaseState:
     
     # 如果没有提取到症状，保持为空列表
     if not symptoms:
-        symptoms = []
+        symptoms = parse_symptoms_input(state.get("symptoms")) or []
     message_parts = [
         f"番茄病害接待智能体：作物类型={crop_type}",
         f"生长阶段={crop_growth_stage}",
@@ -556,7 +586,14 @@ def reception_agent(state: CropDiseaseState) -> CropDiseaseState:
     # 更新状态
     state["crop_type"] = crop_type
     state["crop_growth_stage"] = _canonicalize_growth_stage(crop_growth_stage)
-    symptom_profile = _build_consistent_symptom_profile(symptoms, fallback_raw_text=cleaned_query)
+    user_symptom_text = str(state.get("user_symptom_text") or "").strip()
+    fallback_source = user_symptom_text or cleaned_query
+    allow_fallback = bool(user_symptom_text) or (bool(cleaned_query) and not _is_system_context_text(cleaned_query))
+    symptom_profile = _build_consistent_symptom_profile(
+        symptoms,
+        fallback_raw_text=fallback_source,
+        allow_fallback=allow_fallback,
+    )
     normalized_symptoms = symptom_profile["normalized_tokens"]
     state["symptoms"] = symptom_profile["raw_tokens"]
     state["structured_symptoms"] = {"normalized_symptoms": normalized_symptoms}
@@ -581,6 +618,14 @@ def reception_agent(state: CropDiseaseState) -> CropDiseaseState:
             "symptoms": state.get("symptoms"),
             "normalized_symptoms": normalized_symptoms,
             "symptom_evidence_profile": symptom_profile,
+            "symptom_profile_buckets": _profile_bucket_snapshot(symptom_profile),
+            "symptom_profile_debug": {
+                "raw_user_query": state.get("user_query"),
+                "cleaned_query": cleaned_query,
+                "llm_extracted_symptoms": parse_symptoms_input(symptoms),
+                "fallback_source": fallback_source if allow_fallback else None,
+                "fallback_enabled": bool(allow_fallback),
+            },
             "image_path": image_path,
             "missing_profile_fields": missing_profile_fields,
             "removed_tokens": removed_tokens,
