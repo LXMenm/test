@@ -1847,14 +1847,12 @@ def build_trace_query(
     growth_stage: str | None,
     image_path: str,
 ) -> str:
+    _ = crop_type
+    _ = growth_stage
+    _ = image_path
     parts = []
-    if crop_type:
-        parts.append(f"作物类型：{crop_type}")
-    if growth_stage:
-        parts.append(f"生长阶段：{growth_stage_label(growth_stage)}")
     if symptoms_list:
         parts.append(f"症状：{', '.join(symptoms_list)}")
-    parts.append(f"图片路径：{image_path}")
     return "，".join(parts)
 
 
@@ -2125,6 +2123,10 @@ async def diagnose_image(
             trace_id=trace_id,
             image_path=str(saved_path),
         )
+        initial_state["crop_type"] = crop_type or "番茄"
+        initial_state["crop_growth_stage"] = _canonicalize_growth_stage(growth_stage)
+        initial_state["symptoms"] = list(symptoms_list)
+        initial_state["user_symptom_text"] = str(symptoms or "").strip()
         initial_state["diagnosis_model_id"] = resolved_model.model_id
         if personalization_context:
             initial_state["personalization_context"] = personalization_context
