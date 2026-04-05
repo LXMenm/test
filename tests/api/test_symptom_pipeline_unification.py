@@ -298,6 +298,48 @@ def test_runtime_trace_keeps_fuzzy_symptom_bucket_consistency_between_reception_
     assert "symptom_profile_buckets" in outputs
 
 
+def test_reception_keeps_fuzzy_token_when_llm_extracts_only_explicit_symptoms(monkeypatch) -> None:
+    fake_kb = _FakeKB()
+    monkeypatch.setattr(agents_module, "kb_manager", fake_kb)
+    monkeypatch.setattr(agents_module, "append_trace_event", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        agents_module,
+        "call_llm",
+        lambda *_args, **_kwargs: '{"growth_stage": null, "symptoms": ["叶片发黄", "有斑点", "卷叶"]}',
+    )
+
+    reception_state = create_initial_state("叶片发黄, 有斑点, 卷叶, 叶子有问题")
+    reception_out = agents_module.reception_agent(reception_state)
+    profile = reception_out.get("symptom_evidence_profile") or {}
+
+    assert "叶子有问题" in list(profile.get("raw_tokens") or [])
+    assert "叶子有问题" in list(profile.get("unknown_tokens") or [])
+
+
+def test_reception_and_confirm_no_longer_show_fuzzy_token_missing_gap(monkeypatch) -> None:
+    fake_kb = _FakeKB()
+    monkeypatch.setattr(agents_module, "kb_manager", fake_kb)
+    monkeypatch.setattr(agents_module, "append_trace_event", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        agents_module,
+        "call_llm",
+        lambda *_args, **_kwargs: '{"growth_stage": null, "symptoms": ["叶片发黄", "有斑点", "卷叶"]}',
+    )
+
+    reception_state = create_initial_state("叶片发黄, 有斑点, 卷叶, 叶子有问题")
+    reception_out = agents_module.reception_agent(reception_state)
+
+    confirm_state = create_initial_state("confirm")
+    confirm_state["incoming_symptoms"] = ["叶片发黄", "有斑点", "卷叶", "叶子有问题"]
+    confirm_state["historical_symptoms"] = []
+    confirm_out = agents_module.confirm_input_step(confirm_state)
+
+    reception_unknown = list((reception_out.get("symptom_evidence_profile") or {}).get("unknown_tokens") or [])
+    confirm_unknown = list((confirm_out.get("symptom_evidence_profile") or {}).get("unknown_tokens") or [])
+    assert "叶子有问题" in reception_unknown
+    assert "叶子有问题" in confirm_unknown
+
+
 def test_diagnosis_agent_prefers_existing_symptom_profile(monkeypatch) -> None:
     fake_kb = _FakeKB()
     _prepare_diagnosis_agent_mocks(monkeypatch, fake_kb)

@@ -158,10 +158,20 @@ def _build_consistent_symptom_profile(
     *,
     fallback_raw_text: str | None = None,
     allow_fallback: bool = True,
+    merge_fallback_tokens: bool = False,
 ) -> dict[str, Any]:
     parsed_symptoms = parse_symptoms_input(symptoms)
-    if allow_fallback and not parsed_symptoms and fallback_raw_text:
-        parsed_symptoms = parse_symptoms_input(fallback_raw_text)
+    fallback_text = str(fallback_raw_text or "")
+    fallback_tokens = parse_symptoms_input(fallback_text) if (allow_fallback and fallback_text) else []
+    fallback_looks_like_symptom_list = any(marker in fallback_text for marker in [",", "，", ";", "；", "\n"])
+    if merge_fallback_tokens and fallback_tokens and (fallback_looks_like_symptom_list or len(fallback_tokens) > 1):
+        merged: list[str] = []
+        for token in [*parsed_symptoms, *fallback_tokens]:
+            if token and token not in merged:
+                merged.append(token)
+        parsed_symptoms = merged
+    elif allow_fallback and not parsed_symptoms and fallback_tokens:
+        parsed_symptoms = fallback_tokens
     profile = build_symptom_evidence_profile(parsed_symptoms, kb_manager)
     profile["text_evidence_level"] = get_text_evidence_level(profile, kb_manager)
     return profile
@@ -593,6 +603,7 @@ def reception_agent(state: CropDiseaseState) -> CropDiseaseState:
         symptoms,
         fallback_raw_text=fallback_source,
         allow_fallback=allow_fallback,
+        merge_fallback_tokens=True,
     )
     normalized_symptoms = symptom_profile["normalized_tokens"]
     state["symptoms"] = symptom_profile["raw_tokens"]
