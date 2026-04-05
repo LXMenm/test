@@ -581,6 +581,17 @@ class DiagnoseResponse(BaseModel):
     verification_issues: list[str] = []
     verification_summary: str | None = None
     status: str = "completed"
+    result_stage: str | None = None
+    is_final_result: bool | None = None
+    final_result_authoritative: bool | None = None
+    provisional_disease: str | None = None
+    provisional_confidence: float | None = None
+    provisional_source: str | None = None
+    current_top1: str | None = None
+    compatibility_final_fields: bool | None = None
+    final_disease_compat: str | None = None
+    final_confidence_compat: float | None = None
+    final_source_compat: str | None = None
     expert_review_recommended: bool = False
     expert_review_selected: bool = False
     expert_review_status: str = "NONE"
@@ -1106,6 +1117,49 @@ def serialize_final_response(payload: dict[str, Any]) -> dict[str, Any]:
     if "confirm_message" in data and data["confirm_message"] is not None:
         data["confirm_message"] = sanitize_user_text(data["confirm_message"])
 
+    return data
+
+
+WAITING_RESULT_STATUSES = {
+    "waiting_for_supplement",
+    "waiting_for_expert_decision",
+    "pending_expert_review",
+}
+
+
+def _derive_result_stage(*, status: Any, need_confirm: Any) -> str:
+    status_text = str(status or "").strip().lower()
+    if status_text == "waiting_for_supplement" or bool(need_confirm):
+        return "awaiting_confirmation"
+    if status_text == "waiting_for_expert_decision":
+        return "pending_confirmation"
+    if status_text == "pending_expert_review":
+        return "pending_expert_review"
+    return "diagnosis_completed"
+
+
+def _apply_result_semantics(payload: dict[str, Any]) -> dict[str, Any]:
+    data = dict(payload or {})
+    stage = _derive_result_stage(status=data.get("status"), need_confirm=data.get("need_confirm"))
+    is_final_result = stage == "diagnosis_completed"
+    data["result_stage"] = stage
+    data["is_final_result"] = is_final_result
+    data["final_result_authoritative"] = is_final_result
+    data["compatibility_final_fields"] = not is_final_result
+    if not is_final_result:
+        data["provisional_disease"] = data.get("provisional_disease") or data.get("final_disease")
+        data["provisional_confidence"] = (
+            data.get("provisional_confidence")
+            if data.get("provisional_confidence") is not None
+            else data.get("final_confidence")
+        )
+        data["provisional_source"] = data.get("provisional_source") or data.get("final_source")
+        data["current_top1"] = data.get("current_top1") or data.get("provisional_disease")
+        data["final_disease_compat"] = data.get("final_disease")
+        data["final_confidence_compat"] = data.get("final_confidence")
+        data["final_source_compat"] = data.get("final_source")
+    else:
+        data["current_top1"] = data.get("current_top1") or data.get("final_disease")
     return data
 
 
@@ -1896,72 +1950,6 @@ async def _save_uploaded_image(file: UploadFile, *, preferred_name: str | None =
     return unique_name, saved_path
 
 
-def _lightweight_diagnosis_payload(
-    *,
-    image_id: str,
-    trace_id: str,
-    preliminary_disease: str,
-    preliminary_confidence_pct: float | None,
-    image_top3: list[dict[str, Any]],
-    need_confirm: bool,
-    need_multimodal_confirmation: bool,
-    recommended_next_step: str,
-    reason_code: str | None,
-    reason_text: str | None,
-    ui_mode: str,
-    follow_up_questions: list[str],
-) -> dict[str, Any]:
-    status = "waiting_for_supplement" if need_confirm else "diagnosis_completed"
-    
-    if need_confirm and reason_code:
-        if reason_code == "IMAGE_QUALITY_LOW":
-            confirm_fields = ["image"]
-        elif reason_code == "SYMPTOM_TEXT_INSUFFICIENT":
-            confirm_fields = ["symptoms"]
-        elif reason_code in {"IMAGE_TEXT_CONFLICT", "BOTH_IMAGE_AND_TEXT_WEAK"}:
-            confirm_fields = ["image", "symptoms"]
-        elif reason_code == "LOW_DISCRIMINATION_NEED_KEY_FEATURES":
-            if ui_mode == "image":
-                confirm_fields = ["image"]
-            elif ui_mode == "text":
-                confirm_fields = ["symptoms"]
-            else:
-                confirm_fields = ["image", "symptoms"]
-        else:
-            confirm_fields = ["symptoms"]
-            if ui_mode in {"image", "image_and_text"}:
-                confirm_fields.append("image")
-    else:
-        confirm_fields = []
-    
-    return {
-        "trace_id": trace_id,
-        "image_id": image_id,
-        "image_url": f"/uploads/{image_id}",
-        "result_stage": "image_precheck",
-        "preliminary_disease": preliminary_disease,
-        "preliminary_confidence_pct": preliminary_confidence_pct,
-        "image_top3": image_top3,
-        "need_multimodal_confirmation": need_multimodal_confirmation,
-        "recommended_next_step": recommended_next_step,
-        # 兼容历史字段：明确声明当前仅为 image_precheck 阶段
-        "final_disease": preliminary_disease,
-        "displayConfidencePct": preliminary_confidence_pct,
-        "need_confirm": need_confirm,
-        "confirm_message": "当前信息不足，请补充诊断信息后继续" if need_confirm else None,
-        "confirm_reason_code": reason_code if need_confirm else None,
-        "confirm_reason_text": reason_text if need_confirm else None,
-        "confirm_ui_mode": ui_mode if need_confirm else None,
-        "confirm_fields": confirm_fields if need_confirm else [],
-        "follow_up_questions": follow_up_questions if need_confirm else [],
-        "status": status,
-        "treatment": None,
-        "treatment_available": False,
-        "verification_available": False,
-        "verification_result": None,
-    }
-
-
 @app.post("/api/diagnose-image/start")
 async def diagnose_image_start(
     request: Request,
@@ -2124,7 +2112,7 @@ async def diagnose_image(
             image_path=str(saved_path),
         )
         initial_state["crop_type"] = crop_type or "番茄"
-        initial_state["crop_growth_stage"] = _canonicalize_growth_stage(growth_stage)
+        initial_state["crop_growth_stage"] = normalize_growth_stage_code(growth_stage)
         initial_state["symptoms"] = list(symptoms_list)
         initial_state["user_symptom_text"] = str(symptoms or "").strip()
         initial_state["diagnosis_model_id"] = resolved_model.model_id
@@ -2382,6 +2370,7 @@ async def diagnose_image(
         "fallback_treatment_used": fallback_treatment_used,
         **confirm_explanation,
     }
+    event = _apply_result_semantics(event)
     event = serialize_final_response(event)
     emit_node_event(trace_id, node="Persist", status="start", message="写入事件日志")
     try:
@@ -2397,7 +2386,12 @@ async def diagnose_image(
             node="AwaitUserConfirmation",
             status="end",
             message="当前轮返回追问，等待用户进入补充诊断",
-            payload={"final_disease": final_disease, "status": response_status, "reason": "need_confirm_wait_user"},
+            payload={
+                "provisional_disease": event.get("provisional_disease") or final_disease,
+                "status": response_status,
+                "reason": "need_confirm_wait_user",
+                "result_stage": event.get("result_stage"),
+            },
         )
     else:
         emit_final_event_once(
@@ -2494,6 +2488,7 @@ async def diagnose_image(
         } if debug_mode else None,
     }
     response_payload.update(confirm_explanation)
+    response_payload = _apply_result_semantics(response_payload)
 
     return DiagnoseResponse(**serialize_final_response(response_payload))
 
@@ -2996,6 +2991,7 @@ def _diagnose_confirm_core(request: Request, payload: dict) -> dict:
         **confirm_explanation,
     }
     event["confirm_message"] = confirm_message
+    event = _apply_result_semantics(event)
     event = serialize_final_response(event)
     emit_node_event(trace_id, node="Persist", status="start", message="写入确认轮事件日志")
     try:
@@ -3013,9 +3009,10 @@ def _diagnose_confirm_core(request: Request, payload: dict) -> dict:
             status="end",
             message="当前轮返回追问，等待用户进入补充诊断",
             payload={
-                "final_disease": state.get("final_disease"),
+                "provisional_disease": event.get("provisional_disease") or state.get("final_disease"),
                 "status": confirm_status,
                 "reason": "need_confirm_wait_user",
+                "result_stage": event.get("result_stage"),
             },
         )
     else:
@@ -3121,6 +3118,7 @@ def _diagnose_confirm_core(request: Request, payload: dict) -> dict:
         "events": events,
     }
     response_payload["previous_trace_id"] = previous_trace_id or trace_id
+    response_payload = _apply_result_semantics(response_payload)
     print(
         "[DiagnoseConfirm] output",
         json.dumps(
