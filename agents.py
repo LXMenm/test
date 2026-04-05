@@ -415,8 +415,8 @@ def reception_agent(state: CropDiseaseState) -> CropDiseaseState:
     query = state["user_query"]
     profile, base_profile = _get_profile_from_state(state)
     
-    # 提取图像路径（如果用户查询中包含）
-    image_path = None
+    # 优先使用 ParseInput/上游显式写入的 image_path，仅在缺失时回退到 query 解析
+    image_path = _resolve_image_path_fast(str(state.get("image_path") or ""))
     import re
     
     # 支持多种图像路径格式
@@ -428,18 +428,16 @@ def reception_agent(state: CropDiseaseState) -> CropDiseaseState:
         r'path[:：]\s*(.+)'  
     ]
     
-    for pattern in image_patterns:
-        match = re.search(pattern, query)
-        if match:
-            image_path = match.group(1).strip()
-            # 从查询中移除图像路径部分
-            query = re.sub(pattern, '', query).strip()
-            break
-    
-    # 快速解析图像路径，避免全量 glob 导致接待阶段耗时飙升
-    image_path = _resolve_image_path_fast(image_path)
-    if not image_path and state.get("image_path"):
-        image_path = _resolve_image_path_fast(str(state.get("image_path")))
+    if not image_path:
+        for pattern in image_patterns:
+            match = re.search(pattern, query)
+            if match:
+                image_path = match.group(1).strip()
+                # 从查询中移除图像路径部分
+                query = re.sub(pattern, '', query).strip()
+                break
+        # 快速解析图像路径，避免全量 glob 导致接待阶段耗时飙升
+        image_path = _resolve_image_path_fast(image_path)
     if not image_path:
         print("警告：图像路径不存在或不可解析")
     
