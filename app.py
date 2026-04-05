@@ -954,6 +954,30 @@ def _reason_equals(reason_tokens: list[str], target: str) -> bool:
     return any(token == target_text for token in reason_tokens)
 
 
+IMAGE_FOLLOW_UP_KEYWORDS = ("图", "图片", "图像", "拍", "上传", "重传", "补拍", "清晰", "对焦", "角度")
+
+
+def _is_image_follow_up_question(question: Any) -> bool:
+    text = str(question or "").strip()
+    return bool(text) and any(keyword in text for keyword in IMAGE_FOLLOW_UP_KEYWORDS)
+
+
+def _filter_follow_up_questions_for_mode(
+    follow_up_questions: Any,
+    *,
+    confirm_fields: list[str],
+) -> list[str]:
+    questions = [str(item).strip() for item in (follow_up_questions or []) if str(item).strip()]
+    if not questions:
+        return []
+    fields = {str(item).strip() for item in (confirm_fields or []) if str(item).strip()}
+    if fields == {"symptoms"}:
+        return [q for q in questions if not _is_image_follow_up_question(q)]
+    if fields == {"image"}:
+        return [q for q in questions if _is_image_follow_up_question(q)]
+    return questions
+
+
 def build_confirm_explanation_v2(
     *,
     need_confirm: bool,
@@ -1042,11 +1066,12 @@ def build_confirm_explanation_v2(
         ui_mode = "text"
         fields = ["symptoms"]
 
+    filtered_follow_ups = _filter_follow_up_questions_for_mode(follow_ups, confirm_fields=fields)
     confirm_message = reason_text
     if ui_mode == "image":
         confirm_message = f"{reason_text}。请重新上传图片。"
-    if follow_ups and ui_mode in {"text", "image_and_text"}:
-        confirm_message = f"{reason_text}。请优先补充：{'；'.join(follow_ups[:3])}"
+    if filtered_follow_ups and ui_mode in {"text", "image_and_text"}:
+        confirm_message = f"{reason_text}。请优先补充：{'；'.join(filtered_follow_ups[:3])}"
 
     return {
         "confirm_reason_code": reason_code,
@@ -1054,6 +1079,7 @@ def build_confirm_explanation_v2(
         "recommended_action": action,
         "confirm_ui_mode": ui_mode,
         "confirm_fields": fields,
+        "filtered_follow_up_questions": filtered_follow_ups,
         "confirm_message": confirm_message,
     }
 
@@ -2310,6 +2336,11 @@ async def diagnose_image(
         fallback_reason=trace_fallback_reason or fallback_reasons,
         follow_up_questions=follow_up_questions,
     )
+    filtered_follow_up_questions = normalize_follow_up_questions(
+        confirm_explanation.get("filtered_follow_up_questions") or []
+    )
+    confirm_explanation.pop("filtered_follow_up_questions", None)
+    follow_up_questions = filtered_follow_up_questions
 
     event = {
         "id": uuid.uuid4().hex,
@@ -2368,6 +2399,7 @@ async def diagnose_image(
         "expert_review_actions": [],
         "graph_treatment_generated": graph_treatment_generated,
         "fallback_treatment_used": fallback_treatment_used,
+        "follow_up_questions": follow_up_questions,
         **confirm_explanation,
     }
     event = _apply_result_semantics(event)
@@ -2900,6 +2932,11 @@ def _diagnose_confirm_core(request: Request, payload: dict) -> dict:
         fallback_reason=flags.get("fallback_reason"),
         follow_up_questions=follow_up_questions,
     )
+    filtered_follow_up_questions = normalize_follow_up_questions(
+        confirm_explanation.get("filtered_follow_up_questions") or []
+    )
+    confirm_explanation.pop("filtered_follow_up_questions", None)
+    follow_up_questions = filtered_follow_up_questions
     confirm_message = confirm_explanation.get("confirm_message")
     if confirm_status == "pending_expert_review":
         confirm_message = "已进入待专家复核状态，后续将由专家确认病害并补充最终方案。"
