@@ -153,6 +153,19 @@ def _normalize_top3_candidates(candidates: Any) -> list[tuple[str, float]]:
     return normalized
 
 
+def _build_consistent_symptom_profile(
+    symptoms: Any,
+    *,
+    fallback_raw_text: str | None = None,
+) -> dict[str, Any]:
+    parsed_symptoms = parse_symptoms_input(symptoms)
+    if not parsed_symptoms and fallback_raw_text:
+        parsed_symptoms = parse_symptoms_input(fallback_raw_text)
+    profile = build_symptom_evidence_profile(parsed_symptoms, kb_manager)
+    profile["text_evidence_level"] = get_text_evidence_level(profile, kb_manager)
+    return profile
+
+
 def confirm_input_step(state: CropDiseaseState) -> CropDiseaseState:
     # 即使 incoming_symptoms 是空列表，也要使用它
     incoming_symptoms = [str(item).strip() for item in (state.get("incoming_symptoms") or []) if str(item).strip()]
@@ -161,7 +174,7 @@ def confirm_input_step(state: CropDiseaseState) -> CropDiseaseState:
     for symptom in [*historical_symptoms, *incoming_symptoms]:
         if symptom and symptom not in merged:
             merged.append(symptom)
-    symptom_profile = build_symptom_evidence_profile(merged, kb_manager)
+    symptom_profile = _build_consistent_symptom_profile(merged)
     image_path = state.get("image_path") or state.get("image")
     state["symptoms"] = symptom_profile["raw_tokens"]
     state["normalized_symptoms"] = symptom_profile["normalized_tokens"]
@@ -509,7 +522,7 @@ def reception_agent(state: CropDiseaseState) -> CropDiseaseState:
     # 更新状态
     state["crop_type"] = crop_type
     state["crop_growth_stage"] = _canonicalize_growth_stage(crop_growth_stage)
-    symptom_profile = build_symptom_evidence_profile(symptoms, kb_manager)
+    symptom_profile = _build_consistent_symptom_profile(symptoms, fallback_raw_text=cleaned_query)
     normalized_symptoms = symptom_profile["normalized_tokens"]
     state["symptoms"] = symptom_profile["raw_tokens"]
     state["structured_symptoms"] = {"normalized_symptoms": normalized_symptoms}
@@ -619,7 +632,7 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
     }
     state["diagnosis_model_meta"] = model_meta
 
-    symptom_profile = build_symptom_evidence_profile(symptoms, kb_manager)
+    symptom_profile = _build_consistent_symptom_profile(symptoms)
     symptoms = symptom_profile["raw_tokens"]
     normalized_symptoms = symptom_profile["normalized_tokens"]
     state["symptoms"] = symptoms
@@ -675,9 +688,9 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
         image_confidence = 0.0
 
     # 文本分支（KB 驱动）
-    text_evidence_level = "none"
-    if enable_text_model:
-        text_evidence_level = get_text_evidence_level(symptom_profile, kb_manager)
+    text_evidence_level = str(symptom_profile.get("text_evidence_level") or "none")
+    if not enable_text_model:
+        text_evidence_level = "none"
     text_evidence_active = text_evidence_level != "none"
     text_probs_source = "none"
     text_weight_multiplier = 1.0
