@@ -530,7 +530,7 @@ class DiagnoseResponse(BaseModel):
     fallback_reason: Optional[list[str]]
     confirm_reasons: list[str] = []
     rule_result: Optional[RuleResult]
-    final_disease: str
+    final_disease: str | None = None
     treatment: Optional[TreatmentPlan] = None
     personalization_applied: bool = False
     farmer_id: Optional[str] = None
@@ -1184,6 +1184,9 @@ def _apply_result_semantics(payload: dict[str, Any]) -> dict[str, Any]:
         data["final_disease_compat"] = data.get("final_disease")
         data["final_confidence_compat"] = data.get("final_confidence")
         data["final_source_compat"] = data.get("final_source")
+        data["final_disease"] = None
+        data["final_confidence"] = None
+        data["final_source"] = None
     else:
         data["current_top1"] = data.get("current_top1") or data.get("final_disease")
     return data
@@ -2690,7 +2693,12 @@ def _diagnose_confirm_core(request: Request, payload: dict) -> dict:
         state["user_choice"] = "other"
         state["current_step"] = "confirm_input"
         if isinstance(previous_case_event, dict):
-            inherited_disease = str(previous_case_event.get("final_disease") or "").strip()
+            inherited_disease = str(
+                previous_case_event.get("final_disease")
+                or previous_case_event.get("provisional_disease")
+                or previous_case_event.get("final_disease_compat")
+                or ""
+            ).strip()
             if inherited_disease:
                 _inherit_previous_diagnosis_context(
                     state,
@@ -4502,6 +4510,8 @@ def _event_disease(event: dict[str, Any]) -> str:
     image_result = _safe_record(event.get("image_result"))
     return str(
         event.get("final_disease")
+        or event.get("provisional_disease")
+        or event.get("final_disease_compat")
         or image_result.get("disease")
         or event.get("disease")
         or event.get("disease_name")
@@ -4543,7 +4553,13 @@ def _event_top1(event: dict[str, Any]) -> str:
     top3 = _normalize_top3_candidates(image_result.get("top3"))
     if top3:
         return str(top3[0][0]).strip()
-    return str(image_result.get("disease") or event.get("final_disease") or "未知").strip() or "未知"
+    return str(
+        image_result.get("disease")
+        or event.get("final_disease")
+        or event.get("provisional_disease")
+        or event.get("final_disease_compat")
+        or "未知"
+    ).strip() or "未知"
 
 
 def _pick_latest_case_by_trace(events: list[dict[str, Any]]) -> list[dict[str, Any]]:

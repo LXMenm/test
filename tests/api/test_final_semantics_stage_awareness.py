@@ -120,7 +120,7 @@ def test_compat_final_fields_can_exist_but_stage_still_distinguishes_non_final(m
         data={"crop_type": "番茄"},
     ).json()
 
-    assert body["final_disease"] == "晚疫病"
+    assert "final_disease" not in body or body["final_disease"] is None
     assert body["final_disease_compat"] == "晚疫病"
     assert body["compatibility_final_fields"] is True
     assert body["result_stage"] == "awaiting_confirmation"
