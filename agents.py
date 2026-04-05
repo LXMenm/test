@@ -183,6 +183,26 @@ def _profile_tokens(profile: Any) -> tuple[list[str], list[str]]:
     return raw_tokens, normalized_tokens
 
 
+def _profile_bucket_snapshot(profile: Any) -> dict[str, Any]:
+    if not isinstance(profile, dict):
+        return {
+            "raw_tokens": [],
+            "normalized_tokens": [],
+            "unknown_tokens": [],
+            "generic_tokens": [],
+            "discriminative_tokens": [],
+            "text_evidence_level": "none",
+        }
+    return {
+        "raw_tokens": parse_symptoms_input(profile.get("raw_tokens")),
+        "normalized_tokens": parse_symptoms_input(profile.get("normalized_tokens")),
+        "unknown_tokens": parse_symptoms_input(profile.get("unknown_tokens")),
+        "generic_tokens": parse_symptoms_input(profile.get("generic_tokens")),
+        "discriminative_tokens": parse_symptoms_input(profile.get("discriminative_tokens")),
+        "text_evidence_level": str(profile.get("text_evidence_level") or "none"),
+    }
+
+
 def _profile_is_usable(profile: Any) -> bool:
     raw_tokens, normalized_tokens = _profile_tokens(profile)
     if not raw_tokens and not normalized_tokens:
@@ -233,6 +253,7 @@ def confirm_input_step(state: CropDiseaseState) -> CropDiseaseState:
             "symptoms": state.get("symptoms"),
             "normalized_symptoms": state.get("normalized_symptoms"),
             "symptom_evidence_profile": state.get("symptom_evidence_profile"),
+            "symptom_profile_buckets": _profile_bucket_snapshot(symptom_profile),
             "image_path": state.get("image_path"),
             "next_action": "diagnosis",
         },
@@ -597,6 +618,14 @@ def reception_agent(state: CropDiseaseState) -> CropDiseaseState:
             "symptoms": state.get("symptoms"),
             "normalized_symptoms": normalized_symptoms,
             "symptom_evidence_profile": symptom_profile,
+            "symptom_profile_buckets": _profile_bucket_snapshot(symptom_profile),
+            "symptom_profile_debug": {
+                "raw_user_query": state.get("user_query"),
+                "cleaned_query": cleaned_query,
+                "llm_extracted_symptoms": parse_symptoms_input(symptoms),
+                "fallback_source": fallback_source if allow_fallback else None,
+                "fallback_enabled": bool(allow_fallback),
+            },
             "image_path": image_path,
             "missing_profile_fields": missing_profile_fields,
             "removed_tokens": removed_tokens,

@@ -270,6 +270,34 @@ def test_same_input_yields_same_unknown_generic_discriminative_buckets_across_st
     assert _profile_buckets(reception_out) == _profile_buckets(confirm_out) == _profile_buckets(diagnosis_out)
 
 
+def test_runtime_trace_keeps_fuzzy_symptom_bucket_consistency_between_reception_and_confirm(monkeypatch) -> None:
+    fake_kb = _FakeKB()
+    monkeypatch.setattr(agents_module, "kb_manager", fake_kb)
+    monkeypatch.setattr(agents_module, "append_trace_event", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        agents_module,
+        "call_llm",
+        lambda *_args, **_kwargs: '{"growth_stage": null, "symptoms": ["叶片发黄", "有斑点", "卷叶", "叶子有问题"]}',
+    )
+
+    reception_state = create_initial_state("叶片发黄, 有斑点, 卷叶, 叶子有问题")
+    reception_out = agents_module.reception_agent(reception_state)
+
+    confirm_state = create_initial_state("confirm")
+    confirm_state["incoming_symptoms"] = ["叶片发黄", "有斑点", "卷叶", "叶子有问题"]
+    confirm_state["historical_symptoms"] = []
+    confirm_out = agents_module.confirm_input_step(confirm_state)
+
+    assert _profile_buckets(reception_out) == _profile_buckets(confirm_out)
+    reception_profile = reception_out.get("symptom_evidence_profile") or {}
+    assert "叶子有问题" in list(reception_profile.get("raw_tokens") or [])
+    trace_events = list(reception_out.get("trace_events") or [])
+    reception_trace = next((event for event in trace_events if event.get("agent") == "reception"), {})
+    outputs = reception_trace.get("outputs") or {}
+    assert "symptom_profile_debug" in outputs
+    assert "symptom_profile_buckets" in outputs
+
+
 def test_diagnosis_agent_prefers_existing_symptom_profile(monkeypatch) -> None:
     fake_kb = _FakeKB()
     _prepare_diagnosis_agent_mocks(monkeypatch, fake_kb)
