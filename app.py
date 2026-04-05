@@ -2242,7 +2242,13 @@ async def diagnose_image(
             growth_stage=growth_stage,
             image_path=str(saved_path),
         )
-        initial_state = create_initial_state(query_text, farmer_id=farmer_id, base_id=base_id, trace_id=trace_id)
+        initial_state = create_initial_state(
+            query_text,
+            farmer_id=farmer_id,
+            base_id=base_id,
+            trace_id=trace_id,
+            image_path=str(saved_path),
+        )
         initial_state["diagnosis_model_id"] = resolved_model.model_id
         if personalization_context:
             initial_state["personalization_context"] = personalization_context
