@@ -44,12 +44,13 @@ def _prepare_start_mocks(monkeypatch, *, probs):
         return "img-start.jpg", app_module.UPLOAD_DIR / "img-start.jpg"
 
     monkeypatch.setattr(app_module, "_save_uploaded_image", _fake_save_uploaded_image)
+    _ = probs
     monkeypatch.setattr(
         app_module,
         "resolve_model",
         lambda model_id, allow_torch=False: (SimpleNamespace(model_path="/tmp/mock.bin", backend="mock", model_id="mock", display_name="mock"), []),
     )
-    monkeypatch.setattr(app_module, "get_diagnosis_engine", lambda **kwargs: SimpleNamespace(diagnose_from_image=lambda _path: ("早疫病", 0.78, probs)))
+    monkeypatch.setattr(app_module, "get_diagnosis_engine", lambda **kwargs: SimpleNamespace(diagnose_from_image=lambda _path: ("早疫病", 0.78, {"早疫病": 0.78})))
     monkeypatch.setattr(app_module, "get_kb_manager", lambda: _StartKB())
 
 
@@ -64,12 +65,16 @@ def test_start_interface_returns_preliminary_not_final_semantics(monkeypatch):
     )
     assert resp.status_code == 200
     body = resp.json()
-    assert body["result_stage"] == "image_precheck"
-    assert body["preliminary_disease"] == "早疫病"
-    assert body["preliminary_confidence_pct"] == 78.0
-    assert isinstance(body["image_top3"], list)
-    assert body["need_multimodal_confirmation"] is True
-    assert body["recommended_next_step"] == "continue_to_multimodal_diagnosis"
+    assert body["result_stage"] == "precheck_internal"
+    assert "preliminary_disease" not in body
+    assert "final_disease" not in body
+    assert body["interface_role"] == "internal_precheck"
+    assert body["entrypoint"] == "diagnose_image_start"
+    assert body["first_user_visible_result"] is False
+    assert body["precheck_semantics_exposed"] is True
+    assert body["user_visible"] is False
+    assert body["recommended_next_step"] == "continue_to_formal_graph_diagnosis"
+    assert body["recommended_next_endpoint"] == "/api/diagnose-image/continue"
 
 
 def test_start_interface_does_not_expose_image_only_result_as_final(monkeypatch):
@@ -83,9 +88,11 @@ def test_start_interface_does_not_expose_image_only_result_as_final(monkeypatch)
     )
     assert resp.status_code == 200
     body = resp.json()
-    assert body["result_stage"] == "image_precheck"
-    assert body["need_multimodal_confirmation"] is True
-    assert body["preliminary_disease"] == body["final_disease"]
+    assert body["result_stage"] == "precheck_internal"
+    assert body["first_user_visible_result"] is False
+    assert body["precheck_semantics_exposed"] is True
+    assert "preliminary_disease" not in body
+    assert "final_disease" not in body
 
 
 def test_start_interface_generates_real_follow_up_questions(monkeypatch):
@@ -99,5 +106,5 @@ def test_start_interface_generates_real_follow_up_questions(monkeypatch):
     )
     assert resp.status_code == 200
     body = resp.json()
-    assert body["follow_up_questions"] == ["请补充病斑是否同心轮纹", "请描述叶背是否有霉层"]
-    assert body["follow_up_questions"] != ["叶片黄化", "叶背白霉"]
+    assert body["result_stage"] == "precheck_internal"
+    assert "follow_up_questions" not in body

@@ -530,7 +530,7 @@ class DiagnoseResponse(BaseModel):
     fallback_reason: Optional[list[str]]
     confirm_reasons: list[str] = []
     rule_result: Optional[RuleResult]
-    final_disease: str
+    final_disease: str | None = None
     treatment: Optional[TreatmentPlan] = None
     personalization_applied: bool = False
     farmer_id: Optional[str] = None
@@ -581,6 +581,21 @@ class DiagnoseResponse(BaseModel):
     verification_issues: list[str] = []
     verification_summary: str | None = None
     status: str = "completed"
+    result_stage: str | None = None
+    interface_role: str | None = None
+    entrypoint: str | None = None
+    first_user_visible_result: bool | None = None
+    precheck_semantics_exposed: bool | None = None
+    is_final_result: bool | None = None
+    final_result_authoritative: bool | None = None
+    provisional_disease: str | None = None
+    provisional_confidence: float | None = None
+    provisional_source: str | None = None
+    current_top1: str | None = None
+    compatibility_final_fields: bool | None = None
+    final_disease_compat: str | None = None
+    final_confidence_compat: float | None = None
+    final_source_compat: str | None = None
     expert_review_recommended: bool = False
     expert_review_selected: bool = False
     expert_review_status: str = "NONE"
@@ -614,6 +629,33 @@ class RegisterRequest(BaseModel):
     username: str
     display_name: str
     password: str
+
+
+class DiagnoseStartResponse(BaseModel):
+    trace_id: str
+    image_id: str
+    image_url: str
+    result_stage: str
+    interface_role: str
+    entrypoint: str
+    first_user_visible_result: bool
+    precheck_semantics_exposed: bool
+    user_visible: bool
+    recommended_next_step: str
+    recommended_next_endpoint: str
+    contract_version: str = "diagnose-v2"
+    status: str = "ready_for_formal_diagnosis"
+
+
+class DiagnoseContinueRequest(BaseModel):
+    image_id: str
+    trace_id: str
+    crop_type: str = "番茄"
+    symptoms: str | None = None
+    growth_stage: str | None = None
+    model_id: str | None = None
+    farmer_id: str | None = None
+    base_id: str | None = None
 
 
 class ChangePasswordRequest(BaseModel):
@@ -943,6 +985,30 @@ def _reason_equals(reason_tokens: list[str], target: str) -> bool:
     return any(token == target_text for token in reason_tokens)
 
 
+IMAGE_FOLLOW_UP_KEYWORDS = ("图", "图片", "图像", "拍", "上传", "重传", "补拍", "清晰", "对焦", "角度")
+
+
+def _is_image_follow_up_question(question: Any) -> bool:
+    text = str(question or "").strip()
+    return bool(text) and any(keyword in text for keyword in IMAGE_FOLLOW_UP_KEYWORDS)
+
+
+def _filter_follow_up_questions_for_mode(
+    follow_up_questions: Any,
+    *,
+    confirm_fields: list[str],
+) -> list[str]:
+    questions = [str(item).strip() for item in (follow_up_questions or []) if str(item).strip()]
+    if not questions:
+        return []
+    fields = {str(item).strip() for item in (confirm_fields or []) if str(item).strip()}
+    if fields == {"symptoms"}:
+        return [q for q in questions if not _is_image_follow_up_question(q)]
+    if fields == {"image"}:
+        return [q for q in questions if _is_image_follow_up_question(q)]
+    return questions
+
+
 def build_confirm_explanation_v2(
     *,
     need_confirm: bool,
@@ -1031,11 +1097,12 @@ def build_confirm_explanation_v2(
         ui_mode = "text"
         fields = ["symptoms"]
 
+    filtered_follow_ups = _filter_follow_up_questions_for_mode(follow_ups, confirm_fields=fields)
     confirm_message = reason_text
     if ui_mode == "image":
         confirm_message = f"{reason_text}。请重新上传图片。"
-    if follow_ups and ui_mode in {"text", "image_and_text"}:
-        confirm_message = f"{reason_text}。请优先补充：{'；'.join(follow_ups[:3])}"
+    if filtered_follow_ups and ui_mode in {"text", "image_and_text"}:
+        confirm_message = f"{reason_text}。请优先补充：{'；'.join(filtered_follow_ups[:3])}"
 
     return {
         "confirm_reason_code": reason_code,
@@ -1043,6 +1110,7 @@ def build_confirm_explanation_v2(
         "recommended_action": action,
         "confirm_ui_mode": ui_mode,
         "confirm_fields": fields,
+        "filtered_follow_up_questions": filtered_follow_ups,
         "confirm_message": confirm_message,
     }
 
@@ -1106,6 +1174,61 @@ def serialize_final_response(payload: dict[str, Any]) -> dict[str, Any]:
     if "confirm_message" in data and data["confirm_message"] is not None:
         data["confirm_message"] = sanitize_user_text(data["confirm_message"])
 
+    return data
+
+
+WAITING_RESULT_STATUSES = {
+    "waiting_for_supplement",
+    "waiting_for_expert_decision",
+    "pending_expert_review",
+}
+
+
+def _derive_result_stage(*, status: Any, need_confirm: Any) -> str:
+    status_text = str(status or "").strip().lower()
+    if status_text == "waiting_for_supplement" or bool(need_confirm):
+        return "awaiting_confirmation"
+    if status_text == "waiting_for_expert_decision":
+        return "pending_confirmation"
+    if status_text == "pending_expert_review":
+        return "pending_expert_review"
+    return "diagnosis_completed"
+
+
+def _interface_contract(*, entrypoint: str, user_visible: bool, precheck_semantics_exposed: bool) -> dict[str, Any]:
+    return {
+        "interface_role": "formal_diagnosis" if user_visible else "internal_precheck",
+        "entrypoint": entrypoint,
+        "first_user_visible_result": user_visible,
+        "precheck_semantics_exposed": precheck_semantics_exposed,
+    }
+
+
+def _apply_result_semantics(payload: dict[str, Any]) -> dict[str, Any]:
+    data = dict(payload or {})
+    stage = _derive_result_stage(status=data.get("status"), need_confirm=data.get("need_confirm"))
+    is_final_result = stage == "diagnosis_completed"
+    data["result_stage"] = stage
+    data["is_final_result"] = is_final_result
+    data["final_result_authoritative"] = is_final_result
+    data["compatibility_final_fields"] = not is_final_result
+    if not is_final_result:
+        data["provisional_disease"] = data.get("provisional_disease") or data.get("final_disease")
+        data["provisional_confidence"] = (
+            data.get("provisional_confidence")
+            if data.get("provisional_confidence") is not None
+            else data.get("final_confidence")
+        )
+        data["provisional_source"] = data.get("provisional_source") or data.get("final_source")
+        data["current_top1"] = data.get("current_top1") or data.get("provisional_disease")
+        data["final_disease_compat"] = data.get("final_disease")
+        data["final_confidence_compat"] = data.get("final_confidence")
+        data["final_source_compat"] = data.get("final_source")
+        data["final_disease"] = None
+        data["final_confidence"] = None
+        data["final_source"] = None
+    else:
+        data["current_top1"] = data.get("current_top1") or data.get("final_disease")
     return data
 
 
@@ -1847,14 +1970,12 @@ def build_trace_query(
     growth_stage: str | None,
     image_path: str,
 ) -> str:
+    _ = crop_type
+    _ = growth_stage
+    _ = image_path
     parts = []
-    if crop_type:
-        parts.append(f"作物类型：{crop_type}")
-    if growth_stage:
-        parts.append(f"生长阶段：{growth_stage_label(growth_stage)}")
     if symptoms_list:
         parts.append(f"症状：{', '.join(symptoms_list)}")
-    parts.append(f"图片路径：{image_path}")
     return "，".join(parts)
 
 
@@ -1898,73 +2019,7 @@ async def _save_uploaded_image(file: UploadFile, *, preferred_name: str | None =
     return unique_name, saved_path
 
 
-def _lightweight_diagnosis_payload(
-    *,
-    image_id: str,
-    trace_id: str,
-    preliminary_disease: str,
-    preliminary_confidence_pct: float | None,
-    image_top3: list[dict[str, Any]],
-    need_confirm: bool,
-    need_multimodal_confirmation: bool,
-    recommended_next_step: str,
-    reason_code: str | None,
-    reason_text: str | None,
-    ui_mode: str,
-    follow_up_questions: list[str],
-) -> dict[str, Any]:
-    status = "waiting_for_supplement" if need_confirm else "diagnosis_completed"
-    
-    if need_confirm and reason_code:
-        if reason_code == "IMAGE_QUALITY_LOW":
-            confirm_fields = ["image"]
-        elif reason_code == "SYMPTOM_TEXT_INSUFFICIENT":
-            confirm_fields = ["symptoms"]
-        elif reason_code in {"IMAGE_TEXT_CONFLICT", "BOTH_IMAGE_AND_TEXT_WEAK"}:
-            confirm_fields = ["image", "symptoms"]
-        elif reason_code == "LOW_DISCRIMINATION_NEED_KEY_FEATURES":
-            if ui_mode == "image":
-                confirm_fields = ["image"]
-            elif ui_mode == "text":
-                confirm_fields = ["symptoms"]
-            else:
-                confirm_fields = ["image", "symptoms"]
-        else:
-            confirm_fields = ["symptoms"]
-            if ui_mode in {"image", "image_and_text"}:
-                confirm_fields.append("image")
-    else:
-        confirm_fields = []
-    
-    return {
-        "trace_id": trace_id,
-        "image_id": image_id,
-        "image_url": f"/uploads/{image_id}",
-        "result_stage": "image_precheck",
-        "preliminary_disease": preliminary_disease,
-        "preliminary_confidence_pct": preliminary_confidence_pct,
-        "image_top3": image_top3,
-        "need_multimodal_confirmation": need_multimodal_confirmation,
-        "recommended_next_step": recommended_next_step,
-        # 兼容历史字段：明确声明当前仅为 image_precheck 阶段
-        "final_disease": preliminary_disease,
-        "displayConfidencePct": preliminary_confidence_pct,
-        "need_confirm": need_confirm,
-        "confirm_message": "当前信息不足，请补充诊断信息后继续" if need_confirm else None,
-        "confirm_reason_code": reason_code if need_confirm else None,
-        "confirm_reason_text": reason_text if need_confirm else None,
-        "confirm_ui_mode": ui_mode if need_confirm else None,
-        "confirm_fields": confirm_fields if need_confirm else [],
-        "follow_up_questions": follow_up_questions if need_confirm else [],
-        "status": status,
-        "treatment": None,
-        "treatment_available": False,
-        "verification_available": False,
-        "verification_result": None,
-    }
-
-
-@app.post("/api/diagnose-image/start")
+@app.post("/api/diagnose-image/start", response_model=DiagnoseStartResponse, response_model_exclude_none=True)
 async def diagnose_image_start(
     request: Request,
     file: UploadFile = File(...),
@@ -1974,7 +2029,7 @@ async def diagnose_image_start(
     model_id: str | None = Form(None),
     farmer_id: str | None = Form(None),
     base_id: str | None = Form(None),
-) -> dict[str, Any]:
+) -> DiagnoseStartResponse:
     actor = _get_request_actor(request)
     farmer_id = _apply_farmer_scope(actor, farmer_id)
     trace_id = uuid.uuid4().hex
@@ -1987,23 +2042,31 @@ async def diagnose_image_start(
         "image_url": f"/uploads/{image_id}",
         "result_stage": "precheck_internal",
         "status": "ready_for_formal_diagnosis",
-        "need_multimodal_confirmation": True,
         "recommended_next_step": "continue_to_formal_graph_diagnosis",
+        "recommended_next_endpoint": "/api/diagnose-image/continue",
         "user_visible": False,
+        "contract_version": "diagnose-v2",
+        **_interface_contract(
+            entrypoint="diagnose_image_start",
+            user_visible=False,
+            precheck_semantics_exposed=True,
+        ),
     }
     emit_node_event(trace_id, node="PrecheckReady", status="end", message="预检查完成，等待正式诊断", payload=payload)
-    return payload
+    return DiagnoseStartResponse(**payload)
 
 
 @app.post("/api/diagnose-image/continue", response_model=DiagnoseResponse, response_model_exclude_none=True)
 async def diagnose_image_continue(
     request: Request,
-    payload: dict = Body(...),
+    payload: DiagnoseContinueRequest = Body(...),
 ) -> DiagnoseResponse:
-    image_id = str(payload.get("image_id") or "").strip()
-    trace_id = str(payload.get("trace_id") or "").strip()
+    image_id = str(payload.image_id or "").strip()
+    trace_id = str(payload.trace_id or "").strip()
     if not image_id:
         raise HTTPException(status_code=400, detail="image_id 不能为空")
+    if not trace_id:
+        raise HTTPException(status_code=400, detail="trace_id 不能为空")
     image_path = UPLOAD_DIR / image_id
     if not image_path.exists():
         raise HTTPException(status_code=404, detail="未找到对应图片，请重新上传")
@@ -2013,14 +2076,18 @@ async def diagnose_image_continue(
     return await diagnose_image(
         request=request,
         file=upload_file,
-        crop_type=str(payload.get("crop_type") or "番茄"),
-        symptoms=str(payload.get("symptoms") or "") or None,
-        growth_stage=str(payload.get("growth_stage") or "") or None,
-        model_id=str(payload.get("model_id") or "") or None,
-        farmer_id=str(payload.get("farmer_id") or "") or None,
-        base_id=str(payload.get("base_id") or "") or None,
+        crop_type=str(payload.crop_type or "番茄"),
+        symptoms=str(payload.symptoms or "") or None,
+        growth_stage=str(payload.growth_stage or "") or None,
+        model_id=str(payload.model_id or "") or None,
+        farmer_id=str(payload.farmer_id or "") or None,
+        base_id=str(payload.base_id or "") or None,
+        lat=None,
+        lon=None,
+        debug_runtime=None,
         trace_id_override=trace_id or None,
         image_id_override=image_id,
+        entrypoint="diagnose_image_continue",
     )
 
 
@@ -2039,11 +2106,13 @@ async def diagnose_image(
     debug_runtime: bool | None = Form(None),
     trace_id_override: str | None = Form(None),
     image_id_override: str | None = Form(None),
+    entrypoint: str | None = Form(None),
 ) -> DiagnoseResponse:
     request_started = time.perf_counter()
     actor = _get_request_actor(request)
     farmer_id = _apply_farmer_scope(actor, farmer_id)
     trace_id = str(trace_id_override or "").strip() or uuid.uuid4().hex
+    resolved_entrypoint = str(entrypoint or "diagnose_image").strip() or "diagnose_image"
     emit_node_event(trace_id, node="ParseInput", status="start", message="开始解析上传请求")
     debug_mode = bool(debug_runtime) or str(os.getenv("DIAG_DEBUG_RUNTIME", "0")).lower() in {"1", "true", "yes"}
     runtime_debug = _collect_runtime_debug() if debug_mode else None
@@ -2125,6 +2194,10 @@ async def diagnose_image(
             trace_id=trace_id,
             image_path=str(saved_path),
         )
+        initial_state["crop_type"] = crop_type or "番茄"
+        initial_state["crop_growth_stage"] = normalize_growth_stage_code(growth_stage)
+        initial_state["symptoms"] = list(symptoms_list)
+        initial_state["user_symptom_text"] = str(symptoms or "").strip()
         initial_state["diagnosis_model_id"] = resolved_model.model_id
         if personalization_context:
             initial_state["personalization_context"] = personalization_context
@@ -2189,6 +2262,8 @@ async def diagnose_image(
                     for name, prob in resolved_top3
                 ],
             }
+    if not image_result_dict.get("disease"):
+        image_result_dict["disease"] = str(final_disease or "未知病害")
 
     verification_result = (final_state or {}).get("verification_result")
     verification_passed = (final_state or {}).get("verification_passed")
@@ -2320,6 +2395,11 @@ async def diagnose_image(
         fallback_reason=trace_fallback_reason or fallback_reasons,
         follow_up_questions=follow_up_questions,
     )
+    filtered_follow_up_questions = normalize_follow_up_questions(
+        confirm_explanation.get("filtered_follow_up_questions") or []
+    )
+    confirm_explanation.pop("filtered_follow_up_questions", None)
+    follow_up_questions = filtered_follow_up_questions
 
     event = {
         "id": uuid.uuid4().hex,
@@ -2362,6 +2442,11 @@ async def diagnose_image(
         "reliability_issue_types": list((final_state or {}).get("reliability_issue_types") or []),
         "supplement_mode": str((final_state or {}).get("supplement_mode") or "none"),
         "status": response_status,
+        **_interface_contract(
+            entrypoint=resolved_entrypoint,
+            user_visible=True,
+            precheck_semantics_exposed=False,
+        ),
         "treatment_skipped_due_need_confirm": need_confirm_waiting,
         "treatment_available": treatment_available,
         "verification_available": verification_available,
@@ -2378,8 +2463,10 @@ async def diagnose_image(
         "expert_review_actions": [],
         "graph_treatment_generated": graph_treatment_generated,
         "fallback_treatment_used": fallback_treatment_used,
+        "follow_up_questions": follow_up_questions,
         **confirm_explanation,
     }
+    event = _apply_result_semantics(event)
     event = serialize_final_response(event)
     emit_node_event(trace_id, node="Persist", status="start", message="写入事件日志")
     try:
@@ -2395,7 +2482,12 @@ async def diagnose_image(
             node="AwaitUserConfirmation",
             status="end",
             message="当前轮返回追问，等待用户进入补充诊断",
-            payload={"final_disease": final_disease, "status": response_status, "reason": "need_confirm_wait_user"},
+            payload={
+                "provisional_disease": event.get("provisional_disease") or final_disease,
+                "status": response_status,
+                "reason": "need_confirm_wait_user",
+                "result_stage": event.get("result_stage"),
+            },
         )
     else:
         emit_final_event_once(
@@ -2462,6 +2554,11 @@ async def diagnose_image(
         "verification_issues": verification_issues,
         "verification_summary": verification_summary,
         "status": response_status,
+        **_interface_contract(
+            entrypoint=resolved_entrypoint,
+            user_visible=True,
+            precheck_semantics_exposed=False,
+        ),
         "expert_review_recommended": expert_review_recommended,
         "expert_review_selected": expert_review_selected,
         "expert_review_status": expert_review_status,
@@ -2492,6 +2589,7 @@ async def diagnose_image(
         } if debug_mode else None,
     }
     response_payload.update(confirm_explanation)
+    response_payload = _apply_result_semantics(response_payload)
 
     return DiagnoseResponse(**serialize_final_response(response_payload))
 
@@ -2661,7 +2759,12 @@ def _diagnose_confirm_core(request: Request, payload: dict) -> dict:
         state["user_choice"] = "other"
         state["current_step"] = "confirm_input"
         if isinstance(previous_case_event, dict):
-            inherited_disease = str(previous_case_event.get("final_disease") or "").strip()
+            inherited_disease = str(
+                previous_case_event.get("final_disease")
+                or previous_case_event.get("provisional_disease")
+                or previous_case_event.get("final_disease_compat")
+                or ""
+            ).strip()
             if inherited_disease:
                 _inherit_previous_diagnosis_context(
                     state,
@@ -2903,6 +3006,11 @@ def _diagnose_confirm_core(request: Request, payload: dict) -> dict:
         fallback_reason=flags.get("fallback_reason"),
         follow_up_questions=follow_up_questions,
     )
+    filtered_follow_up_questions = normalize_follow_up_questions(
+        confirm_explanation.get("filtered_follow_up_questions") or []
+    )
+    confirm_explanation.pop("filtered_follow_up_questions", None)
+    follow_up_questions = filtered_follow_up_questions
     confirm_message = confirm_explanation.get("confirm_message")
     if confirm_status == "pending_expert_review":
         confirm_message = "已进入待专家复核状态，后续将由专家确认病害并补充最终方案。"
@@ -2994,6 +3102,7 @@ def _diagnose_confirm_core(request: Request, payload: dict) -> dict:
         **confirm_explanation,
     }
     event["confirm_message"] = confirm_message
+    event = _apply_result_semantics(event)
     event = serialize_final_response(event)
     emit_node_event(trace_id, node="Persist", status="start", message="写入确认轮事件日志")
     try:
@@ -3011,9 +3120,10 @@ def _diagnose_confirm_core(request: Request, payload: dict) -> dict:
             status="end",
             message="当前轮返回追问，等待用户进入补充诊断",
             payload={
-                "final_disease": state.get("final_disease"),
+                "provisional_disease": event.get("provisional_disease") or state.get("final_disease"),
                 "status": confirm_status,
                 "reason": "need_confirm_wait_user",
+                "result_stage": event.get("result_stage"),
             },
         )
     else:
@@ -3119,6 +3229,7 @@ def _diagnose_confirm_core(request: Request, payload: dict) -> dict:
         "events": events,
     }
     response_payload["previous_trace_id"] = previous_trace_id or trace_id
+    response_payload = _apply_result_semantics(response_payload)
     print(
         "[DiagnoseConfirm] output",
         json.dumps(
@@ -4465,6 +4576,8 @@ def _event_disease(event: dict[str, Any]) -> str:
     image_result = _safe_record(event.get("image_result"))
     return str(
         event.get("final_disease")
+        or event.get("provisional_disease")
+        or event.get("final_disease_compat")
         or image_result.get("disease")
         or event.get("disease")
         or event.get("disease_name")
@@ -4506,7 +4619,13 @@ def _event_top1(event: dict[str, Any]) -> str:
     top3 = _normalize_top3_candidates(image_result.get("top3"))
     if top3:
         return str(top3[0][0]).strip()
-    return str(image_result.get("disease") or event.get("final_disease") or "未知").strip() or "未知"
+    return str(
+        image_result.get("disease")
+        or event.get("final_disease")
+        or event.get("provisional_disease")
+        or event.get("final_disease_compat")
+        or "未知"
+    ).strip() or "未知"
 
 
 def _pick_latest_case_by_trace(events: list[dict[str, Any]]) -> list[dict[str, Any]]:

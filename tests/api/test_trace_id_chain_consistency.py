@@ -132,6 +132,14 @@ def test_start_continue_reuses_same_trace_id(monkeypatch, tmp_path):
     continue_resp.raise_for_status()
     continue_body = continue_resp.json()
     assert continue_body["trace_id"] == trace_id
+    assert continue_body["entrypoint"] == "diagnose_image_continue"
+    assert continue_body["precheck_semantics_exposed"] is False
+    events = event_store.list_events(limit=20)
+    chain_events = [evt for evt in events if evt.get("trace_id") == trace_id]
+    assert chain_events
+    latest = chain_events[-1]
+    assert latest.get("result_stage") == "diagnosis_completed"
+    assert latest.get("precheck_semantics_exposed") is False
 
 
 def test_confirm_other_and_choice_reuse_same_trace_id(monkeypatch, tmp_path):
