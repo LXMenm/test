@@ -452,6 +452,7 @@ def _clean_query_for_symptoms(query: str) -> tuple[str, list[str]]:
     patterns = [
         r"(作物类型|作物|crop)\s*[:：]\s*([^\s,，；;]+)",
         r"(图片路径|图像路径|图片|图像|path)\s*[:：]\s*([^\s,，；;]+)",
+        r"(症状|symptoms)\s*[:：]\s*",  # 清理症状前缀
     ]
     for pattern in patterns:
         match = re.search(pattern, cleaned, flags=re.IGNORECASE)
