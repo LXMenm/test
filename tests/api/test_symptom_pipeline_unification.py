@@ -289,9 +289,109 @@ def test_runtime_trace_keeps_fuzzy_symptom_bucket_consistency_between_reception_
     confirm_out = agents_module.confirm_input_step(confirm_state)
 
     assert _profile_buckets(reception_out) == _profile_buckets(confirm_out)
-    reception_profile = reception_out.get("symptom_evidence_profile") or {}
+
+
+def test_reception_mixed_input_keeps_fuzzy_token_in_raw_or_unknown(monkeypatch) -> None:
+    fake_kb = _FakeKB()
+    monkeypatch.setattr(agents_module, "kb_manager", fake_kb)
+    monkeypatch.setattr(agents_module, "append_trace_event", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        agents_module,
+        "call_llm",
+        lambda *_args, **_kwargs: '{"growth_stage": null, "symptoms": ["叶片发黄", "有斑点", "卷叶"]}',
+    )
+
+    state = create_initial_state("叶片发黄, 有斑点, 卷叶, 叶子有问题")
+    out = agents_module.reception_agent(state)
+    profile = out.get("symptom_evidence_profile") or {}
+    raw_tokens = list(profile.get("raw_tokens") or [])
+    unknown_tokens = list(profile.get("unknown_tokens") or [])
+
+    assert "叶子有问题" in raw_tokens or "叶子有问题" in unknown_tokens
+
+
+def test_reception_mixed_explicit_and_fuzzy_does_not_drop_fuzzy(monkeypatch) -> None:
+    fake_kb = _FakeKB()
+    monkeypatch.setattr(agents_module, "kb_manager", fake_kb)
+    monkeypatch.setattr(agents_module, "append_trace_event", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        agents_module,
+        "call_llm",
+        lambda *_args, **_kwargs: '{"growth_stage": null, "symptoms": ["发黄"]}',
+    )
+
+    state = create_initial_state("叶子有问题, 发黄")
+    out = agents_module.reception_agent(state)
+    raw_tokens = list((out.get("symptom_evidence_profile") or {}).get("raw_tokens") or [])
+
+    assert "发黄" in raw_tokens
+    assert "叶子有问题" in raw_tokens
+
+
+def test_reception_only_fuzzy_input_keeps_unknown_tokens(monkeypatch) -> None:
+    fake_kb = _FakeKB()
+    monkeypatch.setattr(agents_module, "kb_manager", fake_kb)
+    monkeypatch.setattr(agents_module, "append_trace_event", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        agents_module,
+        "call_llm",
+        lambda *_args, **_kwargs: '{"growth_stage": null, "symptoms": []}',
+    )
+
+    state = create_initial_state("叶子有问题")
+    out = agents_module.reception_agent(state)
+    unknown_tokens = list((out.get("symptom_evidence_profile") or {}).get("unknown_tokens") or [])
+    raw_tokens = list((out.get("symptom_evidence_profile") or {}).get("raw_tokens") or [])
+    assert "叶子有问题" in raw_tokens
+    assert "叶子有问题" in unknown_tokens
+
+
+def test_reception_and_confirm_keep_same_fuzzy_token_without_divergence(monkeypatch) -> None:
+    fake_kb = _FakeKB()
+    monkeypatch.setattr(agents_module, "kb_manager", fake_kb)
+    monkeypatch.setattr(agents_module, "append_trace_event", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        agents_module,
+        "call_llm",
+        lambda *_args, **_kwargs: '{"growth_stage": null, "symptoms": ["发黄"]}',
+    )
+
+    reception_state = create_initial_state("叶子有问题, 发黄")
+    reception_out = agents_module.reception_agent(reception_state)
+
+    confirm_state = create_initial_state("confirm")
+    confirm_state["incoming_symptoms"] = ["叶子有问题", "发黄"]
+    confirm_state["historical_symptoms"] = []
+    confirm_out = agents_module.confirm_input_step(confirm_state)
+
+    assert "叶子有问题" in (reception_out.get("symptoms") or [])
+    assert "叶子有问题" in (confirm_out.get("symptoms") or [])
+
+
+def test_reception_trace_debug_contains_merged_token_observability(monkeypatch) -> None:
+    fake_kb = _FakeKB()
+    monkeypatch.setattr(agents_module, "kb_manager", fake_kb)
+    monkeypatch.setattr(agents_module, "append_trace_event", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        agents_module,
+        "call_llm",
+        lambda *_args, **_kwargs: '{"growth_stage": null, "symptoms": ["发黄"]}',
+    )
+
+    state = create_initial_state("叶子有问题, 发黄")
+    out = agents_module.reception_agent(state)
+    trace_events = list(out.get("trace_events") or [])
+    reception_events = [event for event in trace_events if event.get("agent") == "reception"]
+    assert reception_events
+    debug = (((reception_events[-1] or {}).get("outputs") or {}).get("symptom_profile_debug") or {})
+
+    assert debug.get("llm_extracted_tokens") == ["发黄"]
+    assert "叶子有问题" in (debug.get("parsed_free_text_tokens") or [])
+    assert "发黄" in (debug.get("merged_tokens") or [])
+    assert "叶子有问题" in (debug.get("merged_tokens") or [])
+    reception_profile = out.get("symptom_evidence_profile") or {}
     assert "叶子有问题" in list(reception_profile.get("raw_tokens") or [])
-    trace_events = list(reception_out.get("trace_events") or [])
+    trace_events = list(out.get("trace_events") or [])
     reception_trace = next((event for event in trace_events if event.get("agent") == "reception"), {})
     outputs = reception_trace.get("outputs") or {}
     assert "symptom_profile_debug" in outputs

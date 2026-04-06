@@ -163,8 +163,7 @@ def _build_consistent_symptom_profile(
     parsed_symptoms = parse_symptoms_input(symptoms)
     fallback_text = str(fallback_raw_text or "")
     fallback_tokens = parse_symptoms_input(fallback_text) if (allow_fallback and fallback_text) else []
-    fallback_looks_like_symptom_list = any(marker in fallback_text for marker in [",", "，", ";", "；", "\n"])
-    if merge_fallback_tokens and fallback_tokens and (fallback_looks_like_symptom_list or len(fallback_tokens) > 1):
+    if merge_fallback_tokens and fallback_tokens:
         merged: list[str] = []
         for token in [*parsed_symptoms, *fallback_tokens]:
             if token and token not in merged:
@@ -596,14 +595,30 @@ def reception_agent(state: CropDiseaseState) -> CropDiseaseState:
     # 更新状态
     state["crop_type"] = crop_type
     state["crop_growth_stage"] = _canonicalize_growth_stage(crop_growth_stage)
+    llm_extracted_tokens = parse_symptoms_input(symptoms)
     user_symptom_text = str(state.get("user_symptom_text") or "").strip()
     fallback_source = user_symptom_text or cleaned_query
     allow_fallback = bool(user_symptom_text) or (bool(cleaned_query) and not _is_system_context_text(cleaned_query))
+    parse_cleaned_query = (
+        bool(cleaned_query)
+        and not user_symptom_text
+        and (
+            any(marker in cleaned_query for marker in [",", "，", ";", "；", "\n"])
+            or (not llm_extracted_tokens and "番茄" not in cleaned_query and "作物" not in cleaned_query)
+        )
+    )
+    parsed_free_text_tokens = parse_symptoms_input(
+        user_symptom_text if user_symptom_text else (cleaned_query if parse_cleaned_query else "")
+    ) if allow_fallback else []
+    merged_tokens: list[str] = []
+    for token in [*llm_extracted_tokens, *parsed_free_text_tokens]:
+        if token and token not in merged_tokens:
+            merged_tokens.append(token)
     symptom_profile = _build_consistent_symptom_profile(
-        symptoms,
-        fallback_raw_text=fallback_source,
-        allow_fallback=allow_fallback,
-        merge_fallback_tokens=True,
+        merged_tokens,
+        fallback_raw_text=None,
+        allow_fallback=False,
+        merge_fallback_tokens=False,
     )
     normalized_symptoms = symptom_profile["normalized_tokens"]
     state["symptoms"] = symptom_profile["raw_tokens"]
@@ -633,7 +648,10 @@ def reception_agent(state: CropDiseaseState) -> CropDiseaseState:
             "symptom_profile_debug": {
                 "raw_user_query": state.get("user_query"),
                 "cleaned_query": cleaned_query,
-                "llm_extracted_symptoms": parse_symptoms_input(symptoms),
+                "llm_extracted_symptoms": llm_extracted_tokens,
+                "llm_extracted_tokens": llm_extracted_tokens,
+                "parsed_free_text_tokens": parsed_free_text_tokens,
+                "merged_tokens": merged_tokens,
                 "fallback_source": fallback_source if allow_fallback else None,
                 "fallback_enabled": bool(allow_fallback),
             },
