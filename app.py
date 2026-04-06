@@ -2093,9 +2093,9 @@ async def diagnose_image_start(
     actor = _get_request_actor(request)
     farmer_id = _apply_farmer_scope(actor, farmer_id)
     trace_id = uuid.uuid4().hex
-    emit_node_event(trace_id, node="ParseInput", status="start", message="开始解析上传请求")
+    emit_node_event(trace_id, node="PrecheckUploadInit", status="start", message="开始内部预处理上传初始化")
     image_id, saved_path = await _save_uploaded_image(file)
-    emit_node_event(trace_id, node="ParseInput", status="end", message="输入解析完成", payload={"image_path": str(saved_path)})
+    emit_node_event(trace_id, node="PrecheckUploadInit", status="end", message="内部预处理上传完成", payload={"image_path": str(saved_path)})
     payload = {
         "trace_id": trace_id,
         "image_id": image_id,
@@ -2112,7 +2112,7 @@ async def diagnose_image_start(
             precheck_semantics_exposed=True,
         ),
     }
-    emit_node_event(trace_id, node="PrecheckReady", status="end", message="预检查完成，等待正式诊断", payload=payload)
+    emit_node_event(trace_id, node="PrecheckReadyInternal", status="end", message="内部预处理完成，等待正式诊断", payload=payload)
     return DiagnoseStartResponse(**payload)
 
 
@@ -2130,10 +2130,11 @@ async def diagnose_image_continue(
     image_path = UPLOAD_DIR / image_id
     if not image_path.exists():
         raise HTTPException(status_code=404, detail="未找到对应图片，请重新上传")
+    emit_node_event(trace_id, node="ContinueFromPrecheck", status="start", message="接续 precheck 进入正式诊断", payload={"image_id": image_id})
     with image_path.open("rb") as f:
         image_bytes = f.read()
     upload_file = UploadFile(filename=image_id, file=BytesIO(image_bytes))
-    return await diagnose_image(
+    response = await diagnose_image(
         request=request,
         file=upload_file,
         crop_type=str(payload.crop_type or "番茄"),
@@ -2149,6 +2150,8 @@ async def diagnose_image_continue(
         image_id_override=image_id,
         entrypoint="diagnose_image_continue",
     )
+    emit_node_event(trace_id, node="ContinueFromPrecheck", status="end", message="precheck 接续已移交正式诊断链", payload={"image_id": image_id})
+    return response
 
 
 @app.post("/api/diagnose-image", response_model=DiagnoseResponse, response_model_exclude_none=True)
@@ -2173,20 +2176,39 @@ async def diagnose_image(
     farmer_id = _apply_farmer_scope(actor, farmer_id)
     trace_id = str(trace_id_override or "").strip() or uuid.uuid4().hex
     resolved_entrypoint = str(entrypoint or "diagnose_image").strip() or "diagnose_image"
-    emit_node_event(trace_id, node="ParseInput", status="start", message="开始解析上传请求")
+    use_prechecked_image = bool(
+        resolved_entrypoint == "diagnose_image_continue"
+        and str(image_id_override or "").strip()
+    )
+    parse_node = "ContinueInputReuse" if use_prechecked_image else "ParseInput"
+    parse_start_message = "复用 precheck 图片并接续正式诊断" if use_prechecked_image else "开始解析上传请求"
+    emit_node_event(trace_id, node=parse_node, status="start", message=parse_start_message)
     debug_mode = bool(debug_runtime) or str(os.getenv("DIAG_DEBUG_RUNTIME", "0")).lower() in {"1", "true", "yes"}
     runtime_debug = _collect_runtime_debug() if debug_mode else None
     if debug_mode:
         print(f"[RuntimeDebug] {json.dumps(runtime_debug, ensure_ascii=False)}")
     try:
-        unique_name, saved_path = await _save_uploaded_image(file, preferred_name=image_id_override)
-        emit_node_event(trace_id, node="ParseInput", status="end", message="输入解析完成", payload={"image_path": str(saved_path)})
+        if use_prechecked_image:
+            unique_name = str(image_id_override or "").strip()
+            saved_path = (UPLOAD_DIR / unique_name).resolve()
+            if not saved_path.exists():
+                raise HTTPException(status_code=404, detail="未找到 precheck 图片，请重新上传")
+            emit_node_event(
+                trace_id,
+                node=parse_node,
+                status="end",
+                message="已复用 precheck 图片",
+                payload={"image_path": str(saved_path), "input_mode": "precheck_reuse"},
+            )
+        else:
+            unique_name, saved_path = await _save_uploaded_image(file, preferred_name=image_id_override)
+            emit_node_event(trace_id, node=parse_node, status="end", message="输入解析完成", payload={"image_path": str(saved_path)})
     except HTTPException:
-        emit_node_event(trace_id, node="ParseInput", status="error", message="输入解析失败")
+        emit_node_event(trace_id, node=parse_node, status="error", message="输入解析失败")
         emit_node_event(trace_id, node="Final", status="error", message="请求解析失败")
         raise
     except Exception as exc:
-        emit_node_event(trace_id, node="ParseInput", status="error", message=f"读取或保存失败: {exc}")
+        emit_node_event(trace_id, node=parse_node, status="error", message=f"读取或保存失败: {exc}")
         emit_node_event(trace_id, node="Final", status="error", message="请求解析失败")
         raise HTTPException(status_code=400, detail=f"读取或保存图片失败: {exc}") from exc
 
