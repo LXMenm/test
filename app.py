@@ -990,7 +990,20 @@ IMAGE_FOLLOW_UP_KEYWORDS = ("图", "图片", "图像", "拍", "上传", "重传"
 
 def _is_image_follow_up_question(question: Any) -> bool:
     text = str(question or "").strip()
-    return bool(text) and any(keyword in text for keyword in IMAGE_FOLLOW_UP_KEYWORDS)
+    if not text:
+        return False
+    # 图片相关关键词，需要更精确的匹配
+    image_keywords = ["上传图片", "重新上传", "补拍", "拍照", "图片", "图像", "照片", "对焦", "角度", "光线"]
+    # 排除包含症状描述关键词的问题
+    symptom_keywords = ["病斑", "颜色", "边缘", "水渍", "霉层", "症状", "特征", "表现"]
+    
+    # 如果包含症状关键词，不是图片相关问题
+    for symptom_keyword in symptom_keywords:
+        if symptom_keyword in text:
+            return False
+    
+    # 检查是否包含图片相关关键词
+    return any(image_keyword in text for image_keyword in image_keywords)
 
 
 def _filter_follow_up_questions_for_mode(
@@ -1007,6 +1020,53 @@ def _filter_follow_up_questions_for_mode(
     if fields == {"image"}:
         return [q for q in questions if _is_image_follow_up_question(q)]
     return questions
+
+
+def normalize_confirmation_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """
+    统一后处理函数，确保 confirm_ui_mode / confirm_fields / confirm_message / follow_up_questions 一致
+    
+    Args:
+        payload: 包含确认信息的字典
+        
+    Returns:
+        处理后的字典，确保各字段一致
+    """
+    payload = dict(payload or {})
+    
+    # 获取确认相关字段
+    confirm_ui_mode = payload.get("confirm_ui_mode")
+    confirm_fields = payload.get("confirm_fields", [])
+    follow_up_questions = payload.get("follow_up_questions", [])
+    confirm_message = payload.get("confirm_message")
+    confirm_reason_text = payload.get("confirm_reason_text")
+    
+    # 过滤 follow_up_questions
+    filtered_follow_ups = _filter_follow_up_questions_for_mode(
+        follow_up_questions, 
+        confirm_fields=confirm_fields
+    )
+    payload["follow_up_questions"] = filtered_follow_ups
+    
+    # 根据 confirm_ui_mode 更新 confirm_message
+    if confirm_ui_mode and confirm_reason_text:
+        if confirm_ui_mode == "image":
+            # image 模式：只能要求补图
+            payload["confirm_message"] = f"{confirm_reason_text}。请重新上传图片。"
+        elif confirm_ui_mode == "text":
+            # text 模式：只能要求补文本
+            if filtered_follow_ups:
+                payload["confirm_message"] = f"{confirm_reason_text}。请优先补充：{'；'.join(filtered_follow_ups[:3])}"
+            else:
+                payload["confirm_message"] = f"{confirm_reason_text}。请补充详细症状描述。"
+        elif confirm_ui_mode == "image_and_text":
+            # image_and_text 模式：允许同时要求两者
+            if filtered_follow_ups:
+                payload["confirm_message"] = f"{confirm_reason_text}。请优先补充：{'；'.join(filtered_follow_ups[:3])}"
+            else:
+                payload["confirm_message"] = f"{confirm_reason_text}。请同时补充图片和症状描述。"
+    
+    return payload
 
 
 def build_confirm_explanation_v2(
@@ -2468,6 +2528,8 @@ async def diagnose_image(
     }
     event = _apply_result_semantics(event)
     event = serialize_final_response(event)
+    # 统一后处理，确保确认信息一致
+    event = normalize_confirmation_payload(event)
     emit_node_event(trace_id, node="Persist", status="start", message="写入事件日志")
     try:
         append_event(event)
@@ -3105,7 +3167,9 @@ def _diagnose_confirm_core(request: Request, payload: dict) -> dict:
     event["confirm_message"] = confirm_message
     event = _apply_result_semantics(event)
     event = serialize_final_response(event)
-    emit_node_event(trace_id, node="Persist", status="start", message="写入确认轮事件日志")
+    # 统一后处理，确保确认信息一致
+    event = normalize_confirmation_payload(event)
+    emit_node_event(trace_id, node="Persist", status="start", message="写入事件日志")
     try:
         append_event(serialize_final_response(event))
         emit_node_event(trace_id, node="Persist", status="end", message="确认轮事件落盘完成")
