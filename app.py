@@ -2927,6 +2927,7 @@ def _diagnose_confirm_core(request: Request, payload: dict) -> dict:
     expert_review_selected = False
     expert_review_status = "NONE"
     expert_review_actions: list[str] = []
+    manual_review_required_before_execution = False
     if terminal_action == "expert_final_decision":
         expert_review_recommended = True
         manual_review_recommended = True
