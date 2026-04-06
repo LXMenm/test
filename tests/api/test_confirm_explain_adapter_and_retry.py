@@ -156,6 +156,47 @@ def test_blurry_conflict_case_explain_should_be_image_quality_low() -> None:
     assert result["confirm_ui_mode"] != "image_and_text"
 
 
+def test_build_confirm_explanation_filters_follow_ups_by_mode() -> None:
+    text_mode = app_module.build_confirm_explanation_v2(
+        need_confirm=True,
+        fusion_case=None,
+        image_reliable=True,
+        text_reliable=False,
+        supplement_mode="text_only",
+        fallback_reason=[],
+        follow_up_questions=["请重新拍一张清晰图片", "请描述病斑边缘颜色"],
+    )
+    assert text_mode["confirm_ui_mode"] == "text"
+    assert text_mode["confirm_fields"] == ["symptoms"]
+    assert "重新拍一张清晰图片" not in " ".join(text_mode["filtered_follow_up_questions"])
+
+    image_mode = app_module.build_confirm_explanation_v2(
+        need_confirm=True,
+        fusion_case=None,
+        image_reliable=False,
+        text_reliable=True,
+        supplement_mode="image_only",
+        fallback_reason=[],
+        follow_up_questions=["请重新拍一张清晰图片", "请描述病斑边缘颜色"],
+    )
+    assert image_mode["confirm_ui_mode"] == "image"
+    assert image_mode["confirm_fields"] == ["image"]
+    assert image_mode["filtered_follow_up_questions"] == ["请重新拍一张清晰图片"]
+
+    both_mode = app_module.build_confirm_explanation_v2(
+        need_confirm=True,
+        fusion_case="both_weak",
+        image_reliable=False,
+        text_reliable=False,
+        supplement_mode="image_and_text",
+        fallback_reason=["both_modalities_weak"],
+        follow_up_questions=["请重新拍一张清晰图片", "请描述病斑边缘颜色"],
+    )
+    assert both_mode["confirm_ui_mode"] == "image_and_text"
+    assert both_mode["confirm_fields"] == ["image", "symptoms"]
+    assert len(both_mode["filtered_follow_up_questions"]) == 2
+
+
 def test_diagnose_image_returns_explain_fields(monkeypatch):
     monkeypatch.setattr(app_module, "emit_node_event", lambda *args, **kwargs: {})
     monkeypatch.setattr(app_module, "emit_final_event_once", lambda *args, **kwargs: True)
@@ -172,14 +213,19 @@ def test_diagnose_image_returns_explain_fields(monkeypatch):
         app_module,
         "build_graph",
         lambda: _StaticGraph(
-            {
-                "trace_id": "t-image",
-                "final_disease": "早疫病",
-                "final_confidence": 0.6,
-                "final_source": "fusion",
-                "fusion_case": "conflict",
-                "image_reliable": False,
-                "text_reliable": True,
+                {
+                    "trace_id": "t-image",
+                    "final_disease": "早疫病",
+                    "final_confidence": 0.6,
+                    "final_source": "fusion",
+                    "image_result": {
+                        "disease": "早疫病",
+                        "confidence": 0.91,
+                        "top3": [("早疫病", 0.91), ("晚疫病", 0.09)],
+                    },
+                    "fusion_case": "conflict",
+                    "image_reliable": False,
+                    "text_reliable": True,
                 "supplement_mode": "image_and_text",
                 "personalization_flags": {"need_confirm": True, "fallback_reason": ["image_text_conflict"], "follow_up_questions": ["请补充病斑边缘特征"]},
             }
@@ -192,6 +238,9 @@ def test_diagnose_image_returns_explain_fields(monkeypatch):
     data = resp.json()
     assert data["confirm_reason_code"] == "IMAGE_QUALITY_LOW"
     assert data["confirm_ui_mode"] == "image"
+    assert data["confirm_fields"] == ["image"]
+    assert data["follow_up_questions"] == []
+    assert "请优先补充" not in (data.get("confirm_message") or "")
     assert data["recommended_action"] == "reupload_image"
 
 
@@ -254,3 +303,93 @@ def test_confirm_and_retry_endpoints_compatible_and_support_modes(monkeypatch):
     assert calls[1]["symptoms"] == ["叶片黄化", "病斑扩大"]
     assert calls[2]["image_id"] != "img3.jpg"
     assert calls[3]["symptoms"] == ["卷叶", "黄化"]
+
+
+def test_diagnose_confirm_chain_filters_follow_ups_to_text_mode(monkeypatch, tmp_path):
+    trace_id = "trace-confirm-filter"
+    image_id = "confirm.jpg"
+    (tmp_path / image_id).write_bytes(b"fake")
+    monkeypatch.setattr(app_module, "UPLOAD_DIR", tmp_path)
+    monkeypatch.setattr(app_module, "emit_node_event", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app_module, "emit_final_event_once", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app_module, "append_event", lambda *args, **kwargs: None)
+
+    previous_case_event = {
+        "trace_id": trace_id,
+        "status": "waiting_for_supplement",
+        "symptoms": ["叶片发黄"],
+        "final_disease": "早疫病",
+        "final_confidence": 0.61,
+        "final_source": "fusion",
+        "follow_up_questions": ["请补拍整株图片", "请描述病斑颜色"],
+    }
+    monkeypatch.setattr(app_module, "_latest_case_event_by_trace", lambda _trace_id: dict(previous_case_event))
+    monkeypatch.setattr(app_module, "list_trace_events", lambda _trace_id: [dict(previous_case_event)])
+
+    class _KB:
+        @staticmethod
+        def normalize_symptoms(symptoms):
+            return [str(item).strip() for item in (symptoms or []) if str(item).strip()]
+
+        @staticmethod
+        def has_effective_text_evidence(symptoms, **_kwargs):
+            return bool(symptoms)
+
+        @staticmethod
+        def has_discriminative_text_evidence(_symptoms):
+            return False
+
+        @staticmethod
+        def get_candidate_diseases_from_symptoms(_symptoms):
+            return []
+
+        @staticmethod
+        def generate_text_follow_up_questions(_symptoms, text_probs=None):
+            _ = text_probs
+            return []
+
+    monkeypatch.setattr(app_module, "get_kb_manager", lambda: _KB())
+    monkeypatch.setattr(app_module, "_resolve_profile_and_base", lambda *_args, **_kwargs: (None, None, None))
+    monkeypatch.setattr(app_module, "build_personalization_context", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(app_module, "build_personalization_flags", lambda *_args, **_kwargs: {})
+
+    class _Graph:
+        def invoke(self, state, config=None):
+            _ = config
+            out = dict(state)
+            out.update(
+                {
+                    "final_disease": "早疫病",
+                    "final_confidence": 0.61,
+                    "final_source": "fusion",
+                    "fusion_case": "image_weak_text_strong",
+                    "image_reliable": True,
+                    "text_reliable": False,
+                    "supplement_mode": "text_only",
+                    "personalization_flags": {
+                        "need_confirm": True,
+                        "fallback_reason": ["low_margin"],
+                        "follow_up_questions": ["请补拍整株图片", "请描述病斑颜色"],
+                    },
+                    "follow_up_questions": ["请补拍整株图片", "请描述病斑颜色"],
+                    "profile_follow_up_questions": [],
+                    "diagnosis_follow_up_questions": [],
+                    "diagnosis_evidence": {},
+                    "image_result": {"disease": "早疫病", "confidence": 0.61, "top3": [("早疫病", 0.61)]},
+                }
+            )
+            return out
+
+    monkeypatch.setattr(app_module, "build_graph", lambda: _Graph())
+
+    client = TestClient(app_module.app)
+    resp = client.post(
+        "/api/diagnose-confirm",
+        json={"trace_id": trace_id, "image_id": image_id, "symptoms": "叶片发黄", "choice": "other"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["confirm_ui_mode"] == "text"
+    assert body["confirm_fields"] == ["symptoms"]
+    assert all("图" not in q for q in body["follow_up_questions"])
+    assert "补拍" not in (body.get("confirm_message") or "")
