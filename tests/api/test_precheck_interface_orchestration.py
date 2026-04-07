@@ -113,6 +113,8 @@ def test_start_precheck_is_not_used_as_first_user_visible_diagnosis_result(monke
     body = resp.json()
     assert body["result_stage"] == "precheck_internal"
     assert body["user_visible"] is False
+    assert body["first_user_visible_result"] is False
+    assert body["interface_role"] == "internal_precheck"
     assert "preliminary_disease" not in body
     assert "final_disease" not in body
 
@@ -130,6 +132,10 @@ def test_formal_diagnosis_returns_fusion_top1_as_first_visible_result(monkeypatc
     body = resp.json()
     assert body["final_disease"] == "晚疫病"
     assert body["final_source"] == "fusion"
+    assert body["result_stage"] == "diagnosis_completed"
+    assert body["first_user_visible_result"] is True
+    assert body["precheck_semantics_exposed"] is False
+    assert body["entrypoint"] == "diagnose_image"
     assert "preliminary_disease" not in body
 
 
@@ -145,4 +151,99 @@ def test_continue_or_equivalent_path_does_not_duplicate_image_only_diagnosis(mon
         json={"image_id": image_id, "trace_id": "trace-continue", "crop_type": "番茄"},
     )
     assert resp.status_code == 200
+    body = resp.json()
+    assert body["entrypoint"] == "diagnose_image_continue"
+    assert body["first_user_visible_result"] is True
+    assert body["precheck_semantics_exposed"] is False
+    assert body["result_stage"] == "diagnosis_completed"
+    assert counter["diagnose_from_image"] == 0
+
+
+def test_start_trace_events_are_internal_precheck_only(monkeypatch, tmp_path):
+    saved = tmp_path / "start.jpg"
+    saved.write_bytes(b"fake")
+    emitted: list[tuple[str, str]] = []
+
+    async def _fake_save_uploaded_image(*_args, **_kwargs):
+        return saved.name, saved
+
+    def _capture_emit(trace_id, node, status, message, payload=None):
+        _ = trace_id, message, payload
+        emitted.append((str(node), str(status)))
+
+    monkeypatch.setattr(app_module, "_save_uploaded_image", _fake_save_uploaded_image)
+    monkeypatch.setattr(app_module, "emit_node_event", _capture_emit)
+    client = TestClient(app_module.app)
+
+    resp = client.post(
+        "/api/diagnose-image/start",
+        files={"file": ("case.jpg", b"fake-jpeg-content", "image/jpeg")},
+        data={"crop_type": "番茄"},
+    )
+    assert resp.status_code == 200
+    nodes = [node for node, _status in emitted]
+    assert "PrecheckUploadInit" in nodes
+    assert "PrecheckReadyInternal" in nodes
+    assert "ParseInput" not in nodes
+
+
+def test_start_continue_trace_names_show_precheck_handoff_not_reentry(monkeypatch, tmp_path):
+    counter = {"diagnose_from_image": 0}
+    emitted: list[str] = []
+    image_id = "continue.jpg"
+    (tmp_path / image_id).write_bytes(b"fake")
+
+    async def _fake_save_uploaded_image(*_args, **_kwargs):
+        return image_id, tmp_path / image_id
+
+    class _Engine:
+        def diagnose_from_image(self, _path):
+            counter["diagnose_from_image"] += 1
+            return "早疫病", 0.9, {"早疫病": 0.9}
+
+    class _Graph:
+        def invoke(self, initial_state, config=None):
+            _ = config
+            return _stub_graph_result(initial_state)
+
+    def _capture_emit(trace_id, node, status, message, payload=None):
+        _ = trace_id, status, message, payload
+        emitted.append(str(node))
+
+    monkeypatch.setattr(app_module, "_save_uploaded_image", _fake_save_uploaded_image)
+    monkeypatch.setattr(app_module, "emit_node_event", _capture_emit)
+    monkeypatch.setattr(app_module, "emit_final_event_once", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app_module, "append_event", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(app_module, "list_trace_events", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(
+        app_module,
+        "resolve_model",
+        lambda model_id, allow_torch=False: (
+            SimpleNamespace(model_path="/tmp/mock.bin", backend="mock", model_id="mock", display_name="mock"),
+            [],
+        ),
+    )
+    monkeypatch.setattr(app_module, "get_diagnosis_engine", lambda **_kwargs: _Engine())
+    monkeypatch.setattr(app_module, "build_graph", lambda: _Graph())
+    monkeypatch.setattr(app_module, "_build_degraded_treatment", lambda *_args, **_kwargs: (None, {}))
+    monkeypatch.setattr(app_module, "UPLOAD_DIR", tmp_path)
+
+    client = TestClient(app_module.app)
+    start_resp = client.post(
+        "/api/diagnose-image/start",
+        files={"file": ("case.jpg", b"fake-jpeg-content", "image/jpeg")},
+        data={"crop_type": "番茄"},
+    )
+    assert start_resp.status_code == 200
+    trace_id = start_resp.json()["trace_id"]
+
+    continue_resp = client.post(
+        "/api/diagnose-image/continue",
+        json={"image_id": image_id, "trace_id": trace_id, "crop_type": "番茄"},
+    )
+    assert continue_resp.status_code == 200
+    nodes = emitted
+    assert "ContinueFromPrecheck" in nodes
+    assert "ContinueInputReuse" in nodes
+    assert "ParseInput" not in nodes
     assert counter["diagnose_from_image"] == 0
