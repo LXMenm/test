@@ -1039,6 +1039,7 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
             final_disease=final_disease,
             final_confidence=final_confidence,
             final_source="fusion",
+            include_prior_raw_debug=bool(debug_enabled),
         )
     else:
         diagnosis_evidence = {

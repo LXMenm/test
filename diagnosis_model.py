@@ -893,21 +893,68 @@ class DiseaseDiagnosisEngine:
         meta = {"fuse_version": FUSE_MULTIMODAL_VERSION, "has_image": has_image, "has_text": has_text, "has_prior": has_prior, **reliability_summary, "image_top1_conf": image_top1_conf, "text_top1_conf": text_top1_conf, "image_margin": image_margin, "text_margin": text_margin, "fusion_case": fusion_case, "normalized_weights": normalized_weights, "pre_fusion_top1": {"image": image_top3[:1], "text": text_top3[:1], "prior": prior_top3[:1]}, "pre_fusion_top3": adjusted_pre_fusion_top3, "pre_fusion_top3_raw": {"image": image_top3_raw, "text": text_top3_raw, "prior": prior_top3}, "pre_fusion_top3_hint": {"prior": prior_hint_top3}, "pre_fusion_top3_adjusted": adjusted_pre_fusion_top3, "post_fusion_top3": self._topk(fused, 3), "confidence_drop_reason": confidence_drop_reason, "modality_conflict_flag": conflict, "weak_conflict_candidate": weak_conflict_candidate, "strong_text_evidence": strong_text_evidence, "image_downgraded_on_conflict": image_downgraded_on_conflict, "image_confusion_result": image_confusion_result, "text_confusion_result": text_confusion_result}
         return fused, meta
 
-    def build_diagnosis_evidence(self, normalized_symptoms: List[str], raw_symptoms: List[str], image_probs: Dict[str, float], text_probs: Dict[str, float], prior_probs: Dict[str, float], fusion_probs: Dict[str, float], fusion_meta: Dict[str, object], modality_conflict_flag: bool, final_disease: str, final_confidence: float, final_source: str) -> Dict[str, object]:
+    def build_diagnosis_evidence(
+        self,
+        normalized_symptoms: List[str],
+        raw_symptoms: List[str],
+        image_probs: Dict[str, float],
+        text_probs: Dict[str, float],
+        prior_probs: Dict[str, float],
+        fusion_probs: Dict[str, float],
+        fusion_meta: Dict[str, object],
+        modality_conflict_flag: bool,
+        final_disease: str,
+        final_confidence: float,
+        final_source: str,
+        include_prior_raw_debug: bool = False,
+    ) -> Dict[str, object]:
         image_top3 = self._topk(image_probs, 3)
         text_top3 = self._topk(text_probs, 3)
         prior_top3_raw = self._topk(prior_probs, 3)
         prior_top3 = self._prior_hint_topk(prior_probs, 3)
         fusion_top3 = self._topk(fusion_probs, 3)
+        fusion_meta_payload = dict(fusion_meta) if isinstance(fusion_meta, dict) else {}
+        if not include_prior_raw_debug and isinstance(fusion_meta_payload.get("pre_fusion_top3_raw"), dict):
+            raw_map = dict(fusion_meta_payload.get("pre_fusion_top3_raw") or {})
+            raw_map.pop("prior", None)
+            if raw_map:
+                fusion_meta_payload["pre_fusion_top3_raw"] = raw_map
+            else:
+                fusion_meta_payload.pop("pre_fusion_top3_raw", None)
         concise_summary = f"融合诊断Top1: {final_disease} ({final_confidence:.2f})" if fusion_top3 else "无可用证据"
         detailed_reason = (f"图像top1={image_top3[0][0]}({image_top3[0][1]:.2f})；" if image_top3 else "图像分支缺失；")
         detailed_reason += (f"文本top1={text_top3[0][0]}({text_top3[0][1]:.2f})；" if text_top3 else "文本分支缺失；")
         if prior_top3:
-            detailed_reason += f"先验偏好top1={prior_top3[0][0]}(hint={prior_top3[0][1]:.2f}, raw={prior_top3_raw[0][1]:.2f})；"
+            detailed_reason += f"先验偏好top1={prior_top3[0][0]}(hint={prior_top3[0][1]:.2f})；"
         detailed_reason += f"融合后={final_disease}({final_confidence:.2f})。"
         if modality_conflict_flag:
             detailed_reason += "图文top1冲突，已采用保守融合权重。"
-        return {"normalized_symptoms": normalized_symptoms, "raw_symptoms": raw_symptoms, "image_top3": image_top3, "text_top3": text_top3, "prior_top3": prior_top3, "prior_top3_raw": prior_top3_raw, "prior_semantics": "hint_score", "fusion_top3": fusion_top3, "weights": fusion_meta.get("normalized_weights") if isinstance(fusion_meta, dict) else {}, "fusion_meta": fusion_meta, "modality_conflict_flag": modality_conflict_flag, "image_reliable": bool(fusion_meta.get("image_reliable")) if isinstance(fusion_meta, dict) else False, "text_reliable": bool(fusion_meta.get("text_reliable")) if isinstance(fusion_meta, dict) else False, "reliability_issue_types": list(fusion_meta.get("reliability_issue_types") or []) if isinstance(fusion_meta, dict) else [], "supplement_mode": str(fusion_meta.get("supplement_mode") or "none") if isinstance(fusion_meta, dict) else "none", "final_disease": final_disease, "final_confidence": final_confidence, "final_source": final_source, "concise_summary": concise_summary, "detailed_reason": detailed_reason, "summary": concise_summary}
+        evidence = {
+            "normalized_symptoms": normalized_symptoms,
+            "raw_symptoms": raw_symptoms,
+            "image_top3": image_top3,
+            "text_top3": text_top3,
+            "prior_top3": prior_top3,
+            "prior_semantics": "hint_score_preference",
+            "fusion_top3": fusion_top3,
+            "weights": fusion_meta_payload.get("normalized_weights") if isinstance(fusion_meta_payload, dict) else {},
+            "fusion_meta": fusion_meta_payload,
+            "modality_conflict_flag": modality_conflict_flag,
+            "image_reliable": bool(fusion_meta_payload.get("image_reliable")) if isinstance(fusion_meta_payload, dict) else False,
+            "text_reliable": bool(fusion_meta_payload.get("text_reliable")) if isinstance(fusion_meta_payload, dict) else False,
+            "reliability_issue_types": list(fusion_meta_payload.get("reliability_issue_types") or []) if isinstance(fusion_meta_payload, dict) else [],
+            "supplement_mode": str(fusion_meta_payload.get("supplement_mode") or "none") if isinstance(fusion_meta_payload, dict) else "none",
+            "final_disease": final_disease,
+            "final_confidence": final_confidence,
+            "final_source": final_source,
+            "concise_summary": concise_summary,
+            "detailed_reason": detailed_reason,
+            "summary": concise_summary,
+        }
+        if include_prior_raw_debug:
+            evidence["debug_prior_top3_raw"] = prior_top3_raw
+            evidence["debug_prior_semantics"] = "raw_probability_debug_only"
+        return evidence
 
 
 _diagnosis_engine: Optional[DiseaseDiagnosisEngine] = None
