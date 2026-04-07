@@ -4572,8 +4572,6 @@ def _to_stream_event(trace_id: str, event: dict) -> dict:
 def _should_close_trace_stream(stream_event: dict[str, Any]) -> bool:
     if stream_event.get("node") == "Final" and stream_event.get("status") in {"end", "error"}:
         return True
-    if stream_event.get("node") == "AwaitUserConfirmation" and stream_event.get("status") == "end":
-        return True
     return False
 
 
