@@ -1241,6 +1241,13 @@ def serialize_final_response(payload: dict[str, Any]) -> dict[str, Any]:
     if "confirm_message" in data and data["confirm_message"] is not None:
         data["confirm_message"] = sanitize_user_text(data["confirm_message"])
 
+    # display 症状语义兜底：防止旧路径/DTO 未经过统一收口时遗漏 display_*
+    if "display_symptoms" not in data or "display_symptom_count" not in data:
+        data = _apply_display_symptom_semantics(data)
+    else:
+        data["display_symptoms"] = _normalize_symptom_tokens(data.get("display_symptoms"))
+        data["display_symptom_count"] = len(data["display_symptoms"])
+
     return data
 
 

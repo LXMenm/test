@@ -108,6 +108,9 @@ def test_completed_stage_keeps_final_semantics(monkeypatch, tmp_path):
     assert body["final_result_authoritative"] is True
     assert body["final_disease"] == "晚疫病"
     assert body["final_source"] == "fusion"
+    assert "display_symptoms" in body
+    assert "display_symptom_count" in body
+    assert body["display_symptom_count"] == len(body["display_symptoms"])
 
 
 def test_compat_final_fields_can_exist_but_stage_still_distinguishes_non_final(monkeypatch, tmp_path):
@@ -435,6 +438,55 @@ def test_confirm_choice_response_uses_single_display_symptoms_source(monkeypatch
     assert body["status"] == "completed"
     assert body["display_symptoms"] == ["叶片卷曲"]
     assert body["display_symptom_count"] == 1
+
+
+def test_completed_response_still_has_display_fields_when_normalized_symptoms_missing(monkeypatch, tmp_path):
+    _prepare_common_mocks(monkeypatch, tmp_path, need_confirm=False)
+
+    class _GraphCompletedNoNormalized:
+        def invoke(self, initial_state, config=None):
+            _ = config
+            out = dict(initial_state)
+            out.update(
+                {
+                    "trace_id": initial_state.get("trace_id"),
+                    "final_disease": "晚疫病",
+                    "final_confidence": 0.91,
+                    "final_source": "fusion",
+                    "image_result": {"disease": "晚疫病", "confidence": 0.72, "top3": [("晚疫病", 0.72)]},
+                    "personalization_flags": {"need_confirm": False, "fallback_reason": []},
+                    "normalized_symptoms": [],
+                    "diagnosis_evidence": {"raw_symptoms": ["卷叶"], "normalized_symptoms": ["叶片卷曲"]},
+                    "symptom_evidence_profile": {"raw_tokens": ["卷叶"], "normalized_tokens": ["叶片卷曲"]},
+                }
+            )
+            return out
+
+    monkeypatch.setattr(app_module, "build_graph", lambda: _GraphCompletedNoNormalized())
+    client = TestClient(app_module.app)
+    body = client.post(
+        "/api/diagnose-image",
+        files={"file": ("case.jpg", b"fake-jpeg-content", "image/jpeg")},
+        data={"crop_type": "番茄"},
+    ).json()
+    assert body["status"] == "completed"
+    assert body["display_symptoms"] == ["叶片卷曲"]
+    assert body["display_symptom_count"] == 1
+    assert body["display_symptom_count"] == len(body["display_symptoms"])
+
+
+def test_serialize_event_dto_backfills_display_fields_for_latest_event_paths():
+    dto = app_module._serialize_event_dto(
+        {
+            "status": "completed",
+            "need_confirm": False,
+            "normalized_symptoms": [],
+            "diagnosis_evidence": {"normalized_symptoms": ["叶片卷曲"]},
+        }
+    )
+    assert dto["display_symptoms"] == ["叶片卷曲"]
+    assert dto["display_symptom_count"] == 1
+    assert dto["display_symptom_count"] == len(dto["display_symptoms"])
 
 
 def test_emit_node_event_truncates_status_and_message_and_payload_error_summary(monkeypatch):
