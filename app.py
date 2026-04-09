@@ -574,6 +574,8 @@ class DiagnoseResponse(BaseModel):
     reliability_issue_types: list[str] = []
     supplement_mode: str = "none"
     normalized_symptoms: list[str] = []
+    display_symptoms: list[str] = []
+    display_symptom_count: int = 0
     debug_runtime: dict[str, Any] | None = None
     verification_result: dict[str, Any] | None = None
     verification_passed: bool | None = None
@@ -582,6 +584,7 @@ class DiagnoseResponse(BaseModel):
     verification_summary: str | None = None
     status: str = "completed"
     result_stage: str | None = None
+    final_status: str | None = None
     interface_role: str | None = None
     entrypoint: str | None = None
     first_user_visible_result: bool | None = None
@@ -613,6 +616,9 @@ class DiagnoseResponse(BaseModel):
     graph_treatment_generated: bool = False
     fallback_treatment_used: bool = False
     manual_review_required_before_execution: bool = False
+    execution_allowed: bool | None = None
+    treatment_actionable: bool | None = None
+    treatment_reference_only: bool = False
     confirm_round_parent_trace_id: str | None = None
     meta: dict[str, Any] | None = None
     events: list[dict[str, Any]] = []
@@ -812,6 +818,7 @@ LIST_FIELDS_ALWAYS = {
     "text_top3",
     "fusion_top3",
     "normalized_symptoms",
+    "display_symptoms",
     "model_fallback_reason",
     "confirm_reasons",
     "events",
@@ -1289,7 +1296,107 @@ def _apply_result_semantics(payload: dict[str, Any]) -> dict[str, Any]:
         data.pop("final_source", None)
     else:
         data["current_top1"] = data.get("current_top1") or data.get("final_disease")
+    data = _apply_display_symptom_semantics(data)
+    data = _apply_execution_gate_semantics(data)
     return data
+
+
+def _normalize_symptom_tokens(tokens: Any) -> list[str]:
+    normalized: list[str] = []
+    for item in _as_clean_list(tokens):
+        token = str(item).strip()
+        if token and token not in normalized:
+            normalized.append(token)
+    return normalized
+
+
+def _pick_display_symptoms(payload: dict[str, Any]) -> list[str]:
+    profile = _safe_record(payload.get("symptom_evidence_profile"))
+    diagnosis_evidence = _safe_record(payload.get("diagnosis_evidence"))
+    candidates = [
+        payload.get("normalized_symptoms"),
+        profile.get("normalized_tokens"),
+        diagnosis_evidence.get("normalized_symptoms"),
+        profile.get("raw_tokens"),
+        diagnosis_evidence.get("raw_symptoms"),
+        payload.get("symptoms"),
+    ]
+    for one in candidates:
+        tokens = _normalize_symptom_tokens(one)
+        if tokens:
+            return tokens
+    return []
+
+
+def _apply_display_symptom_semantics(payload: dict[str, Any]) -> dict[str, Any]:
+    data = dict(payload or {})
+    display_symptoms = _pick_display_symptoms(data)
+    data["display_symptoms"] = display_symptoms
+    data["display_symptom_count"] = len(display_symptoms)
+    if not _normalize_symptom_tokens(data.get("normalized_symptoms")) and display_symptoms:
+        data["normalized_symptoms"] = list(display_symptoms)
+    return data
+
+
+def _apply_execution_gate_semantics(payload: dict[str, Any]) -> dict[str, Any]:
+    data = dict(payload or {})
+    stage = str(data.get("result_stage") or "")
+    is_final_stage = stage == "diagnosis_completed"
+    verification_passed = data.get("verification_passed")
+    treatment_available = bool(data.get("treatment_available"))
+    verification_available = bool(data.get("verification_available")) or data.get("verification_result") is not None
+
+    data["final_status"] = data.get("status")
+    data["execution_allowed"] = is_final_stage
+    data["treatment_actionable"] = bool(is_final_stage and treatment_available)
+    data["treatment_reference_only"] = False
+
+    if verification_passed is False:
+        if is_final_stage:
+            data["status"] = "completed_verification_failed"
+            data["final_status"] = "completed_verification_failed"
+        else:
+            data["final_status"] = "verification_failed_before_completion"
+        data["execution_allowed"] = False
+        data["treatment_actionable"] = False
+        data["treatment_reference_only"] = treatment_available
+        data["manual_review_required_before_execution"] = True
+    elif verification_passed is True:
+        data["final_status"] = data.get("status")
+        data["execution_allowed"] = is_final_stage
+        data["treatment_actionable"] = bool(is_final_stage and treatment_available)
+        data["treatment_reference_only"] = False
+    elif is_final_stage and verification_available:
+        data["final_status"] = "completed_with_warning"
+
+    return data
+
+
+TRACE_STATUS_MAX_LEN = 32
+TRACE_MESSAGE_MAX_LEN = 255
+TRACE_ERROR_SUMMARY_MAX_LEN = 500
+
+
+def _safe_trace_status(value: Any) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    return text[:TRACE_STATUS_MAX_LEN]
+
+
+def _safe_trace_message(value: Any) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    return text[:TRACE_MESSAGE_MAX_LEN]
+
+
+def _safe_error_summary(exc: Exception, limit: int = TRACE_ERROR_SUMMARY_MAX_LEN) -> str:
+    text = f"{type(exc).__name__}: {str(exc)}".strip()
+    if not text:
+        text = type(exc).__name__
+    safe_limit = max(int(limit or TRACE_ERROR_SUMMARY_MAX_LEN), 32)
+    return text[:safe_limit]
 
 
 def _compact_trace_steps(trace_id: str | None) -> list[dict[str, Any]]:
@@ -1359,13 +1466,18 @@ def emit_node_event(
     message: str | None = None,
     payload: dict | None = None,
 ) -> dict:
+    payload_data = dict(payload or {})
+    if "error_summary" in payload_data and payload_data.get("error_summary") is not None:
+        payload_data["error_summary"] = str(payload_data.get("error_summary"))[:TRACE_ERROR_SUMMARY_MAX_LEN]
+    safe_status = _safe_trace_status(status) or "unknown"
+    safe_message = _safe_trace_message(message or NODE_MESSAGE_CN.get(node, node)) or NODE_MESSAGE_CN.get(node, node)
     return emit_trace_event(
         trace_id,
         {
             "node": node,
-            "status": status,
-            "message": message or NODE_MESSAGE_CN.get(node, node),
-            "payload": payload or {},
+            "status": safe_status,
+            "message": safe_message,
+            "payload": payload_data,
         },
     )
 
@@ -2489,6 +2601,12 @@ async def diagnose_image(
         "trace_id": trace_id,
         "crop_type": crop_type,
         "symptoms": symptoms_list,
+        "normalized_symptoms": list(
+            (final_state or {}).get("normalized_symptoms")
+            or ((final_state or {}).get("structured_symptoms") or {}).get("normalized_symptoms")
+            or []
+        ),
+        "symptom_evidence_profile": (final_state or {}).get("symptom_evidence_profile"),
         **image_refs,
         "image_result": image_result_dict,
         "fallback_used": fallback_used,
@@ -2558,7 +2676,16 @@ async def diagnose_image(
         emit_node_event(trace_id, node="Persist", status="end", message="事件落盘完成")
     except Exception as exc:
         print(f"Warning: failed to append event: {exc}")
-        emit_node_event(trace_id, node="Persist", status="error", message=f"事件落盘失败: {exc}")
+        emit_node_event(
+            trace_id,
+            node="Persist",
+            status="error",
+            message="事件落盘失败",
+            payload={
+                "error_type": type(exc).__name__,
+                "error_summary": _safe_error_summary(exc),
+            },
+        )
 
     if response_status == "waiting_for_supplement":
         emit_node_event(
@@ -3125,6 +3252,12 @@ def _diagnose_confirm_core(request: Request, payload: dict) -> dict:
         "trace_id": trace_id,
         "crop_type": crop_type,
         "symptoms": state.get("symptoms") or [],
+        "normalized_symptoms": list(
+            state.get("normalized_symptoms")
+            or ((state.get("structured_symptoms") or {}).get("normalized_symptoms")
+            or [])
+        ),
+        "symptom_evidence_profile": state.get("symptom_evidence_profile"),
         **_build_image_refs(image_id),
         "image_result": image_result,
         "fallback_used": carried_fallback_used,
@@ -3197,7 +3330,16 @@ def _diagnose_confirm_core(request: Request, payload: dict) -> dict:
         emit_node_event(trace_id, node="Persist", status="end", message="确认轮事件落盘完成")
     except Exception as exc:
         print(f"Warning: failed to append confirm event: {exc}")
-        emit_node_event(trace_id, node="Persist", status="error", message=f"确认轮事件落盘失败: {exc}")
+        emit_node_event(
+            trace_id,
+            node="Persist",
+            status="error",
+            message="确认轮事件落盘失败",
+            payload={
+                "error_type": type(exc).__name__,
+                "error_summary": _safe_error_summary(exc),
+            },
+        )
 
     # Final 必须在 Persist 之后，才是真正终点
     if confirm_status == "waiting_for_supplement":
