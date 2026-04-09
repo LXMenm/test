@@ -327,8 +327,9 @@ def test_verification_failed_is_not_plain_completed_anymore():
     }
     out = app_module._apply_result_semantics(payload)
     assert out["result_stage"] == "diagnosis_completed"
-    assert out["status"] == "completed_with_verification_failure"
-    assert out["final_status"] == "completed_with_verification_failure"
+    assert out["status"] == "completed_verification_failed"
+    assert out["final_status"] == "completed_verification_failed"
+    assert len(out["status"]) <= 32
     assert out["execution_allowed"] is False
     assert out["treatment_actionable"] is False
     assert out["treatment_reference_only"] is True
@@ -434,3 +435,112 @@ def test_confirm_choice_response_uses_single_display_symptoms_source(monkeypatch
     assert body["status"] == "completed"
     assert body["display_symptoms"] == ["叶片卷曲"]
     assert body["display_symptom_count"] == 1
+
+
+def test_emit_node_event_truncates_status_and_message_and_payload_error_summary(monkeypatch):
+    captured: dict = {}
+
+    def _fake_emit_trace_event(_trace_id, payload):
+        captured.update(payload)
+        return payload
+
+    monkeypatch.setattr(app_module, "emit_trace_event", _fake_emit_trace_event)
+    app_module.emit_node_event(
+        "trace-x",
+        node="Persist",
+        status="x" * 80,
+        message="m" * 400,
+        payload={"error_summary": "e" * 1200},
+    )
+    assert len(captured["status"]) <= 32
+    assert len(captured["message"]) <= 255
+    assert len((captured.get("payload") or {}).get("error_summary") or "") <= 500
+
+
+def test_diagnose_image_persist_error_keeps_short_trace_message_and_puts_details_in_payload(monkeypatch, tmp_path):
+    _prepare_common_mocks(monkeypatch, tmp_path, need_confirm=True)
+    persisted_events: list[dict] = []
+    emitted: list[dict] = []
+
+    def _failing_append(_evt):
+        if not persisted_events:
+            persisted_events.append({"first_call": True})
+            raise RuntimeError("db error " + ("x" * 600))
+        persisted_events.append({"second_call": True})
+
+    def _capture_emit(_trace_id, *, node, status, message=None, payload=None):
+        emitted.append({"node": node, "status": status, "message": message, "payload": payload})
+        return {}
+
+    monkeypatch.setattr(app_module, "append_event", _failing_append)
+    monkeypatch.setattr(app_module, "emit_node_event", _capture_emit)
+
+    client = TestClient(app_module.app)
+    resp = client.post(
+        "/api/diagnose-image",
+        files={"file": ("case.jpg", b"fake-jpeg-content", "image/jpeg")},
+        data={"crop_type": "番茄"},
+    )
+    assert resp.status_code == 200
+    persist_errors = [item for item in emitted if item.get("node") == "Persist" and item.get("status") == "error"]
+    assert persist_errors
+    one = persist_errors[-1]
+    assert one["message"] == "事件落盘失败"
+    assert len(one["message"]) <= 255
+    assert (one.get("payload") or {}).get("error_type") == "RuntimeError"
+    assert "db error" in ((one.get("payload") or {}).get("error_summary") or "")
+    assert len((one.get("payload") or {}).get("error_summary") or "") <= 500
+
+
+def test_diagnose_confirm_persist_error_keeps_short_trace_message_and_puts_details_in_payload(monkeypatch, tmp_path):
+    image_id, _captured_events = _prepare_confirm_core_mocks(monkeypatch, tmp_path, previous_status="waiting_for_supplement")
+    emitted: list[dict] = []
+    append_calls = {"n": 0}
+
+    class _Graph:
+        def invoke(self, state, config=None):
+            _ = config
+            out = dict(state)
+            out.update(
+                {
+                    "trace_id": state.get("trace_id"),
+                    "next_action": "await_user_confirmation",
+                    "final_disease": "晚疫病",
+                    "final_confidence": 0.63,
+                    "final_source": "fusion",
+                    "image_diagnosis": {"top1": {"disease": "晚疫病", "confidence": 0.7}, "top3": [("晚疫病", 0.7)]},
+                    "personalization_flags": {"need_confirm": True, "fallback_reason": ["low_confidence"], "follow_up_questions": []},
+                    "fusion_top3": [("晚疫病", 0.63)],
+                    "text_top3": [("晚疫病", 0.61)],
+                    "diagnosis_evidence": {"fusion_top3": [("晚疫病", 0.63)]},
+                    "supplement_mode": "text_only",
+                }
+            )
+            return out
+
+    def _failing_append(_evt):
+        append_calls["n"] += 1
+        raise ValueError("confirm persist error " + ("y" * 600))
+
+    def _capture_emit(_trace_id, *, node, status, message=None, payload=None):
+        emitted.append({"node": node, "status": status, "message": message, "payload": payload})
+        return {}
+
+    monkeypatch.setattr(app_module, "build_graph", lambda: _Graph())
+    monkeypatch.setattr(app_module, "append_event", _failing_append)
+    monkeypatch.setattr(app_module, "emit_node_event", _capture_emit)
+    client = TestClient(app_module.app)
+    resp = client.post(
+        "/api/diagnose-confirm",
+        json={"trace_id": "trace-confirm", "image_id": image_id, "crop_type": "番茄", "choice": "other", "symptoms": ["发黄"]},
+    )
+    assert resp.status_code == 200
+    assert append_calls["n"] >= 1
+    persist_errors = [item for item in emitted if item.get("node") == "Persist" and item.get("status") == "error"]
+    assert persist_errors
+    one = persist_errors[-1]
+    assert one["message"] == "确认轮事件落盘失败"
+    assert len(one["message"]) <= 255
+    assert (one.get("payload") or {}).get("error_type") == "ValueError"
+    assert "confirm persist error" in ((one.get("payload") or {}).get("error_summary") or "")
+    assert len((one.get("payload") or {}).get("error_summary") or "") <= 500
