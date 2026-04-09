@@ -120,7 +120,7 @@ def test_compat_final_fields_can_exist_but_stage_still_distinguishes_non_final(m
         data={"crop_type": "番茄"},
     ).json()
 
-    assert "final_disease" not in body or body["final_disease"] is None
+    assert "final_disease" not in body
     assert body["final_disease_compat"] == "晚疫病"
     assert body["compatibility_final_fields"] is True
     assert body["result_stage"] == "awaiting_confirmation"
@@ -147,9 +147,9 @@ def test_non_final_statuses_share_same_canonical_downgrade_rules():
         assert out["final_result_authoritative"] is False
         assert out["provisional_disease"] == "晚疫病"
         assert out["final_disease_compat"] == "晚疫病"
-        assert out["final_disease"] is None
-        assert out["final_confidence"] is None
-        assert out["final_source"] is None
+        assert "final_disease" not in out
+        assert "final_confidence" not in out
+        assert "final_source" not in out
 
 
 def _prepare_confirm_core_mocks(monkeypatch, tmp_path: Path, *, previous_status: str, previous_final_disease: str = "晚疫病"):
@@ -248,14 +248,14 @@ def test_diagnose_confirm_waiting_stage_hides_canonical_final_fields(monkeypatch
     body = resp.json()
     assert body["status"] == "waiting_for_supplement"
     assert body["result_stage"] == "awaiting_confirmation"
-    assert "final_disease" not in body or body["final_disease"] is None
+    assert "final_disease" not in body
     assert body["provisional_disease"] == "晚疫病"
     assert body["final_disease_compat"] == "晚疫病"
     assert captured_events
     persisted = captured_events[-1]
     assert persisted["status"] == "waiting_for_supplement"
     assert persisted["result_stage"] == "awaiting_confirmation"
-    assert persisted.get("final_disease") in (None, "")
+    assert "final_disease" not in persisted
 
 
 def test_diagnose_confirm_pending_expert_review_hides_canonical_final_fields(monkeypatch, tmp_path):
@@ -277,11 +277,11 @@ def test_diagnose_confirm_pending_expert_review_hides_canonical_final_fields(mon
     assert body["status"] == "pending_expert_review"
     assert body["result_stage"] == "pending_expert_review"
     assert body["is_final_result"] is False
-    assert "final_disease" not in body or body["final_disease"] is None
+    assert "final_disease" not in body
     assert body["provisional_disease"] == "晚疫病"
     assert body["final_disease_compat"] == "晚疫病"
     assert captured_events
     persisted = captured_events[-1]
     assert persisted["status"] == "pending_expert_review"
     assert persisted["result_stage"] == "pending_expert_review"
-    assert persisted.get("final_disease") in (None, "")
+    assert "final_disease" not in persisted

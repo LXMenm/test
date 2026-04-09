@@ -1284,9 +1284,9 @@ def _apply_result_semantics(payload: dict[str, Any]) -> dict[str, Any]:
         data["final_disease_compat"] = data.get("final_disease")
         data["final_confidence_compat"] = data.get("final_confidence")
         data["final_source_compat"] = data.get("final_source")
-        data["final_disease"] = None
-        data["final_confidence"] = None
-        data["final_source"] = None
+        data.pop("final_disease", None)
+        data.pop("final_confidence", None)
+        data.pop("final_source", None)
     else:
         data["current_top1"] = data.get("current_top1") or data.get("final_disease")
     return data
