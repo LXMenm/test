@@ -285,3 +285,152 @@ def test_diagnose_confirm_pending_expert_review_hides_canonical_final_fields(mon
     assert persisted["status"] == "pending_expert_review"
     assert persisted["result_stage"] == "pending_expert_review"
     assert "final_disease" not in persisted
+
+
+def test_display_symptoms_has_single_canonical_source_for_ui_count():
+    payload = {
+        "status": "waiting_for_supplement",
+        "need_confirm": True,
+        "final_disease": "晚疫病",
+        "normalized_symptoms": [],
+        "diagnosis_evidence": {"raw_symptoms": ["卷叶", "叶背白霉"], "normalized_symptoms": ["叶片卷曲", "叶背白霉"]},
+        "symptom_evidence_profile": {"raw_tokens": ["卷叶"], "normalized_tokens": ["叶片卷曲"]},
+    }
+    out = app_module._apply_result_semantics(payload)
+    assert out["display_symptoms"] == ["叶片卷曲"]
+    assert out["display_symptom_count"] == 1
+    assert out["normalized_symptoms"] == ["叶片卷曲"]
+
+
+def test_display_symptoms_stays_stable_when_debug_evidence_changes():
+    payload = {
+        "status": "completed",
+        "need_confirm": False,
+        "final_disease": "晚疫病",
+        "normalized_symptoms": ["叶片卷曲", "叶背白霉"],
+        "diagnosis_evidence": {"raw_symptoms": ["卷叶"], "normalized_symptoms": ["叶片卷曲"]},
+        "symptom_evidence_profile": {"raw_tokens": ["随机token"], "normalized_tokens": ["随机标准化token"]},
+    }
+    out = app_module._apply_result_semantics(payload)
+    assert out["display_symptoms"] == ["叶片卷曲", "叶背白霉"]
+    assert out["display_symptom_count"] == 2
+
+
+def test_verification_failed_is_not_plain_completed_anymore():
+    payload = {
+        "status": "completed",
+        "need_confirm": False,
+        "final_disease": "晚疫病",
+        "treatment_available": True,
+        "verification_available": True,
+        "verification_passed": False,
+    }
+    out = app_module._apply_result_semantics(payload)
+    assert out["result_stage"] == "diagnosis_completed"
+    assert out["status"] == "completed_with_verification_failure"
+    assert out["final_status"] == "completed_with_verification_failure"
+    assert out["execution_allowed"] is False
+    assert out["treatment_actionable"] is False
+    assert out["treatment_reference_only"] is True
+    assert out["manual_review_required_before_execution"] is True
+
+
+def test_verification_passed_keeps_completed_semantics_and_actionable_gate():
+    payload = {
+        "status": "completed",
+        "need_confirm": False,
+        "final_disease": "晚疫病",
+        "treatment_available": True,
+        "verification_available": True,
+        "verification_passed": True,
+    }
+    out = app_module._apply_result_semantics(payload)
+    assert out["status"] == "completed"
+    assert out["final_status"] == "completed"
+    assert out["execution_allowed"] is True
+    assert out["treatment_actionable"] is True
+    assert out["treatment_reference_only"] is False
+
+
+def test_waiting_api_and_persist_payload_share_same_provisional_and_display_semantics(monkeypatch, tmp_path):
+    _prepare_common_mocks(monkeypatch, tmp_path, need_confirm=True)
+    captured_events: list[dict] = []
+    monkeypatch.setattr(app_module, "append_event", lambda evt: captured_events.append(dict(evt)))
+
+    class _GraphWithSymptoms:
+        def invoke(self, initial_state, config=None):
+            _ = config
+            out = dict(initial_state)
+            out.update(
+                {
+                    "trace_id": initial_state.get("trace_id"),
+                    "final_disease": "晚疫病",
+                    "final_confidence": 0.62,
+                    "final_source": "fusion",
+                    "image_result": {"disease": "晚疫病", "confidence": 0.72, "top3": [("晚疫病", 0.72)]},
+                    "personalization_flags": {"need_confirm": True, "fallback_reason": ["low_confidence"]},
+                    "diagnosis_evidence": {"raw_symptoms": ["卷叶"], "normalized_symptoms": ["叶片卷曲"]},
+                    "symptom_evidence_profile": {"raw_tokens": ["卷叶"], "normalized_tokens": ["叶片卷曲"]},
+                    "normalized_symptoms": ["叶片卷曲"],
+                }
+            )
+            return out
+
+    monkeypatch.setattr(app_module, "build_graph", lambda: _GraphWithSymptoms())
+    client = TestClient(app_module.app)
+    body = client.post(
+        "/api/diagnose-image",
+        files={"file": ("case.jpg", b"fake-jpeg-content", "image/jpeg")},
+        data={"crop_type": "番茄"},
+    ).json()
+
+    assert captured_events
+    persisted = captured_events[-1]
+    assert body["result_stage"] == "awaiting_confirmation"
+    assert persisted["result_stage"] == "awaiting_confirmation"
+    assert "final_disease" not in body
+    assert "final_disease" not in persisted
+    assert body["provisional_disease"] == persisted["provisional_disease"] == "晚疫病"
+    assert body["display_symptoms"] == persisted["display_symptoms"] == ["叶片卷曲"]
+    assert body["display_symptom_count"] == persisted["display_symptom_count"] == 1
+
+
+def test_confirm_choice_response_uses_single_display_symptoms_source(monkeypatch, tmp_path):
+    image_id, _captured_events = _prepare_confirm_core_mocks(monkeypatch, tmp_path, previous_status="waiting_for_supplement")
+
+    class _Graph:
+        def invoke(self, state, config=None):
+            _ = config
+            out = dict(state)
+            out.update(
+                {
+                    "trace_id": state.get("trace_id"),
+                    "next_action": "end",
+                    "final_disease": "晚疫病",
+                    "final_confidence": 0.93,
+                    "final_source": "user_confirmed_candidate",
+                    "image_diagnosis": {"top1": {"disease": "晚疫病", "confidence": 0.9}, "top3": [("晚疫病", 0.9)]},
+                    "diagnosis_evidence": {"raw_symptoms": ["卷叶"], "normalized_symptoms": ["叶片卷曲"]},
+                    "symptom_evidence_profile": {"raw_tokens": ["卷叶"], "normalized_tokens": ["叶片卷曲"]},
+                    "normalized_symptoms": ["叶片卷曲"],
+                    "personalization_flags": {"need_confirm": False, "fallback_reason": [], "follow_up_questions": []},
+                    "verification_result": {"passed": True},
+                    "verification_passed": True,
+                    "verification_risk_level": "low",
+                    "verification_issues": [],
+                    "verification_summary": "ok",
+                }
+            )
+            return out
+
+    monkeypatch.setattr(app_module, "build_graph", lambda: _Graph())
+    client = TestClient(app_module.app)
+    resp = client.post(
+        "/api/diagnose-confirm",
+        json={"trace_id": "trace-confirm", "image_id": image_id, "crop_type": "番茄", "choice": "晚疫病", "symptoms": ["卷叶"]},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "completed"
+    assert body["display_symptoms"] == ["叶片卷曲"]
+    assert body["display_symptom_count"] == 1
