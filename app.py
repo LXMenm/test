@@ -1248,6 +1248,13 @@ def serialize_final_response(payload: dict[str, Any]) -> dict[str, Any]:
         data["display_symptoms"] = _normalize_symptom_tokens(data.get("display_symptoms"))
         data["display_symptom_count"] = len(data["display_symptoms"])
 
+    # execution gate 语义兜底：防止 confirm 等路径遗漏 final_status / execution_*
+    execution_gate_keys = {"final_status", "execution_allowed", "treatment_actionable", "treatment_reference_only"}
+    if any(key not in data for key in execution_gate_keys):
+        if not str(data.get("result_stage") or "").strip():
+            data["result_stage"] = _derive_result_stage(status=data.get("status"), need_confirm=data.get("need_confirm"))
+        data = _apply_execution_gate_semantics(data)
+
     return data
 
 
