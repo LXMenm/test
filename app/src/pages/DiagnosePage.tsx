@@ -814,22 +814,22 @@ export function DiagnosePage() {
       if (selectedBaseId) fd.append('base_id', selectedBaseId);
       console.log('diagnose-image model_id=', modelId);
 
-      const startResp = await authFetch('/api/diagnose-image/start', {
+      const diagnoseResp = await authFetch('/api/diagnose-image', {
         method: 'POST',
         body: fd
       }, authUser);
-      const raw = await startResp.text();
+      const raw = await diagnoseResp.text();
       let data: unknown = null;
       try {
         data = raw ? JSON.parse(raw) : null;
       } catch {
         data = null;
       }
-      if (!startResp.ok) {
+      if (!diagnoseResp.ok) {
         const detail = data && typeof data === 'object' && 'detail' in data
           ? String((data as { detail?: unknown }).detail ?? '')
           : '';
-        throw new Error(detail || raw || `诊断失败: ${startResp.status}`);
+        throw new Error(detail || raw || `诊断失败: ${diagnoseResp.status}`);
       }
 
       if (!data || typeof data !== 'object') {
@@ -851,54 +851,9 @@ export function DiagnosePage() {
 
       const normalizedResult = buildResultFromPayload(payload);
       syncConfirmStateFromPayload(payload, normalizedResult, { defaultChoice: 'other' });
-
-      if (payload.status !== 'waiting_for_supplement') {
-        const continueResp = await authFetch('/api/diagnose-image/continue', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            trace_id: payload.trace_id,
-            image_id: payload.image_id,
-            crop_type: cropType || '番茄',
-            symptoms: symptomsForDiagnose || null,
-            growth_stage: growthStage.trim() || null,
-            model_id: modelId || null,
-            farmer_id: selectedFarmerId,
-            base_id: selectedBaseId || null,
-          }),
-        }, authUser);
-        const continueData = await continueResp.json();
-        if (!continueResp.ok) {
-          throw new Error(String(continueData?.detail || `继续诊断失败: ${continueResp.status}`));
-        }
-        if (continueData && typeof continueData === 'object') {
-          const mergedPayload = { ...payload, ...(continueData as Record<string, unknown>) };
-          setLatestPayload(mergedPayload);
-          const mergedResult = buildResultFromPayload(mergedPayload);
-          syncConfirmStateFromPayload(mergedPayload, mergedResult);
-          
-          console.log('latestPayload.events.length', Array.isArray(mergedPayload?.events) ? mergedPayload.events.length : 'no-events');
-          console.log('latestPayload.events.sample', Array.isArray(mergedPayload?.events) ? mergedPayload.events.slice(0, 3) : null);
-          
-          console.log(
-            'continue events brief',
-            (continueData?.events || []).map((e: any) => ({
-              seq: e.seq,
-              node: e.node,
-              agent: e.agent,
-              agent_id: e.agent_id,
-              status: e.status,
-              message: e.message,
-            }))
-          );
-          
-          if (Array.isArray((continueData as Record<string, unknown>).events)) {
-            setTraceEvents((prev) => mergePayloadEventsAsPrimary(prev, (continueData as Record<string, unknown>).events, 'continue'));
-          } else if (Array.isArray(payload.events)) {
-            setTraceEvents((prev) => mergePayloadEventsAsPrimary(prev, payload.events, 'continue'));
-          }
-        }
-      }
+      setLatestPayload(payload);
+      console.log('latestPayload.events.length', Array.isArray(payload?.events) ? payload.events.length : 'no-events');
+      console.log('latestPayload.events.sample', Array.isArray(payload?.events) ? payload.events.slice(0, 3) : null);
     } catch (error) {
       console.error('Diagnosis failed:', error);
     } finally {
