@@ -1206,6 +1206,8 @@ def build_confirm_explanation(
 def serialize_final_response(payload: dict[str, Any]) -> dict[str, Any]:
     data = dict(payload or {})
     meta = dict(data.get("meta") or {})
+    data = _apply_verification_contract_semantics(data)
+    data = _apply_diagnosis_evidence_semantics(data)
 
     # canonical 统一进 meta，root 保持兼容性非空回填
     for key in META_ONLY_CANONICAL_KEYS:
@@ -1310,6 +1312,8 @@ def _apply_result_semantics(payload: dict[str, Any]) -> dict[str, Any]:
         data.pop("final_source", None)
     else:
         data["current_top1"] = data.get("current_top1") or data.get("final_disease")
+    data = _apply_verification_contract_semantics(data)
+    data = _apply_diagnosis_evidence_semantics(data)
     data = _apply_display_symptom_semantics(data)
     data = _apply_execution_gate_semantics(data)
     return data
@@ -1383,6 +1387,51 @@ def _apply_execution_gate_semantics(payload: dict[str, Any]) -> dict[str, Any]:
     elif is_final_stage and verification_available:
         data["final_status"] = "completed_with_warning"
 
+    return data
+
+
+def _has_blocking_must_fix(verification_result: Any) -> bool:
+    if not isinstance(verification_result, dict):
+        return False
+    must_fix_items = _as_clean_list(verification_result.get("must_fix"))
+    return any(str(item).strip() for item in must_fix_items)
+
+
+def _apply_verification_contract_semantics(payload: dict[str, Any]) -> dict[str, Any]:
+    data = dict(payload or {})
+    verification_result = data.get("verification_result")
+    has_blocking_must_fix = _has_blocking_must_fix(verification_result)
+    verification_passed = data.get("verification_passed")
+
+    if verification_passed is True and has_blocking_must_fix:
+        data["verification_passed"] = False
+        if isinstance(verification_result, dict):
+            normalized_result = dict(verification_result)
+            normalized_result["passed"] = False
+            data["verification_result"] = normalized_result
+        if not data.get("manual_review_required_before_execution"):
+            data["manual_review_required_before_execution"] = True
+    return data
+
+
+def _apply_diagnosis_evidence_semantics(payload: dict[str, Any]) -> dict[str, Any]:
+    data = dict(payload or {})
+    diagnosis_evidence = data.get("diagnosis_evidence")
+    if not isinstance(diagnosis_evidence, dict):
+        return data
+    evidence = dict(diagnosis_evidence)
+
+    if _is_non_empty_value(evidence.get("final_disease")):
+        evidence["evidence_final_disease"] = evidence.get("final_disease")
+        evidence.pop("final_disease", None)
+    if _is_non_empty_value(evidence.get("final_source")):
+        evidence["evidence_final_source"] = evidence.get("final_source")
+        evidence.pop("final_source", None)
+    if _is_non_empty_value(evidence.get("summary")):
+        evidence["evidence_summary"] = evidence.get("summary")
+        evidence.pop("summary", None)
+
+    data["diagnosis_evidence"] = evidence
     return data
 
 

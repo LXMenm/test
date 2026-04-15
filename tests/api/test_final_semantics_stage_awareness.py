@@ -589,6 +589,51 @@ def test_confirm_event_payload_matches_api_response_for_display_and_execution_fi
         assert body.get(key) == persisted.get(key)
 
 
+def test_verification_passed_is_downgraded_when_blocking_must_fix_exists():
+    payload = {
+        "status": "completed",
+        "need_confirm": False,
+        "verification_passed": True,
+        "verification_result": {
+            "passed": True,
+            "must_fix": ["必须先修复后才能执行"],
+            "issues": [],
+        },
+        "treatment_available": True,
+        "verification_available": True,
+    }
+    out = app_module._apply_result_semantics(payload)
+    assert out["verification_passed"] is False
+    assert (out.get("verification_result") or {}).get("passed") is False
+    assert out["status"] == "completed_verification_failed"
+    assert out["execution_allowed"] is False
+    assert out["manual_review_required_before_execution"] is True
+
+
+def test_serialize_final_response_moves_evidence_final_fields_to_debug_namespace():
+    out = app_module.serialize_final_response(
+        {
+            "status": "completed",
+            "need_confirm": False,
+            "final_disease": "晚疫病",
+            "final_source": "user_confirmed_candidate",
+            "diagnosis_evidence": {
+                "final_disease": "融合候选1",
+                "final_source": "fusion",
+                "summary": "融合 top1",
+                "fusion_top3": [("晚疫病", 0.66)],
+            },
+        }
+    )
+    evidence = out["diagnosis_evidence"]
+    assert "final_disease" not in evidence
+    assert "final_source" not in evidence
+    assert "summary" not in evidence
+    assert evidence["evidence_final_disease"] == "融合候选1"
+    assert evidence["evidence_final_source"] == "fusion"
+    assert evidence["evidence_summary"] == "融合 top1"
+
+
 def test_emit_node_event_truncates_status_and_message_and_payload_error_summary(monkeypatch):
     captured: dict = {}
 
