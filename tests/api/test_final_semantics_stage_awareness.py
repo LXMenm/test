@@ -111,6 +111,10 @@ def test_completed_stage_keeps_final_semantics(monkeypatch, tmp_path):
     assert "display_symptoms" in body
     assert "display_symptom_count" in body
     assert body["display_symptom_count"] == len(body["display_symptoms"])
+    assert "final_status" in body
+    assert "execution_allowed" in body
+    assert "treatment_actionable" in body
+    assert "treatment_reference_only" in body
 
 
 def test_compat_final_fields_can_exist_but_stage_still_distinguishes_non_final(monkeypatch, tmp_path):
@@ -356,6 +360,40 @@ def test_verification_passed_keeps_completed_semantics_and_actionable_gate():
     assert out["treatment_reference_only"] is False
 
 
+def test_serialize_final_response_backfills_execution_gate_when_values_are_none():
+    payload = {
+        "status": "completed",
+        "need_confirm": False,
+        "final_disease": "晚疫病",
+        "treatment_available": True,
+        "verification_passed": True,
+        "final_status": None,
+        "execution_allowed": None,
+        "treatment_actionable": None,
+        "treatment_reference_only": None,
+    }
+    out = app_module.serialize_final_response(payload)
+    assert out["final_status"] == "completed"
+    assert out["execution_allowed"] is True
+    assert out["treatment_actionable"] is True
+    assert out["treatment_reference_only"] is False
+
+
+def test_verification_failed_sets_reference_only_true_even_without_treatment_available():
+    payload = {
+        "status": "completed",
+        "need_confirm": False,
+        "verification_passed": False,
+        "treatment_available": False,
+    }
+    out = app_module._apply_result_semantics(payload)
+    assert out["status"] == "completed_verification_failed"
+    assert out["final_status"] == "completed_verification_failed"
+    assert out["execution_allowed"] is False
+    assert out["treatment_actionable"] is False
+    assert out["treatment_reference_only"] is True
+
+
 def test_waiting_api_and_persist_payload_share_same_provisional_and_display_semantics(monkeypatch, tmp_path):
     _prepare_common_mocks(monkeypatch, tmp_path, need_confirm=True)
     captured_events: list[dict] = []
@@ -440,7 +478,7 @@ def test_confirm_choice_response_uses_single_display_symptoms_source(monkeypatch
     assert body["display_symptom_count"] == 1
     assert body["final_status"] == "completed"
     assert body["execution_allowed"] is True
-    assert body["treatment_actionable"] is False
+    assert body["treatment_actionable"] is True
     assert body["treatment_reference_only"] is False
 
 
@@ -587,6 +625,51 @@ def test_confirm_event_payload_matches_api_response_for_display_and_execution_fi
         "treatment_reference_only",
     ):
         assert body.get(key) == persisted.get(key)
+
+
+def test_verification_passed_is_downgraded_when_blocking_must_fix_exists():
+    payload = {
+        "status": "completed",
+        "need_confirm": False,
+        "verification_passed": True,
+        "verification_result": {
+            "passed": True,
+            "must_fix": ["必须先修复后才能执行"],
+            "issues": [],
+        },
+        "treatment_available": True,
+        "verification_available": True,
+    }
+    out = app_module._apply_result_semantics(payload)
+    assert out["verification_passed"] is False
+    assert (out.get("verification_result") or {}).get("passed") is False
+    assert out["status"] == "completed_verification_failed"
+    assert out["execution_allowed"] is False
+    assert out["manual_review_required_before_execution"] is True
+
+
+def test_serialize_final_response_moves_evidence_final_fields_to_debug_namespace():
+    out = app_module.serialize_final_response(
+        {
+            "status": "completed",
+            "need_confirm": False,
+            "final_disease": "晚疫病",
+            "final_source": "user_confirmed_candidate",
+            "diagnosis_evidence": {
+                "final_disease": "融合候选1",
+                "final_source": "fusion",
+                "summary": "融合 top1",
+                "fusion_top3": [("晚疫病", 0.66)],
+            },
+        }
+    )
+    evidence = out["diagnosis_evidence"]
+    assert "final_disease" not in evidence
+    assert "final_source" not in evidence
+    assert "summary" not in evidence
+    assert evidence["evidence_final_disease"] == "融合候选1"
+    assert evidence["evidence_final_source"] == "fusion"
+    assert evidence["evidence_summary"] == "融合 top1"
 
 
 def test_emit_node_event_truncates_status_and_message_and_payload_error_summary(monkeypatch):
