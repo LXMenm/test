@@ -1252,7 +1252,7 @@ def serialize_final_response(payload: dict[str, Any]) -> dict[str, Any]:
 
     # execution gate 语义兜底：防止 confirm 等路径遗漏 final_status / execution_*
     execution_gate_keys = {"final_status", "execution_allowed", "treatment_actionable", "treatment_reference_only"}
-    if any(key not in data for key in execution_gate_keys):
+    if any(key not in data or data.get(key) is None for key in execution_gate_keys):
         if not str(data.get("result_stage") or "").strip():
             data["result_stage"] = _derive_result_stage(status=data.get("status"), need_confirm=data.get("need_confirm"))
         data = _apply_execution_gate_semantics(data)
@@ -1377,12 +1377,12 @@ def _apply_execution_gate_semantics(payload: dict[str, Any]) -> dict[str, Any]:
             data["final_status"] = "verification_failed_before_completion"
         data["execution_allowed"] = False
         data["treatment_actionable"] = False
-        data["treatment_reference_only"] = treatment_available
+        data["treatment_reference_only"] = True
         data["manual_review_required_before_execution"] = True
     elif verification_passed is True:
         data["final_status"] = data.get("status")
         data["execution_allowed"] = is_final_stage
-        data["treatment_actionable"] = bool(is_final_stage and treatment_available)
+        data["treatment_actionable"] = bool(is_final_stage)
         data["treatment_reference_only"] = False
     elif is_final_stage and verification_available:
         data["final_status"] = "completed_with_warning"
