@@ -2761,6 +2761,12 @@ async def diagnose_image(
                 "status": response_status,
                 "reason": "need_confirm_wait_user",
                 "result_stage": event.get("result_stage"),
+                "display_symptoms": list(event.get("display_symptoms") or []),
+                "display_symptom_count": event.get("display_symptom_count"),
+                "final_status": event.get("final_status"),
+                "execution_allowed": event.get("execution_allowed"),
+                "treatment_actionable": event.get("treatment_actionable"),
+                "treatment_reference_only": event.get("treatment_reference_only"),
             },
         )
     else:
@@ -2768,7 +2774,16 @@ async def diagnose_image(
             trace_id,
             status=response_status,
             message="诊断流程完成",
-            payload={"final_disease": final_disease, "status": response_status},
+            payload={
+                "final_disease": final_disease,
+                "status": response_status,
+                "display_symptoms": list(event.get("display_symptoms") or []),
+                "display_symptom_count": event.get("display_symptom_count"),
+                "final_status": event.get("final_status"),
+                "execution_allowed": event.get("execution_allowed"),
+                "treatment_actionable": event.get("treatment_actionable"),
+                "treatment_reference_only": event.get("treatment_reference_only"),
+            },
         )
 
     response_payload = {
@@ -3416,6 +3431,12 @@ def _diagnose_confirm_core(request: Request, payload: dict) -> dict:
                 "status": confirm_status,
                 "reason": "need_confirm_wait_user",
                 "result_stage": event.get("result_stage"),
+                "display_symptoms": list(event.get("display_symptoms") or []),
+                "display_symptom_count": event.get("display_symptom_count"),
+                "final_status": event.get("final_status"),
+                "execution_allowed": event.get("execution_allowed"),
+                "treatment_actionable": event.get("treatment_actionable"),
+                "treatment_reference_only": event.get("treatment_reference_only"),
             },
         )
     else:
@@ -3427,6 +3448,12 @@ def _diagnose_confirm_core(request: Request, payload: dict) -> dict:
                 "final_disease": state.get("final_disease"),
                 "confirm_round": True,
                 "status": confirm_status,
+                "display_symptoms": list(event.get("display_symptoms") or []),
+                "display_symptom_count": event.get("display_symptom_count"),
+                "final_status": event.get("final_status"),
+                "execution_allowed": event.get("execution_allowed"),
+                "treatment_actionable": event.get("treatment_actionable"),
+                "treatment_reference_only": event.get("treatment_reference_only"),
             },
         )
 
