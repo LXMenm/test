@@ -474,8 +474,18 @@ def test_confirm_choice_response_uses_single_display_symptoms_source(monkeypatch
     assert resp.status_code == 200
     body = resp.json()
     assert body["status"] == "completed"
+    for key in (
+        "display_symptoms",
+        "display_symptom_count",
+        "final_status",
+        "execution_allowed",
+        "treatment_actionable",
+        "treatment_reference_only",
+    ):
+        assert key in body
     assert body["display_symptoms"] == ["叶片卷曲"]
     assert body["display_symptom_count"] == 1
+    assert body["display_symptom_count"] == len(body["display_symptoms"])
     assert body["final_status"] == "completed"
     assert body["execution_allowed"] is True
     assert body["treatment_actionable"] is True
@@ -519,6 +529,15 @@ def test_confirm_choice_completed_verification_failed_includes_execution_gate_co
     )
     assert resp.status_code == 200
     body = resp.json()
+    for key in (
+        "display_symptoms",
+        "display_symptom_count",
+        "final_status",
+        "execution_allowed",
+        "treatment_actionable",
+        "treatment_reference_only",
+    ):
+        assert key in body
     assert body["status"] == "completed_verification_failed"
     assert body["final_status"] == "completed_verification_failed"
     assert body["execution_allowed"] is False

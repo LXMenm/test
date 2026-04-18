@@ -3562,7 +3562,19 @@ def _diagnose_confirm_core(request: Request, payload: dict) -> dict:
             ensure_ascii=False,
         ),
     )
-    return serialize_final_response(response_payload)
+    final_response = serialize_final_response(response_payload)
+    # confirm 完成态出站兜底：确保 completed/completed_verification_failed 稳定带齐 UI 真源与 execution gate
+    if "display_symptoms" not in final_response or "display_symptom_count" not in final_response:
+        final_response = _apply_display_symptom_semantics(final_response)
+    execution_gate_keys = {"final_status", "execution_allowed", "treatment_actionable", "treatment_reference_only"}
+    if any(key not in final_response or final_response.get(key) is None for key in execution_gate_keys):
+        if not str(final_response.get("result_stage") or "").strip():
+            final_response["result_stage"] = _derive_result_stage(
+                status=final_response.get("status"),
+                need_confirm=final_response.get("need_confirm"),
+            )
+        final_response = _apply_execution_gate_semantics(final_response)
+    return final_response
 
 
 @app.post("/api/diagnose-confirm")
