@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef, memo, useCallback } from 'react';
+import { useEffect, useState, useRef, memo, useCallback, useMemo } from 'react';
 import type { ChangeEvent, JSX } from 'react';
 import { Upload, Send, RefreshCw, AlertCircle, CheckCircle, Loader2, Image as ImageIcon, ChevronDown, ChevronUp, Bell } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -239,6 +239,12 @@ export function DiagnosePage() {
   const payloadImageId = typeof latestPayload?.image_id === 'string' ? latestPayload.image_id : '';
   const activeTraceId = payloadTraceId || result?.trace_id || traceId || '';
   const activeImageId = payloadImageId || imageId || '';
+  const workflowInitialEvents = useMemo(
+    () => (Array.isArray(latestPayload?.events)
+      ? tagEventsSource(latestPayload.events as unknown[], 'continue')
+      : (traceEvents as unknown[])),
+    [latestPayload?.events, traceEvents],
+  );
 
   useEffect(() => {
     if (payloadTraceId && traceId && payloadTraceId !== traceId) {
@@ -847,8 +853,6 @@ export function DiagnosePage() {
       if (Array.isArray(payload.events)) {
         setTraceEvents((prev) => mergePayloadEventsAsPrimary(prev, payload.events, 'start'));
       }
-      setWorkflowRefreshToken((prev) => prev + 1);
-
       const normalizedResult = buildResultFromPayload(payload);
       syncConfirmStateFromPayload(payload, normalizedResult, { defaultChoice: 'other' });
 
@@ -967,8 +971,6 @@ export function DiagnosePage() {
       } else {
         setTraceEvents([]);
       }
-      setWorkflowRefreshToken((prev) => prev + 1);
-
       const normalizedResult = buildResultFromPayload(payload);
       syncConfirmStateFromPayload(payload, normalizedResult, { defaultChoice: 'other', resetInputs: true, markResubmitSuccess: true });
     } catch (error) {
@@ -1020,7 +1022,6 @@ export function DiagnosePage() {
       if (payload.trace_id) setTraceId(String(payload.trace_id));
       if (payload.image_id) setImageId(String(payload.image_id));
       if (Array.isArray(payload.events)) setTraceEvents((prev) => mergePayloadEventsAsPrimary(prev, payload.events, 'confirm'));
-      setWorkflowRefreshToken((prev) => prev + 1);
       const normalizedResult = buildResultFromPayload(payload);
       syncConfirmStateFromPayload(payload, normalizedResult, { defaultChoice: 'other', resetInputs: true, markResubmitSuccess: true });
     } catch (error) {
@@ -1086,8 +1087,6 @@ export function DiagnosePage() {
       if (Array.isArray(data?.events)) {
         setTraceEvents((prev) => mergePayloadEventsAsPrimary(prev, data.events, 'confirm'));
       }
-      setWorkflowRefreshToken((prev) => prev + 1);
-
       const mergedPayload = {
         ...data,
         image_url: (typeof data?.image_url === 'string' && data.image_url)
@@ -1166,8 +1165,6 @@ export function DiagnosePage() {
       if (Array.isArray(data?.events)) {
         setTraceEvents((prev) => mergePayloadEventsAsPrimary(prev, data.events, 'confirm'));
       }
-      setWorkflowRefreshToken((prev) => prev + 1);
-
       const mergedPayload = {
         ...data,
         image_url: (typeof data?.image_url === 'string' && data.image_url)
@@ -1778,7 +1775,7 @@ export function DiagnosePage() {
                 traceId={traceId || undefined}
                 confidencePct={result?.displayConfidencePct ?? undefined}
                 refreshToken={workflowRefreshToken}
-                initialEvents={Array.isArray(latestPayload?.events) ? tagEventsSource(latestPayload.events as unknown[], 'continue') : (traceEvents as unknown[])}
+                initialEvents={workflowInitialEvents}
                 initialPayload={latestPayload}
                 phase1Payload={phase1Payload}
                 i18n={latestPayload && typeof latestPayload.i18n === 'object' ? latestPayload.i18n as Record<string, unknown> : null}
