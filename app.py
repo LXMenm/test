@@ -1206,6 +1206,8 @@ def build_confirm_explanation(
 def serialize_final_response(payload: dict[str, Any]) -> dict[str, Any]:
     data = dict(payload or {})
     meta = dict(data.get("meta") or {})
+    data = _apply_verification_contract_semantics(data)
+    data = _apply_diagnosis_evidence_semantics(data)
 
     # canonical 统一进 meta，root 保持兼容性非空回填
     for key in META_ONLY_CANONICAL_KEYS:
@@ -1250,7 +1252,7 @@ def serialize_final_response(payload: dict[str, Any]) -> dict[str, Any]:
 
     # execution gate 语义兜底：防止 confirm 等路径遗漏 final_status / execution_*
     execution_gate_keys = {"final_status", "execution_allowed", "treatment_actionable", "treatment_reference_only"}
-    if any(key not in data for key in execution_gate_keys):
+    if any(key not in data or data.get(key) is None for key in execution_gate_keys):
         if not str(data.get("result_stage") or "").strip():
             data["result_stage"] = _derive_result_stage(status=data.get("status"), need_confirm=data.get("need_confirm"))
         data = _apply_execution_gate_semantics(data)
@@ -1270,7 +1272,7 @@ def _derive_result_stage(*, status: Any, need_confirm: Any) -> str:
     if status_text == "waiting_for_supplement" or bool(need_confirm):
         return "awaiting_confirmation"
     if status_text == "waiting_for_expert_decision":
-        return "pending_confirmation"
+        return "pending_expert_decision"
     if status_text == "pending_expert_review":
         return "pending_expert_review"
     return "diagnosis_completed"
@@ -1310,6 +1312,8 @@ def _apply_result_semantics(payload: dict[str, Any]) -> dict[str, Any]:
         data.pop("final_source", None)
     else:
         data["current_top1"] = data.get("current_top1") or data.get("final_disease")
+    data = _apply_verification_contract_semantics(data)
+    data = _apply_diagnosis_evidence_semantics(data)
     data = _apply_display_symptom_semantics(data)
     data = _apply_execution_gate_semantics(data)
     return data
@@ -1373,16 +1377,61 @@ def _apply_execution_gate_semantics(payload: dict[str, Any]) -> dict[str, Any]:
             data["final_status"] = "verification_failed_before_completion"
         data["execution_allowed"] = False
         data["treatment_actionable"] = False
-        data["treatment_reference_only"] = treatment_available
+        data["treatment_reference_only"] = True
         data["manual_review_required_before_execution"] = True
     elif verification_passed is True:
         data["final_status"] = data.get("status")
         data["execution_allowed"] = is_final_stage
-        data["treatment_actionable"] = bool(is_final_stage and treatment_available)
+        data["treatment_actionable"] = bool(is_final_stage)
         data["treatment_reference_only"] = False
     elif is_final_stage and verification_available:
         data["final_status"] = "completed_with_warning"
 
+    return data
+
+
+def _has_blocking_must_fix(verification_result: Any) -> bool:
+    if not isinstance(verification_result, dict):
+        return False
+    must_fix_items = _as_clean_list(verification_result.get("must_fix"))
+    return any(str(item).strip() for item in must_fix_items)
+
+
+def _apply_verification_contract_semantics(payload: dict[str, Any]) -> dict[str, Any]:
+    data = dict(payload or {})
+    verification_result = data.get("verification_result")
+    has_blocking_must_fix = _has_blocking_must_fix(verification_result)
+    verification_passed = data.get("verification_passed")
+
+    if verification_passed is True and has_blocking_must_fix:
+        data["verification_passed"] = False
+        if isinstance(verification_result, dict):
+            normalized_result = dict(verification_result)
+            normalized_result["passed"] = False
+            data["verification_result"] = normalized_result
+        if not data.get("manual_review_required_before_execution"):
+            data["manual_review_required_before_execution"] = True
+    return data
+
+
+def _apply_diagnosis_evidence_semantics(payload: dict[str, Any]) -> dict[str, Any]:
+    data = dict(payload or {})
+    diagnosis_evidence = data.get("diagnosis_evidence")
+    if not isinstance(diagnosis_evidence, dict):
+        return data
+    evidence = dict(diagnosis_evidence)
+
+    if _is_non_empty_value(evidence.get("final_disease")):
+        evidence["evidence_final_disease"] = evidence.get("final_disease")
+        evidence.pop("final_disease", None)
+    if _is_non_empty_value(evidence.get("final_source")):
+        evidence["evidence_final_source"] = evidence.get("final_source")
+        evidence.pop("final_source", None)
+    if _is_non_empty_value(evidence.get("summary")):
+        evidence["evidence_summary"] = evidence.get("summary")
+        evidence.pop("summary", None)
+
+    data["diagnosis_evidence"] = evidence
     return data
 
 
@@ -2712,6 +2761,35 @@ async def diagnose_image(
                 "status": response_status,
                 "reason": "need_confirm_wait_user",
                 "result_stage": event.get("result_stage"),
+                "display_symptoms": list(event.get("display_symptoms") or []),
+                "display_symptom_count": event.get("display_symptom_count"),
+                "final_status": event.get("final_status"),
+                "execution_allowed": event.get("execution_allowed"),
+                "treatment_actionable": event.get("treatment_actionable"),
+                "treatment_reference_only": event.get("treatment_reference_only"),
+            },
+        )
+    elif response_status == "waiting_for_expert_decision":
+        emit_node_event(
+            trace_id,
+            node="AwaitExpertDecision",
+            status="end",
+            message="等待用户决定采用当前结果或进入专家复核",
+            payload={
+                "status": event.get("status"),
+                "final_status": event.get("final_status"),
+                "result_stage": event.get("result_stage"),
+                "display_symptoms": list(event.get("display_symptoms") or []),
+                "display_symptom_count": event.get("display_symptom_count"),
+                "execution_allowed": event.get("execution_allowed"),
+                "treatment_actionable": event.get("treatment_actionable"),
+                "treatment_reference_only": event.get("treatment_reference_only"),
+                "provisional_disease": event.get("provisional_disease"),
+                "provisional_confidence": event.get("provisional_confidence"),
+                "provisional_source": event.get("provisional_source"),
+                "expert_review_recommended": event.get("expert_review_recommended"),
+                "expert_review_status": event.get("expert_review_status"),
+                "expert_review_actions": list(event.get("expert_review_actions") or []),
             },
         )
     else:
@@ -2719,7 +2797,16 @@ async def diagnose_image(
             trace_id,
             status=response_status,
             message="诊断流程完成",
-            payload={"final_disease": final_disease, "status": response_status},
+            payload={
+                "final_disease": final_disease,
+                "status": response_status,
+                "display_symptoms": list(event.get("display_symptoms") or []),
+                "display_symptom_count": event.get("display_symptom_count"),
+                "final_status": event.get("final_status"),
+                "execution_allowed": event.get("execution_allowed"),
+                "treatment_actionable": event.get("treatment_actionable"),
+                "treatment_reference_only": event.get("treatment_reference_only"),
+            },
         )
 
     response_payload = {
@@ -3367,6 +3454,35 @@ def _diagnose_confirm_core(request: Request, payload: dict) -> dict:
                 "status": confirm_status,
                 "reason": "need_confirm_wait_user",
                 "result_stage": event.get("result_stage"),
+                "display_symptoms": list(event.get("display_symptoms") or []),
+                "display_symptom_count": event.get("display_symptom_count"),
+                "final_status": event.get("final_status"),
+                "execution_allowed": event.get("execution_allowed"),
+                "treatment_actionable": event.get("treatment_actionable"),
+                "treatment_reference_only": event.get("treatment_reference_only"),
+            },
+        )
+    elif confirm_status == "waiting_for_expert_decision":
+        emit_node_event(
+            trace_id,
+            node="AwaitExpertDecision",
+            status="end",
+            message="等待用户决定采用当前结果或进入专家复核",
+            payload={
+                "status": event.get("status"),
+                "final_status": event.get("final_status"),
+                "result_stage": event.get("result_stage"),
+                "display_symptoms": list(event.get("display_symptoms") or []),
+                "display_symptom_count": event.get("display_symptom_count"),
+                "execution_allowed": event.get("execution_allowed"),
+                "treatment_actionable": event.get("treatment_actionable"),
+                "treatment_reference_only": event.get("treatment_reference_only"),
+                "provisional_disease": event.get("provisional_disease"),
+                "provisional_confidence": event.get("provisional_confidence"),
+                "provisional_source": event.get("provisional_source"),
+                "expert_review_recommended": event.get("expert_review_recommended"),
+                "expert_review_status": event.get("expert_review_status"),
+                "expert_review_actions": list(event.get("expert_review_actions") or []),
             },
         )
     else:
@@ -3378,6 +3494,12 @@ def _diagnose_confirm_core(request: Request, payload: dict) -> dict:
                 "final_disease": state.get("final_disease"),
                 "confirm_round": True,
                 "status": confirm_status,
+                "display_symptoms": list(event.get("display_symptoms") or []),
+                "display_symptom_count": event.get("display_symptom_count"),
+                "final_status": event.get("final_status"),
+                "execution_allowed": event.get("execution_allowed"),
+                "treatment_actionable": event.get("treatment_actionable"),
+                "treatment_reference_only": event.get("treatment_reference_only"),
             },
         )
 
@@ -3486,7 +3608,19 @@ def _diagnose_confirm_core(request: Request, payload: dict) -> dict:
             ensure_ascii=False,
         ),
     )
-    return serialize_final_response(response_payload)
+    final_response = serialize_final_response(response_payload)
+    # confirm 完成态出站兜底：确保 completed/completed_verification_failed 稳定带齐 UI 真源与 execution gate
+    if "display_symptoms" not in final_response or "display_symptom_count" not in final_response:
+        final_response = _apply_display_symptom_semantics(final_response)
+    execution_gate_keys = {"final_status", "execution_allowed", "treatment_actionable", "treatment_reference_only"}
+    if any(key not in final_response or final_response.get(key) is None for key in execution_gate_keys):
+        if not str(final_response.get("result_stage") or "").strip():
+            final_response["result_stage"] = _derive_result_stage(
+                status=final_response.get("status"),
+                need_confirm=final_response.get("need_confirm"),
+            )
+        final_response = _apply_execution_gate_semantics(final_response)
+    return final_response
 
 
 @app.post("/api/diagnose-confirm")
