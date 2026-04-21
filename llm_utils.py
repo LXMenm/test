@@ -67,67 +67,39 @@ def _call_openai(prompt: str, system_prompt: Optional[str] = None, temperature: 
 def _call_qwen(prompt: str, system_prompt: Optional[str] = None, temperature: float = 0.7) -> str:
     """调用通义千问API"""
     try:
-        import dashscope
-        from dashscope import Generation
+        from openai import OpenAI
         
         if not QWEN_API_KEY or QWEN_API_KEY == "your_qwen_api_key_here":
             return "API调用失败: 未配置QWEN_API_KEY，请在.env文件中设置"
         
-        dashscope.api_key = QWEN_API_KEY
+        # 初始化 OpenAI 客户端
+        client = OpenAI(
+            api_key=QWEN_API_KEY,
+            base_url=QWEN_BASE_URL if QWEN_BASE_URL else "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        )
         
+        # 构建消息
         messages = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
         
-        response = Generation.call(
+        # 调用 API
+        completion = client.chat.completions.create(
             model=QWEN_MODEL,
             messages=messages,
             temperature=temperature
         )
         
-        if response.status_code == 200:
-            # 通义千问API的响应格式：response.output.text
-            try:
-                if hasattr(response, 'output') and response.output is not None:
-                    # 通义千问API返回格式：response.output.text
-                    # GenerationOutput对象同时支持属性访问和字典访问
-                    
-                    # 方式1: 直接属性访问 response.output.text（最直接）
-                    try:
-                        text = response.output.text
-                        if text:
-                            return text
-                    except (AttributeError, KeyError):
-                        pass
-                    
-                    # 方式2: 字典访问 response.output['text']
-                    try:
-                        text = response.output['text']
-                        if text:
-                            return text
-                    except (KeyError, TypeError):
-                        pass
-                    
-                    # 方式3: 使用get方法（如果支持）
-                    try:
-                        if hasattr(response.output, 'get'):
-                            text = response.output.get('text')
-                            if text:
-                                return text
-                    except Exception:
-                        pass
-                
-                return f"API调用失败: 无法解析响应格式，响应对象: {type(response)}"
-            except Exception as e:
-                return f"API调用失败: 解析响应时出错 - {str(e)}"
+        # 获取响应
+        if completion and completion.choices:
+            return completion.choices[0].message.content
         else:
-            error_msg = getattr(response, 'message', '未知错误')
-            return f"API调用失败: {error_msg} (状态码: {response.status_code})"
+            return "API调用失败: 未获取到响应内容"
     except ImportError:
-        return "API调用失败: dashscope库未安装，请运行 pip install dashscope"
+        return "API调用失败: 请安装 openai 库 (pip install openai)"
     except Exception as e:
-        print(f"通义千问API调用失败: {e}")
+        print(f"Qwen API调用失败: {e}")
         return f"API调用失败: {str(e)}"
 
 

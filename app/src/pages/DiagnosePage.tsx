@@ -239,6 +239,15 @@ export function DiagnosePage() {
   const payloadImageId = typeof latestPayload?.image_id === 'string' ? latestPayload.image_id : '';
   const activeTraceId = payloadTraceId || result?.trace_id || traceId || '';
   const activeImageId = payloadImageId || imageId || '';
+
+  const tagEventsSource = (eventsLike: unknown, source: 'start' | 'continue' | 'replay' | 'confirm'): unknown[] => {
+    if (!Array.isArray(eventsLike)) return [];
+    return eventsLike.map((item) => {
+      const raw = item && typeof item === 'object' ? item as Record<string, unknown> : {};
+      return { ...raw, __source: source };
+    });
+  };
+
   const workflowInitialEvents = useMemo(
     () => (Array.isArray(latestPayload?.events)
       ? tagEventsSource(latestPayload.events as unknown[], 'continue')
@@ -666,14 +675,6 @@ export function DiagnosePage() {
       confirm_ui_mode: typeof payload.confirm_ui_mode === 'string' ? payload.confirm_ui_mode : undefined,
       confirm_fields: Array.isArray(payload.confirm_fields) ? payload.confirm_fields.map((item) => String(item)) : [],
     };
-  };
-
-  const tagEventsSource = (eventsLike: unknown, source: 'start' | 'continue' | 'replay' | 'confirm'): unknown[] => {
-    if (!Array.isArray(eventsLike)) return [];
-    return eventsLike.map((item) => {
-      const raw = item && typeof item === 'object' ? item as Record<string, unknown> : {};
-      return { ...raw, __source: source };
-    });
   };
 
   const normalizeTraceEvents = (eventsLike: unknown, source: 'start' | 'continue' | 'replay' | 'confirm' = 'replay'): TraceEvent[] => {
