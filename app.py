@@ -1272,7 +1272,7 @@ def _derive_result_stage(*, status: Any, need_confirm: Any) -> str:
     if status_text == "waiting_for_supplement" or bool(need_confirm):
         return "awaiting_confirmation"
     if status_text == "waiting_for_expert_decision":
-        return "pending_confirmation"
+        return "pending_expert_decision"
     if status_text == "pending_expert_review":
         return "pending_expert_review"
     return "diagnosis_completed"
@@ -2769,6 +2769,29 @@ async def diagnose_image(
                 "treatment_reference_only": event.get("treatment_reference_only"),
             },
         )
+    elif response_status == "waiting_for_expert_decision":
+        emit_node_event(
+            trace_id,
+            node="AwaitExpertDecision",
+            status="end",
+            message="等待用户决定采用当前结果或进入专家复核",
+            payload={
+                "status": event.get("status"),
+                "final_status": event.get("final_status"),
+                "result_stage": event.get("result_stage"),
+                "display_symptoms": list(event.get("display_symptoms") or []),
+                "display_symptom_count": event.get("display_symptom_count"),
+                "execution_allowed": event.get("execution_allowed"),
+                "treatment_actionable": event.get("treatment_actionable"),
+                "treatment_reference_only": event.get("treatment_reference_only"),
+                "provisional_disease": event.get("provisional_disease"),
+                "provisional_confidence": event.get("provisional_confidence"),
+                "provisional_source": event.get("provisional_source"),
+                "expert_review_recommended": event.get("expert_review_recommended"),
+                "expert_review_status": event.get("expert_review_status"),
+                "expert_review_actions": list(event.get("expert_review_actions") or []),
+            },
+        )
     else:
         emit_final_event_once(
             trace_id,
@@ -3437,6 +3460,29 @@ def _diagnose_confirm_core(request: Request, payload: dict) -> dict:
                 "execution_allowed": event.get("execution_allowed"),
                 "treatment_actionable": event.get("treatment_actionable"),
                 "treatment_reference_only": event.get("treatment_reference_only"),
+            },
+        )
+    elif confirm_status == "waiting_for_expert_decision":
+        emit_node_event(
+            trace_id,
+            node="AwaitExpertDecision",
+            status="end",
+            message="等待用户决定采用当前结果或进入专家复核",
+            payload={
+                "status": event.get("status"),
+                "final_status": event.get("final_status"),
+                "result_stage": event.get("result_stage"),
+                "display_symptoms": list(event.get("display_symptoms") or []),
+                "display_symptom_count": event.get("display_symptom_count"),
+                "execution_allowed": event.get("execution_allowed"),
+                "treatment_actionable": event.get("treatment_actionable"),
+                "treatment_reference_only": event.get("treatment_reference_only"),
+                "provisional_disease": event.get("provisional_disease"),
+                "provisional_confidence": event.get("provisional_confidence"),
+                "provisional_source": event.get("provisional_source"),
+                "expert_review_recommended": event.get("expert_review_recommended"),
+                "expert_review_status": event.get("expert_review_status"),
+                "expert_review_actions": list(event.get("expert_review_actions") or []),
             },
         )
     else:

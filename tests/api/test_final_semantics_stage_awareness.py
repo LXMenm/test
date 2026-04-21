@@ -137,7 +137,7 @@ def test_compat_final_fields_can_exist_but_stage_still_distinguishes_non_final(m
 def test_non_final_statuses_share_same_canonical_downgrade_rules():
     cases = [
         ("waiting_for_supplement", True, "awaiting_confirmation"),
-        ("waiting_for_expert_decision", False, "pending_confirmation"),
+        ("waiting_for_expert_decision", False, "pending_expert_decision"),
         ("pending_expert_review", False, "pending_expert_review"),
     ]
     for status, need_confirm, expected_stage in cases:
@@ -746,6 +746,66 @@ def test_confirm_completed_final_event_payload_contains_display_and_execution_fi
         "execution_allowed",
         "treatment_actionable",
         "treatment_reference_only",
+    ):
+        assert payload.get(key) == body.get(key)
+
+
+def test_confirm_waiting_for_expert_decision_emits_terminal_event_aligned_with_api(monkeypatch, tmp_path):
+    image_id, _captured_events = _prepare_confirm_core_mocks(monkeypatch, tmp_path, previous_status="waiting_for_supplement")
+    emitted: list[dict] = []
+
+    class _Graph:
+        def invoke(self, state, config=None):
+            _ = config
+            out = dict(state)
+            out.update(
+                {
+                    "trace_id": state.get("trace_id"),
+                    "next_action": "manual_review",
+                    "final_disease": "晚疫病",
+                    "final_confidence": 0.64,
+                    "final_source": "fusion",
+                    "image_diagnosis": {"top1": {"disease": "晚疫病", "confidence": 0.7}, "top3": [("晚疫病", 0.7)]},
+                    "normalized_symptoms": ["叶片卷曲"],
+                    "diagnosis_evidence": {"normalized_symptoms": ["叶片卷曲"]},
+                    "personalization_flags": {"need_confirm": False, "fallback_reason": [], "follow_up_questions": []},
+                    "expert_review_actions": ["use_current_result", "request_expert_review"],
+                }
+            )
+            return out
+
+    def _capture_emit(_trace_id, *, node, status, message=None, payload=None):
+        emitted.append({"node": node, "status": status, "message": message, "payload": payload})
+        return {}
+
+    monkeypatch.setattr(app_module, "build_graph", lambda: _Graph())
+    monkeypatch.setattr(app_module, "emit_node_event", _capture_emit)
+    client = TestClient(app_module.app)
+    resp = client.post(
+        "/api/diagnose-confirm",
+        json={"trace_id": "trace-confirm", "image_id": image_id, "crop_type": "番茄", "choice": "other", "symptoms": ["卷叶"]},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "waiting_for_expert_decision"
+    assert body["final_status"] == "waiting_for_expert_decision"
+    assert body["result_stage"] == "pending_expert_decision"
+    assert body["is_final_result"] is False
+    assert body["final_result_authoritative"] is False
+
+    terminal_events = [item for item in emitted if item.get("node") == "AwaitExpertDecision" and item.get("status") == "end"]
+    assert terminal_events
+    payload = terminal_events[-1].get("payload") or {}
+    for key in (
+        "status",
+        "final_status",
+        "result_stage",
+        "display_symptoms",
+        "display_symptom_count",
+        "execution_allowed",
+        "treatment_actionable",
+        "treatment_reference_only",
+        "provisional_disease",
     ):
         assert payload.get(key) == body.get(key)
 
