@@ -752,6 +752,7 @@ def test_confirm_completed_final_event_payload_contains_display_and_execution_fi
 
 def test_confirm_completed_fields_exist_after_result_semantics_after_serialize_and_in_api_response(monkeypatch, tmp_path):
     image_id, _captured_events = _prepare_confirm_core_mocks(monkeypatch, tmp_path, previous_status="waiting_for_supplement")
+    captured_raw_before_result: dict | None = None
     captured_after_result: dict | None = None
     captured_after_serialize: dict | None = None
 
@@ -759,7 +760,10 @@ def test_confirm_completed_fields_exist_after_result_semantics_after_serialize_a
     original_serialize = app_module.serialize_final_response
 
     def _wrapped_apply(payload):
+        nonlocal captured_raw_before_result
         nonlocal captured_after_result
+        if isinstance(payload, dict) and payload.get("status") in {"completed", "completed_verification_failed"} and "events" in payload:
+            captured_raw_before_result = dict(payload)
         out = original_apply(payload)
         if isinstance(payload, dict) and payload.get("status") in {"completed", "completed_verification_failed"} and "events" in payload:
             captured_after_result = dict(out)
@@ -810,8 +814,19 @@ def test_confirm_completed_fields_exist_after_result_semantics_after_serialize_a
     assert resp.status_code == 200
     body = resp.json()
 
+    assert captured_raw_before_result is not None
     assert captured_after_result is not None
     assert captured_after_serialize is not None
+    # 原始 response_payload 阶段允许缺字段；关键是统一收口后与最终出站不能丢。
+    for key in (
+        "display_symptoms",
+        "display_symptom_count",
+        "final_status",
+        "execution_allowed",
+        "treatment_actionable",
+        "treatment_reference_only",
+    ):
+        assert key not in captured_raw_before_result or captured_raw_before_result.get(key) is None
     for one in (captured_after_result, captured_after_serialize, body):
         for key in (
             "display_symptoms",
