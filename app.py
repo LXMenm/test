@@ -3616,17 +3616,24 @@ def _diagnose_confirm_core(request: Request, payload: dict) -> dict:
         ),
     )
     final_response = serialize_final_response(response_payload)
-    # confirm 完成态出站兜底：确保 completed/completed_verification_failed 稳定带齐 UI 真源与 execution gate
-    if "display_symptoms" not in final_response or "display_symptom_count" not in final_response:
-        final_response = _apply_display_symptom_semantics(final_response)
-    execution_gate_keys = {"final_status", "execution_allowed", "treatment_actionable", "treatment_reference_only"}
-    if any(key not in final_response or final_response.get(key) is None for key in execution_gate_keys):
-        if not str(final_response.get("result_stage") or "").strip():
-            final_response["result_stage"] = _derive_result_stage(
-                status=final_response.get("status"),
-                need_confirm=final_response.get("need_confirm"),
-            )
-        final_response = _apply_execution_gate_semantics(final_response)
+    # confirm 完成态最终出站兜底：只在 completed/completed_verification_failed 缺 unified contract 时重走统一收口
+    final_contract_keys = {
+        "display_symptoms",
+        "display_symptom_count",
+        "final_status",
+        "execution_allowed",
+        "treatment_actionable",
+        "treatment_reference_only",
+        "result_stage",
+        "is_final_result",
+        "final_result_authoritative",
+    }
+    final_status_text = str(final_response.get("status") or "").strip()
+    if final_status_text in {"completed", "completed_verification_failed"} and any(
+        key not in final_response or final_response.get(key) is None for key in final_contract_keys
+    ):
+        final_response = _apply_result_semantics(final_response)
+        final_response = serialize_final_response(final_response)
     return final_response
 
 
