@@ -435,6 +435,14 @@ def test_waiting_api_and_persist_payload_share_same_provisional_and_display_sema
     assert body["provisional_disease"] == persisted["provisional_disease"] == "晚疫病"
     assert body["display_symptoms"] == persisted["display_symptoms"] == ["叶片卷曲"]
     assert body["display_symptom_count"] == persisted["display_symptom_count"] == 1
+    for key in (
+        "final_status",
+        "execution_allowed",
+        "treatment_actionable",
+        "treatment_reference_only",
+    ):
+        assert key in body
+        assert key in persisted
 
 
 def test_confirm_choice_response_uses_single_display_symptoms_source(monkeypatch, tmp_path):
@@ -510,6 +518,8 @@ def test_confirm_choice_completed_verification_failed_includes_execution_gate_co
                     "normalized_symptoms": ["叶片卷曲"],
                     "diagnosis_evidence": {"normalized_symptoms": ["叶片卷曲"]},
                     "personalization_flags": {"need_confirm": False, "fallback_reason": [], "follow_up_questions": []},
+                    "llm_failed": False,
+                    "llm_failed_reason": "constraint_violation",
                     "verification_result": {"passed": False, "issues": ["x"]},
                     "verification_passed": False,
                     "verification_risk_level": "high",
@@ -545,6 +555,8 @@ def test_confirm_choice_completed_verification_failed_includes_execution_gate_co
     assert body["treatment_reference_only"] is True
     assert body["manual_review_required_before_execution"] is True
     assert body["display_symptom_count"] == len(body["display_symptoms"])
+    assert body["llm_failed"] is False
+    assert body.get("llm_failed_reason") is None
 
 
 def test_completed_response_still_has_display_fields_when_normalized_symptoms_missing(monkeypatch, tmp_path):
@@ -808,6 +820,19 @@ def test_confirm_waiting_for_expert_decision_emits_terminal_event_aligned_with_a
         "provisional_disease",
     ):
         assert payload.get(key) == body.get(key)
+
+
+def test_serialize_final_response_normalizes_llm_failed_reason_contract():
+    out = app_module.serialize_final_response(
+        {
+            "status": "completed",
+            "need_confirm": False,
+            "llm_failed": False,
+            "llm_failed_reason": "constraint_violation",
+        }
+    )
+    assert out["llm_failed"] is False
+    assert out.get("llm_failed_reason") is None
 
 
 def test_confirm_completed_fields_exist_after_result_semantics_after_serialize_and_in_api_response(monkeypatch, tmp_path):

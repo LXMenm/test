@@ -1243,6 +1243,13 @@ def serialize_final_response(payload: dict[str, Any]) -> dict[str, Any]:
     if "confirm_message" in data and data["confirm_message"] is not None:
         data["confirm_message"] = sanitize_user_text(data["confirm_message"])
 
+    llm_failed_reason = str(data.get("llm_failed_reason") or "").strip()
+    if data.get("llm_failed") is False:
+        data["llm_failed_reason"] = None
+    elif llm_failed_reason:
+        data["llm_failed"] = True
+        data["llm_failed_reason"] = llm_failed_reason
+
     # display 症状语义兜底：防止旧路径/DTO 未经过统一收口时遗漏 display_*
     if "display_symptoms" not in data or "display_symptom_count" not in data:
         data = _apply_display_symptom_semantics(data)
