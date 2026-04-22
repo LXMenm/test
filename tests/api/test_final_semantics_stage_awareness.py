@@ -1185,7 +1185,7 @@ def test_waiting_for_supplement_api_and_event_behavior_does_not_regress(monkeypa
         assert key in event
 
 
-def test_final_completed_response_keeps_unified_contract_fields_before_return(monkeypatch, tmp_path):
+def test_final_completed_response_keeps_unified_contract_fields(monkeypatch, tmp_path):
     image_id, _captured_events = _prepare_confirm_core_mocks(monkeypatch, tmp_path, previous_status="waiting_for_supplement")
     checkpoints: dict[str, dict] = {}
     contract_keys = (
@@ -1259,7 +1259,7 @@ def test_final_completed_response_keeps_unified_contract_fields_before_return(mo
         assert key not in checkpoints["graph_output"]
 
 
-def test_final_completed_verification_failed_response_keeps_unified_contract_fields_before_return(monkeypatch, tmp_path):
+def test_final_completed_verification_failed_response_keeps_unified_contract_fields(monkeypatch, tmp_path):
     image_id, _captured_events = _prepare_confirm_core_mocks(monkeypatch, tmp_path, previous_status="waiting_for_supplement")
 
     class _Graph:
@@ -1308,14 +1308,14 @@ def test_final_completed_verification_failed_response_keeps_unified_contract_fie
         assert key in body
 
 
-def test_final_completed_response_has_diagnosis_completed_stage_flags():
+def test_final_completed_response_has_final_stage_flags():
     out = app_module.serialize_final_response(app_module._apply_result_semantics({"status": "completed", "need_confirm": False}))
     assert out["result_stage"] == "diagnosis_completed"
     assert out["is_final_result"] is True
     assert out["final_result_authoritative"] is True
 
 
-def test_final_completed_verification_failed_response_has_diagnosis_completed_stage_flags():
+def test_final_completed_verification_failed_response_has_final_stage_flags():
     out = app_module.serialize_final_response(
         app_module._apply_result_semantics(
             {"status": "completed", "need_confirm": False, "verification_result": {"passed": False}, "verification_passed": False}
@@ -1336,40 +1336,8 @@ def test_final_display_symptom_count_matches_display_symptoms_length():
     assert out["display_symptom_count"] == len(out["display_symptoms"])
 
 
-def test_waiting_behavior_does_not_regress(monkeypatch, tmp_path):
-    _prepare_common_mocks(monkeypatch, tmp_path, need_confirm=True)
-    captured_events: list[dict] = []
-    monkeypatch.setattr(app_module, "append_event", lambda evt: captured_events.append(dict(evt)))
-    client = TestClient(app_module.app)
-    body = client.post(
-        "/api/diagnose-image",
-        files={"file": ("case.jpg", b"fake-jpeg-content", "image/jpeg")},
-        data={"crop_type": "番茄"},
-    ).json()
-    assert body["status"] == "waiting_for_supplement"
-    assert body["result_stage"] == "awaiting_confirmation"
-    assert body["is_final_result"] is False
-    assert body["final_result_authoritative"] is False
-    for key in (
-        "display_symptoms",
-        "display_symptom_count",
-        "final_status",
-        "execution_allowed",
-        "treatment_actionable",
-        "treatment_reference_only",
-    ):
-        assert key in body
-    assert captured_events
-    event = captured_events[-1]
-    for key in (
-        "display_symptoms",
-        "display_symptom_count",
-        "final_status",
-        "execution_allowed",
-        "treatment_actionable",
-        "treatment_reference_only",
-    ):
-        assert key in event
+def test_waiting_for_supplement_behavior_does_not_regress(monkeypatch, tmp_path):
+    test_waiting_for_supplement_api_and_event_behavior_does_not_regress(monkeypatch, tmp_path)
 
 
 def test_final_response_keeps_verification_contract_after_unified_contract_fix(monkeypatch, tmp_path):
