@@ -1185,7 +1185,7 @@ def test_waiting_for_supplement_api_and_event_behavior_does_not_regress(monkeypa
         assert key in event
 
 
-def test_final_completed_response_keeps_unified_contract_fields(monkeypatch, tmp_path):
+def test_final_completed_response_keeps_unified_contract_fields_before_return(monkeypatch, tmp_path):
     image_id, _captured_events = _prepare_confirm_core_mocks(monkeypatch, tmp_path, previous_status="waiting_for_supplement")
     checkpoints: dict[str, dict] = {}
     contract_keys = (
@@ -1259,7 +1259,7 @@ def test_final_completed_response_keeps_unified_contract_fields(monkeypatch, tmp
         assert key not in checkpoints["graph_output"]
 
 
-def test_final_completed_verification_failed_response_keeps_unified_contract_fields(monkeypatch, tmp_path):
+def test_final_completed_verification_failed_response_keeps_unified_contract_fields_before_return(monkeypatch, tmp_path):
     image_id, _captured_events = _prepare_confirm_core_mocks(monkeypatch, tmp_path, previous_status="waiting_for_supplement")
 
     class _Graph:
@@ -1308,14 +1308,14 @@ def test_final_completed_verification_failed_response_keeps_unified_contract_fie
         assert key in body
 
 
-def test_final_completed_response_has_final_stage_flags():
+def test_final_completed_response_has_diagnosis_completed_stage_flags():
     out = app_module.serialize_final_response(app_module._apply_result_semantics({"status": "completed", "need_confirm": False}))
     assert out["result_stage"] == "diagnosis_completed"
     assert out["is_final_result"] is True
     assert out["final_result_authoritative"] is True
 
 
-def test_final_completed_verification_failed_response_has_final_stage_flags():
+def test_final_completed_verification_failed_response_has_diagnosis_completed_stage_flags():
     out = app_module.serialize_final_response(
         app_module._apply_result_semantics(
             {"status": "completed", "need_confirm": False, "verification_result": {"passed": False}, "verification_passed": False}
@@ -1336,8 +1336,40 @@ def test_final_display_symptom_count_matches_display_symptoms_length():
     assert out["display_symptom_count"] == len(out["display_symptoms"])
 
 
-def test_waiting_for_supplement_behavior_does_not_regress(monkeypatch, tmp_path):
-    test_waiting_for_supplement_api_and_event_behavior_does_not_regress(monkeypatch, tmp_path)
+def test_waiting_behavior_does_not_regress(monkeypatch, tmp_path):
+    _prepare_common_mocks(monkeypatch, tmp_path, need_confirm=True)
+    captured_events: list[dict] = []
+    monkeypatch.setattr(app_module, "append_event", lambda evt: captured_events.append(dict(evt)))
+    client = TestClient(app_module.app)
+    body = client.post(
+        "/api/diagnose-image",
+        files={"file": ("case.jpg", b"fake-jpeg-content", "image/jpeg")},
+        data={"crop_type": "番茄"},
+    ).json()
+    assert body["status"] == "waiting_for_supplement"
+    assert body["result_stage"] == "awaiting_confirmation"
+    assert body["is_final_result"] is False
+    assert body["final_result_authoritative"] is False
+    for key in (
+        "display_symptoms",
+        "display_symptom_count",
+        "final_status",
+        "execution_allowed",
+        "treatment_actionable",
+        "treatment_reference_only",
+    ):
+        assert key in body
+    assert captured_events
+    event = captured_events[-1]
+    for key in (
+        "display_symptoms",
+        "display_symptom_count",
+        "final_status",
+        "execution_allowed",
+        "treatment_actionable",
+        "treatment_reference_only",
+    ):
+        assert key in event
 
 
 def test_final_response_keeps_verification_contract_after_unified_contract_fix(monkeypatch, tmp_path):
@@ -1377,6 +1409,65 @@ def test_final_response_keeps_verification_contract_after_unified_contract_fix(m
     assert body["verification_passed"] is False
     assert isinstance(body["verification_result"], dict)
     assert body["verification_summary"] == "fail"
+
+
+def test_confirm_final_response_backfills_verification_contract_from_trace_events_when_state_drops_it(monkeypatch, tmp_path):
+    image_id, _captured_events = _prepare_confirm_core_mocks(monkeypatch, tmp_path, previous_status="waiting_for_supplement")
+
+    verification_complete_event = {
+        "node": "verification_complete",
+        "outputs": {
+            "passed": False,
+            "risk_level": "high",
+            "issues": ["x"],
+            "must_fix": ["必须先修复"],
+            "compliance_summary": "fail",
+        },
+    }
+    monkeypatch.setattr(app_module, "list_trace_events", lambda *_args, **_kwargs: [verification_complete_event])
+
+    class _Graph:
+        def invoke(self, state, config=None):
+            _ = config
+            out = dict(state)
+            out.update(
+                {
+                    "trace_id": state.get("trace_id"),
+                    "next_action": "end",
+                    "final_disease": "晚疫病",
+                    "final_confidence": 0.88,
+                    "final_source": "fusion",
+                    "image_diagnosis": {"top1": {"disease": "晚疫病", "confidence": 0.88}, "top3": [("晚疫病", 0.88)]},
+                    "normalized_symptoms": ["叶片卷曲"],
+                    "diagnosis_evidence": {"normalized_symptoms": ["叶片卷曲"]},
+                    "personalization_flags": {"need_confirm": False, "fallback_reason": [], "follow_up_questions": []},
+                    "verification_result": None,
+                    "verification_passed": None,
+                    "verification_risk_level": None,
+                    "verification_issues": [],
+                    "verification_summary": None,
+                    "treatment_plan": "仅供参考方案",
+                    "prevention_advice": "仅供参考预防",
+                }
+            )
+            return out
+
+    monkeypatch.setattr(app_module, "build_graph", lambda: _Graph())
+    client = TestClient(app_module.app)
+    body = client.post(
+        "/api/diagnose-confirm",
+        json={"trace_id": "trace-confirm", "image_id": image_id, "crop_type": "番茄", "choice": "晚疫病", "symptoms": ["卷叶"]},
+    ).json()
+
+    assert body["verification_available"] is True
+    assert body["verification_passed"] is False
+    assert isinstance(body["verification_result"], dict)
+    assert body["verification_summary"] == "fail"
+    assert body["status"] == "completed_verification_failed"
+    assert body["final_status"] == "completed_verification_failed"
+    assert body["execution_allowed"] is False
+    assert body["treatment_actionable"] is False
+    assert body["treatment_reference_only"] is True
 
 
 def test_verification_passed_is_downgraded_when_blocking_must_fix_exists():
