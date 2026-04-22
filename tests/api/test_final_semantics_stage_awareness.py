@@ -1244,6 +1244,10 @@ def test_confirm_final_event_has_unified_contract_before_response_return(monkeyp
         assert key in body
 
 
+def test_terminal_event_contains_unified_contract_before_final_return(monkeypatch, tmp_path):
+    test_confirm_final_event_has_unified_contract_before_response_return(monkeypatch, tmp_path)
+
+
 def test_confirm_final_response_unconditionally_inherits_unified_contract_from_event(monkeypatch, tmp_path):
     image_id, _captured_events = _prepare_confirm_core_mocks(monkeypatch, tmp_path, previous_status="waiting_for_supplement")
     final_contract_keys = (
@@ -1307,6 +1311,10 @@ def test_confirm_final_response_unconditionally_inherits_unified_contract_from_e
         assert key in body
 
 
+def test_final_completed_response_unconditionally_inherits_unified_contract_from_terminal_event(monkeypatch, tmp_path):
+    test_confirm_final_response_unconditionally_inherits_unified_contract_from_event(monkeypatch, tmp_path)
+
+
 def test_confirm_completed_verification_failed_response_keeps_verification_and_unified_contract(monkeypatch, tmp_path):
     image_id, _captured_events = _prepare_confirm_core_mocks(monkeypatch, tmp_path, previous_status="waiting_for_supplement")
 
@@ -1359,6 +1367,10 @@ def test_confirm_completed_verification_failed_response_keeps_verification_and_u
     assert body["verification_passed"] is False
     assert isinstance(body["verification_result"], dict)
     assert body["verification_summary"] == "fail"
+
+
+def test_final_completed_verification_failed_response_unconditionally_inherits_unified_contract_from_terminal_event(monkeypatch, tmp_path):
+    test_confirm_completed_verification_failed_response_keeps_verification_and_unified_contract(monkeypatch, tmp_path)
 
 
 def test_final_completed_response_keeps_unified_contract_fields_before_return(monkeypatch, tmp_path):
@@ -1585,6 +1597,10 @@ def test_final_response_keeps_verification_contract_after_unified_contract_fix(m
     assert body["verification_passed"] is False
     assert isinstance(body["verification_result"], dict)
     assert body["verification_summary"] == "fail"
+
+
+def test_final_response_keeps_verification_contract_after_unified_contract_force_copy(monkeypatch, tmp_path):
+    test_final_response_keeps_verification_contract_after_unified_contract_fix(monkeypatch, tmp_path)
 
 
 def test_final_completed_response_keeps_unified_contract_fields(monkeypatch, tmp_path):
