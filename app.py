@@ -3728,21 +3728,9 @@ def _diagnose_confirm_core(request: Request, payload: dict) -> dict:
         "is_final_result",
         "final_result_authoritative",
     }
-    verification_contract_keys = {
-        "verification_result",
-        "verification_passed",
-        "verification_risk_level",
-        "verification_issues",
-        "verification_summary",
-    }
     for key in final_contract_keys:
         if (key not in response_payload or response_payload.get(key) is None) and event.get(key) is not None:
             response_payload[key] = event.get(key)
-    for key in verification_contract_keys:
-        if response_payload.get(key) in (None, "", []) and event.get(key) not in (None, "", []):
-            response_payload[key] = event.get(key)
-    if event.get("verification_available") is True:
-        response_payload["verification_available"] = True
     print(
         "[DiagnoseConfirm] output",
         json.dumps(
@@ -3759,16 +3747,10 @@ def _diagnose_confirm_core(request: Request, payload: dict) -> dict:
     final_response = serialize_final_response(response_payload)
     final_status_text = str(final_response.get("status") or "").strip()
     need_final_contract_fix = any(key not in final_response or final_response.get(key) is None for key in final_contract_keys)
-    need_verification_contract_fix = any(final_response.get(key) in (None, "", []) for key in verification_contract_keys)
-    if final_status_text in {"completed", "completed_verification_failed"} and (need_final_contract_fix or need_verification_contract_fix):
+    if final_status_text in {"completed", "completed_verification_failed"} and need_final_contract_fix:
         for key in final_contract_keys:
             if (key not in final_response or final_response.get(key) is None) and event.get(key) is not None:
                 final_response[key] = event.get(key)
-        for key in verification_contract_keys:
-            if final_response.get(key) in (None, "", []) and event.get(key) not in (None, "", []):
-                final_response[key] = event.get(key)
-        if event.get("verification_available") is True:
-            final_response["verification_available"] = True
         final_response = _apply_result_semantics(final_response)
         final_response = serialize_final_response(final_response)
     return final_response
