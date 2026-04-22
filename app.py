@@ -1421,6 +1421,97 @@ def _apply_verification_contract_semantics(payload: dict[str, Any]) -> dict[str,
     return data
 
 
+def _build_verification_snapshot_from_payload(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {}
+    verification_result = payload.get("verification_result")
+    verification_passed = payload.get("verification_passed")
+    verification_risk_level = payload.get("verification_risk_level")
+    verification_issues = payload.get("verification_issues")
+    verification_summary = payload.get("verification_summary")
+    verification_available = payload.get("verification_available")
+
+    if not isinstance(verification_result, dict):
+        alt_result: dict[str, Any] = {}
+        passed = payload.get("passed")
+        risk_level = payload.get("risk_level")
+        issues = payload.get("issues")
+        must_fix = payload.get("must_fix")
+        compliance_summary = payload.get("compliance_summary")
+        if passed is not None:
+            alt_result["passed"] = passed
+        if risk_level is not None:
+            alt_result["risk_level"] = risk_level
+        if issues is not None:
+            alt_result["issues"] = list(_as_clean_list(issues))
+        if must_fix is not None:
+            alt_result["must_fix"] = list(_as_clean_list(must_fix))
+        if compliance_summary is not None:
+            alt_result["compliance_summary"] = compliance_summary
+        if alt_result:
+            verification_result = alt_result
+
+    if isinstance(verification_result, dict):
+        verification_result = dict(verification_result)
+        if verification_passed is None and verification_result.get("passed") is not None:
+            verification_passed = verification_result.get("passed")
+        if verification_risk_level in (None, "") and verification_result.get("risk_level") is not None:
+            verification_risk_level = verification_result.get("risk_level")
+        if not _as_clean_list(verification_issues) and verification_result.get("issues") is not None:
+            verification_issues = list(_as_clean_list(verification_result.get("issues")))
+        if verification_summary in (None, "") and verification_result.get("compliance_summary") is not None:
+            verification_summary = verification_result.get("compliance_summary")
+        if verification_passed is None and _has_blocking_must_fix(verification_result):
+            verification_passed = False
+            verification_result["passed"] = False
+
+    has_any = any(
+        [
+            isinstance(verification_result, dict),
+            verification_passed is not None,
+            str(verification_risk_level or "").strip(),
+            bool(_as_clean_list(verification_issues)),
+            str(verification_summary or "").strip(),
+            verification_available is True,
+        ]
+    )
+    if not has_any:
+        return {}
+
+    snapshot = {
+        "verification_result": verification_result if isinstance(verification_result, dict) else None,
+        "verification_passed": verification_passed,
+        "verification_risk_level": verification_risk_level,
+        "verification_issues": list(_as_clean_list(verification_issues)),
+        "verification_summary": verification_summary,
+    }
+    snapshot["verification_available"] = bool(snapshot["verification_result"] is not None or verification_available is True)
+    return snapshot
+
+
+def _extract_verification_snapshot_from_trace_events(events: Any) -> dict[str, Any]:
+    if not isinstance(events, list):
+        return {}
+    for event in reversed(events):
+        if not isinstance(event, dict):
+            continue
+        node_text = str(event.get("node") or "").strip().lower()
+        agent_text = str(event.get("agent") or event.get("agent_id") or "").strip().lower()
+        is_verification_event = (
+            "verification" in node_text
+            or "verification" in agent_text
+            or node_text == "verification_complete"
+            or agent_text == "verification_complete"
+        )
+        if not is_verification_event:
+            continue
+        for key in ("outputs", "payload", "decision"):
+            snapshot = _build_verification_snapshot_from_payload(event.get(key))
+            if snapshot:
+                return snapshot
+    return {}
+
+
 def _apply_diagnosis_evidence_semantics(payload: dict[str, Any]) -> dict[str, Any]:
     data = dict(payload or {})
     diagnosis_evidence = data.get("diagnosis_evidence")
@@ -3354,6 +3445,30 @@ def _diagnose_confirm_core(request: Request, payload: dict) -> dict:
         model_meta=model_meta,
         growth_stage=normalize_growth_stage_code(state.get("crop_growth_stage") or growth_stage),
     )
+    latest_trace_events = list_trace_events(trace_id)
+    if confirm_status != "pending_expert_review":
+        state_snapshot = _build_verification_snapshot_from_payload(
+            {
+                "verification_result": state.get("verification_result"),
+                "verification_passed": state.get("verification_passed"),
+                "verification_risk_level": state.get("verification_risk_level"),
+                "verification_issues": state.get("verification_issues"),
+                "verification_summary": state.get("verification_summary"),
+                "verification_available": state.get("verification_result") is not None,
+            }
+        )
+        if not state_snapshot:
+            trace_snapshot = _extract_verification_snapshot_from_trace_events(latest_trace_events)
+            for key in (
+                "verification_result",
+                "verification_passed",
+                "verification_risk_level",
+                "verification_issues",
+                "verification_summary",
+            ):
+                current_value = state.get(key)
+                if current_value in (None, "", []) and trace_snapshot.get(key) not in (None, "", []):
+                    state[key] = trace_snapshot.get(key)
     event = {
         "id": uuid.uuid4().hex,
         "ts": datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
@@ -3602,6 +3717,32 @@ def _diagnose_confirm_core(request: Request, payload: dict) -> dict:
     }
     response_payload["previous_trace_id"] = previous_trace_id or trace_id
     response_payload = _apply_result_semantics(response_payload)
+    final_contract_keys = {
+        "display_symptoms",
+        "display_symptom_count",
+        "final_status",
+        "execution_allowed",
+        "treatment_actionable",
+        "treatment_reference_only",
+        "result_stage",
+        "is_final_result",
+        "final_result_authoritative",
+    }
+    verification_contract_keys = {
+        "verification_result",
+        "verification_passed",
+        "verification_risk_level",
+        "verification_issues",
+        "verification_summary",
+    }
+    for key in final_contract_keys:
+        if (key not in response_payload or response_payload.get(key) is None) and event.get(key) is not None:
+            response_payload[key] = event.get(key)
+    for key in verification_contract_keys:
+        if response_payload.get(key) in (None, "", []) and event.get(key) not in (None, "", []):
+            response_payload[key] = event.get(key)
+    if event.get("verification_available") is True:
+        response_payload["verification_available"] = True
     print(
         "[DiagnoseConfirm] output",
         json.dumps(
@@ -3616,17 +3757,20 @@ def _diagnose_confirm_core(request: Request, payload: dict) -> dict:
         ),
     )
     final_response = serialize_final_response(response_payload)
-    # confirm 完成态出站兜底：确保 completed/completed_verification_failed 稳定带齐 UI 真源与 execution gate
-    if "display_symptoms" not in final_response or "display_symptom_count" not in final_response:
-        final_response = _apply_display_symptom_semantics(final_response)
-    execution_gate_keys = {"final_status", "execution_allowed", "treatment_actionable", "treatment_reference_only"}
-    if any(key not in final_response or final_response.get(key) is None for key in execution_gate_keys):
-        if not str(final_response.get("result_stage") or "").strip():
-            final_response["result_stage"] = _derive_result_stage(
-                status=final_response.get("status"),
-                need_confirm=final_response.get("need_confirm"),
-            )
-        final_response = _apply_execution_gate_semantics(final_response)
+    final_status_text = str(final_response.get("status") or "").strip()
+    need_final_contract_fix = any(key not in final_response or final_response.get(key) is None for key in final_contract_keys)
+    need_verification_contract_fix = any(final_response.get(key) in (None, "", []) for key in verification_contract_keys)
+    if final_status_text in {"completed", "completed_verification_failed"} and (need_final_contract_fix or need_verification_contract_fix):
+        for key in final_contract_keys:
+            if (key not in final_response or final_response.get(key) is None) and event.get(key) is not None:
+                final_response[key] = event.get(key)
+        for key in verification_contract_keys:
+            if final_response.get(key) in (None, "", []) and event.get(key) not in (None, "", []):
+                final_response[key] = event.get(key)
+        if event.get("verification_available") is True:
+            final_response["verification_available"] = True
+        final_response = _apply_result_semantics(final_response)
+        final_response = serialize_final_response(final_response)
     return final_response
 
 
