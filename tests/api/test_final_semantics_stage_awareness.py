@@ -861,7 +861,8 @@ def test_confirm_completed_fields_exist_after_result_semantics_after_serialize_a
         nonlocal captured_raw_before_result
         nonlocal captured_after_result
         if isinstance(payload, dict) and payload.get("status") in {"completed", "completed_verification_failed"} and "events" in payload:
-            captured_raw_before_result = dict(payload)
+            if captured_raw_before_result is None:
+                captured_raw_before_result = dict(payload)
         out = original_apply(payload)
         if isinstance(payload, dict) and payload.get("status") in {"completed", "completed_verification_failed"} and "events" in payload:
             captured_after_result = dict(out)
@@ -1183,6 +1184,181 @@ def test_waiting_for_supplement_api_and_event_behavior_does_not_regress(monkeypa
         "treatment_reference_only",
     ):
         assert key in event
+
+
+def test_confirm_final_event_has_unified_contract_before_response_return(monkeypatch, tmp_path):
+    image_id, _captured_events = _prepare_confirm_core_mocks(monkeypatch, tmp_path, previous_status="waiting_for_supplement")
+    terminal_event_after_serialize: dict | None = None
+    original_serialize = app_module.serialize_final_response
+
+    def _wrapped_serialize(payload):
+        nonlocal terminal_event_after_serialize
+        out = original_serialize(payload)
+        if isinstance(payload, dict) and payload.get("confirm_round") is True and payload.get("status") in {"completed", "completed_verification_failed"}:
+            terminal_event_after_serialize = dict(out)
+        return out
+
+    class _Graph:
+        def invoke(self, state, config=None):
+            _ = config
+            out = dict(state)
+            out.update(
+                {
+                    "trace_id": state.get("trace_id"),
+                    "next_action": "end",
+                    "final_disease": "晚疫病",
+                    "final_confidence": 0.92,
+                    "final_source": "fusion",
+                    "image_diagnosis": {"top1": {"disease": "晚疫病", "confidence": 0.92}, "top3": [("晚疫病", 0.92)]},
+                    "normalized_symptoms": ["叶片卷曲"],
+                    "diagnosis_evidence": {"normalized_symptoms": ["叶片卷曲"]},
+                    "personalization_flags": {"need_confirm": False, "fallback_reason": [], "follow_up_questions": []},
+                    "verification_result": {"passed": True},
+                    "verification_passed": True,
+                    "verification_summary": "ok",
+                }
+            )
+            return out
+
+    monkeypatch.setattr(app_module, "serialize_final_response", _wrapped_serialize)
+    monkeypatch.setattr(app_module, "build_graph", lambda: _Graph())
+    client = TestClient(app_module.app)
+    body = client.post(
+        "/api/diagnose-confirm",
+        json={"trace_id": "trace-confirm", "image_id": image_id, "crop_type": "番茄", "choice": "晚疫病", "symptoms": ["卷叶"]},
+    ).json()
+
+    assert terminal_event_after_serialize is not None
+    for key in (
+        "display_symptoms",
+        "display_symptom_count",
+        "final_status",
+        "execution_allowed",
+        "treatment_actionable",
+        "treatment_reference_only",
+        "result_stage",
+        "is_final_result",
+        "final_result_authoritative",
+    ):
+        assert key in terminal_event_after_serialize
+        assert key in body
+
+
+def test_confirm_final_response_unconditionally_inherits_unified_contract_from_event(monkeypatch, tmp_path):
+    image_id, _captured_events = _prepare_confirm_core_mocks(monkeypatch, tmp_path, previous_status="waiting_for_supplement")
+    final_contract_keys = (
+        "display_symptoms",
+        "display_symptom_count",
+        "final_status",
+        "execution_allowed",
+        "treatment_actionable",
+        "treatment_reference_only",
+        "result_stage",
+        "is_final_result",
+        "final_result_authoritative",
+    )
+    original_apply = app_module._apply_result_semantics
+    dropped_once = False
+
+    def _wrapped_apply(payload):
+        nonlocal dropped_once
+        out = original_apply(payload)
+        if (
+            not dropped_once
+            and isinstance(payload, dict)
+            and payload.get("status") in {"completed", "completed_verification_failed"}
+            and "events" in payload
+        ):
+            for key in final_contract_keys:
+                out.pop(key, None)
+            dropped_once = True
+        return out
+
+    class _Graph:
+        def invoke(self, state, config=None):
+            _ = config
+            out = dict(state)
+            out.update(
+                {
+                    "trace_id": state.get("trace_id"),
+                    "next_action": "end",
+                    "final_disease": "晚疫病",
+                    "final_confidence": 0.9,
+                    "final_source": "fusion",
+                    "image_diagnosis": {"top1": {"disease": "晚疫病", "confidence": 0.9}, "top3": [("晚疫病", 0.9)]},
+                    "normalized_symptoms": ["叶片卷曲"],
+                    "diagnosis_evidence": {"normalized_symptoms": ["叶片卷曲"]},
+                    "personalization_flags": {"need_confirm": False, "fallback_reason": [], "follow_up_questions": []},
+                    "verification_result": {"passed": True},
+                    "verification_passed": True,
+                    "verification_summary": "ok",
+                }
+            )
+            return out
+
+    monkeypatch.setattr(app_module, "_apply_result_semantics", _wrapped_apply)
+    monkeypatch.setattr(app_module, "build_graph", lambda: _Graph())
+    client = TestClient(app_module.app)
+    body = client.post(
+        "/api/diagnose-confirm",
+        json={"trace_id": "trace-confirm", "image_id": image_id, "crop_type": "番茄", "choice": "晚疫病", "symptoms": ["卷叶"]},
+    ).json()
+    for key in final_contract_keys:
+        assert key in body
+
+
+def test_confirm_completed_verification_failed_response_keeps_verification_and_unified_contract(monkeypatch, tmp_path):
+    image_id, _captured_events = _prepare_confirm_core_mocks(monkeypatch, tmp_path, previous_status="waiting_for_supplement")
+
+    class _Graph:
+        def invoke(self, state, config=None):
+            _ = config
+            out = dict(state)
+            out.update(
+                {
+                    "trace_id": state.get("trace_id"),
+                    "next_action": "end",
+                    "final_disease": "晚疫病",
+                    "final_confidence": 0.86,
+                    "final_source": "fusion",
+                    "image_diagnosis": {"top1": {"disease": "晚疫病", "confidence": 0.86}, "top3": [("晚疫病", 0.86)]},
+                    "normalized_symptoms": ["叶片卷曲"],
+                    "diagnosis_evidence": {"normalized_symptoms": ["叶片卷曲"]},
+                    "personalization_flags": {"need_confirm": False, "fallback_reason": [], "follow_up_questions": []},
+                    "verification_result": {"passed": False, "must_fix": ["x"]},
+                    "verification_passed": False,
+                    "verification_risk_level": "high",
+                    "verification_issues": ["x"],
+                    "verification_summary": "fail",
+                }
+            )
+            return out
+
+    monkeypatch.setattr(app_module, "build_graph", lambda: _Graph())
+    client = TestClient(app_module.app)
+    body = client.post(
+        "/api/diagnose-confirm",
+        json={"trace_id": "trace-confirm", "image_id": image_id, "crop_type": "番茄", "choice": "晚疫病", "symptoms": ["卷叶"]},
+    ).json()
+
+    for key in (
+        "display_symptoms",
+        "display_symptom_count",
+        "final_status",
+        "execution_allowed",
+        "treatment_actionable",
+        "treatment_reference_only",
+        "result_stage",
+        "is_final_result",
+        "final_result_authoritative",
+    ):
+        assert key in body
+    assert body["status"] == "completed_verification_failed"
+    assert body["final_status"] == "completed_verification_failed"
+    assert body["verification_available"] is True
+    assert body["verification_passed"] is False
+    assert isinstance(body["verification_result"], dict)
+    assert body["verification_summary"] == "fail"
 
 
 def test_final_completed_response_keeps_unified_contract_fields_before_return(monkeypatch, tmp_path):

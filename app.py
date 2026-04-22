@@ -3728,9 +3728,12 @@ def _diagnose_confirm_core(request: Request, payload: dict) -> dict:
         "is_final_result",
         "final_result_authoritative",
     }
-    for key in final_contract_keys:
-        if (key not in response_payload or response_payload.get(key) is None) and event.get(key) is not None:
-            response_payload[key] = event.get(key)
+    response_status_text = str(response_payload.get("status") or "").strip()
+    is_terminal_final_status = response_status_text in {"completed", "completed_verification_failed"}
+    if is_terminal_final_status:
+        for key in final_contract_keys:
+            if event.get(key) is not None:
+                response_payload[key] = event.get(key)
     print(
         "[DiagnoseConfirm] output",
         json.dumps(
@@ -3746,10 +3749,9 @@ def _diagnose_confirm_core(request: Request, payload: dict) -> dict:
     )
     final_response = serialize_final_response(response_payload)
     final_status_text = str(final_response.get("status") or "").strip()
-    need_final_contract_fix = any(key not in final_response or final_response.get(key) is None for key in final_contract_keys)
-    if final_status_text in {"completed", "completed_verification_failed"} and need_final_contract_fix:
+    if final_status_text in {"completed", "completed_verification_failed"}:
         for key in final_contract_keys:
-            if (key not in final_response or final_response.get(key) is None) and event.get(key) is not None:
+            if event.get(key) is not None:
                 final_response[key] = event.get(key)
         final_response = _apply_result_semantics(final_response)
         final_response = serialize_final_response(final_response)
