@@ -582,25 +582,6 @@ export function DiagnosePage() {
       is_early_diagnosis_preview: true,
     };
   };
-  const buildPreviewPayloadFromStreamEvent = (rawEvent: Record<string, unknown>): Record<string, unknown> => {
-    const payload = normalizePayloadRecord(rawEvent.payload);
-    const outputs = normalizePayloadRecord(rawEvent.outputs);
-    const payloadOutputs = normalizePayloadRecord(payload.outputs);
-    const nestedPayload = normalizePayloadRecord(payload.payload);
-    const merged = {
-      ...payload,
-      ...outputs,
-      ...payloadOutputs,
-      ...nestedPayload,
-    } as Record<string, unknown>;
-    const resolvedDisease = resolveDiseaseFromCandidates(merged);
-    if (resolvedDisease) {
-      merged.final_disease = resolvedDisease;
-    }
-    merged.result_phase = 'diagnosis_preview';
-    merged.is_early_diagnosis_preview = true;
-    return merged;
-  };
 
   const resolveResultDisease = (payload: Record<string, unknown>): string => {
     const fromFinalDisease = typeof payload.final_disease === 'string' ? payload.final_disease.trim() : '';
