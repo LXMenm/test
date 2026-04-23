@@ -1546,6 +1546,7 @@ export function DiagnosePage() {
     !!displayDiseaseName &&
     displayDiseaseName !== '未知' &&
     displayDiseaseName !== '—';
+
   return (
     <div className="space-y-6 animate-fadeIn">
       {canViewExpertInbox && (
@@ -1791,6 +1792,7 @@ export function DiagnosePage() {
                         <Badge className="bg-blue-500/20 text-blue-200 border border-blue-400/40">初步诊断</Badge>
                       ) : null}
                     </div>
+                    <button type="button" onClick={() => navigateToKbDisease(displayDiseaseName)} className="text-left text-xl font-bold text-[#c8f7c5] hover:underline underline-offset-4">{displayDiseaseName}</button>
                     <button type="button" onClick={() => navigateToKbDisease(displayDiseaseName)} className="text-left text-xl font-bold text-[#c8f7c5] hover:underline underline-offset-4">{displayDiseaseName}</button>
                     {displayResult.is_early_diagnosis_preview ? <p className="text-xs text-amber-200/90 mt-2">已识别病害，后续方案与校验结果会自动更新。</p> : null}
                   </div>
