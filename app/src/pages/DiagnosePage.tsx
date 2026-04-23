@@ -1453,14 +1453,20 @@ export function DiagnosePage() {
         const status = String(rawEvent.status || '').trim().toLowerCase();
         const payloadStatus = String(normalizePayloadRecord(rawEvent.payload).status || '').trim().toLowerCase();
         const previewPayload = extractDiagnosisPreviewFromStreamEvent(rawEvent);
+        const previewDisease = typeof previewPayload?.final_disease === 'string' ? previewPayload.final_disease : '';
+        console.debug('[DiagnosePage][stream-preview]', {
+          node,
+          status,
+          payloadStatus,
+          hasPreviewPayload: !!previewPayload,
+          previewDisease,
+          hasFinalResult,
+        });
         if (previewPayload && !hasFinalResult) {
-          const previewResult = buildResultFromPayload(previewPayload);
-          setEarlyDiagnosisResult((prev) => {
-            if (prev?.final_disease === previewResult.final_disease && prev?.trace_id === previewResult.trace_id) {
-              return prev;
-            }
-            return previewResult;
-          });
+          console.debug('[DiagnosePage][stream-preview-set]', { previewDisease, hasFinalResult });
+          setEarlyDiagnosisResult(buildResultFromPayload(previewPayload));
+        } else if (previewPayload) {
+          console.debug('[DiagnosePage][stream-preview-skip]', { reason: 'hasFinalResult=true', previewDisease });
         }
         if (
           ['waiting_for_supplement', 'completed', 'completed_verification_failed'].includes(status)
@@ -1543,10 +1549,22 @@ const displayDiseaseName =
   typeof displayResult?.final_disease === 'string'
     ? displayResult.final_disease.trim()
     : '';
-const hasDisplayDisease =
+  const hasDisplayDisease =
   !!displayDiseaseName &&
   displayDiseaseName !== '未知' &&
   displayDiseaseName !== '—';
+
+  useEffect(() => {
+    console.debug('[DiagnosePage][render-diagnosis-card]', {
+      hasDisplayDisease,
+      displayDiseaseName,
+      loading,
+      hasResult: !!result,
+      hasLatestPayload: !!latestPayload,
+      useEarlyPreview: !!earlyDiagnosisResult,
+    });
+  }, [hasDisplayDisease, displayDiseaseName, loading, result, latestPayload, earlyDiagnosisResult]);
+
   return (
     <div className="space-y-6 animate-fadeIn">
       {canViewExpertInbox && (
