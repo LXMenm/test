@@ -521,10 +521,25 @@ export function DiagnosePage() {
     return payloadLike && typeof payloadLike === 'object' ? payloadLike as Record<string, unknown> : {};
   };
 
+  const resolveTop1DiseaseFromTop3 = (top3Like: unknown): string => {
+    if (!Array.isArray(top3Like) || top3Like.length === 0) return '';
+    const first = top3Like[0];
+    if (Array.isArray(first) && typeof first[0] === 'string' && first[0].trim()) {
+      return first[0].trim();
+    }
+    if (first && typeof first === 'object') {
+      const firstObj = first as Record<string, unknown>;
+      if (typeof firstObj.disease === 'string' && firstObj.disease.trim()) {
+        return firstObj.disease.trim();
+      }
+    }
+    return '';
+  };
+
   const resolveDiseaseFromCandidates = (payloadLike: unknown): string => {
     const payload = normalizePayloadRecord(payloadLike);
-    const candidates = parseTop3Candidates(payload, result, 'fusion');
-    if (candidates.length > 0 && candidates[0].disease) return candidates[0].disease;
+    const fromFusionTop3 = resolveTop1DiseaseFromTop3(payload.fusion_top3);
+    if (fromFusionTop3) return fromFusionTop3;
     const currentTop1 = payload.current_top1;
     if (typeof currentTop1 === 'string' && currentTop1.trim()) return currentTop1.trim();
     if (currentTop1 && typeof currentTop1 === 'object') {
@@ -532,6 +547,9 @@ export function DiagnosePage() {
       if (typeof currentTop1Obj.disease === 'string' && currentTop1Obj.disease.trim()) {
         return currentTop1Obj.disease.trim();
       }
+    }
+    if (typeof payload.final_disease === 'string' && payload.final_disease.trim()) {
+      return payload.final_disease.trim();
     }
     return '';
   };
@@ -541,9 +559,9 @@ export function DiagnosePage() {
     const payload = normalizePayloadRecord(raw.payload ?? event.payload);
     const outputs = normalizePayloadRecord(raw.outputs);
     const merged = { ...payload, ...outputs } as Record<string, unknown>;
-    const fallbackDisease = resolveDiseaseFromCandidates(merged);
-    if (!merged.final_disease && fallbackDisease) {
-      merged.final_disease = fallbackDisease;
+    const resolvedDisease = resolveDiseaseFromCandidates(merged);
+    if (resolvedDisease) {
+      merged.final_disease = resolvedDisease;
     }
     merged.result_phase = 'diagnosis_preview';
     merged.is_early_diagnosis_preview = true;
