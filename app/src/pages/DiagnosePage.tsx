@@ -199,6 +199,7 @@ export function DiagnosePage() {
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<DiagnosisResult | null>(null);
   const [earlyDiagnosisResult, setEarlyDiagnosisResult] = useState<DiagnosisResult | null>(null);
+  const [hasFinalResult, setHasFinalResult] = useState(false);
   const [traceEvents, setTraceEvents] = useState<TraceEvent[]>([]);
   const [latestPayload, setLatestPayload] = useState<Record<string, unknown> | null>(null);
   const [phase1Payload, setPhase1Payload] = useState<Record<string, unknown> | null>(null);
@@ -559,18 +560,27 @@ export function DiagnosePage() {
     return '';
   };
 
-  const buildEarlyDiagnosisPreviewPayload = (event: TraceEvent): Record<string, unknown> => {
-    const raw = event.raw && typeof event.raw === 'object' ? event.raw as Record<string, unknown> : {};
-    const payload = normalizePayloadRecord(raw.payload ?? event.payload);
+  const extractDiagnosisPreviewFromStreamEvent = (eventLike: unknown): Record<string, unknown> | null => {
+    const raw = eventLike && typeof eventLike === 'object' ? eventLike as Record<string, unknown> : {};
+    const payload = normalizePayloadRecord(raw.payload);
     const outputs = normalizePayloadRecord(raw.outputs);
-    const merged = { ...payload, ...outputs } as Record<string, unknown>;
-    const resolvedDisease = resolveDiseaseFromCandidates(merged);
-    if (resolvedDisease) {
-      merged.final_disease = resolvedDisease;
-    }
-    merged.result_phase = 'diagnosis_preview';
-    merged.is_early_diagnosis_preview = true;
-    return merged;
+    const payloadOutputs = normalizePayloadRecord(payload.outputs);
+    const nestedPayload = normalizePayloadRecord(payload.payload);
+    const merged = {
+      ...nestedPayload,
+      ...payload,
+      ...payloadOutputs,
+      ...outputs,
+      ...raw,
+    } as Record<string, unknown>;
+    const disease = resolveDiseaseFromCandidates(merged);
+    if (!disease || disease === '未知') return null;
+    return {
+      ...merged,
+      final_disease: disease,
+      result_phase: 'diagnosis_preview',
+      is_early_diagnosis_preview: true,
+    };
   };
 
   const resolveResultDisease = (payload: Record<string, unknown>): string => {
@@ -642,6 +652,11 @@ export function DiagnosePage() {
     setResult(normalizedResult);
     if (!normalizedResult.is_early_diagnosis_preview && isKnownDisease(normalizedResult.final_disease)) {
       setEarlyDiagnosisResult(null);
+    }
+    if (['waiting_for_supplement', 'completed', 'completed_verification_failed'].includes(payloadStatus)) {
+      setHasFinalResult(true);
+      setEarlyDiagnosisResult(null);
+      setResult(normalizedResult);
     }
     setLatestPayload(payload);
     const needsConfirm = deriveConfirmNeeds(payload, normalizedResult);
@@ -878,6 +893,7 @@ export function DiagnosePage() {
     setLoading(true);
     setResult(null);
     setEarlyDiagnosisResult(null);
+    setHasFinalResult(false);
     setTraceEvents([]);
     setPhase1Payload(null);
     setConfirmMode(false);
@@ -963,6 +979,12 @@ export function DiagnosePage() {
           setLatestPayload(mergedPayload);
           const mergedResult = buildResultFromPayload(mergedPayload);
           syncConfirmStateFromPayload(mergedPayload, mergedResult);
+          const mergedStatus = typeof mergedPayload.status === 'string' ? mergedPayload.status : '';
+          if (['waiting_for_supplement', 'completed', 'completed_verification_failed'].includes(mergedStatus)) {
+            setHasFinalResult(true);
+            setResult(mergedResult);
+            setEarlyDiagnosisResult(null);
+          }
           
           console.log('latestPayload.events.length', Array.isArray(mergedPayload?.events) ? mergedPayload.events.length : 'no-events');
           console.log('latestPayload.events.sample', Array.isArray(mergedPayload?.events) ? mergedPayload.events.slice(0, 3) : null);
@@ -998,6 +1020,7 @@ export function DiagnosePage() {
     if (usesImageSupplement && !resubmitFile) return;
     setResubmitSubmitting(true);
     setEarlyDiagnosisResult(null);
+    setHasFinalResult(false);
     setResubmitStatus('submitting');
     const now = Date.now();
     setPhase1StartTime(now);
@@ -1070,6 +1093,7 @@ export function DiagnosePage() {
     if (!usesTextSupplement) return;
     setResubmitSubmitting(true);
     setEarlyDiagnosisResult(null);
+    setHasFinalResult(false);
     setResubmitStatus('submitting');
     const now = Date.now();
     setPhase1StartTime(now);
@@ -1191,6 +1215,8 @@ export function DiagnosePage() {
 
   const handleConfirmSubmit = async (finalDecision?: 'use_current_result' | 'request_expert_review') => {
     if (!activeTraceId || !activeImageId) return;
+    setEarlyDiagnosisResult(null);
+    setHasFinalResult(false);
     if (!finalDecision) {
       if (confirmChoice !== 'other') {
         await handleConfirmCandidate();
@@ -1397,8 +1423,12 @@ export function DiagnosePage() {
       traceStreamRef.current?.close();
       traceStreamRef.current = null;
       setTraceEvents([]);
+      setEarlyDiagnosisResult(null);
+      setHasFinalResult(false);
       return;
     }
+    setEarlyDiagnosisResult(null);
+    setHasFinalResult(false);
     refreshTrace();
     return () => {
       traceFetchAbortRef.current?.abort();
@@ -1418,25 +1448,35 @@ export function DiagnosePage() {
       try {
         const raw = JSON.parse(messageEvent.data || '{}');
         const rawEvent = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {};
-        const node = String(rawEvent.node || '');
-        const status = String(rawEvent.status || '').toLowerCase();
-        const isDiagnosisDone = node === 'DiagnosisCompleted' || (node === 'DiagnosisAgent' && status === 'end');
-        if (isDiagnosisDone) {
-          const previewPayload = buildEarlyDiagnosisPreviewPayload({
-            raw: rawEvent,
-            payload: normalizePayloadRecord(rawEvent.payload),
-          } as TraceEvent);
-          const previewResult = buildResultFromPayload(previewPayload);
-          if (isKnownDisease(previewResult.final_disease)) {
-            setEarlyDiagnosisResult((prev) => {
-              if (prev && prev.final_disease === previewResult.final_disease && prev.displayConfidencePct === previewResult.displayConfidencePct) {
-                return prev;
-              }
-              return previewResult;
-            });
-          }
-        }
         setTraceEvents((prev) => mergePayloadEventsAsPrimary(prev, [raw], 'stream'));
+        const node = String(rawEvent.node || '');
+        const status = String(rawEvent.status || '').trim().toLowerCase();
+        const payloadStatus = String(normalizePayloadRecord(rawEvent.payload).status || '').trim().toLowerCase();
+        const previewPayload = extractDiagnosisPreviewFromStreamEvent(rawEvent);
+        if (previewPayload && !hasFinalResult) {
+          const previewResult = buildResultFromPayload(previewPayload);
+          setEarlyDiagnosisResult((prev) => {
+            if (prev?.final_disease === previewResult.final_disease && prev?.trace_id === previewResult.trace_id) {
+              return prev;
+            }
+            return previewResult;
+          });
+        }
+        if (
+          ['waiting_for_supplement', 'completed', 'completed_verification_failed'].includes(status)
+          || ['waiting_for_supplement', 'completed', 'completed_verification_failed'].includes(payloadStatus)
+          || node === 'Final'
+        ) {
+          const finalResult = buildResultFromPayload({
+            ...(previewPayload ?? {}),
+            ...normalizePayloadRecord(rawEvent.payload),
+            is_early_diagnosis_preview: false,
+            result_phase: 'final',
+          });
+          setHasFinalResult(true);
+          setResult(finalResult);
+          setEarlyDiagnosisResult(null);
+        }
       } catch (error) {
         console.error('Failed to parse trace stream event:', error);
       }
@@ -1457,7 +1497,7 @@ export function DiagnosePage() {
         traceStreamRef.current = null;
       }
     };
-  }, [traceId]);
+  }, [traceId, hasFinalResult]);
 
   useEffect(() => {
     if (!traceEvents.length) return;
@@ -1466,25 +1506,6 @@ export function DiagnosePage() {
     const node = String(raw.node || latest.stage || '');
     const status = String(raw.status || latest.status || '').toLowerCase();
     const payload = normalizePayloadRecord(raw.payload ?? latest.payload ?? raw.outputs);
-    const isDiagnosisDone = node === 'DiagnosisCompleted' || (node === 'DiagnosisAgent' && status === 'end');
-    if (isDiagnosisDone) {
-      const previewPayload = buildEarlyDiagnosisPreviewPayload(latest);
-      if (typeof previewPayload.final_disease === 'string' && previewPayload.final_disease.trim()) {
-        setResult((prev) => {
-          if (!prev) return buildResultFromPayload(previewPayload);
-          if (prev.result_phase === 'final' && prev.final_disease) return prev;
-          const next = buildResultFromPayload({ ...prev, ...previewPayload });
-          if (
-            prev.final_disease === next.final_disease
-            && prev.displayConfidencePct === next.displayConfidencePct
-            && prev.result_phase === next.result_phase
-          ) {
-            return prev;
-          }
-          return next;
-        });
-      }
-    }
     if (node === 'TreatmentCompleted' || (node === 'TreatmentAgent' && status === 'end')) {
       setResult((prev) => prev ? buildResultFromPayload({ ...prev, ...payload, is_early_diagnosis_preview: false, result_phase: 'final' }) : prev);
     }
@@ -1493,6 +1514,8 @@ export function DiagnosePage() {
     }
     if (node === 'AwaitUserConfirmation' && status === 'end') {
       setResult((prev) => (prev ? { ...prev, status: 'waiting_for_supplement', is_early_diagnosis_preview: false, result_phase: 'final' } : prev));
+      setHasFinalResult(true);
+      setEarlyDiagnosisResult(null);
       setConfirmMode(true);
     }
   }, [traceEvents]);
@@ -1515,9 +1538,8 @@ export function DiagnosePage() {
     const node = String(event.raw.node ?? event.stage ?? '').toLowerCase();
     return node.includes('kbretrieval') || node.includes('prescription') || node.includes('personalization') || node.includes('validator') || node.includes('verification') || node === 'final';
   });
-  const displayResult = (result && !result.is_early_diagnosis_preview && isKnownDisease(result.final_disease))
-    ? result
-    : (earlyDiagnosisResult ?? result);
+  const displayResult = earlyDiagnosisResult ?? result;
+  const hasDisplayDisease = !!displayResult?.final_disease && displayResult.final_disease !== '未知';
   return (
     <div className="space-y-6 animate-fadeIn">
       {canViewExpertInbox && (
@@ -1748,7 +1770,7 @@ export function DiagnosePage() {
         {/* Right Column - Results */}
         <div className="lg:col-span-3 space-y-6">
           <SectionCard sectionKey="diagnosis" title="诊断结果" icon={<CheckCircle className="w-5 h-5 text-[#c8f7c5]" />} open={sectionOpen.diagnosis} onToggle={toggleSection}>
-            {displayResult ? (
+            {hasDisplayDisease ? (
               <div className="space-y-4 animate-fadeIn">
                 {displayResult.image_url && (
                   <div className="rounded-xl overflow-hidden bg-black/30">
@@ -1757,7 +1779,12 @@ export function DiagnosePage() {
                 )}
                 <div className={cn('grid gap-4', isAdmin ? 'sm:grid-cols-3' : 'sm:grid-cols-2')}>
                   <div className="bg-white/5 rounded-xl p-4">
-                    <p className="text-white/60 text-sm mb-1">{displayResult.is_early_diagnosis_preview ? '已识别病害（初步）' : '最终病害'}</p>
+                    <div className="mb-1 flex items-center gap-2">
+                      <p className="text-white/60 text-sm">{displayResult.is_early_diagnosis_preview ? '已识别病害（初步）' : '最终病害'}</p>
+                      {displayResult.is_early_diagnosis_preview ? (
+                        <Badge className="bg-blue-500/20 text-blue-200 border border-blue-400/40">初步诊断</Badge>
+                      ) : null}
+                    </div>
                     <button type="button" onClick={() => navigateToKbDisease(displayResult.final_disease)} className="text-left text-xl font-bold text-[#c8f7c5] hover:underline underline-offset-4">{displayResult.final_disease}</button>
                     {displayResult.is_early_diagnosis_preview ? <p className="text-xs text-amber-200/90 mt-2">当前为初步诊断结果，后续流程完成后将自动更新正式结果。</p> : null}
                   </div>
