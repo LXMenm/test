@@ -568,6 +568,31 @@ export function DiagnosePage() {
     return merged;
   };
 
+  const resolveResultDisease = (payload: Record<string, unknown>): string => {
+    const fromFinalDisease = typeof payload.final_disease === 'string' ? payload.final_disease.trim() : '';
+    if (fromFinalDisease) return fromFinalDisease;
+
+    const fromFusionTop3 = resolveTop1DiseaseFromTop3(payload.fusion_top3);
+    if (fromFusionTop3) return fromFusionTop3;
+
+    const currentTop1 = payload.current_top1;
+    if (typeof currentTop1 === 'string' && currentTop1.trim()) return currentTop1.trim();
+    if (currentTop1 && typeof currentTop1 === 'object') {
+      const currentTop1Obj = currentTop1 as Record<string, unknown>;
+      if (typeof currentTop1Obj.disease === 'string' && currentTop1Obj.disease.trim()) {
+        return currentTop1Obj.disease.trim();
+      }
+    }
+
+    const imageResult = payload.image_result && typeof payload.image_result === 'object'
+      ? payload.image_result as Record<string, unknown>
+      : {};
+    if (typeof imageResult.disease === 'string' && imageResult.disease.trim()) {
+      return imageResult.disease.trim();
+    }
+    return '未知';
+  };
+
   const normalizeConfirmUiMode = (value: unknown): ConfirmUiMode => {
     const raw = String(value ?? '').trim();
     if (raw === 'image' || raw === 'text' || raw === 'image_and_text' || raw === 'none') return raw;
@@ -661,11 +686,7 @@ export function DiagnosePage() {
       image_url: typeof payload.image_url === 'string'
         ? payload.image_url
         : (typeof payload.image_id === 'string' && payload.image_id ? `/uploads/${payload.image_id}` : ''),
-      final_disease: typeof payload.final_disease === 'string'
-        ? payload.final_disease
-        : (payload.image_result && typeof payload.image_result === 'object' && typeof (payload.image_result as Record<string, unknown>).disease === 'string'
-          ? String((payload.image_result as Record<string, unknown>).disease)
-          : '未知'),
+      final_disease: resolveResultDisease(payload),
       displayConfidencePct: resolveDisplayConfidencePct(payload),
       model_display_name: typeof payload.model_display_name === 'string'
         ? payload.model_display_name
