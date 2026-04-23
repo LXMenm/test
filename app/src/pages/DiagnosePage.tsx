@@ -89,6 +89,8 @@ interface DiagnosisResult {
   recommended_action?: string;
   confirm_ui_mode?: "image" | "text" | "image_and_text" | string;
   confirm_fields?: string[];
+  is_early_diagnosis_preview?: boolean;
+  result_phase?: 'diagnosis_preview' | 'final';
 }
 
 interface ProfileListItem {
@@ -230,6 +232,7 @@ export function DiagnosePage() {
   const [showExpertInbox, setShowExpertInbox] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const traceFetchAbortRef = useRef<AbortController | null>(null);
+  const traceStreamRef = useRef<EventSource | null>(null);
   const prevStatusRef = useRef<string | undefined>(undefined);
   const canViewExpertInbox = isAdmin;
   const toggleSection = useCallback((key: keyof SectionOpenState) => {
@@ -240,7 +243,7 @@ export function DiagnosePage() {
   const activeTraceId = payloadTraceId || result?.trace_id || traceId || '';
   const activeImageId = payloadImageId || imageId || '';
 
-  const tagEventsSource = (eventsLike: unknown, source: 'start' | 'continue' | 'replay' | 'confirm'): unknown[] => {
+  const tagEventsSource = (eventsLike: unknown, source: 'start' | 'continue' | 'replay' | 'confirm' | 'stream'): unknown[] => {
     if (!Array.isArray(eventsLike)) return [];
     return eventsLike.map((item) => {
       const raw = item && typeof item === 'object' ? item as Record<string, unknown> : {};
@@ -518,6 +521,78 @@ export function DiagnosePage() {
     return payloadLike && typeof payloadLike === 'object' ? payloadLike as Record<string, unknown> : {};
   };
 
+  const resolveTop1DiseaseFromTop3 = (top3Like: unknown): string => {
+    if (!Array.isArray(top3Like) || top3Like.length === 0) return '';
+    const first = top3Like[0];
+    if (Array.isArray(first) && typeof first[0] === 'string' && first[0].trim()) {
+      return first[0].trim();
+    }
+    if (first && typeof first === 'object') {
+      const firstObj = first as Record<string, unknown>;
+      if (typeof firstObj.disease === 'string' && firstObj.disease.trim()) {
+        return firstObj.disease.trim();
+      }
+    }
+    return '';
+  };
+
+  const resolveDiseaseFromCandidates = (payloadLike: unknown): string => {
+    const payload = normalizePayloadRecord(payloadLike);
+    const fromFusionTop3 = resolveTop1DiseaseFromTop3(payload.fusion_top3);
+    if (fromFusionTop3) return fromFusionTop3;
+    const currentTop1 = payload.current_top1;
+    if (typeof currentTop1 === 'string' && currentTop1.trim()) return currentTop1.trim();
+    if (currentTop1 && typeof currentTop1 === 'object') {
+      const currentTop1Obj = currentTop1 as Record<string, unknown>;
+      if (typeof currentTop1Obj.disease === 'string' && currentTop1Obj.disease.trim()) {
+        return currentTop1Obj.disease.trim();
+      }
+    }
+    if (typeof payload.final_disease === 'string' && payload.final_disease.trim()) {
+      return payload.final_disease.trim();
+    }
+    return '';
+  };
+
+  const buildEarlyDiagnosisPreviewPayload = (event: TraceEvent): Record<string, unknown> => {
+    const raw = event.raw && typeof event.raw === 'object' ? event.raw as Record<string, unknown> : {};
+    const payload = normalizePayloadRecord(raw.payload ?? event.payload);
+    const outputs = normalizePayloadRecord(raw.outputs);
+    const merged = { ...payload, ...outputs } as Record<string, unknown>;
+    const resolvedDisease = resolveDiseaseFromCandidates(merged);
+    if (resolvedDisease) {
+      merged.final_disease = resolvedDisease;
+    }
+    merged.result_phase = 'diagnosis_preview';
+    merged.is_early_diagnosis_preview = true;
+    return merged;
+  };
+
+  const resolveResultDisease = (payload: Record<string, unknown>): string => {
+    const fromFinalDisease = typeof payload.final_disease === 'string' ? payload.final_disease.trim() : '';
+    if (fromFinalDisease) return fromFinalDisease;
+
+    const fromFusionTop3 = resolveTop1DiseaseFromTop3(payload.fusion_top3);
+    if (fromFusionTop3) return fromFusionTop3;
+
+    const currentTop1 = payload.current_top1;
+    if (typeof currentTop1 === 'string' && currentTop1.trim()) return currentTop1.trim();
+    if (currentTop1 && typeof currentTop1 === 'object') {
+      const currentTop1Obj = currentTop1 as Record<string, unknown>;
+      if (typeof currentTop1Obj.disease === 'string' && currentTop1Obj.disease.trim()) {
+        return currentTop1Obj.disease.trim();
+      }
+    }
+
+    const imageResult = payload.image_result && typeof payload.image_result === 'object'
+      ? payload.image_result as Record<string, unknown>
+      : {};
+    if (typeof imageResult.disease === 'string' && imageResult.disease.trim()) {
+      return imageResult.disease.trim();
+    }
+    return '未知';
+  };
+
   const normalizeConfirmUiMode = (value: unknown): ConfirmUiMode => {
     const raw = String(value ?? '').trim();
     if (raw === 'image' || raw === 'text' || raw === 'image_and_text' || raw === 'none') return raw;
@@ -611,11 +686,7 @@ export function DiagnosePage() {
       image_url: typeof payload.image_url === 'string'
         ? payload.image_url
         : (typeof payload.image_id === 'string' && payload.image_id ? `/uploads/${payload.image_id}` : ''),
-      final_disease: typeof payload.final_disease === 'string'
-        ? payload.final_disease
-        : (payload.image_result && typeof payload.image_result === 'object' && typeof (payload.image_result as Record<string, unknown>).disease === 'string'
-          ? String((payload.image_result as Record<string, unknown>).disease)
-          : '未知'),
+      final_disease: resolveResultDisease(payload),
       displayConfidencePct: resolveDisplayConfidencePct(payload),
       model_display_name: typeof payload.model_display_name === 'string'
         ? payload.model_display_name
@@ -674,10 +745,12 @@ export function DiagnosePage() {
       recommended_action: typeof payload.recommended_action === 'string' ? payload.recommended_action : undefined,
       confirm_ui_mode: typeof payload.confirm_ui_mode === 'string' ? payload.confirm_ui_mode : undefined,
       confirm_fields: Array.isArray(payload.confirm_fields) ? payload.confirm_fields.map((item) => String(item)) : [],
+      is_early_diagnosis_preview: payload.is_early_diagnosis_preview === true,
+      result_phase: payload.result_phase === 'diagnosis_preview' ? 'diagnosis_preview' : 'final',
     };
   };
 
-  const normalizeTraceEvents = (eventsLike: unknown, source: 'start' | 'continue' | 'replay' | 'confirm' = 'replay'): TraceEvent[] => {
+  const normalizeTraceEvents = (eventsLike: unknown, source: 'start' | 'continue' | 'replay' | 'confirm' | 'stream' = 'replay'): TraceEvent[] => {
     const normalized = normalizeRawTraceEvents(tagEventsSource(eventsLike, source));
     return mergeAndDedupeTraceEvents([], normalized);
   };
@@ -685,7 +758,7 @@ export function DiagnosePage() {
   const mergePayloadEventsAsPrimary = (
     existingEvents: TraceEvent[],
     primaryEventsLike: unknown,
-    source: 'start' | 'continue' | 'replay' | 'confirm',
+    source: 'start' | 'continue' | 'replay' | 'confirm' | 'stream',
   ): TraceEvent[] => {
     const primaryEvents = normalizeTraceEvents(primaryEventsLike, source);
     if (!primaryEvents.length) return existingEvents;
@@ -1310,6 +1383,8 @@ export function DiagnosePage() {
     if (!traceId) {
       traceFetchAbortRef.current?.abort();
       traceFetchAbortRef.current = null;
+      traceStreamRef.current?.close();
+      traceStreamRef.current = null;
       setTraceEvents([]);
       return;
     }
@@ -1317,6 +1392,40 @@ export function DiagnosePage() {
     return () => {
       traceFetchAbortRef.current?.abort();
       traceFetchAbortRef.current = null;
+      traceStreamRef.current?.close();
+      traceStreamRef.current = null;
+    };
+  }, [traceId]);
+
+  useEffect(() => {
+    if (!traceId) return;
+    traceStreamRef.current?.close();
+    const es = new EventSource(`/api/traces/${encodeURIComponent(traceId)}/stream`);
+    traceStreamRef.current = es;
+
+    const onTrace = (messageEvent: MessageEvent) => {
+      try {
+        const raw = JSON.parse(messageEvent.data || '{}');
+        setTraceEvents((prev) => mergePayloadEventsAsPrimary(prev, [raw], 'stream'));
+      } catch (error) {
+        console.error('Failed to parse trace stream event:', error);
+      }
+    };
+
+    es.addEventListener('trace', onTrace);
+    es.onerror = () => {
+      es.close();
+      if (traceStreamRef.current === es) {
+        traceStreamRef.current = null;
+      }
+    };
+
+    return () => {
+      es.removeEventListener('trace', onTrace);
+      es.close();
+      if (traceStreamRef.current === es) {
+        traceStreamRef.current = null;
+      }
     };
   }, [traceId]);
 
@@ -1326,18 +1435,34 @@ export function DiagnosePage() {
     const raw = latest.raw;
     const node = String(raw.node || latest.stage || '');
     const status = String(raw.status || latest.status || '').toLowerCase();
-    const payload = normalizePayloadRecord(raw.payload ?? latest.payload);
-    if (node === 'DiagnosisCompleted' || (node === 'DiagnosisAgent' && status === 'end')) {
-      setResult((prev) => prev ? buildResultFromPayload({ ...prev, ...payload }) : prev);
+    const payload = normalizePayloadRecord(raw.payload ?? latest.payload ?? raw.outputs);
+    const isDiagnosisDone = node === 'DiagnosisCompleted' || (node === 'DiagnosisAgent' && status === 'end');
+    if (isDiagnosisDone) {
+      const previewPayload = buildEarlyDiagnosisPreviewPayload(latest);
+      if (typeof previewPayload.final_disease === 'string' && previewPayload.final_disease.trim()) {
+        setResult((prev) => {
+          if (!prev) return buildResultFromPayload(previewPayload);
+          if (prev.result_phase === 'final' && prev.final_disease) return prev;
+          const next = buildResultFromPayload({ ...prev, ...previewPayload });
+          if (
+            prev.final_disease === next.final_disease
+            && prev.displayConfidencePct === next.displayConfidencePct
+            && prev.result_phase === next.result_phase
+          ) {
+            return prev;
+          }
+          return next;
+        });
+      }
     }
     if (node === 'TreatmentCompleted' || (node === 'TreatmentAgent' && status === 'end')) {
-      setResult((prev) => prev ? buildResultFromPayload({ ...prev, ...payload }) : prev);
+      setResult((prev) => prev ? buildResultFromPayload({ ...prev, ...payload, is_early_diagnosis_preview: false, result_phase: 'final' }) : prev);
     }
     if (node === 'VerificationCompleted' || (node === 'VerificationAgent' && status === 'end')) {
-      setResult((prev) => prev ? buildResultFromPayload({ ...prev, ...payload }) : prev);
+      setResult((prev) => prev ? buildResultFromPayload({ ...prev, ...payload, is_early_diagnosis_preview: false, result_phase: 'final' }) : prev);
     }
     if (node === 'AwaitUserConfirmation' && status === 'end') {
-      setResult((prev) => (prev ? { ...prev, status: 'waiting_for_supplement' } : prev));
+      setResult((prev) => (prev ? { ...prev, status: 'waiting_for_supplement', is_early_diagnosis_preview: false, result_phase: 'final' } : prev));
       setConfirmMode(true);
     }
   }, [traceEvents]);
@@ -1599,8 +1724,9 @@ export function DiagnosePage() {
                 )}
                 <div className={cn('grid gap-4', isAdmin ? 'sm:grid-cols-3' : 'sm:grid-cols-2')}>
                   <div className="bg-white/5 rounded-xl p-4">
-                    <p className="text-white/60 text-sm mb-1">最终病害</p>
+                    <p className="text-white/60 text-sm mb-1">{result.is_early_diagnosis_preview ? '已识别病害（初步）' : '最终病害'}</p>
                     <button type="button" onClick={() => navigateToKbDisease(result.final_disease)} className="text-left text-xl font-bold text-[#c8f7c5] hover:underline underline-offset-4">{result.final_disease}</button>
+                    {result.is_early_diagnosis_preview ? <p className="text-xs text-amber-200/90 mt-2">当前为初步诊断结果，后续流程完成后将自动更新正式结果。</p> : null}
                   </div>
                   {isAdmin && (
                     <div className="bg-white/5 rounded-xl p-4">

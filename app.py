@@ -3758,9 +3758,24 @@ def _diagnose_confirm_core(request: Request, payload: dict) -> dict:
     return final_response
 
 
+def _diagnose_confirm_with_gitpython_fallback(request: Request, payload: dict) -> dict:
+    try:
+        return _diagnose_confirm_core(request, payload)
+    except ModuleNotFoundError as exc:
+        if exc.name != "git":
+            raise
+        trace_id = str(payload.get("trace_id") or payload.get("previous_trace_id") or "").strip()
+        print(f"[DiagnoseConfirm] optional dependency missing (git): {exc}; trace_id={trace_id}")
+        if trace_id:
+            latest_event = _latest_case_event_by_trace(trace_id)
+            if isinstance(latest_event, dict) and latest_event:
+                return serialize_final_response(latest_event)
+        raise HTTPException(status_code=500, detail="诊断确认失败：可选依赖 git 不可用")
+
+
 @app.post("/api/diagnose-confirm")
 def diagnose_confirm(request: Request, payload: dict = Body(...)) -> dict:
-    return _diagnose_confirm_core(request, payload)
+    return _diagnose_confirm_with_gitpython_fallback(request, payload)
 
 
 @app.post("/api/diagnose-retry")
@@ -3814,7 +3829,7 @@ async def diagnose_retry(
         "expert_review_decision": expert_review_decision,
         "final_decision": final_decision,
     }
-    return _diagnose_confirm_core(request, payload)
+    return _diagnose_confirm_with_gitpython_fallback(request, payload)
 
 
 
