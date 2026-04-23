@@ -4994,12 +4994,14 @@ def _to_stream_event(trace_id: str, event: dict) -> dict:
     payload = event.get("payload") or {}
     if not isinstance(payload, dict):
         payload = {"value": payload}
-    outputs = event.get("outputs") or {}
-    if not isinstance(outputs, dict):
-        outputs = {"value": outputs}
-    inputs = event.get("inputs") or {}
-    if not isinstance(inputs, dict):
-        inputs = {"value": inputs}
+    outputs = event.get("outputs") if isinstance(event.get("outputs"), dict) else None
+    inputs = event.get("inputs") if isinstance(event.get("inputs"), dict) else None
+    payload_outputs = payload.get("outputs") if isinstance(payload.get("outputs"), dict) else {}
+    payload_payload = payload.get("payload") if isinstance(payload.get("payload"), dict) else {}
+    merged: dict[str, Any] = {}
+    for container in (payload_payload, payload, payload_outputs, outputs or {}):
+        if isinstance(container, dict):
+            merged.update(container)
     agent_id = event.get("agent_id") or payload.get("agent_id") or NODE_TO_AGENT.get(node)
     if agent_id:
         payload = {**payload, "agent_id": agent_id}
@@ -5020,7 +5022,10 @@ def _to_stream_event(trace_id: str, event: dict) -> dict:
         "payload": payload,
         "outputs": outputs,
         "inputs": inputs,
-        **promoted_fields,
+        "final_disease": merged.get("final_disease"),
+        "final_confidence": merged.get("final_confidence"),
+        "fusion_top3": merged.get("fusion_top3"),
+        "current_top1": merged.get("current_top1"),
     }
 
 
