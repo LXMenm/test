@@ -598,6 +598,78 @@ export function DiagnosePage() {
     return '未知';
   };
 
+  const resolveTop1DiseaseFromTop3 = (top3Like: unknown): string => {
+    if (!Array.isArray(top3Like) || top3Like.length === 0) return '';
+    const first = top3Like[0];
+    if (Array.isArray(first) && typeof first[0] === 'string' && first[0].trim()) {
+      return first[0].trim();
+    }
+    if (first && typeof first === 'object') {
+      const firstObj = first as Record<string, unknown>;
+      if (typeof firstObj.disease === 'string' && firstObj.disease.trim()) {
+        return firstObj.disease.trim();
+      }
+    }
+    return '';
+  };
+
+  const resolveDiseaseFromCandidates = (payloadLike: unknown): string => {
+    const payload = normalizePayloadRecord(payloadLike);
+    const fromFusionTop3 = resolveTop1DiseaseFromTop3(payload.fusion_top3);
+    if (fromFusionTop3) return fromFusionTop3;
+    const currentTop1 = payload.current_top1;
+    if (typeof currentTop1 === 'string' && currentTop1.trim()) return currentTop1.trim();
+    if (currentTop1 && typeof currentTop1 === 'object') {
+      const currentTop1Obj = currentTop1 as Record<string, unknown>;
+      if (typeof currentTop1Obj.disease === 'string' && currentTop1Obj.disease.trim()) {
+        return currentTop1Obj.disease.trim();
+      }
+    }
+    if (typeof payload.final_disease === 'string' && payload.final_disease.trim()) {
+      return payload.final_disease.trim();
+    }
+    return '';
+  };
+
+  const buildEarlyDiagnosisPreviewPayload = (event: TraceEvent): Record<string, unknown> => {
+    const raw = event.raw && typeof event.raw === 'object' ? event.raw as Record<string, unknown> : {};
+    const payload = normalizePayloadRecord(raw.payload ?? event.payload);
+    const outputs = normalizePayloadRecord(raw.outputs);
+    const merged = { ...payload, ...outputs } as Record<string, unknown>;
+    const resolvedDisease = resolveDiseaseFromCandidates(merged);
+    if (resolvedDisease) {
+      merged.final_disease = resolvedDisease;
+    }
+    merged.result_phase = 'diagnosis_preview';
+    merged.is_early_diagnosis_preview = true;
+    return merged;
+  };
+
+  const resolveResultDisease = (payload: Record<string, unknown>): string => {
+    const fromFinalDisease = typeof payload.final_disease === 'string' ? payload.final_disease.trim() : '';
+    if (fromFinalDisease) return fromFinalDisease;
+
+    const fromFusionTop3 = resolveTop1DiseaseFromTop3(payload.fusion_top3);
+    if (fromFusionTop3) return fromFusionTop3;
+
+    const currentTop1 = payload.current_top1;
+    if (typeof currentTop1 === 'string' && currentTop1.trim()) return currentTop1.trim();
+    if (currentTop1 && typeof currentTop1 === 'object') {
+      const currentTop1Obj = currentTop1 as Record<string, unknown>;
+      if (typeof currentTop1Obj.disease === 'string' && currentTop1Obj.disease.trim()) {
+        return currentTop1Obj.disease.trim();
+      }
+    }
+
+    const imageResult = payload.image_result && typeof payload.image_result === 'object'
+      ? payload.image_result as Record<string, unknown>
+      : {};
+    if (typeof imageResult.disease === 'string' && imageResult.disease.trim()) {
+      return imageResult.disease.trim();
+    }
+    return '未知';
+  };
+
   const normalizeConfirmUiMode = (value: unknown): ConfirmUiMode => {
     const raw = String(value ?? '').trim();
     if (raw === 'image' || raw === 'text' || raw === 'image_and_text' || raw === 'none') return raw;
