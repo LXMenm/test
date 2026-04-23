@@ -5005,6 +5005,12 @@ def _to_stream_event(trace_id: str, event: dict) -> dict:
     agent_id = event.get("agent_id") or payload.get("agent_id") or NODE_TO_AGENT.get(node)
     if agent_id:
         payload = {**payload, "agent_id": agent_id}
+    promoted_fields: dict[str, Any] = {}
+    for field in ("final_disease", "final_confidence", "fusion_top3", "current_top1"):
+        if payload.get(field) is not None:
+            promoted_fields[field] = payload.get(field)
+        elif outputs.get(field) is not None:
+            promoted_fields[field] = outputs.get(field)
     return {
         "trace_id": event.get("trace_id") or trace_id,
         "ts": event.get("ts"),
