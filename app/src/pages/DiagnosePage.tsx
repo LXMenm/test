@@ -1539,7 +1539,12 @@ export function DiagnosePage() {
     return node.includes('kbretrieval') || node.includes('prescription') || node.includes('personalization') || node.includes('validator') || node.includes('verification') || node === 'final';
   });
   const displayResult = earlyDiagnosisResult ?? result;
-  const hasDisplayDisease = !!displayResult?.final_disease && displayResult.final_disease !== '未知';
+  const hasDisplayDisease =
+    !!displayResult &&
+    typeof displayResult.final_disease === 'string' &&
+    displayResult.final_disease.trim() !== '' &&
+    displayResult.final_disease !== '未知' &&
+    displayResult.final_disease !== '—';
   return (
     <div className="space-y-6 animate-fadeIn">
       {canViewExpertInbox && (
@@ -1786,7 +1791,7 @@ export function DiagnosePage() {
                       ) : null}
                     </div>
                     <button type="button" onClick={() => navigateToKbDisease(displayResult.final_disease)} className="text-left text-xl font-bold text-[#c8f7c5] hover:underline underline-offset-4">{displayResult.final_disease}</button>
-                    {displayResult.is_early_diagnosis_preview ? <p className="text-xs text-amber-200/90 mt-2">当前为初步诊断结果，后续流程完成后将自动更新正式结果。</p> : null}
+                    {displayResult.is_early_diagnosis_preview ? <p className="text-xs text-amber-200/90 mt-2">已识别病害，后续方案与校验结果会自动更新。</p> : null}
                   </div>
                   {isAdmin && (
                     <div className="bg-white/5 rounded-xl p-4">
