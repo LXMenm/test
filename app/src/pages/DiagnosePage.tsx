@@ -198,6 +198,7 @@ export function DiagnosePage() {
   const [modelId, setModelId] = useState('tf_default');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<DiagnosisResult | null>(null);
+  const [earlyDiagnosisResult, setEarlyDiagnosisResult] = useState<DiagnosisResult | null>(null);
   const [traceEvents, setTraceEvents] = useState<TraceEvent[]>([]);
   const [latestPayload, setLatestPayload] = useState<Record<string, unknown> | null>(null);
   const [phase1Payload, setPhase1Payload] = useState<Record<string, unknown> | null>(null);
@@ -520,6 +521,82 @@ export function DiagnosePage() {
   const normalizePayloadRecord = (payloadLike: unknown): Record<string, unknown> => {
     return payloadLike && typeof payloadLike === 'object' ? payloadLike as Record<string, unknown> : {};
   };
+  const isKnownDisease = (value: unknown): boolean => {
+    const text = typeof value === 'string' ? value.trim() : '';
+    return Boolean(text) && text !== '未知' && text !== '—';
+  };
+
+  const resolveTop1DiseaseFromTop3 = (top3Like: unknown): string => {
+    if (!Array.isArray(top3Like) || top3Like.length === 0) return '';
+    const first = top3Like[0];
+    if (Array.isArray(first) && typeof first[0] === 'string' && first[0].trim()) {
+      return first[0].trim();
+    }
+    if (first && typeof first === 'object') {
+      const firstObj = first as Record<string, unknown>;
+      if (typeof firstObj.disease === 'string' && firstObj.disease.trim()) {
+        return firstObj.disease.trim();
+      }
+    }
+    return '';
+  };
+
+  const resolveDiseaseFromCandidates = (payloadLike: unknown): string => {
+    const payload = normalizePayloadRecord(payloadLike);
+    const fromFusionTop3 = resolveTop1DiseaseFromTop3(payload.fusion_top3);
+    if (fromFusionTop3) return fromFusionTop3;
+    const currentTop1 = payload.current_top1;
+    if (typeof currentTop1 === 'string' && currentTop1.trim()) return currentTop1.trim();
+    if (currentTop1 && typeof currentTop1 === 'object') {
+      const currentTop1Obj = currentTop1 as Record<string, unknown>;
+      if (typeof currentTop1Obj.disease === 'string' && currentTop1Obj.disease.trim()) {
+        return currentTop1Obj.disease.trim();
+      }
+    }
+    if (typeof payload.final_disease === 'string' && payload.final_disease.trim()) {
+      return payload.final_disease.trim();
+    }
+    return '';
+  };
+
+  const buildEarlyDiagnosisPreviewPayload = (event: TraceEvent): Record<string, unknown> => {
+    const raw = event.raw && typeof event.raw === 'object' ? event.raw as Record<string, unknown> : {};
+    const payload = normalizePayloadRecord(raw.payload ?? event.payload);
+    const outputs = normalizePayloadRecord(raw.outputs);
+    const merged = { ...payload, ...outputs } as Record<string, unknown>;
+    const resolvedDisease = resolveDiseaseFromCandidates(merged);
+    if (resolvedDisease) {
+      merged.final_disease = resolvedDisease;
+    }
+    merged.result_phase = 'diagnosis_preview';
+    merged.is_early_diagnosis_preview = true;
+    return merged;
+  };
+
+  const resolveResultDisease = (payload: Record<string, unknown>): string => {
+    const fromFinalDisease = typeof payload.final_disease === 'string' ? payload.final_disease.trim() : '';
+    if (fromFinalDisease) return fromFinalDisease;
+
+    const fromFusionTop3 = resolveTop1DiseaseFromTop3(payload.fusion_top3);
+    if (fromFusionTop3) return fromFusionTop3;
+
+    const currentTop1 = payload.current_top1;
+    if (typeof currentTop1 === 'string' && currentTop1.trim()) return currentTop1.trim();
+    if (currentTop1 && typeof currentTop1 === 'object') {
+      const currentTop1Obj = currentTop1 as Record<string, unknown>;
+      if (typeof currentTop1Obj.disease === 'string' && currentTop1Obj.disease.trim()) {
+        return currentTop1Obj.disease.trim();
+      }
+    }
+
+    const imageResult = payload.image_result && typeof payload.image_result === 'object'
+      ? payload.image_result as Record<string, unknown>
+      : {};
+    if (typeof imageResult.disease === 'string' && imageResult.disease.trim()) {
+      return imageResult.disease.trim();
+    }
+    return '未知';
+  };
 
   const resolveTop1DiseaseFromTop3 = (top3Like: unknown): string => {
     if (!Array.isArray(top3Like) || top3Like.length === 0) return '';
@@ -635,6 +712,9 @@ export function DiagnosePage() {
       setPhase1Payload(payload);
     }
     setResult(normalizedResult);
+    if (!normalizedResult.is_early_diagnosis_preview && isKnownDisease(normalizedResult.final_disease)) {
+      setEarlyDiagnosisResult(null);
+    }
     setLatestPayload(payload);
     const needsConfirm = deriveConfirmNeeds(payload, normalizedResult);
     setConfirmMode(needsConfirm);
@@ -869,6 +949,7 @@ export function DiagnosePage() {
 
     setLoading(true);
     setResult(null);
+    setEarlyDiagnosisResult(null);
     setTraceEvents([]);
     setPhase1Payload(null);
     setConfirmMode(false);
@@ -988,6 +1069,7 @@ export function DiagnosePage() {
     if (!selectedFarmerId || !activeTraceId || !activeImageId) return;
     if (usesImageSupplement && !resubmitFile) return;
     setResubmitSubmitting(true);
+    setEarlyDiagnosisResult(null);
     setResubmitStatus('submitting');
     const now = Date.now();
     setPhase1StartTime(now);
@@ -1059,6 +1141,7 @@ export function DiagnosePage() {
     if (!selectedFarmerId || !activeTraceId || !activeImageId) return;
     if (!usesTextSupplement) return;
     setResubmitSubmitting(true);
+    setEarlyDiagnosisResult(null);
     setResubmitStatus('submitting');
     const now = Date.now();
     setPhase1StartTime(now);
@@ -1406,6 +1489,25 @@ export function DiagnosePage() {
     const onTrace = (messageEvent: MessageEvent) => {
       try {
         const raw = JSON.parse(messageEvent.data || '{}');
+        const rawEvent = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {};
+        const node = String(rawEvent.node || '');
+        const status = String(rawEvent.status || '').toLowerCase();
+        const isDiagnosisDone = node === 'DiagnosisCompleted' || (node === 'DiagnosisAgent' && status === 'end');
+        if (isDiagnosisDone) {
+          const previewPayload = buildEarlyDiagnosisPreviewPayload({
+            raw: rawEvent,
+            payload: normalizePayloadRecord(rawEvent.payload),
+          } as TraceEvent);
+          const previewResult = buildResultFromPayload(previewPayload);
+          if (isKnownDisease(previewResult.final_disease)) {
+            setEarlyDiagnosisResult((prev) => {
+              if (prev && prev.final_disease === previewResult.final_disease && prev.displayConfidencePct === previewResult.displayConfidencePct) {
+                return prev;
+              }
+              return previewResult;
+            });
+          }
+        }
         setTraceEvents((prev) => mergePayloadEventsAsPrimary(prev, [raw], 'stream'));
       } catch (error) {
         console.error('Failed to parse trace stream event:', error);
@@ -1485,6 +1587,9 @@ export function DiagnosePage() {
     const node = String(event.raw.node ?? event.stage ?? '').toLowerCase();
     return node.includes('kbretrieval') || node.includes('prescription') || node.includes('personalization') || node.includes('validator') || node.includes('verification') || node === 'final';
   });
+  const displayResult = (result && !result.is_early_diagnosis_preview && isKnownDisease(result.final_disease))
+    ? result
+    : (earlyDiagnosisResult ?? result);
   return (
     <div className="space-y-6 animate-fadeIn">
       {canViewExpertInbox && (
@@ -1715,28 +1820,28 @@ export function DiagnosePage() {
         {/* Right Column - Results */}
         <div className="lg:col-span-3 space-y-6">
           <SectionCard sectionKey="diagnosis" title="诊断结果" icon={<CheckCircle className="w-5 h-5 text-[#c8f7c5]" />} open={sectionOpen.diagnosis} onToggle={toggleSection}>
-            {result ? (
+            {displayResult ? (
               <div className="space-y-4 animate-fadeIn">
-                {result.image_url && (
+                {displayResult.image_url && (
                   <div className="rounded-xl overflow-hidden bg-black/30">
-                    <img src={result.image_url} alt="Diagnosed" className="w-full max-h-64 object-contain" />
+                    <img src={displayResult.image_url} alt="Diagnosed" className="w-full max-h-64 object-contain" />
                   </div>
                 )}
                 <div className={cn('grid gap-4', isAdmin ? 'sm:grid-cols-3' : 'sm:grid-cols-2')}>
                   <div className="bg-white/5 rounded-xl p-4">
-                    <p className="text-white/60 text-sm mb-1">{result.is_early_diagnosis_preview ? '已识别病害（初步）' : '最终病害'}</p>
-                    <button type="button" onClick={() => navigateToKbDisease(result.final_disease)} className="text-left text-xl font-bold text-[#c8f7c5] hover:underline underline-offset-4">{result.final_disease}</button>
-                    {result.is_early_diagnosis_preview ? <p className="text-xs text-amber-200/90 mt-2">当前为初步诊断结果，后续流程完成后将自动更新正式结果。</p> : null}
+                    <p className="text-white/60 text-sm mb-1">{displayResult.is_early_diagnosis_preview ? '已识别病害（初步）' : '最终病害'}</p>
+                    <button type="button" onClick={() => navigateToKbDisease(displayResult.final_disease)} className="text-left text-xl font-bold text-[#c8f7c5] hover:underline underline-offset-4">{displayResult.final_disease}</button>
+                    {displayResult.is_early_diagnosis_preview ? <p className="text-xs text-amber-200/90 mt-2">当前为初步诊断结果，后续流程完成后将自动更新正式结果。</p> : null}
                   </div>
                   {isAdmin && (
                     <div className="bg-white/5 rounded-xl p-4">
                       <p className="text-white/60 text-sm mb-1">置信度</p>
-                      <p className="text-xl font-bold text-[#c8f7c5]">{result.displayConfidencePct !== null ? `${result.displayConfidencePct.toFixed(2)}%` : "—"}</p>
+                      <p className="text-xl font-bold text-[#c8f7c5]">{displayResult.displayConfidencePct !== null ? `${displayResult.displayConfidencePct.toFixed(2)}%` : "—"}</p>
                     </div>
                   )}
                   <div className="bg-white/5 rounded-xl p-4">
                     <p className="text-white/60 text-sm mb-1">{isAdmin ? '使用模型' : '诊断状态'}</p>
-                    <p className="text-sm font-medium text-white">{isAdmin ? result.model_display_name : (result.status || 'diagnosis_completed')}</p>
+                    <p className="text-sm font-medium text-white">{isAdmin ? displayResult.model_display_name : (displayResult.status || 'diagnosis_completed')}</p>
                   </div>
                 </div>
               </div>
