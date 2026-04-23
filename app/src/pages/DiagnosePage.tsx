@@ -1453,14 +1453,20 @@ export function DiagnosePage() {
         const status = String(rawEvent.status || '').trim().toLowerCase();
         const payloadStatus = String(normalizePayloadRecord(rawEvent.payload).status || '').trim().toLowerCase();
         const previewPayload = extractDiagnosisPreviewFromStreamEvent(rawEvent);
+        const previewDisease = typeof previewPayload?.final_disease === 'string' ? previewPayload.final_disease : '';
+        console.debug('[DiagnosePage][stream-preview]', {
+          node,
+          status,
+          payloadStatus,
+          hasPreviewPayload: !!previewPayload,
+          previewDisease,
+          hasFinalResult,
+        });
         if (previewPayload && !hasFinalResult) {
-          const previewResult = buildResultFromPayload(previewPayload);
-          setEarlyDiagnosisResult((prev) => {
-            if (prev?.final_disease === previewResult.final_disease && prev?.trace_id === previewResult.trace_id) {
-              return prev;
-            }
-            return previewResult;
-          });
+          console.debug('[DiagnosePage][stream-preview-set]', { previewDisease, hasFinalResult });
+          setEarlyDiagnosisResult(buildResultFromPayload(previewPayload));
+        } else if (previewPayload) {
+          console.debug('[DiagnosePage][stream-preview-skip]', { reason: 'hasFinalResult=true', previewDisease });
         }
         if (
           ['waiting_for_supplement', 'completed', 'completed_verification_failed'].includes(status)
@@ -1539,23 +1545,26 @@ export function DiagnosePage() {
     return node.includes('kbretrieval') || node.includes('prescription') || node.includes('personalization') || node.includes('validator') || node.includes('verification') || node === 'final';
   });
   const displayResult = earlyDiagnosisResult ?? result;
-<<<<<<< codex/fix-early-diagnosis-result-display-b2pdtu
-  const displayDiseaseName = typeof displayResult?.final_disease === 'string'
+const displayDiseaseName =
+  typeof displayResult?.final_disease === 'string'
     ? displayResult.final_disease.trim()
     : '';
   const hasDisplayDisease =
-    !!displayResult &&
-    displayDiseaseName !== '' &&
-    displayDiseaseName !== '未知' &&
-    displayDiseaseName !== '—';
-=======
-  const hasDisplayDisease =
-    !!displayResult &&
-    typeof displayResult.final_disease === 'string' &&
-    displayResult.final_disease.trim() !== '' &&
-    displayResult.final_disease !== '未知' &&
-    displayResult.final_disease !== '—';
->>>>>>> main
+  !!displayDiseaseName &&
+  displayDiseaseName !== '未知' &&
+  displayDiseaseName !== '—';
+
+  useEffect(() => {
+    console.debug('[DiagnosePage][render-diagnosis-card]', {
+      hasDisplayDisease,
+      displayDiseaseName,
+      loading,
+      hasResult: !!result,
+      hasLatestPayload: !!latestPayload,
+      useEarlyPreview: !!earlyDiagnosisResult,
+    });
+  }, [hasDisplayDisease, displayDiseaseName, loading, result, latestPayload, earlyDiagnosisResult]);
+
   return (
     <div className="space-y-6 animate-fadeIn">
       {canViewExpertInbox && (
@@ -1801,11 +1810,7 @@ export function DiagnosePage() {
                         <Badge className="bg-blue-500/20 text-blue-200 border border-blue-400/40">初步诊断</Badge>
                       ) : null}
                     </div>
-<<<<<<< codex/fix-early-diagnosis-result-display-b2pdtu
                     <button type="button" onClick={() => navigateToKbDisease(displayDiseaseName)} className="text-left text-xl font-bold text-[#c8f7c5] hover:underline underline-offset-4">{displayDiseaseName}</button>
-=======
-                    <button type="button" onClick={() => navigateToKbDisease(displayResult.final_disease)} className="text-left text-xl font-bold text-[#c8f7c5] hover:underline underline-offset-4">{displayResult.final_disease}</button>
->>>>>>> main
                     {displayResult.is_early_diagnosis_preview ? <p className="text-xs text-amber-200/90 mt-2">已识别病害，后续方案与校验结果会自动更新。</p> : null}
                   </div>
                   {isAdmin && (
