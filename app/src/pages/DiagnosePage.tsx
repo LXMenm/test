@@ -1507,16 +1507,40 @@ export function DiagnosePage() {
 
   useEffect(() => {
     if (!traceEvents.length) return;
+    if (!hasFinalResult) {
+      const replayPreviewEvent = traceEvents.slice().reverse().find((event) => {
+        return extractDiagnosisPreviewFromStreamEvent(event.raw) !== null;
+      });
+      const replayPreviewPayload = replayPreviewEvent
+        ? extractDiagnosisPreviewFromStreamEvent(replayPreviewEvent.raw)
+        : null;
+      const earlyDisease = typeof earlyDiagnosisResult?.final_disease === 'string'
+        ? earlyDiagnosisResult.final_disease
+        : '';
+      const shouldSetReplayPreview = !isKnownDisease(earlyDisease);
+      if (replayPreviewPayload && shouldSetReplayPreview) {
+        setEarlyDiagnosisResult(buildResultFromPayload(replayPreviewPayload));
+      }
+    }
+
     const latest = traceEvents[traceEvents.length - 1];
     const raw = latest.raw;
     const node = String(raw.node || latest.stage || '');
     const status = String(raw.status || latest.status || '').toLowerCase();
     const payload = normalizePayloadRecord(raw.payload ?? latest.payload ?? raw.outputs);
     if (node === 'TreatmentCompleted' || (node === 'TreatmentAgent' && status === 'end')) {
-      setResult((prev) => prev ? buildResultFromPayload({ ...prev, ...payload, is_early_diagnosis_preview: false, result_phase: 'final' }) : prev);
+      setResult((prev) => {
+        const nextResult = buildResultFromPayload({ ...(prev ?? {}), ...payload, is_early_diagnosis_preview: false, result_phase: 'final' });
+        if (prev || isKnownDisease(nextResult.final_disease)) return nextResult;
+        return prev;
+      });
     }
     if (node === 'VerificationCompleted' || (node === 'VerificationAgent' && status === 'end')) {
-      setResult((prev) => prev ? buildResultFromPayload({ ...prev, ...payload, is_early_diagnosis_preview: false, result_phase: 'final' }) : prev);
+      setResult((prev) => {
+        const nextResult = buildResultFromPayload({ ...(prev ?? {}), ...payload, is_early_diagnosis_preview: false, result_phase: 'final' });
+        if (prev || isKnownDisease(nextResult.final_disease)) return nextResult;
+        return prev;
+      });
     }
     if (node === 'AwaitUserConfirmation' && status === 'end') {
       setResult((prev) => (prev ? { ...prev, status: 'waiting_for_supplement', is_early_diagnosis_preview: false, result_phase: 'final' } : prev));
@@ -1524,7 +1548,7 @@ export function DiagnosePage() {
       setEarlyDiagnosisResult(null);
       setConfirmMode(true);
     }
-  }, [traceEvents]);
+  }, [traceEvents, hasFinalResult, earlyDiagnosisResult]);
 
   const rawTraceTimingEvents = traceEvents.map((event) => event.raw);
   const traceTiming = calcTracePhaseTiming(rawTraceTimingEvents, timingNowMs);
