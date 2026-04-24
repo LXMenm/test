@@ -1795,7 +1795,7 @@ const displayDiseaseName =
         {/* Right Column - Results */}
         <div className="lg:col-span-3 space-y-6">
           <SectionCard sectionKey="diagnosis" title="诊断结果" icon={<CheckCircle className="w-5 h-5 text-[#c8f7c5]" />} open={sectionOpen.diagnosis} onToggle={toggleSection}>
-            {hasDisplayDisease ? (
+            {hasDisplayDisease && displayResult ? (
               <div className="space-y-4 animate-fadeIn">
                 {displayResult.image_url && (
                   <div className="rounded-xl overflow-hidden bg-black/30">
