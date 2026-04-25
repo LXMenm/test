@@ -235,6 +235,7 @@ export function DiagnosePage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const traceFetchAbortRef = useRef<AbortController | null>(null);
   const traceStreamRef = useRef<EventSource | null>(null);
+  const latestTraceEventKeyRef = useRef('');
   const prevStatusRef = useRef<string | undefined>(undefined);
   const canViewExpertInbox = isAdmin;
   const toggleSection = useCallback((key: keyof SectionOpenState) => {
@@ -1422,11 +1423,13 @@ export function DiagnosePage() {
       traceFetchAbortRef.current = null;
       traceStreamRef.current?.close();
       traceStreamRef.current = null;
+      latestTraceEventKeyRef.current = '';
       setTraceEvents([]);
       setEarlyDiagnosisResult(null);
       setHasFinalResult(false);
       return;
     }
+    latestTraceEventKeyRef.current = '';
     setEarlyDiagnosisResult(null);
     setHasFinalResult(false);
     refreshTrace();
@@ -1533,7 +1536,9 @@ export function DiagnosePage() {
       const replayFinalPayload = normalizePayloadRecord(
         replayFinalEvent.raw.payload ?? replayFinalEvent.payload ?? replayFinalEvent.raw.outputs,
       );
+      const base = normalizePayloadRecord(result ?? earlyDiagnosisResult);
       setResult(buildResultFromPayload({
+        ...base,
         ...replayFinalPayload,
         is_early_diagnosis_preview: false,
         result_phase: 'final',
@@ -1546,6 +1551,10 @@ export function DiagnosePage() {
     const raw = latest.raw;
     const node = String(raw.node || latest.stage || '');
     const status = String(raw.status || latest.status || '').toLowerCase();
+    const latestSeq = String(raw.seq ?? latest.seq ?? traceEvents.length - 1);
+    const latestEventKey = `${latestSeq}:${node}:${status}`;
+    if (latestTraceEventKeyRef.current === latestEventKey) return;
+    latestTraceEventKeyRef.current = latestEventKey;
     const payload = normalizePayloadRecord(raw.payload ?? latest.payload ?? raw.outputs);
     if (node === 'TreatmentCompleted' || (node === 'TreatmentAgent' && status === 'end')) {
       setResult((prev) => {
