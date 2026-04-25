@@ -1481,10 +1481,10 @@ export function DiagnosePage() {
           payloadStatus,
           hasPreviewPayload: !!previewPayload,
           previewDisease,
-          hasFinalResult,
+          hasFinalResult: hasFinalResultRef.current,
         });
-        if (previewPayload && !hasFinalResult) {
-          console.debug('[DiagnosePage][stream-preview-set]', { previewDisease, hasFinalResult });
+        if (previewPayload && !hasFinalResultRef.current) {
+          console.debug('[DiagnosePage][stream-preview-set]', { previewDisease, hasFinalResult: hasFinalResultRef.current });
           setEarlyDiagnosisResult(buildResultFromPayload(previewPayload));
         } else if (previewPayload) {
           console.debug('[DiagnosePage][stream-preview-skip]', { reason: 'hasFinalResult=true', previewDisease });
@@ -1524,7 +1524,7 @@ export function DiagnosePage() {
         traceStreamRef.current = null;
       }
     };
-  }, [traceId, hasFinalResult]);
+  }, [traceId]);
 
   useEffect(() => {
     if (!traceEvents.length) return;
@@ -1625,7 +1625,7 @@ export function DiagnosePage() {
       setEarlyDiagnosisResult(null);
       setConfirmMode(true);
     }
-  }, [traceEvents, hasFinalResult, earlyDiagnosisResult, result]);
+  }, [traceEvents]);
 
   const rawTraceTimingEvents = traceEvents.map((event) => event.raw);
   const traceTiming = calcTracePhaseTiming(rawTraceTimingEvents, timingNowMs);
