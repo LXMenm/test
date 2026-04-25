@@ -1568,6 +1568,13 @@ export function DiagnosePage() {
 
   useEffect(() => {
     if (!traceEvents.length) return;
+    let replayPreviewFallback: DiagnosisResult | null = null;
+    for (const event of traceEvents.slice().reverse()) {
+      const replayPreviewPayload = extractDiagnosisPreviewFromStreamEvent(event.raw);
+      if (!replayPreviewPayload) continue;
+      replayPreviewFallback = buildResultFromPayload(replayPreviewPayload);
+      break;
+    }
     const latest = traceEvents[traceEvents.length - 1];
     const raw = latest.raw;
     const node = String(raw.node || latest.stage || '');
@@ -1579,7 +1586,7 @@ export function DiagnosePage() {
     const payload = normalizePayloadRecord(raw.payload ?? latest.payload ?? raw.outputs);
     if (node === 'TreatmentCompleted' || (node === 'TreatmentAgent' && status === 'end')) {
       setResult((prev) => {
-        const base = prev ?? earlyDiagnosisResultRef.current;
+        const base = prev ?? earlyDiagnosisResultRef.current ?? replayPreviewFallback;
         return buildResultFromPayload({
           ...normalizePayloadRecord(base),
           ...payload,
@@ -1590,7 +1597,7 @@ export function DiagnosePage() {
     }
     if (node === 'VerificationCompleted' || (node === 'VerificationAgent' && status === 'end')) {
       setResult((prev) => {
-        const base = prev ?? earlyDiagnosisResultRef.current;
+        const base = prev ?? earlyDiagnosisResultRef.current ?? replayPreviewFallback;
         return buildResultFromPayload({
           ...normalizePayloadRecord(base),
           ...payload,
@@ -1601,7 +1608,7 @@ export function DiagnosePage() {
     }
     if (node === 'AwaitUserConfirmation' && status === 'end') {
       setResult((prev) => buildResultFromPayload({
-        ...normalizePayloadRecord(prev ?? earlyDiagnosisResultRef.current ?? payload),
+        ...normalizePayloadRecord(prev ?? earlyDiagnosisResultRef.current ?? replayPreviewFallback ?? payload),
         ...payload,
         status: 'waiting_for_supplement',
         is_early_diagnosis_preview: false,
