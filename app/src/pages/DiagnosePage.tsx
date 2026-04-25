@@ -238,6 +238,7 @@ export function DiagnosePage() {
   const resultRef = useRef<DiagnosisResult | null>(null);
   const earlyDiagnosisResultRef = useRef<DiagnosisResult | null>(null);
   const hasFinalResultRef = useRef(false);
+  const replayTraceSnapshotKeyRef = useRef('');
   const latestTraceEventKeyRef = useRef('');
   const prevStatusRef = useRef<string | undefined>(undefined);
   const canViewExpertInbox = isAdmin;
@@ -1429,6 +1430,7 @@ export function DiagnosePage() {
       resultRef.current = null;
       earlyDiagnosisResultRef.current = null;
       hasFinalResultRef.current = false;
+      replayTraceSnapshotKeyRef.current = '';
       latestTraceEventKeyRef.current = '';
       setTraceEvents([]);
       setEarlyDiagnosisResult(null);
@@ -1438,6 +1440,7 @@ export function DiagnosePage() {
     resultRef.current = null;
     earlyDiagnosisResultRef.current = null;
     hasFinalResultRef.current = false;
+    replayTraceSnapshotKeyRef.current = '';
     latestTraceEventKeyRef.current = '';
     setEarlyDiagnosisResult(null);
     setHasFinalResult(false);
@@ -1525,6 +1528,17 @@ export function DiagnosePage() {
 
   useEffect(() => {
     if (!traceEvents.length) return;
+    const replayLatest = traceEvents[traceEvents.length - 1];
+    const replayLatestRaw = replayLatest.raw;
+    const replaySnapshotKey = [
+      traceEvents.length,
+      String(replayLatestRaw.seq ?? replayLatest.seq ?? ''),
+      String(replayLatestRaw.node ?? replayLatest.stage ?? ''),
+      String(replayLatestRaw.status ?? replayLatest.status ?? ''),
+    ].join(':');
+    if (replayTraceSnapshotKeyRef.current === replaySnapshotKey) return;
+    replayTraceSnapshotKeyRef.current = replaySnapshotKey;
+
     let replayPreviewResult: DiagnosisResult | null = null;
     for (const event of traceEvents.slice().reverse()) {
       const replayPreviewPayload = extractDiagnosisPreviewFromStreamEvent(event.raw);
