@@ -235,6 +235,7 @@ export function DiagnosePage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const traceFetchAbortRef = useRef<AbortController | null>(null);
   const traceStreamRef = useRef<EventSource | null>(null);
+  const latestTraceEventKeyRef = useRef('');
   const prevStatusRef = useRef<string | undefined>(undefined);
   const canViewExpertInbox = isAdmin;
   const toggleSection = useCallback((key: keyof SectionOpenState) => {
@@ -1422,11 +1423,13 @@ export function DiagnosePage() {
       traceFetchAbortRef.current = null;
       traceStreamRef.current?.close();
       traceStreamRef.current = null;
+      latestTraceEventKeyRef.current = '';
       setTraceEvents([]);
       setEarlyDiagnosisResult(null);
       setHasFinalResult(false);
       return;
     }
+    latestTraceEventKeyRef.current = '';
     setEarlyDiagnosisResult(null);
     setHasFinalResult(false);
     refreshTrace();
@@ -1507,24 +1510,87 @@ export function DiagnosePage() {
 
   useEffect(() => {
     if (!traceEvents.length) return;
+    const earlyDisease = typeof earlyDiagnosisResult?.final_disease === 'string'
+      ? earlyDiagnosisResult.final_disease
+      : '';
+    const shouldReplayPreview = !hasFinalResult && !isKnownDisease(earlyDisease);
+    if (shouldReplayPreview) {
+      for (const event of traceEvents.slice().reverse()) {
+        const replayPreviewPayload = extractDiagnosisPreviewFromStreamEvent(event.raw);
+        if (!replayPreviewPayload) continue;
+        setEarlyDiagnosisResult(buildResultFromPayload(replayPreviewPayload));
+        break;
+      }
+    }
+
+    const replayFinalEvent = traceEvents.slice().reverse().find((event) => {
+      const eventNode = String(event.raw.node ?? event.stage ?? '');
+      const eventStatus = String(event.raw.status ?? event.status ?? '').trim().toLowerCase();
+      const eventPayload = normalizePayloadRecord(event.raw.payload ?? event.payload ?? event.raw.outputs);
+      const payloadStatus = String(eventPayload.status ?? '').trim().toLowerCase();
+      if (eventNode === 'Final') return true;
+      if (eventNode === 'AwaitUserConfirmation' && eventStatus === 'end') return true;
+      return ['waiting_for_supplement', 'completed', 'completed_verification_failed'].includes(payloadStatus);
+    });
+    if (!result && replayFinalEvent) {
+      const replayFinalPayload = normalizePayloadRecord(
+        replayFinalEvent.raw.payload ?? replayFinalEvent.payload ?? replayFinalEvent.raw.outputs,
+      );
+      const base = normalizePayloadRecord(result ?? earlyDiagnosisResult);
+      setResult(buildResultFromPayload({
+        ...base,
+        ...replayFinalPayload,
+        is_early_diagnosis_preview: false,
+        result_phase: 'final',
+      }));
+      setHasFinalResult(true);
+      setEarlyDiagnosisResult(null);
+    }
+
     const latest = traceEvents[traceEvents.length - 1];
     const raw = latest.raw;
     const node = String(raw.node || latest.stage || '');
     const status = String(raw.status || latest.status || '').toLowerCase();
+    const latestSeq = String(raw.seq ?? latest.seq ?? traceEvents.length - 1);
+    const latestEventKey = `${latestSeq}:${node}:${status}`;
+    if (latestTraceEventKeyRef.current === latestEventKey) return;
+    latestTraceEventKeyRef.current = latestEventKey;
     const payload = normalizePayloadRecord(raw.payload ?? latest.payload ?? raw.outputs);
     if (node === 'TreatmentCompleted' || (node === 'TreatmentAgent' && status === 'end')) {
-      setResult((prev) => prev ? buildResultFromPayload({ ...prev, ...payload, is_early_diagnosis_preview: false, result_phase: 'final' }) : prev);
+      setResult((prev) => {
+        const base = prev ?? earlyDiagnosisResult;
+        return buildResultFromPayload({
+          ...normalizePayloadRecord(base),
+          ...payload,
+          is_early_diagnosis_preview: false,
+          result_phase: 'final',
+        });
+      });
     }
     if (node === 'VerificationCompleted' || (node === 'VerificationAgent' && status === 'end')) {
-      setResult((prev) => prev ? buildResultFromPayload({ ...prev, ...payload, is_early_diagnosis_preview: false, result_phase: 'final' }) : prev);
+      setResult((prev) => {
+        const base = prev ?? earlyDiagnosisResult;
+        return buildResultFromPayload({
+          ...normalizePayloadRecord(base),
+          ...payload,
+          is_early_diagnosis_preview: false,
+          result_phase: 'final',
+        });
+      });
     }
     if (node === 'AwaitUserConfirmation' && status === 'end') {
-      setResult((prev) => (prev ? { ...prev, status: 'waiting_for_supplement', is_early_diagnosis_preview: false, result_phase: 'final' } : prev));
+      setResult((prev) => buildResultFromPayload({
+        ...normalizePayloadRecord(prev ?? earlyDiagnosisResult ?? payload),
+        ...payload,
+        status: 'waiting_for_supplement',
+        is_early_diagnosis_preview: false,
+        result_phase: 'final',
+      }));
       setHasFinalResult(true);
       setEarlyDiagnosisResult(null);
       setConfirmMode(true);
     }
-  }, [traceEvents]);
+  }, [traceEvents, hasFinalResult, earlyDiagnosisResult, result]);
 
   const rawTraceTimingEvents = traceEvents.map((event) => event.raw);
   const traceTiming = calcTracePhaseTiming(rawTraceTimingEvents, timingNowMs);
