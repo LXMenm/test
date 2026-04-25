@@ -1456,8 +1456,11 @@ export function DiagnosePage() {
   useEffect(() => {
     resultRef.current = result;
     earlyDiagnosisResultRef.current = earlyDiagnosisResult;
+  }, [result, earlyDiagnosisResult]);
+
+  useEffect(() => {
     hasFinalResultRef.current = hasFinalResult;
-  }, [result, earlyDiagnosisResult, hasFinalResult]);
+  }, [hasFinalResult]);
 
   useEffect(() => {
     if (!traceId) return;
@@ -1593,7 +1596,7 @@ export function DiagnosePage() {
     const payload = normalizePayloadRecord(raw.payload ?? latest.payload ?? raw.outputs);
     if (node === 'TreatmentCompleted' || (node === 'TreatmentAgent' && status === 'end')) {
       setResult((prev) => {
-        const base = prev ?? earlyDiagnosisResultRef.current;
+        const base = prev ?? earlyDiagnosisResultRef.current ?? payload;
         return buildResultFromPayload({
           ...normalizePayloadRecord(base),
           ...payload,
@@ -1604,7 +1607,7 @@ export function DiagnosePage() {
     }
     if (node === 'VerificationCompleted' || (node === 'VerificationAgent' && status === 'end')) {
       setResult((prev) => {
-        const base = prev ?? earlyDiagnosisResultRef.current;
+        const base = prev ?? earlyDiagnosisResultRef.current ?? payload;
         return buildResultFromPayload({
           ...normalizePayloadRecord(base),
           ...payload,
