@@ -1525,19 +1525,20 @@ export function DiagnosePage() {
 
   useEffect(() => {
     if (!traceEvents.length) return;
+    let replayPreviewResult: DiagnosisResult | null = null;
+    for (const event of traceEvents.slice().reverse()) {
+      const replayPreviewPayload = extractDiagnosisPreviewFromStreamEvent(event.raw);
+      if (!replayPreviewPayload) continue;
+      replayPreviewResult = buildResultFromPayload(replayPreviewPayload);
+      break;
+    }
+
     const currentEarlyDisease = typeof earlyDiagnosisResultRef.current?.final_disease === 'string'
       ? earlyDiagnosisResultRef.current.final_disease
       : '';
     const shouldReplayPreview = !hasFinalResultRef.current && !isKnownDisease(currentEarlyDisease);
-    let replayPreviewResult: DiagnosisResult | null = null;
-    if (shouldReplayPreview) {
-      for (const event of traceEvents.slice().reverse()) {
-        const replayPreviewPayload = extractDiagnosisPreviewFromStreamEvent(event.raw);
-        if (!replayPreviewPayload) continue;
-        replayPreviewResult = buildResultFromPayload(replayPreviewPayload);
-        setEarlyDiagnosisResult(replayPreviewResult);
-        break;
-      }
+    if (shouldReplayPreview && replayPreviewResult) {
+      setEarlyDiagnosisResult(replayPreviewResult);
     }
 
     const replayFinalEvent = traceEvents.slice().reverse().find((event) => {
