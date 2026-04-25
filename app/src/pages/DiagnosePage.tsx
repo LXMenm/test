@@ -1625,7 +1625,7 @@ export function DiagnosePage() {
       setEarlyDiagnosisResult(null);
       setConfirmMode(true);
     }
-  }, [traceEvents]);
+  }, [traceEvents, hasFinalResult, earlyDiagnosisResult, result]);
 
   const rawTraceTimingEvents = traceEvents.map((event) => event.raw);
   const traceTiming = calcTracePhaseTiming(rawTraceTimingEvents, timingNowMs);
