@@ -235,6 +235,9 @@ export function DiagnosePage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const traceFetchAbortRef = useRef<AbortController | null>(null);
   const traceStreamRef = useRef<EventSource | null>(null);
+  const resultRef = useRef<DiagnosisResult | null>(null);
+  const earlyDiagnosisResultRef = useRef<DiagnosisResult | null>(null);
+  const hasFinalResultRef = useRef(false);
   const latestTraceEventKeyRef = useRef('');
   const prevStatusRef = useRef<string | undefined>(undefined);
   const canViewExpertInbox = isAdmin;
@@ -1423,12 +1426,18 @@ export function DiagnosePage() {
       traceFetchAbortRef.current = null;
       traceStreamRef.current?.close();
       traceStreamRef.current = null;
+      resultRef.current = null;
+      earlyDiagnosisResultRef.current = null;
+      hasFinalResultRef.current = false;
       latestTraceEventKeyRef.current = '';
       setTraceEvents([]);
       setEarlyDiagnosisResult(null);
       setHasFinalResult(false);
       return;
     }
+    resultRef.current = null;
+    earlyDiagnosisResultRef.current = null;
+    hasFinalResultRef.current = false;
     latestTraceEventKeyRef.current = '';
     setEarlyDiagnosisResult(null);
     setHasFinalResult(false);
@@ -1440,6 +1449,12 @@ export function DiagnosePage() {
       traceStreamRef.current = null;
     };
   }, [traceId]);
+
+  useEffect(() => {
+    resultRef.current = result;
+    earlyDiagnosisResultRef.current = earlyDiagnosisResult;
+    hasFinalResultRef.current = hasFinalResult;
+  }, [result, earlyDiagnosisResult, hasFinalResult]);
 
   useEffect(() => {
     if (!traceId) return;
@@ -1510,15 +1525,17 @@ export function DiagnosePage() {
 
   useEffect(() => {
     if (!traceEvents.length) return;
-    const earlyDisease = typeof earlyDiagnosisResult?.final_disease === 'string'
-      ? earlyDiagnosisResult.final_disease
+    const currentEarlyDisease = typeof earlyDiagnosisResultRef.current?.final_disease === 'string'
+      ? earlyDiagnosisResultRef.current.final_disease
       : '';
-    const shouldReplayPreview = !hasFinalResult && !isKnownDisease(earlyDisease);
+    const shouldReplayPreview = !hasFinalResultRef.current && !isKnownDisease(currentEarlyDisease);
+    let replayPreviewResult: DiagnosisResult | null = null;
     if (shouldReplayPreview) {
       for (const event of traceEvents.slice().reverse()) {
         const replayPreviewPayload = extractDiagnosisPreviewFromStreamEvent(event.raw);
         if (!replayPreviewPayload) continue;
-        setEarlyDiagnosisResult(buildResultFromPayload(replayPreviewPayload));
+        replayPreviewResult = buildResultFromPayload(replayPreviewPayload);
+        setEarlyDiagnosisResult(replayPreviewResult);
         break;
       }
     }
@@ -1532,11 +1549,11 @@ export function DiagnosePage() {
       if (eventNode === 'AwaitUserConfirmation' && eventStatus === 'end') return true;
       return ['waiting_for_supplement', 'completed', 'completed_verification_failed'].includes(payloadStatus);
     });
-    if (!result && replayFinalEvent) {
+    if (!resultRef.current && replayFinalEvent) {
       const replayFinalPayload = normalizePayloadRecord(
         replayFinalEvent.raw.payload ?? replayFinalEvent.payload ?? replayFinalEvent.raw.outputs,
       );
-      const base = normalizePayloadRecord(result ?? earlyDiagnosisResult);
+      const base = normalizePayloadRecord(resultRef.current ?? earlyDiagnosisResultRef.current ?? replayPreviewResult);
       setResult(buildResultFromPayload({
         ...base,
         ...replayFinalPayload,
@@ -1546,7 +1563,10 @@ export function DiagnosePage() {
       setHasFinalResult(true);
       setEarlyDiagnosisResult(null);
     }
+  }, [traceEvents]);
 
+  useEffect(() => {
+    if (!traceEvents.length) return;
     const latest = traceEvents[traceEvents.length - 1];
     const raw = latest.raw;
     const node = String(raw.node || latest.stage || '');
@@ -1558,7 +1578,7 @@ export function DiagnosePage() {
     const payload = normalizePayloadRecord(raw.payload ?? latest.payload ?? raw.outputs);
     if (node === 'TreatmentCompleted' || (node === 'TreatmentAgent' && status === 'end')) {
       setResult((prev) => {
-        const base = prev ?? earlyDiagnosisResult;
+        const base = prev ?? earlyDiagnosisResultRef.current;
         return buildResultFromPayload({
           ...normalizePayloadRecord(base),
           ...payload,
@@ -1569,7 +1589,7 @@ export function DiagnosePage() {
     }
     if (node === 'VerificationCompleted' || (node === 'VerificationAgent' && status === 'end')) {
       setResult((prev) => {
-        const base = prev ?? earlyDiagnosisResult;
+        const base = prev ?? earlyDiagnosisResultRef.current;
         return buildResultFromPayload({
           ...normalizePayloadRecord(base),
           ...payload,
@@ -1580,7 +1600,7 @@ export function DiagnosePage() {
     }
     if (node === 'AwaitUserConfirmation' && status === 'end') {
       setResult((prev) => buildResultFromPayload({
-        ...normalizePayloadRecord(prev ?? earlyDiagnosisResult ?? payload),
+        ...normalizePayloadRecord(prev ?? earlyDiagnosisResultRef.current ?? payload),
         ...payload,
         status: 'waiting_for_supplement',
         is_early_diagnosis_preview: false,
