@@ -1456,8 +1456,11 @@ export function DiagnosePage() {
   useEffect(() => {
     resultRef.current = result;
     earlyDiagnosisResultRef.current = earlyDiagnosisResult;
+  }, [result, earlyDiagnosisResult]);
+
+  useEffect(() => {
     hasFinalResultRef.current = hasFinalResult;
-  }, [result, earlyDiagnosisResult, hasFinalResult]);
+  }, [hasFinalResult]);
 
   useEffect(() => {
     if (!traceId) return;
@@ -1481,11 +1484,13 @@ export function DiagnosePage() {
           payloadStatus,
           hasPreviewPayload: !!previewPayload,
           previewDisease,
-          hasFinalResult,
+          hasFinalResult: hasFinalResultRef.current,
         });
-        if (previewPayload && !hasFinalResult) {
-          console.debug('[DiagnosePage][stream-preview-set]', { previewDisease, hasFinalResult });
-          setEarlyDiagnosisResult(buildResultFromPayload(previewPayload));
+        if (previewPayload && !hasFinalResultRef.current) {
+          const previewResult = buildResultFromPayload(previewPayload);
+          console.debug('[DiagnosePage][stream-preview-set]', { previewDisease, hasFinalResult: hasFinalResultRef.current });
+          earlyDiagnosisResultRef.current = previewResult;
+          setEarlyDiagnosisResult(previewResult);
         } else if (previewPayload) {
           console.debug('[DiagnosePage][stream-preview-skip]', { reason: 'hasFinalResult=true', previewDisease });
         }
@@ -1500,6 +1505,9 @@ export function DiagnosePage() {
             is_early_diagnosis_preview: false,
             result_phase: 'final',
           });
+          hasFinalResultRef.current = true;
+          resultRef.current = finalResult;
+          earlyDiagnosisResultRef.current = null;
           setHasFinalResult(true);
           setResult(finalResult);
           setEarlyDiagnosisResult(null);
@@ -1524,7 +1532,7 @@ export function DiagnosePage() {
         traceStreamRef.current = null;
       }
     };
-  }, [traceId, hasFinalResult]);
+  }, [traceId]);
 
   useEffect(() => {
     if (!traceEvents.length) return;
@@ -1552,6 +1560,7 @@ export function DiagnosePage() {
       : '';
     const shouldReplayPreview = !hasFinalResultRef.current && !isKnownDisease(currentEarlyDisease);
     if (shouldReplayPreview && replayPreviewResult) {
+      earlyDiagnosisResultRef.current = replayPreviewResult;
       setEarlyDiagnosisResult(replayPreviewResult);
     }
 
@@ -1569,12 +1578,16 @@ export function DiagnosePage() {
         replayFinalEvent.raw.payload ?? replayFinalEvent.payload ?? replayFinalEvent.raw.outputs,
       );
       const base = normalizePayloadRecord(resultRef.current ?? earlyDiagnosisResultRef.current ?? replayPreviewResult);
-      setResult(buildResultFromPayload({
+      const finalResult = buildResultFromPayload({
         ...base,
         ...replayFinalPayload,
         is_early_diagnosis_preview: false,
         result_phase: 'final',
-      }));
+      });
+      setResult(finalResult);
+      hasFinalResultRef.current = true;
+      resultRef.current = finalResult;
+      earlyDiagnosisResultRef.current = null;
       setHasFinalResult(true);
       setEarlyDiagnosisResult(null);
     }
@@ -1594,38 +1607,48 @@ export function DiagnosePage() {
     if (node === 'TreatmentCompleted' || (node === 'TreatmentAgent' && status === 'end')) {
       setResult((prev) => {
         const base = prev ?? earlyDiagnosisResultRef.current;
-        return buildResultFromPayload({
+        const nextResult = buildResultFromPayload({
           ...normalizePayloadRecord(base),
           ...payload,
           is_early_diagnosis_preview: false,
           result_phase: 'final',
         });
+        resultRef.current = nextResult;
+        return nextResult;
       });
     }
     if (node === 'VerificationCompleted' || (node === 'VerificationAgent' && status === 'end')) {
       setResult((prev) => {
         const base = prev ?? earlyDiagnosisResultRef.current;
-        return buildResultFromPayload({
+        const nextResult = buildResultFromPayload({
           ...normalizePayloadRecord(base),
           ...payload,
           is_early_diagnosis_preview: false,
           result_phase: 'final',
         });
+        resultRef.current = nextResult;
+        return nextResult;
       });
     }
     if (node === 'AwaitUserConfirmation' && status === 'end') {
-      setResult((prev) => buildResultFromPayload({
-        ...normalizePayloadRecord(prev ?? earlyDiagnosisResultRef.current ?? payload),
-        ...payload,
-        status: 'waiting_for_supplement',
-        is_early_diagnosis_preview: false,
-        result_phase: 'final',
-      }));
+      setResult((prev) => {
+        const nextResult = buildResultFromPayload({
+          ...normalizePayloadRecord(prev ?? earlyDiagnosisResultRef.current ?? payload),
+          ...payload,
+          status: 'waiting_for_supplement',
+          is_early_diagnosis_preview: false,
+          result_phase: 'final',
+        });
+        resultRef.current = nextResult;
+        return nextResult;
+      });
+      hasFinalResultRef.current = true;
+      earlyDiagnosisResultRef.current = null;
       setHasFinalResult(true);
       setEarlyDiagnosisResult(null);
       setConfirmMode(true);
     }
-  }, [traceEvents, hasFinalResult, earlyDiagnosisResult, result]);
+  }, [traceEvents]);
 
   const rawTraceTimingEvents = traceEvents.map((event) => event.raw);
   const traceTiming = calcTracePhaseTiming(rawTraceTimingEvents, timingNowMs);
