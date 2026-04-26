@@ -613,6 +613,36 @@ export function DiagnosePage() {
     return '未知';
   };
 
+  const isPayloadFieldEmpty = (value: unknown): boolean => {
+    if (value === null || value === undefined) return true;
+    if (typeof value === 'string') return value.trim().length === 0;
+    if (Array.isArray(value)) return value.length === 0;
+    return false;
+  };
+
+  const mergePayloadWithDiseaseFallback = (
+    baseLike: unknown,
+    payloadLike: unknown,
+  ): Record<string, unknown> => {
+    const base = normalizePayloadRecord(baseLike);
+    const payload = normalizePayloadRecord(payloadLike);
+    const payloadDisease = resolveResultDisease(payload);
+    const baseDisease = resolveResultDisease(base);
+    const merged: Record<string, unknown> = { ...base, ...payload };
+
+    if (!isKnownDisease(payloadDisease) && isKnownDisease(baseDisease)) {
+      merged.final_disease = baseDisease;
+    }
+
+    if (isPayloadFieldEmpty(payload.current_top1) && !isPayloadFieldEmpty(base.current_top1)) {
+      merged.current_top1 = base.current_top1;
+    }
+    if (isPayloadFieldEmpty(payload.fusion_top3) && !isPayloadFieldEmpty(base.fusion_top3)) {
+      merged.fusion_top3 = base.fusion_top3;
+    }
+    return merged;
+  };
+
   const normalizeConfirmUiMode = (value: unknown): ConfirmUiMode => {
     const raw = String(value ?? '').trim();
     if (raw === 'image' || raw === 'text' || raw === 'image_and_text' || raw === 'none') return raw;
@@ -649,22 +679,28 @@ export function DiagnosePage() {
     options?: { resetInputs?: boolean; markResubmitSuccess?: boolean; defaultChoice?: string; },
   ) => {
     const payload = normalizePayloadRecord(payloadLike);
+    const mergedPayload = mergePayloadWithDiseaseFallback(
+      resultRef.current ?? earlyDiagnosisResultRef.current ?? result,
+      payload,
+    );
+    const mergedResult = buildResultFromPayload(mergedPayload);
+    const effectiveResult = isKnownDisease(normalizedResult.final_disease) ? normalizedResult : mergedResult;
     const payloadStatus = typeof payload.status === 'string' ? payload.status : '';
     const isConfirmRoundPayload = payload.confirm_round === true || String(payload.source_stage ?? '') === 'confirm';
     if (payloadStatus === 'waiting_for_supplement' && !isConfirmRoundPayload && !phase1Payload) {
       setPhase1Payload(payload);
     }
-    setResult(normalizedResult);
-    if (!normalizedResult.is_early_diagnosis_preview && isKnownDisease(normalizedResult.final_disease)) {
+    setResult(effectiveResult);
+    if (!effectiveResult.is_early_diagnosis_preview && isKnownDisease(effectiveResult.final_disease)) {
       setEarlyDiagnosisResult(null);
     }
     if (['waiting_for_supplement', 'completed', 'completed_verification_failed'].includes(payloadStatus)) {
       setHasFinalResult(true);
       setEarlyDiagnosisResult(null);
-      setResult(normalizedResult);
+      setResult(effectiveResult);
     }
-    setLatestPayload(payload);
-    const needsConfirm = deriveConfirmNeeds(payload, normalizedResult);
+    setLatestPayload(mergedPayload);
+    const needsConfirm = deriveConfirmNeeds(mergedPayload, effectiveResult);
     setConfirmMode(needsConfirm);
     setConfirmChoice(options?.defaultChoice ?? (needsConfirm ? 'other' : confirmChoice));
     if (options?.resetInputs) {
@@ -982,8 +1018,12 @@ export function DiagnosePage() {
         if (continueData && typeof continueData === 'object') {
           const mergedPayload = { ...payload, ...(continueData as Record<string, unknown>) };
           setLatestPayload(mergedPayload);
-          const mergedResult = buildResultFromPayload(mergedPayload);
-          syncConfirmStateFromPayload(mergedPayload, mergedResult);
+          const mergedPayloadWithDisease = mergePayloadWithDiseaseFallback(
+            resultRef.current ?? earlyDiagnosisResultRef.current ?? result,
+            mergedPayload,
+          );
+          const mergedResult = buildResultFromPayload(mergedPayloadWithDisease);
+          syncConfirmStateFromPayload(mergedPayloadWithDisease, mergedResult);
           const mergedStatus = typeof mergedPayload.status === 'string' ? mergedPayload.status : '';
           if (['waiting_for_supplement', 'completed', 'completed_verification_failed'].includes(mergedStatus)) {
             setHasFinalResult(true);
@@ -1499,12 +1539,20 @@ export function DiagnosePage() {
           || ['waiting_for_supplement', 'completed', 'completed_verification_failed'].includes(payloadStatus)
           || node === 'Final'
         ) {
-          const finalResult = buildResultFromPayload({
-            ...(previewPayload ?? {}),
-            ...normalizePayloadRecord(rawEvent.payload),
-            is_early_diagnosis_preview: false,
-            result_phase: 'final',
-          });
+          const streamPayload = normalizePayloadRecord(rawEvent.payload);
+          const base = resultRef.current
+            ?? earlyDiagnosisResultRef.current
+            ?? previewPayload
+            ?? streamPayload;
+          const finalPayload = mergePayloadWithDiseaseFallback(
+            base,
+            {
+              ...streamPayload,
+              is_early_diagnosis_preview: false,
+              result_phase: 'final',
+            },
+          );
+          const finalResult = buildResultFromPayload(finalPayload);
           hasFinalResultRef.current = true;
           resultRef.current = finalResult;
           earlyDiagnosisResultRef.current = null;
@@ -1578,12 +1626,11 @@ export function DiagnosePage() {
         replayFinalEvent.raw.payload ?? replayFinalEvent.payload ?? replayFinalEvent.raw.outputs,
       );
       const base = normalizePayloadRecord(resultRef.current ?? earlyDiagnosisResultRef.current ?? replayPreviewResult);
-      const finalResult = buildResultFromPayload({
-        ...base,
+      const finalResult = buildResultFromPayload(mergePayloadWithDiseaseFallback(base, {
         ...replayFinalPayload,
         is_early_diagnosis_preview: false,
         result_phase: 'final',
-      });
+      }));
       setResult(finalResult);
       hasFinalResultRef.current = true;
       resultRef.current = finalResult;
@@ -1606,39 +1653,39 @@ export function DiagnosePage() {
     const payload = normalizePayloadRecord(raw.payload ?? latest.payload ?? raw.outputs);
     if (node === 'TreatmentCompleted' || (node === 'TreatmentAgent' && status === 'end')) {
       setResult((prev) => {
-        const base = prev ?? earlyDiagnosisResultRef.current;
-        const nextResult = buildResultFromPayload({
-          ...normalizePayloadRecord(base),
+        const base = prev ?? earlyDiagnosisResultRef.current ?? resultRef.current;
+        const nextResult = buildResultFromPayload(mergePayloadWithDiseaseFallback(base, {
           ...payload,
           is_early_diagnosis_preview: false,
           result_phase: 'final',
-        });
+        }));
         resultRef.current = nextResult;
         return nextResult;
       });
     }
     if (node === 'VerificationCompleted' || (node === 'VerificationAgent' && status === 'end')) {
       setResult((prev) => {
-        const base = prev ?? earlyDiagnosisResultRef.current;
-        const nextResult = buildResultFromPayload({
-          ...normalizePayloadRecord(base),
+        const base = prev ?? earlyDiagnosisResultRef.current ?? resultRef.current;
+        const nextResult = buildResultFromPayload(mergePayloadWithDiseaseFallback(base, {
           ...payload,
           is_early_diagnosis_preview: false,
           result_phase: 'final',
-        });
+        }));
         resultRef.current = nextResult;
         return nextResult;
       });
     }
     if (node === 'AwaitUserConfirmation' && status === 'end') {
       setResult((prev) => {
-        const nextResult = buildResultFromPayload({
-          ...normalizePayloadRecord(prev ?? earlyDiagnosisResultRef.current ?? payload),
+        const nextResult = buildResultFromPayload(mergePayloadWithDiseaseFallback(
+          prev ?? earlyDiagnosisResultRef.current ?? resultRef.current ?? payload,
+          {
           ...payload,
           status: 'waiting_for_supplement',
           is_early_diagnosis_preview: false,
           result_phase: 'final',
-        });
+          },
+        ));
         resultRef.current = nextResult;
         return nextResult;
       });
@@ -1669,10 +1716,16 @@ export function DiagnosePage() {
     return node.includes('kbretrieval') || node.includes('prescription') || node.includes('personalization') || node.includes('validator') || node.includes('verification') || node === 'final';
   });
   const displayResult = earlyDiagnosisResult ?? result;
-const displayDiseaseName =
-  typeof displayResult?.final_disease === 'string'
-    ? displayResult.final_disease.trim()
-    : '';
+  const rawDisplayDiseaseName =
+    typeof displayResult?.final_disease === 'string'
+      ? displayResult.final_disease.trim()
+      : '';
+  const displayDiseaseName = isKnownDisease(rawDisplayDiseaseName)
+    ? rawDisplayDiseaseName
+    : (() => {
+      const fallbackDisease = resolveDiseaseFromCandidates(displayResult ?? {});
+      return isKnownDisease(fallbackDisease) ? fallbackDisease : '';
+    })();
   const hasDisplayDisease =
   !!displayDiseaseName &&
   displayDiseaseName !== '未知' &&
@@ -1919,9 +1972,9 @@ const displayDiseaseName =
         {/* Right Column - Results */}
         <div className="lg:col-span-3 space-y-6">
           <SectionCard sectionKey="diagnosis" title="诊断结果" icon={<CheckCircle className="w-5 h-5 text-[#c8f7c5]" />} open={sectionOpen.diagnosis} onToggle={toggleSection}>
-            {hasDisplayDisease && displayResult ? (
+            {hasDisplayDisease ? (
               <div className="space-y-4 animate-fadeIn">
-                {displayResult.image_url && (
+                {displayResult?.image_url && (
                   <div className="rounded-xl overflow-hidden bg-black/30">
                     <img src={displayResult.image_url} alt="Diagnosed" className="w-full max-h-64 object-contain" />
                   </div>
@@ -1929,23 +1982,23 @@ const displayDiseaseName =
                 <div className={cn('grid gap-4', isAdmin ? 'sm:grid-cols-3' : 'sm:grid-cols-2')}>
                   <div className="bg-white/5 rounded-xl p-4">
                     <div className="mb-1 flex items-center gap-2">
-                      <p className="text-white/60 text-sm">{displayResult.is_early_diagnosis_preview ? '已识别病害（初步）' : '最终病害'}</p>
-                      {displayResult.is_early_diagnosis_preview ? (
+                      <p className="text-white/60 text-sm">{displayResult?.is_early_diagnosis_preview ? '已识别病害（初步）' : '最终病害'}</p>
+                      {displayResult?.is_early_diagnosis_preview ? (
                         <Badge className="bg-blue-500/20 text-blue-200 border border-blue-400/40">初步诊断</Badge>
                       ) : null}
                     </div>
                     <button type="button" onClick={() => navigateToKbDisease(displayDiseaseName)} className="text-left text-xl font-bold text-[#c8f7c5] hover:underline underline-offset-4">{displayDiseaseName}</button>
-                    {displayResult.is_early_diagnosis_preview ? <p className="text-xs text-amber-200/90 mt-2">已识别病害，后续方案与校验结果会自动更新。</p> : null}
+                    {displayResult?.is_early_diagnosis_preview ? <p className="text-xs text-amber-200/90 mt-2">已识别病害，后续方案与校验结果会自动更新。</p> : null}
                   </div>
                   {isAdmin && (
                     <div className="bg-white/5 rounded-xl p-4">
                       <p className="text-white/60 text-sm mb-1">置信度</p>
-                      <p className="text-xl font-bold text-[#c8f7c5]">{displayResult.displayConfidencePct !== null ? `${displayResult.displayConfidencePct.toFixed(2)}%` : "—"}</p>
+                      <p className="text-xl font-bold text-[#c8f7c5]">{displayResult?.displayConfidencePct !== null && displayResult?.displayConfidencePct !== undefined ? `${displayResult.displayConfidencePct.toFixed(2)}%` : "—"}</p>
                     </div>
                   )}
                   <div className="bg-white/5 rounded-xl p-4">
                     <p className="text-white/60 text-sm mb-1">{isAdmin ? '使用模型' : '诊断状态'}</p>
-                    <p className="text-sm font-medium text-white">{isAdmin ? displayResult.model_display_name : (displayResult.status || 'diagnosis_completed')}</p>
+                    <p className="text-sm font-medium text-white">{isAdmin ? (displayResult?.model_display_name || '—') : (displayResult?.status || 'diagnosis_completed')}</p>
                   </div>
                 </div>
               </div>
