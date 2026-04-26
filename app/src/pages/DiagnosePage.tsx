@@ -1539,13 +1539,17 @@ export function DiagnosePage() {
           || ['waiting_for_supplement', 'completed', 'completed_verification_failed'].includes(payloadStatus)
           || node === 'Final'
         ) {
+          const streamPayload = normalizePayloadRecord(rawEvent.payload);
+          const base = resultRef.current
+            ?? earlyDiagnosisResultRef.current
+            ?? previewPayload
+            ?? streamPayload;
           const finalPayload = mergePayloadWithDiseaseFallback(
-            resultRef.current ?? earlyDiagnosisResultRef.current ?? previewPayload,
+            base,
             {
-            ...(previewPayload ?? {}),
-            ...normalizePayloadRecord(rawEvent.payload),
-            is_early_diagnosis_preview: false,
-            result_phase: 'final',
+              ...streamPayload,
+              is_early_diagnosis_preview: false,
+              result_phase: 'final',
             },
           );
           const finalResult = buildResultFromPayload(finalPayload);
