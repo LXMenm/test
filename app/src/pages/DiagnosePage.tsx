@@ -124,6 +124,11 @@ interface ProfileDetail {
 }
 
 type BaseOption = { id: string; name?: string };
+type PendingContinueRequest = {
+  traceId: string;
+  payload: Record<string, unknown>;
+  startPayload: Record<string, unknown>;
+};
 
 type TraceEvent = NormalizedTraceEvent;
 
@@ -235,12 +240,16 @@ export function DiagnosePage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const traceFetchAbortRef = useRef<AbortController | null>(null);
   const traceStreamRef = useRef<EventSource | null>(null);
+  const pendingContinueRequestRef = useRef<PendingContinueRequest | null>(null);
+  const continueStartedRef = useRef(false);
+  const traceBootstrapReadyRef = useRef(false);
   const resultRef = useRef<DiagnosisResult | null>(null);
   const earlyDiagnosisResultRef = useRef<DiagnosisResult | null>(null);
   const hasFinalResultRef = useRef(false);
   const replayTraceSnapshotKeyRef = useRef('');
   const latestTraceEventKeyRef = useRef('');
   const prevStatusRef = useRef<string | undefined>(undefined);
+  const [continueTrigger, setContinueTrigger] = useState(0);
   const canViewExpertInbox = isAdmin;
   const toggleSection = useCallback((key: keyof SectionOpenState) => {
     setSectionOpen((prev) => ({ ...prev, [key]: !prev[key] }));
@@ -931,7 +940,10 @@ export function DiagnosePage() {
   const handleSubmit = async () => {
     if (!file || !selectedFarmerId) return;
 
+    pendingContinueRequestRef.current = null;
+    continueStartedRef.current = false;
     setLoading(true);
+    let shouldKeepLoadingForContinue = false;
     setResult(null);
     setEarlyDiagnosisResult(null);
     setHasFinalResult(false);
@@ -997,10 +1009,9 @@ export function DiagnosePage() {
       syncConfirmStateFromPayload(payload, normalizedResult, { defaultChoice: 'other' });
 
       if (payload.status !== 'waiting_for_supplement') {
-        const continueResp = await authFetch('/api/diagnose-image/continue', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
+        pendingContinueRequestRef.current = {
+          traceId: typeof payload.trace_id === 'string' ? payload.trace_id : '',
+          payload: {
             trace_id: payload.trace_id,
             image_id: payload.image_id,
             crop_type: cropType || '番茄',
@@ -1009,54 +1020,19 @@ export function DiagnosePage() {
             model_id: modelId || null,
             farmer_id: selectedFarmerId,
             base_id: selectedBaseId || null,
-          }),
-        }, authUser);
-        const continueData = await continueResp.json();
-        if (!continueResp.ok) {
-          throw new Error(String(continueData?.detail || `继续诊断失败: ${continueResp.status}`));
-        }
-        if (continueData && typeof continueData === 'object') {
-          const mergedPayload = { ...payload, ...(continueData as Record<string, unknown>) };
-          setLatestPayload(mergedPayload);
-          const mergedPayloadWithDisease = mergePayloadWithDiseaseFallback(
-            resultRef.current ?? earlyDiagnosisResultRef.current ?? result,
-            mergedPayload,
-          );
-          const mergedResult = buildResultFromPayload(mergedPayloadWithDisease);
-          syncConfirmStateFromPayload(mergedPayloadWithDisease, mergedResult);
-          const mergedStatus = typeof mergedPayload.status === 'string' ? mergedPayload.status : '';
-          if (['waiting_for_supplement', 'completed', 'completed_verification_failed'].includes(mergedStatus)) {
-            setHasFinalResult(true);
-            setResult(mergedResult);
-            setEarlyDiagnosisResult(null);
-          }
-          
-          console.log('latestPayload.events.length', Array.isArray(mergedPayload?.events) ? mergedPayload.events.length : 'no-events');
-          console.log('latestPayload.events.sample', Array.isArray(mergedPayload?.events) ? mergedPayload.events.slice(0, 3) : null);
-          
-          console.log(
-            'continue events brief',
-            (continueData?.events || []).map((e: any) => ({
-              seq: e.seq,
-              node: e.node,
-              agent: e.agent,
-              agent_id: e.agent_id,
-              status: e.status,
-              message: e.message,
-            }))
-          );
-          
-          if (Array.isArray((continueData as Record<string, unknown>).events)) {
-            setTraceEvents((prev) => mergePayloadEventsAsPrimary(prev, (continueData as Record<string, unknown>).events, 'continue'));
-          } else if (Array.isArray(payload.events)) {
-            setTraceEvents((prev) => mergePayloadEventsAsPrimary(prev, payload.events, 'continue'));
-          }
-        }
+          },
+          startPayload: payload,
+        };
+        continueStartedRef.current = false;
+        shouldKeepLoadingForContinue = true;
+        setContinueTrigger((prev) => prev + 1);
       }
     } catch (error) {
       console.error('Diagnosis failed:', error);
     } finally {
-      setLoading(false);
+      if (!shouldKeepLoadingForContinue) {
+        setLoading(false);
+      }
     }
   };
 
@@ -1463,10 +1439,13 @@ export function DiagnosePage() {
 
   useEffect(() => {
     if (!traceId) {
+      pendingContinueRequestRef.current = null;
+      continueStartedRef.current = false;
       traceFetchAbortRef.current?.abort();
       traceFetchAbortRef.current = null;
       traceStreamRef.current?.close();
       traceStreamRef.current = null;
+      traceBootstrapReadyRef.current = false;
       resultRef.current = null;
       earlyDiagnosisResultRef.current = null;
       hasFinalResultRef.current = false;
@@ -1477,6 +1456,8 @@ export function DiagnosePage() {
       setHasFinalResult(false);
       return;
     }
+    traceBootstrapReadyRef.current = false;
+    continueStartedRef.current = false;
     resultRef.current = null;
     earlyDiagnosisResultRef.current = null;
     hasFinalResultRef.current = false;
@@ -1484,12 +1465,19 @@ export function DiagnosePage() {
     latestTraceEventKeyRef.current = '';
     setEarlyDiagnosisResult(null);
     setHasFinalResult(false);
-    refreshTrace();
+    void (async () => {
+      await refreshTrace();
+      if (traceId) {
+        traceBootstrapReadyRef.current = true;
+        setContinueTrigger((prev) => prev + 1);
+      }
+    })();
     return () => {
       traceFetchAbortRef.current?.abort();
       traceFetchAbortRef.current = null;
       traceStreamRef.current?.close();
       traceStreamRef.current = null;
+      traceBootstrapReadyRef.current = false;
     };
   }, [traceId]);
 
@@ -1507,6 +1495,10 @@ export function DiagnosePage() {
     traceStreamRef.current?.close();
     const es = new EventSource(`/api/traces/${encodeURIComponent(traceId)}/stream`);
     traceStreamRef.current = es;
+    es.onopen = () => {
+      traceBootstrapReadyRef.current = true;
+      setContinueTrigger((prev) => prev + 1);
+    };
 
     const onTrace = (messageEvent: MessageEvent) => {
       try {
@@ -1581,6 +1573,75 @@ export function DiagnosePage() {
       }
     };
   }, [traceId]);
+
+  useEffect(() => {
+    const pending = pendingContinueRequestRef.current;
+    if (!traceId || !pending) return;
+    if (pending.traceId && pending.traceId !== traceId) return;
+    if (!traceBootstrapReadyRef.current) return;
+    if (continueStartedRef.current) return;
+
+    continueStartedRef.current = true;
+    pendingContinueRequestRef.current = null;
+
+    void (async () => {
+      try {
+        const continueResp = await authFetch('/api/diagnose-image/continue', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(pending.payload),
+        }, authUser);
+        const continueData = await continueResp.json();
+        if (!continueResp.ok) {
+          throw new Error(String(continueData?.detail || `继续诊断失败: ${continueResp.status}`));
+        }
+        if (continueData && typeof continueData === 'object') {
+          const mergedPayload = { ...pending.startPayload, ...(continueData as Record<string, unknown>) };
+          setLatestPayload(mergedPayload);
+          const mergedPayloadWithDisease = mergePayloadWithDiseaseFallback(
+            resultRef.current ?? earlyDiagnosisResultRef.current ?? result,
+            mergedPayload,
+          );
+          const mergedResult = buildResultFromPayload(mergedPayloadWithDisease);
+          syncConfirmStateFromPayload(mergedPayloadWithDisease, mergedResult);
+          const mergedStatus = typeof mergedPayload.status === 'string' ? mergedPayload.status : '';
+          if (['waiting_for_supplement', 'completed', 'completed_verification_failed'].includes(mergedStatus)) {
+            setHasFinalResult(true);
+            setResult(mergedResult);
+            setEarlyDiagnosisResult(null);
+          }
+
+          console.log('latestPayload.events.length', Array.isArray(mergedPayload?.events) ? mergedPayload.events.length : 'no-events');
+          console.log('latestPayload.events.sample', Array.isArray(mergedPayload?.events) ? mergedPayload.events.slice(0, 3) : null);
+
+          const continueEvents = Array.isArray((continueData as Record<string, unknown>)?.events)
+            ? (continueData as Record<string, unknown>).events as Array<Record<string, unknown>>
+            : [];
+          console.log(
+            'continue events brief',
+            continueEvents.map((e) => ({
+              seq: e.seq,
+              node: e.node,
+              agent: e.agent,
+              agent_id: e.agent_id,
+              status: e.status,
+              message: e.message,
+            })),
+          );
+
+          if (continueEvents.length > 0) {
+            setTraceEvents((prev) => mergePayloadEventsAsPrimary(prev, continueEvents, 'continue'));
+          } else if (Array.isArray(pending.startPayload.events)) {
+            setTraceEvents((prev) => mergePayloadEventsAsPrimary(prev, pending.startPayload.events as unknown[], 'continue'));
+          }
+        }
+      } catch (error) {
+        console.error('Continue diagnose failed:', error);
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, [traceId, continueTrigger, authUser, result]);
 
   useEffect(() => {
     if (!traceEvents.length) return;
