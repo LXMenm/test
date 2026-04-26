@@ -1621,7 +1621,7 @@ export function DiagnosePage() {
       if (eventNode === 'AwaitUserConfirmation' && eventStatus === 'end') return true;
       return ['waiting_for_supplement', 'completed', 'completed_verification_failed'].includes(payloadStatus);
     });
-    if (!resultRef.current && replayFinalEvent) {
+    if ((!resultRef.current || !isKnownDisease(resultRef.current.final_disease)) && replayFinalEvent) {
       const replayFinalPayload = normalizePayloadRecord(
         replayFinalEvent.raw.payload ?? replayFinalEvent.payload ?? replayFinalEvent.raw.outputs,
       );
