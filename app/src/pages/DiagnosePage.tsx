@@ -1716,10 +1716,16 @@ export function DiagnosePage() {
     return node.includes('kbretrieval') || node.includes('prescription') || node.includes('personalization') || node.includes('validator') || node.includes('verification') || node === 'final';
   });
   const displayResult = earlyDiagnosisResult ?? result;
-const displayDiseaseName =
-  typeof displayResult?.final_disease === 'string'
-    ? displayResult.final_disease.trim()
-    : '';
+  const rawDisplayDiseaseName =
+    typeof displayResult?.final_disease === 'string'
+      ? displayResult.final_disease.trim()
+      : '';
+  const displayDiseaseName = isKnownDisease(rawDisplayDiseaseName)
+    ? rawDisplayDiseaseName
+    : (() => {
+      const fallbackDisease = resolveDiseaseFromCandidates(displayResult ?? {});
+      return isKnownDisease(fallbackDisease) ? fallbackDisease : '';
+    })();
   const hasDisplayDisease =
   !!displayDiseaseName &&
   displayDiseaseName !== '未知' &&
