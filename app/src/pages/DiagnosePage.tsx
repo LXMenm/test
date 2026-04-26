@@ -613,6 +613,36 @@ export function DiagnosePage() {
     return '未知';
   };
 
+  const isPayloadFieldEmpty = (value: unknown): boolean => {
+    if (value === null || value === undefined) return true;
+    if (typeof value === 'string') return value.trim().length === 0;
+    if (Array.isArray(value)) return value.length === 0;
+    return false;
+  };
+
+  const mergePayloadWithDiseaseFallback = (
+    baseLike: unknown,
+    payloadLike: unknown,
+  ): Record<string, unknown> => {
+    const base = normalizePayloadRecord(baseLike);
+    const payload = normalizePayloadRecord(payloadLike);
+    const payloadDisease = resolveResultDisease(payload);
+    const baseDisease = resolveResultDisease(base);
+    const merged: Record<string, unknown> = { ...base, ...payload };
+
+    if (!isKnownDisease(payloadDisease) && isKnownDisease(baseDisease)) {
+      merged.final_disease = baseDisease;
+    }
+
+    if (isPayloadFieldEmpty(payload.current_top1) && !isPayloadFieldEmpty(base.current_top1)) {
+      merged.current_top1 = base.current_top1;
+    }
+    if (isPayloadFieldEmpty(payload.fusion_top3) && !isPayloadFieldEmpty(base.fusion_top3)) {
+      merged.fusion_top3 = base.fusion_top3;
+    }
+    return merged;
+  };
+
   const normalizeConfirmUiMode = (value: unknown): ConfirmUiMode => {
     const raw = String(value ?? '').trim();
     if (raw === 'image' || raw === 'text' || raw === 'image_and_text' || raw === 'none') return raw;
@@ -649,22 +679,28 @@ export function DiagnosePage() {
     options?: { resetInputs?: boolean; markResubmitSuccess?: boolean; defaultChoice?: string; },
   ) => {
     const payload = normalizePayloadRecord(payloadLike);
+    const mergedPayload = mergePayloadWithDiseaseFallback(
+      resultRef.current ?? earlyDiagnosisResultRef.current ?? result,
+      payload,
+    );
+    const mergedResult = buildResultFromPayload(mergedPayload);
+    const effectiveResult = isKnownDisease(normalizedResult.final_disease) ? normalizedResult : mergedResult;
     const payloadStatus = typeof payload.status === 'string' ? payload.status : '';
     const isConfirmRoundPayload = payload.confirm_round === true || String(payload.source_stage ?? '') === 'confirm';
     if (payloadStatus === 'waiting_for_supplement' && !isConfirmRoundPayload && !phase1Payload) {
       setPhase1Payload(payload);
     }
-    setResult(normalizedResult);
-    if (!normalizedResult.is_early_diagnosis_preview && isKnownDisease(normalizedResult.final_disease)) {
+    setResult(effectiveResult);
+    if (!effectiveResult.is_early_diagnosis_preview && isKnownDisease(effectiveResult.final_disease)) {
       setEarlyDiagnosisResult(null);
     }
     if (['waiting_for_supplement', 'completed', 'completed_verification_failed'].includes(payloadStatus)) {
       setHasFinalResult(true);
       setEarlyDiagnosisResult(null);
-      setResult(normalizedResult);
+      setResult(effectiveResult);
     }
-    setLatestPayload(payload);
-    const needsConfirm = deriveConfirmNeeds(payload, normalizedResult);
+    setLatestPayload(mergedPayload);
+    const needsConfirm = deriveConfirmNeeds(mergedPayload, effectiveResult);
     setConfirmMode(needsConfirm);
     setConfirmChoice(options?.defaultChoice ?? (needsConfirm ? 'other' : confirmChoice));
     if (options?.resetInputs) {
@@ -982,8 +1018,12 @@ export function DiagnosePage() {
         if (continueData && typeof continueData === 'object') {
           const mergedPayload = { ...payload, ...(continueData as Record<string, unknown>) };
           setLatestPayload(mergedPayload);
-          const mergedResult = buildResultFromPayload(mergedPayload);
-          syncConfirmStateFromPayload(mergedPayload, mergedResult);
+          const mergedPayloadWithDisease = mergePayloadWithDiseaseFallback(
+            resultRef.current ?? earlyDiagnosisResultRef.current ?? result,
+            mergedPayload,
+          );
+          const mergedResult = buildResultFromPayload(mergedPayloadWithDisease);
+          syncConfirmStateFromPayload(mergedPayloadWithDisease, mergedResult);
           const mergedStatus = typeof mergedPayload.status === 'string' ? mergedPayload.status : '';
           if (['waiting_for_supplement', 'completed', 'completed_verification_failed'].includes(mergedStatus)) {
             setHasFinalResult(true);
@@ -1499,12 +1539,16 @@ export function DiagnosePage() {
           || ['waiting_for_supplement', 'completed', 'completed_verification_failed'].includes(payloadStatus)
           || node === 'Final'
         ) {
-          const finalResult = buildResultFromPayload({
+          const finalPayload = mergePayloadWithDiseaseFallback(
+            resultRef.current ?? earlyDiagnosisResultRef.current ?? previewPayload,
+            {
             ...(previewPayload ?? {}),
             ...normalizePayloadRecord(rawEvent.payload),
             is_early_diagnosis_preview: false,
             result_phase: 'final',
-          });
+            },
+          );
+          const finalResult = buildResultFromPayload(finalPayload);
           hasFinalResultRef.current = true;
           resultRef.current = finalResult;
           earlyDiagnosisResultRef.current = null;
@@ -1578,12 +1622,11 @@ export function DiagnosePage() {
         replayFinalEvent.raw.payload ?? replayFinalEvent.payload ?? replayFinalEvent.raw.outputs,
       );
       const base = normalizePayloadRecord(resultRef.current ?? earlyDiagnosisResultRef.current ?? replayPreviewResult);
-      const finalResult = buildResultFromPayload({
-        ...base,
+      const finalResult = buildResultFromPayload(mergePayloadWithDiseaseFallback(base, {
         ...replayFinalPayload,
         is_early_diagnosis_preview: false,
         result_phase: 'final',
-      });
+      }));
       setResult(finalResult);
       hasFinalResultRef.current = true;
       resultRef.current = finalResult;
@@ -1606,39 +1649,39 @@ export function DiagnosePage() {
     const payload = normalizePayloadRecord(raw.payload ?? latest.payload ?? raw.outputs);
     if (node === 'TreatmentCompleted' || (node === 'TreatmentAgent' && status === 'end')) {
       setResult((prev) => {
-        const base = prev ?? earlyDiagnosisResultRef.current;
-        const nextResult = buildResultFromPayload({
-          ...normalizePayloadRecord(base),
+        const base = prev ?? earlyDiagnosisResultRef.current ?? resultRef.current;
+        const nextResult = buildResultFromPayload(mergePayloadWithDiseaseFallback(base, {
           ...payload,
           is_early_diagnosis_preview: false,
           result_phase: 'final',
-        });
+        }));
         resultRef.current = nextResult;
         return nextResult;
       });
     }
     if (node === 'VerificationCompleted' || (node === 'VerificationAgent' && status === 'end')) {
       setResult((prev) => {
-        const base = prev ?? earlyDiagnosisResultRef.current;
-        const nextResult = buildResultFromPayload({
-          ...normalizePayloadRecord(base),
+        const base = prev ?? earlyDiagnosisResultRef.current ?? resultRef.current;
+        const nextResult = buildResultFromPayload(mergePayloadWithDiseaseFallback(base, {
           ...payload,
           is_early_diagnosis_preview: false,
           result_phase: 'final',
-        });
+        }));
         resultRef.current = nextResult;
         return nextResult;
       });
     }
     if (node === 'AwaitUserConfirmation' && status === 'end') {
       setResult((prev) => {
-        const nextResult = buildResultFromPayload({
-          ...normalizePayloadRecord(prev ?? earlyDiagnosisResultRef.current ?? payload),
+        const nextResult = buildResultFromPayload(mergePayloadWithDiseaseFallback(
+          prev ?? earlyDiagnosisResultRef.current ?? resultRef.current ?? payload,
+          {
           ...payload,
           status: 'waiting_for_supplement',
           is_early_diagnosis_preview: false,
           result_phase: 'final',
-        });
+          },
+        ));
         resultRef.current = nextResult;
         return nextResult;
       });
