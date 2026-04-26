@@ -1919,9 +1919,9 @@ const displayDiseaseName =
         {/* Right Column - Results */}
         <div className="lg:col-span-3 space-y-6">
           <SectionCard sectionKey="diagnosis" title="诊断结果" icon={<CheckCircle className="w-5 h-5 text-[#c8f7c5]" />} open={sectionOpen.diagnosis} onToggle={toggleSection}>
-            {hasDisplayDisease && displayResult ? (
+            {hasDisplayDisease ? (
               <div className="space-y-4 animate-fadeIn">
-                {displayResult.image_url && (
+                {displayResult?.image_url && (
                   <div className="rounded-xl overflow-hidden bg-black/30">
                     <img src={displayResult.image_url} alt="Diagnosed" className="w-full max-h-64 object-contain" />
                   </div>
@@ -1929,23 +1929,23 @@ const displayDiseaseName =
                 <div className={cn('grid gap-4', isAdmin ? 'sm:grid-cols-3' : 'sm:grid-cols-2')}>
                   <div className="bg-white/5 rounded-xl p-4">
                     <div className="mb-1 flex items-center gap-2">
-                      <p className="text-white/60 text-sm">{displayResult.is_early_diagnosis_preview ? '已识别病害（初步）' : '最终病害'}</p>
-                      {displayResult.is_early_diagnosis_preview ? (
+                      <p className="text-white/60 text-sm">{displayResult?.is_early_diagnosis_preview ? '已识别病害（初步）' : '最终病害'}</p>
+                      {displayResult?.is_early_diagnosis_preview ? (
                         <Badge className="bg-blue-500/20 text-blue-200 border border-blue-400/40">初步诊断</Badge>
                       ) : null}
                     </div>
                     <button type="button" onClick={() => navigateToKbDisease(displayDiseaseName)} className="text-left text-xl font-bold text-[#c8f7c5] hover:underline underline-offset-4">{displayDiseaseName}</button>
-                    {displayResult.is_early_diagnosis_preview ? <p className="text-xs text-amber-200/90 mt-2">已识别病害，后续方案与校验结果会自动更新。</p> : null}
+                    {displayResult?.is_early_diagnosis_preview ? <p className="text-xs text-amber-200/90 mt-2">已识别病害，后续方案与校验结果会自动更新。</p> : null}
                   </div>
                   {isAdmin && (
                     <div className="bg-white/5 rounded-xl p-4">
                       <p className="text-white/60 text-sm mb-1">置信度</p>
-                      <p className="text-xl font-bold text-[#c8f7c5]">{displayResult.displayConfidencePct !== null ? `${displayResult.displayConfidencePct.toFixed(2)}%` : "—"}</p>
+                      <p className="text-xl font-bold text-[#c8f7c5]">{displayResult?.displayConfidencePct !== null && displayResult?.displayConfidencePct !== undefined ? `${displayResult.displayConfidencePct.toFixed(2)}%` : "—"}</p>
                     </div>
                   )}
                   <div className="bg-white/5 rounded-xl p-4">
                     <p className="text-white/60 text-sm mb-1">{isAdmin ? '使用模型' : '诊断状态'}</p>
-                    <p className="text-sm font-medium text-white">{isAdmin ? displayResult.model_display_name : (displayResult.status || 'diagnosis_completed')}</p>
+                    <p className="text-sm font-medium text-white">{isAdmin ? (displayResult?.model_display_name || '—') : (displayResult?.status || 'diagnosis_completed')}</p>
                   </div>
                 </div>
               </div>
