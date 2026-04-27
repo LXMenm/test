@@ -244,6 +244,7 @@ export function DiagnosePage() {
   const continueStartedRef = useRef(false);
   const traceReplayReadyRef = useRef(false);
   const traceStreamOpenRef = useRef(false);
+  const traceBootstrapReadyRef = useRef(false);
   const resultRef = useRef<DiagnosisResult | null>(null);
   const earlyDiagnosisResultRef = useRef<DiagnosisResult | null>(null);
   const hasFinalResultRef = useRef(false);
@@ -1476,6 +1477,7 @@ export function DiagnosePage() {
       await refreshTrace();
       if (traceId) {
         traceReplayReadyRef.current = true;
+      }
       if (traceId && traceStreamRef.current) {
         traceBootstrapReadyRef.current = true;
 
@@ -1654,7 +1656,6 @@ export function DiagnosePage() {
         setLoading(false);
       }
     })();
-  }, [traceId, continueTrigger, authUser]);
   }, [traceId, continueTrigger, authUser]);
 
 
