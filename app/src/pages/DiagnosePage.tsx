@@ -558,8 +558,11 @@ export function DiagnosePage() {
     return '';
   };
 
-  const resolveDiseaseFromCandidates = (payloadLike: unknown): string => {
+  const resolveDiseaseFromShallowFields = (payloadLike: unknown): string => {
     const payload = normalizePayloadRecord(payloadLike);
+    if (typeof payload.final_disease === 'string' && payload.final_disease.trim()) {
+      return payload.final_disease.trim();
+    }
     const fromFusionTop3 = resolveTop1DiseaseFromTop3(payload.fusion_top3);
     if (fromFusionTop3) return fromFusionTop3;
     const currentTop1 = payload.current_top1;
@@ -570,10 +573,92 @@ export function DiagnosePage() {
         return currentTop1Obj.disease.trim();
       }
     }
-    if (typeof payload.final_disease === 'string' && payload.final_disease.trim()) {
-      return payload.final_disease.trim();
+    const imageResult = payload.image_result && typeof payload.image_result === 'object'
+      ? payload.image_result as Record<string, unknown>
+      : {};
+    if (typeof imageResult.disease === 'string' && imageResult.disease.trim()) {
+      return imageResult.disease.trim();
+    }
+    const imageDiagnosis = payload.image_diagnosis && typeof payload.image_diagnosis === 'object'
+      ? payload.image_diagnosis as Record<string, unknown>
+      : {};
+    if (typeof imageDiagnosis.disease === 'string' && imageDiagnosis.disease.trim()) {
+      return imageDiagnosis.disease.trim();
     }
     return '';
+  };
+
+  const derivePreviewDiseaseAndCandidates = (
+    payloadLike: unknown,
+    source: string = 'unknown',
+  ): {
+    disease: string;
+    fusionCandidates: Top3Candidate[];
+    imageCandidates: Top3Candidate[];
+  } => {
+    const payload = normalizePayloadRecord(payloadLike);
+    const shallowDisease = resolveDiseaseFromShallowFields(payload);
+    const fusionCandidates = parseTop3Candidates(payload, undefined, 'fusion');
+    const imageCandidates = parseTop3Candidates(payload, undefined, 'image');
+    const fusionTop1Disease = fusionCandidates[0]?.disease?.trim() ?? '';
+    const imageTop1Disease = imageCandidates[0]?.disease?.trim() ?? '';
+    const derivedDisease = isKnownDisease(shallowDisease)
+      ? shallowDisease
+      : (isKnownDisease(fusionTop1Disease) ? fusionTop1Disease : (isKnownDisease(imageTop1Disease) ? imageTop1Disease : ''));
+    console.debug('[diagnosis-preview/candidate-source]', {
+      source,
+      shallowDisease,
+      fusionCandidatesCount: fusionCandidates.length,
+      imageCandidatesCount: imageCandidates.length,
+      derivedDisease,
+    });
+    return {
+      disease: derivedDisease,
+      fusionCandidates,
+      imageCandidates,
+    };
+  };
+
+  const resolveDiseaseFromCandidates = (payloadLike: unknown): string => {
+    const payload = normalizePayloadRecord(payloadLike);
+    const shallowDisease = resolveDiseaseFromShallowFields(payload);
+    if (isKnownDisease(shallowDisease)) return shallowDisease;
+    const derived = derivePreviewDiseaseAndCandidates(payload, 'resolveDiseaseFromCandidates');
+    const fusionTop1Disease = derived.fusionCandidates[0]?.disease?.trim() ?? '';
+    if (isKnownDisease(fusionTop1Disease)) return fusionTop1Disease;
+    const imageTop1Disease = derived.imageCandidates[0]?.disease?.trim() ?? '';
+    if (isKnownDisease(imageTop1Disease)) return imageTop1Disease;
+    return '';
+  };
+
+  const extractDiagnosisPreviewFromPayloadLike = (
+    payloadLike: unknown,
+    source: string = 'unknown',
+  ): Record<string, unknown> | null => {
+    const merged = normalizePayloadRecord(payloadLike);
+    const { disease, fusionCandidates, imageCandidates } = derivePreviewDiseaseAndCandidates(merged, source);
+    if (!isKnownDisease(disease)) return null;
+    const top1Candidate = fusionCandidates[0] ?? imageCandidates[0];
+    const normalizedTop3 = (fusionCandidates.length > 0 ? fusionCandidates : imageCandidates)
+      .map((candidate) => ({ disease: candidate.disease, prob_pct: candidate.probPct }));
+    const hasCurrentTop1 = !isPayloadFieldEmpty(merged.current_top1);
+    const hasFusionTop3 = !isPayloadFieldEmpty(merged.fusion_top3);
+    const hasTop3 = !isPayloadFieldEmpty(merged.top3);
+    return {
+      ...merged,
+      final_disease: disease,
+      current_top1: hasCurrentTop1
+        ? merged.current_top1
+        : (top1Candidate ? { disease: top1Candidate.disease, prob_pct: top1Candidate.probPct } : disease),
+      fusion_top3: hasFusionTop3
+        ? merged.fusion_top3
+        : (fusionCandidates.length > 0 ? normalizedTop3 : merged.fusion_top3),
+      top3: hasTop3
+        ? merged.top3
+        : (normalizedTop3.length > 0 ? normalizedTop3 : merged.top3),
+      result_phase: 'diagnosis_preview',
+      is_early_diagnosis_preview: true,
+    };
   };
 
   const extractDiagnosisPreviewFromStreamEvent = (eventLike: unknown): Record<string, unknown> | null => {
@@ -589,38 +674,45 @@ export function DiagnosePage() {
       ...outputs,
       ...raw,
     } as Record<string, unknown>;
-    const disease = resolveDiseaseFromCandidates(merged);
-    if (!disease || disease === '未知') return null;
-    return {
-      ...merged,
-      final_disease: disease,
-      result_phase: 'diagnosis_preview',
-      is_early_diagnosis_preview: true,
-    };
+    return extractDiagnosisPreviewFromPayloadLike(merged, 'stream-event');
+  };
+
+  const applyDiagnosisPreviewCandidate = (
+    sourceLike: unknown,
+    source: 'stream' | 'replay' | 'latest' | 'payload',
+  ): DiagnosisResult | null => {
+    const previewPayload = extractDiagnosisPreviewFromPayloadLike(sourceLike, source);
+    if (!previewPayload) {
+      console.debug('[diagnosis-preview/skip]', { source, reason: 'preview-not-found' });
+      return null;
+    }
+    const disease = resolveDiseaseFromCandidates(previewPayload);
+    if (!isKnownDisease(disease)) {
+      console.debug('[diagnosis-preview/skip]', { source, reason: 'invalid-disease' });
+      return null;
+    }
+    const previewResult = buildResultFromPayload(previewPayload);
+    const currentResultDisease = resolveDiseaseFromCandidates(resultRef.current ?? {});
+    const shouldPromoteResult = !resultRef.current || !isKnownDisease(currentResultDisease);
+    earlyDiagnosisResultRef.current = previewResult;
+    setEarlyDiagnosisResult(previewResult);
+    if (shouldPromoteResult) {
+      resultRef.current = previewResult;
+      setResult(previewResult);
+    }
+    console.debug('[diagnosis-preview/apply]', {
+      source,
+      disease,
+      hasFinalResult: hasFinalResultRef.current,
+    });
+    return previewResult;
   };
 
   const resolveResultDisease = (payload: Record<string, unknown>): string => {
-    const fromFinalDisease = typeof payload.final_disease === 'string' ? payload.final_disease.trim() : '';
-    if (fromFinalDisease) return fromFinalDisease;
-
-    const fromFusionTop3 = resolveTop1DiseaseFromTop3(payload.fusion_top3);
-    if (fromFusionTop3) return fromFusionTop3;
-
-    const currentTop1 = payload.current_top1;
-    if (typeof currentTop1 === 'string' && currentTop1.trim()) return currentTop1.trim();
-    if (currentTop1 && typeof currentTop1 === 'object') {
-      const currentTop1Obj = currentTop1 as Record<string, unknown>;
-      if (typeof currentTop1Obj.disease === 'string' && currentTop1Obj.disease.trim()) {
-        return currentTop1Obj.disease.trim();
-      }
-    }
-
-    const imageResult = payload.image_result && typeof payload.image_result === 'object'
-      ? payload.image_result as Record<string, unknown>
-      : {};
-    if (typeof imageResult.disease === 'string' && imageResult.disease.trim()) {
-      return imageResult.disease.trim();
-    }
+    const shallowDisease = resolveDiseaseFromShallowFields(payload);
+    if (isKnownDisease(shallowDisease)) return shallowDisease;
+    const derived = derivePreviewDiseaseAndCandidates(payload, 'resolveResultDisease');
+    if (isKnownDisease(derived.disease)) return derived.disease;
     return '未知';
   };
 
@@ -684,6 +776,18 @@ export function DiagnosePage() {
     );
   };
 
+  const clearEarlyDiagnosisPreviewIfFinalReady = (
+    nextResultLike: unknown,
+    node: string,
+  ) => {
+    const nextDisease = resolveDiseaseFromCandidates(nextResultLike ?? {});
+    const willClearEarly = isKnownDisease(nextDisease);
+    console.debug('[diagnosis-preview/clear-check]', { node, nextDisease, willClearEarly });
+    if (!willClearEarly) return;
+    earlyDiagnosisResultRef.current = null;
+    setEarlyDiagnosisResult(null);
+  };
+
   const syncConfirmStateFromPayload = (
     payloadLike: unknown,
     normalizedResult: DiagnosisResult,
@@ -702,12 +806,10 @@ export function DiagnosePage() {
       setPhase1Payload(payload);
     }
     setResult(effectiveResult);
-    if (!effectiveResult.is_early_diagnosis_preview && isKnownDisease(effectiveResult.final_disease)) {
-      setEarlyDiagnosisResult(null);
-    }
+    clearEarlyDiagnosisPreviewIfFinalReady(effectiveResult, 'syncConfirmStateFromPayload.effective');
     if (['waiting_for_supplement', 'completed', 'completed_verification_failed'].includes(payloadStatus)) {
       setHasFinalResult(true);
-      setEarlyDiagnosisResult(null);
+      clearEarlyDiagnosisPreviewIfFinalReady(effectiveResult, `syncConfirmStateFromPayload.${payloadStatus}`);
       setResult(effectiveResult);
     }
     setLatestPayload(mergedPayload);
@@ -1007,6 +1109,7 @@ export function DiagnosePage() {
       if (Array.isArray(payload.events)) {
         setTraceEvents((prev) => mergePayloadEventsAsPrimary(prev, payload.events, 'start'));
       }
+      applyDiagnosisPreviewCandidate(payload, 'payload');
       const normalizedResult = buildResultFromPayload(payload);
       syncConfirmStateFromPayload(payload, normalizedResult, { defaultChoice: 'other' });
 
@@ -1105,6 +1208,7 @@ export function DiagnosePage() {
       } else {
         setTraceEvents([]);
       }
+      applyDiagnosisPreviewCandidate(payload, 'payload');
       const normalizedResult = buildResultFromPayload(payload);
       syncConfirmStateFromPayload(payload, normalizedResult, { defaultChoice: 'other', resetInputs: true, markResubmitSuccess: true });
     } catch (error) {
@@ -1158,6 +1262,7 @@ export function DiagnosePage() {
       if (payload.trace_id) setTraceId(String(payload.trace_id));
       if (payload.image_id) setImageId(String(payload.image_id));
       if (Array.isArray(payload.events)) setTraceEvents((prev) => mergePayloadEventsAsPrimary(prev, payload.events, 'confirm'));
+      applyDiagnosisPreviewCandidate(payload, 'payload');
       const normalizedResult = buildResultFromPayload(payload);
       syncConfirmStateFromPayload(payload, normalizedResult, { defaultChoice: 'other', resetInputs: true, markResubmitSuccess: true });
     } catch (error) {
@@ -1232,6 +1337,7 @@ export function DiagnosePage() {
             : (result?.image_url || ''),
       };
       const nextResult = buildResultFromPayload(mergedPayload as Record<string, unknown>);
+      applyDiagnosisPreviewCandidate(mergedPayload, 'payload');
       syncConfirmStateFromPayload(mergedPayload, nextResult, { resetInputs: true });
     } catch (error) {
       console.error('Confirm candidate failed:', error);
@@ -1312,6 +1418,7 @@ export function DiagnosePage() {
             : (result?.image_url || ''),
       };
       const nextResult = buildResultFromPayload(mergedPayload as Record<string, unknown>);
+      applyDiagnosisPreviewCandidate(mergedPayload, 'payload');
       syncConfirmStateFromPayload(mergedPayload, nextResult);
     } catch (error) {
       console.error('Confirm diagnose failed:', error);
@@ -1432,6 +1539,13 @@ export function DiagnosePage() {
         traceFetchAbortRef.current = null;
       }
       if (Array.isArray(data?.events)) {
+        const replayEvents = data.events as unknown[];
+        for (let idx = replayEvents.length - 1; idx >= 0; idx -= 1) {
+          const preview = extractDiagnosisPreviewFromStreamEvent(replayEvents[idx]);
+          if (!preview) continue;
+          applyDiagnosisPreviewCandidate(preview, 'replay');
+          break;
+        }
         setTraceEvents((prev) => mergePayloadEventsAsPrimary(prev, data.events, 'replay'));
       }
     } catch (error) {
@@ -1523,23 +1637,7 @@ export function DiagnosePage() {
         const status = String(rawEvent.status || '').trim().toLowerCase();
         const payloadStatus = String(normalizePayloadRecord(rawEvent.payload).status || '').trim().toLowerCase();
         const previewPayload = extractDiagnosisPreviewFromStreamEvent(rawEvent);
-        const previewDisease = typeof previewPayload?.final_disease === 'string' ? previewPayload.final_disease : '';
-        console.debug('[DiagnosePage][stream-preview]', {
-          node,
-          status,
-          payloadStatus,
-          hasPreviewPayload: !!previewPayload,
-          previewDisease,
-          hasFinalResult: hasFinalResultRef.current,
-        });
-        if (previewPayload && !hasFinalResultRef.current) {
-          const previewResult = buildResultFromPayload(previewPayload);
-          console.debug('[DiagnosePage][stream-preview-set]', { previewDisease, hasFinalResult: hasFinalResultRef.current });
-          earlyDiagnosisResultRef.current = previewResult;
-          setEarlyDiagnosisResult(previewResult);
-        } else if (previewPayload) {
-          console.debug('[DiagnosePage][stream-preview-skip]', { reason: 'hasFinalResult=true', previewDisease });
-        }
+        if (previewPayload) applyDiagnosisPreviewCandidate(previewPayload, 'stream');
         if (
           ['waiting_for_supplement', 'completed', 'completed_verification_failed'].includes(status)
           || ['waiting_for_supplement', 'completed', 'completed_verification_failed'].includes(payloadStatus)
@@ -1561,10 +1659,9 @@ export function DiagnosePage() {
           const finalResult = buildResultFromPayload(finalPayload);
           hasFinalResultRef.current = true;
           resultRef.current = finalResult;
-          earlyDiagnosisResultRef.current = null;
           setHasFinalResult(true);
           setResult(finalResult);
-          setEarlyDiagnosisResult(null);
+          clearEarlyDiagnosisPreviewIfFinalReady(finalResult, `stream:${node || payloadStatus || status}`);
         }
       } catch (error) {
         console.error('Failed to parse trace stream event:', error);
@@ -1612,6 +1709,7 @@ export function DiagnosePage() {
         }
         if (continueData && typeof continueData === 'object') {
           const mergedPayload = { ...pending.startPayload, ...(continueData as Record<string, unknown>) };
+          applyDiagnosisPreviewCandidate(mergedPayload, 'payload');
           setLatestPayload(mergedPayload);
           const mergedPayloadWithDisease = mergePayloadWithDiseaseFallback(
             resultRef.current ?? earlyDiagnosisResultRef.current ?? result,
@@ -1623,7 +1721,7 @@ export function DiagnosePage() {
           if (['waiting_for_supplement', 'completed', 'completed_verification_failed'].includes(mergedStatus)) {
             setHasFinalResult(true);
             setResult(mergedResult);
-            setEarlyDiagnosisResult(null);
+            clearEarlyDiagnosisPreviewIfFinalReady(mergedResult, `continue:${mergedStatus}`);
           }
 
           console.log('latestPayload.events.length', Array.isArray(mergedPayload?.events) ? mergedPayload.events.length : 'no-events');
@@ -1676,17 +1774,8 @@ export function DiagnosePage() {
     for (const event of traceEvents.slice().reverse()) {
       const replayPreviewPayload = extractDiagnosisPreviewFromStreamEvent(event.raw);
       if (!replayPreviewPayload) continue;
-      replayPreviewResult = buildResultFromPayload(replayPreviewPayload);
+      replayPreviewResult = applyDiagnosisPreviewCandidate(replayPreviewPayload, 'replay') ?? buildResultFromPayload(replayPreviewPayload);
       break;
-    }
-
-    const currentEarlyDisease = typeof earlyDiagnosisResultRef.current?.final_disease === 'string'
-      ? earlyDiagnosisResultRef.current.final_disease
-      : '';
-    const shouldReplayPreview = !hasFinalResultRef.current && !isKnownDisease(currentEarlyDisease);
-    if (shouldReplayPreview && replayPreviewResult) {
-      earlyDiagnosisResultRef.current = replayPreviewResult;
-      setEarlyDiagnosisResult(replayPreviewResult);
     }
 
     const replayFinalEvent = traceEvents.slice().reverse().find((event) => {
@@ -1711,9 +1800,8 @@ export function DiagnosePage() {
       setResult(finalResult);
       hasFinalResultRef.current = true;
       resultRef.current = finalResult;
-      earlyDiagnosisResultRef.current = null;
       setHasFinalResult(true);
-      setEarlyDiagnosisResult(null);
+      clearEarlyDiagnosisPreviewIfFinalReady(finalResult, `replay:${String(replayFinalEvent.raw.node ?? replayFinalEvent.stage ?? '')}`);
     }
   }, [traceEvents]);
 
@@ -1727,6 +1815,8 @@ export function DiagnosePage() {
     const latestEventKey = `${latestSeq}:${node}:${status}`;
     if (latestTraceEventKeyRef.current === latestEventKey) return;
     latestTraceEventKeyRef.current = latestEventKey;
+    const latestPreview = extractDiagnosisPreviewFromStreamEvent(raw);
+    if (latestPreview) applyDiagnosisPreviewCandidate(latestPreview, 'latest');
     const payload = normalizePayloadRecord(raw.payload ?? latest.payload ?? raw.outputs);
     if (node === 'TreatmentCompleted' || (node === 'TreatmentAgent' && status === 'end')) {
       setResult((prev) => {
@@ -1737,6 +1827,7 @@ export function DiagnosePage() {
           result_phase: 'final',
         }));
         resultRef.current = nextResult;
+        clearEarlyDiagnosisPreviewIfFinalReady(nextResult, node || 'Treatment');
         return nextResult;
       });
     }
@@ -1749,6 +1840,7 @@ export function DiagnosePage() {
           result_phase: 'final',
         }));
         resultRef.current = nextResult;
+        clearEarlyDiagnosisPreviewIfFinalReady(nextResult, node || 'Verification');
         return nextResult;
       });
     }
@@ -1764,12 +1856,11 @@ export function DiagnosePage() {
           },
         ));
         resultRef.current = nextResult;
+        clearEarlyDiagnosisPreviewIfFinalReady(nextResult, 'AwaitUserConfirmation');
         return nextResult;
       });
       hasFinalResultRef.current = true;
-      earlyDiagnosisResultRef.current = null;
       setHasFinalResult(true);
-      setEarlyDiagnosisResult(null);
       setConfirmMode(true);
     }
   }, [traceEvents]);
@@ -1792,7 +1883,13 @@ export function DiagnosePage() {
     const node = String(event.raw.node ?? event.stage ?? '').toLowerCase();
     return node.includes('kbretrieval') || node.includes('prescription') || node.includes('personalization') || node.includes('validator') || node.includes('verification') || node === 'final';
   });
-  const displayResult = earlyDiagnosisResult ?? result;
+  const earlyDisease = resolveDiseaseFromCandidates(earlyDiagnosisResult ?? {});
+  const resultDisease = resolveDiseaseFromCandidates(result ?? {});
+  const earlyHasDisease = isKnownDisease(earlyDisease);
+  const resultHasDisease = isKnownDisease(resultDisease);
+  const displayResult = resultHasDisease
+    ? result
+    : (earlyHasDisease ? earlyDiagnosisResult : (earlyDiagnosisResult ?? result));
   const rawDisplayDiseaseName =
     typeof displayResult?.final_disease === 'string'
       ? displayResult.final_disease.trim()
@@ -1809,15 +1906,13 @@ export function DiagnosePage() {
   displayDiseaseName !== '—';
 
   useEffect(() => {
-    console.debug('[DiagnosePage][render-diagnosis-card]', {
-      hasDisplayDisease,
+    console.debug('[diagnosis-card-check]', {
+      earlyDisease,
+      resultDisease,
       displayDiseaseName,
-      loading,
-      hasResult: !!result,
-      hasLatestPayload: !!latestPayload,
-      useEarlyPreview: !!earlyDiagnosisResult,
+      hasDisplayDisease,
     });
-  }, [hasDisplayDisease, displayDiseaseName, loading, result, latestPayload, earlyDiagnosisResult]);
+  }, [earlyDisease, resultDisease, displayDiseaseName, hasDisplayDisease]);
 
   return (
     <div className="space-y-6 animate-fadeIn">
