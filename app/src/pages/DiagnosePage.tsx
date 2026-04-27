@@ -557,6 +557,11 @@ export function DiagnosePage() {
     }
     return '';
   };
+  const resolveTop1DiseaseFromCandidates = (candidates: Top3Candidate[]): string => {
+    if (!Array.isArray(candidates) || candidates.length === 0) return '';
+    const top1 = candidates[0]?.disease;
+    return typeof top1 === 'string' ? top1.trim() : '';
+  };
 
   const resolveDiseaseFromShallowFields = (payloadLike: unknown): string => {
     const payload = normalizePayloadRecord(payloadLike);
@@ -624,9 +629,9 @@ export function DiagnosePage() {
     const shallowDisease = resolveDiseaseFromShallowFields(payload);
     if (isKnownDisease(shallowDisease)) return shallowDisease;
     const derived = derivePreviewDiseaseAndCandidates(payload, 'resolveDiseaseFromCandidates');
-    const fusionTop1Disease = derived.fusionCandidates[0]?.disease?.trim() ?? '';
+    const fusionTop1Disease = resolveTop1DiseaseFromCandidates(derived.fusionCandidates);
     if (isKnownDisease(fusionTop1Disease)) return fusionTop1Disease;
-    const imageTop1Disease = derived.imageCandidates[0]?.disease?.trim() ?? '';
+    const imageTop1Disease = resolveTop1DiseaseFromCandidates(derived.imageCandidates);
     if (isKnownDisease(imageTop1Disease)) return imageTop1Disease;
     return '';
   };
@@ -712,6 +717,10 @@ export function DiagnosePage() {
     const shallowDisease = resolveDiseaseFromShallowFields(payload);
     if (isKnownDisease(shallowDisease)) return shallowDisease;
     const derived = derivePreviewDiseaseAndCandidates(payload, 'resolveResultDisease');
+    const fusionTop1Disease = resolveTop1DiseaseFromCandidates(derived.fusionCandidates);
+    if (isKnownDisease(fusionTop1Disease)) return fusionTop1Disease;
+    const imageTop1Disease = resolveTop1DiseaseFromCandidates(derived.imageCandidates);
+    if (isKnownDisease(imageTop1Disease)) return imageTop1Disease;
     if (isKnownDisease(derived.disease)) return derived.disease;
     return '未知';
   };
