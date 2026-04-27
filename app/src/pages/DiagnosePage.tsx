@@ -1012,6 +1012,8 @@ export function DiagnosePage() {
       if (payload.status !== 'waiting_for_supplement') {
         traceReplayReadyRef.current = false;
         traceStreamOpenRef.current = false;
+        traceBootstrapReadyRef.current = false;
+
         pendingContinueRequestRef.current = {
           traceId: typeof payload.trace_id === 'string' ? payload.trace_id : '',
           payload: {
@@ -1474,6 +1476,9 @@ export function DiagnosePage() {
       await refreshTrace();
       if (traceId) {
         traceReplayReadyRef.current = true;
+      if (traceId && traceStreamRef.current) {
+        traceBootstrapReadyRef.current = true;
+
         setContinueTrigger((prev) => prev + 1);
       }
     })();
@@ -1650,6 +1655,8 @@ export function DiagnosePage() {
       }
     })();
   }, [traceId, continueTrigger, authUser]);
+  }, [traceId, continueTrigger, authUser]);
+
 
   useEffect(() => {
     if (!traceEvents.length) return;
