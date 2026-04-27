@@ -558,7 +558,7 @@ export function DiagnosePage() {
     return '';
   };
 
-  const resolveDiseaseFromCandidates = (payloadLike: unknown): string => {
+  const resolveDiseaseFromShallowFields = (payloadLike: unknown): string => {
     const payload = normalizePayloadRecord(payloadLike);
     if (typeof payload.final_disease === 'string' && payload.final_disease.trim()) {
       return payload.final_disease.trim();
@@ -579,16 +579,83 @@ export function DiagnosePage() {
     if (typeof imageResult.disease === 'string' && imageResult.disease.trim()) {
       return imageResult.disease.trim();
     }
+    const imageDiagnosis = payload.image_diagnosis && typeof payload.image_diagnosis === 'object'
+      ? payload.image_diagnosis as Record<string, unknown>
+      : {};
+    if (typeof imageDiagnosis.disease === 'string' && imageDiagnosis.disease.trim()) {
+      return imageDiagnosis.disease.trim();
+    }
     return '';
   };
 
-  const extractDiagnosisPreviewFromPayloadLike = (payloadLike: unknown): Record<string, unknown> | null => {
+  const derivePreviewDiseaseAndCandidates = (
+    payloadLike: unknown,
+    source: string = 'unknown',
+  ): {
+    disease: string;
+    fusionCandidates: Top3Candidate[];
+    imageCandidates: Top3Candidate[];
+  } => {
+    const payload = normalizePayloadRecord(payloadLike);
+    const shallowDisease = resolveDiseaseFromShallowFields(payload);
+    const fusionCandidates = parseTop3Candidates(payload, undefined, 'fusion');
+    const imageCandidates = parseTop3Candidates(payload, undefined, 'image');
+    const fusionTop1Disease = fusionCandidates[0]?.disease?.trim() ?? '';
+    const imageTop1Disease = imageCandidates[0]?.disease?.trim() ?? '';
+    const derivedDisease = isKnownDisease(shallowDisease)
+      ? shallowDisease
+      : (isKnownDisease(fusionTop1Disease) ? fusionTop1Disease : (isKnownDisease(imageTop1Disease) ? imageTop1Disease : ''));
+    console.debug('[diagnosis-preview/candidate-source]', {
+      source,
+      shallowDisease,
+      fusionCandidatesCount: fusionCandidates.length,
+      imageCandidatesCount: imageCandidates.length,
+      derivedDisease,
+    });
+    return {
+      disease: derivedDisease,
+      fusionCandidates,
+      imageCandidates,
+    };
+  };
+
+  const resolveDiseaseFromCandidates = (payloadLike: unknown): string => {
+    const payload = normalizePayloadRecord(payloadLike);
+    const shallowDisease = resolveDiseaseFromShallowFields(payload);
+    if (isKnownDisease(shallowDisease)) return shallowDisease;
+    const derived = derivePreviewDiseaseAndCandidates(payload, 'resolveDiseaseFromCandidates');
+    const fusionTop1Disease = derived.fusionCandidates[0]?.disease?.trim() ?? '';
+    if (isKnownDisease(fusionTop1Disease)) return fusionTop1Disease;
+    const imageTop1Disease = derived.imageCandidates[0]?.disease?.trim() ?? '';
+    if (isKnownDisease(imageTop1Disease)) return imageTop1Disease;
+    return '';
+  };
+
+  const extractDiagnosisPreviewFromPayloadLike = (
+    payloadLike: unknown,
+    source: string = 'unknown',
+  ): Record<string, unknown> | null => {
     const merged = normalizePayloadRecord(payloadLike);
-    const disease = resolveDiseaseFromCandidates(merged);
+    const { disease, fusionCandidates, imageCandidates } = derivePreviewDiseaseAndCandidates(merged, source);
     if (!isKnownDisease(disease)) return null;
+    const top1Candidate = fusionCandidates[0] ?? imageCandidates[0];
+    const normalizedTop3 = (fusionCandidates.length > 0 ? fusionCandidates : imageCandidates)
+      .map((candidate) => ({ disease: candidate.disease, prob_pct: candidate.probPct }));
+    const hasCurrentTop1 = !isPayloadFieldEmpty(merged.current_top1);
+    const hasFusionTop3 = !isPayloadFieldEmpty(merged.fusion_top3);
+    const hasTop3 = !isPayloadFieldEmpty(merged.top3);
     return {
       ...merged,
       final_disease: disease,
+      current_top1: hasCurrentTop1
+        ? merged.current_top1
+        : (top1Candidate ? { disease: top1Candidate.disease, prob_pct: top1Candidate.probPct } : disease),
+      fusion_top3: hasFusionTop3
+        ? merged.fusion_top3
+        : (fusionCandidates.length > 0 ? normalizedTop3 : merged.fusion_top3),
+      top3: hasTop3
+        ? merged.top3
+        : (normalizedTop3.length > 0 ? normalizedTop3 : merged.top3),
       result_phase: 'diagnosis_preview',
       is_early_diagnosis_preview: true,
     };
@@ -607,14 +674,14 @@ export function DiagnosePage() {
       ...outputs,
       ...raw,
     } as Record<string, unknown>;
-    return extractDiagnosisPreviewFromPayloadLike(merged);
+    return extractDiagnosisPreviewFromPayloadLike(merged, 'stream-event');
   };
 
   const applyDiagnosisPreviewCandidate = (
     sourceLike: unknown,
     source: 'stream' | 'replay' | 'latest' | 'payload',
   ): DiagnosisResult | null => {
-    const previewPayload = extractDiagnosisPreviewFromPayloadLike(sourceLike);
+    const previewPayload = extractDiagnosisPreviewFromPayloadLike(sourceLike, source);
     if (!previewPayload) {
       console.debug('[diagnosis-preview/skip]', { source, reason: 'preview-not-found' });
       return null;
@@ -642,27 +709,10 @@ export function DiagnosePage() {
   };
 
   const resolveResultDisease = (payload: Record<string, unknown>): string => {
-    const fromFinalDisease = typeof payload.final_disease === 'string' ? payload.final_disease.trim() : '';
-    if (fromFinalDisease) return fromFinalDisease;
-
-    const fromFusionTop3 = resolveTop1DiseaseFromTop3(payload.fusion_top3);
-    if (fromFusionTop3) return fromFusionTop3;
-
-    const currentTop1 = payload.current_top1;
-    if (typeof currentTop1 === 'string' && currentTop1.trim()) return currentTop1.trim();
-    if (currentTop1 && typeof currentTop1 === 'object') {
-      const currentTop1Obj = currentTop1 as Record<string, unknown>;
-      if (typeof currentTop1Obj.disease === 'string' && currentTop1Obj.disease.trim()) {
-        return currentTop1Obj.disease.trim();
-      }
-    }
-
-    const imageResult = payload.image_result && typeof payload.image_result === 'object'
-      ? payload.image_result as Record<string, unknown>
-      : {};
-    if (typeof imageResult.disease === 'string' && imageResult.disease.trim()) {
-      return imageResult.disease.trim();
-    }
+    const shallowDisease = resolveDiseaseFromShallowFields(payload);
+    if (isKnownDisease(shallowDisease)) return shallowDisease;
+    const derived = derivePreviewDiseaseAndCandidates(payload, 'resolveResultDisease');
+    if (isKnownDisease(derived.disease)) return derived.disease;
     return '未知';
   };
 
