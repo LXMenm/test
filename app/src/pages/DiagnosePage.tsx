@@ -242,7 +242,8 @@ export function DiagnosePage() {
   const traceStreamRef = useRef<EventSource | null>(null);
   const pendingContinueRequestRef = useRef<PendingContinueRequest | null>(null);
   const continueStartedRef = useRef(false);
-  const traceBootstrapReadyRef = useRef(false);
+  const traceReplayReadyRef = useRef(false);
+  const traceStreamOpenRef = useRef(false);
   const resultRef = useRef<DiagnosisResult | null>(null);
   const earlyDiagnosisResultRef = useRef<DiagnosisResult | null>(null);
   const hasFinalResultRef = useRef(false);
@@ -1009,10 +1010,10 @@ export function DiagnosePage() {
       syncConfirmStateFromPayload(payload, normalizedResult, { defaultChoice: 'other' });
 
       if (payload.status !== 'waiting_for_supplement') {
-<<<<<<< codex/fix-display-logic-for-diagnosis-card-wic9pc
+        traceReplayReadyRef.current = false;
+        traceStreamOpenRef.current = false;
         traceBootstrapReadyRef.current = false;
-=======
->>>>>>> main
+
         pendingContinueRequestRef.current = {
           traceId: typeof payload.trace_id === 'string' ? payload.trace_id : '',
           payload: {
@@ -1449,7 +1450,8 @@ export function DiagnosePage() {
       traceFetchAbortRef.current = null;
       traceStreamRef.current?.close();
       traceStreamRef.current = null;
-      traceBootstrapReadyRef.current = false;
+      traceReplayReadyRef.current = false;
+      traceStreamOpenRef.current = false;
       resultRef.current = null;
       earlyDiagnosisResultRef.current = null;
       hasFinalResultRef.current = false;
@@ -1460,7 +1462,8 @@ export function DiagnosePage() {
       setHasFinalResult(false);
       return;
     }
-    traceBootstrapReadyRef.current = false;
+    traceReplayReadyRef.current = false;
+    traceStreamOpenRef.current = false;
     continueStartedRef.current = false;
     resultRef.current = null;
     earlyDiagnosisResultRef.current = null;
@@ -1471,12 +1474,11 @@ export function DiagnosePage() {
     setHasFinalResult(false);
     void (async () => {
       await refreshTrace();
-<<<<<<< codex/fix-display-logic-for-diagnosis-card-wic9pc
-      if (traceId && traceStreamRef.current) {
-=======
       if (traceId) {
->>>>>>> main
+        traceReplayReadyRef.current = true;
+      if (traceId && traceStreamRef.current) {
         traceBootstrapReadyRef.current = true;
+
         setContinueTrigger((prev) => prev + 1);
       }
     })();
@@ -1485,7 +1487,9 @@ export function DiagnosePage() {
       traceFetchAbortRef.current = null;
       traceStreamRef.current?.close();
       traceStreamRef.current = null;
-      traceBootstrapReadyRef.current = false;
+      traceReplayReadyRef.current = false;
+      traceStreamOpenRef.current = false;
+      continueStartedRef.current = false;
     };
   }, [traceId]);
 
@@ -1504,7 +1508,7 @@ export function DiagnosePage() {
     const es = new EventSource(`/api/traces/${encodeURIComponent(traceId)}/stream`);
     traceStreamRef.current = es;
     es.onopen = () => {
-      traceBootstrapReadyRef.current = true;
+      traceStreamOpenRef.current = true;
       setContinueTrigger((prev) => prev + 1);
     };
 
@@ -1586,7 +1590,8 @@ export function DiagnosePage() {
     const pending = pendingContinueRequestRef.current;
     if (!traceId || !pending) return;
     if (pending.traceId && pending.traceId !== traceId) return;
-    if (!traceBootstrapReadyRef.current) return;
+    if (!traceReplayReadyRef.current) return;
+    if (!traceStreamOpenRef.current) return;
     if (continueStartedRef.current) return;
 
     continueStartedRef.current = true;
@@ -1649,11 +1654,9 @@ export function DiagnosePage() {
         setLoading(false);
       }
     })();
-<<<<<<< codex/fix-display-logic-for-diagnosis-card-wic9pc
   }, [traceId, continueTrigger, authUser]);
-=======
-  }, [traceId, continueTrigger, authUser, result]);
->>>>>>> main
+  }, [traceId, continueTrigger, authUser]);
+
 
   useEffect(() => {
     if (!traceEvents.length) return;
