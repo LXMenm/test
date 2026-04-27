@@ -124,6 +124,11 @@ interface ProfileDetail {
 }
 
 type BaseOption = { id: string; name?: string };
+type PendingContinueRequest = {
+  traceId: string;
+  payload: Record<string, unknown>;
+  startPayload: Record<string, unknown>;
+};
 
 type TraceEvent = NormalizedTraceEvent;
 
@@ -235,12 +240,17 @@ export function DiagnosePage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const traceFetchAbortRef = useRef<AbortController | null>(null);
   const traceStreamRef = useRef<EventSource | null>(null);
+  const pendingContinueRequestRef = useRef<PendingContinueRequest | null>(null);
+  const continueStartedRef = useRef(false);
+  const traceReplayReadyRef = useRef(false);
+  const traceStreamOpenRef = useRef(false);
   const resultRef = useRef<DiagnosisResult | null>(null);
   const earlyDiagnosisResultRef = useRef<DiagnosisResult | null>(null);
   const hasFinalResultRef = useRef(false);
   const replayTraceSnapshotKeyRef = useRef('');
   const latestTraceEventKeyRef = useRef('');
   const prevStatusRef = useRef<string | undefined>(undefined);
+  const [continueTrigger, setContinueTrigger] = useState(0);
   const canViewExpertInbox = isAdmin;
   const toggleSection = useCallback((key: keyof SectionOpenState) => {
     setSectionOpen((prev) => ({ ...prev, [key]: !prev[key] }));
@@ -613,6 +623,36 @@ export function DiagnosePage() {
     return '未知';
   };
 
+  const isPayloadFieldEmpty = (value: unknown): boolean => {
+    if (value === null || value === undefined) return true;
+    if (typeof value === 'string') return value.trim().length === 0;
+    if (Array.isArray(value)) return value.length === 0;
+    return false;
+  };
+
+  const mergePayloadWithDiseaseFallback = (
+    baseLike: unknown,
+    payloadLike: unknown,
+  ): Record<string, unknown> => {
+    const base = normalizePayloadRecord(baseLike);
+    const payload = normalizePayloadRecord(payloadLike);
+    const payloadDisease = resolveResultDisease(payload);
+    const baseDisease = resolveResultDisease(base);
+    const merged: Record<string, unknown> = { ...base, ...payload };
+
+    if (!isKnownDisease(payloadDisease) && isKnownDisease(baseDisease)) {
+      merged.final_disease = baseDisease;
+    }
+
+    if (isPayloadFieldEmpty(payload.current_top1) && !isPayloadFieldEmpty(base.current_top1)) {
+      merged.current_top1 = base.current_top1;
+    }
+    if (isPayloadFieldEmpty(payload.fusion_top3) && !isPayloadFieldEmpty(base.fusion_top3)) {
+      merged.fusion_top3 = base.fusion_top3;
+    }
+    return merged;
+  };
+
   const normalizeConfirmUiMode = (value: unknown): ConfirmUiMode => {
     const raw = String(value ?? '').trim();
     if (raw === 'image' || raw === 'text' || raw === 'image_and_text' || raw === 'none') return raw;
@@ -649,22 +689,28 @@ export function DiagnosePage() {
     options?: { resetInputs?: boolean; markResubmitSuccess?: boolean; defaultChoice?: string; },
   ) => {
     const payload = normalizePayloadRecord(payloadLike);
+    const mergedPayload = mergePayloadWithDiseaseFallback(
+      resultRef.current ?? earlyDiagnosisResultRef.current ?? result,
+      payload,
+    );
+    const mergedResult = buildResultFromPayload(mergedPayload);
+    const effectiveResult = isKnownDisease(normalizedResult.final_disease) ? normalizedResult : mergedResult;
     const payloadStatus = typeof payload.status === 'string' ? payload.status : '';
     const isConfirmRoundPayload = payload.confirm_round === true || String(payload.source_stage ?? '') === 'confirm';
     if (payloadStatus === 'waiting_for_supplement' && !isConfirmRoundPayload && !phase1Payload) {
       setPhase1Payload(payload);
     }
-    setResult(normalizedResult);
-    if (!normalizedResult.is_early_diagnosis_preview && isKnownDisease(normalizedResult.final_disease)) {
+    setResult(effectiveResult);
+    if (!effectiveResult.is_early_diagnosis_preview && isKnownDisease(effectiveResult.final_disease)) {
       setEarlyDiagnosisResult(null);
     }
     if (['waiting_for_supplement', 'completed', 'completed_verification_failed'].includes(payloadStatus)) {
       setHasFinalResult(true);
       setEarlyDiagnosisResult(null);
-      setResult(normalizedResult);
+      setResult(effectiveResult);
     }
-    setLatestPayload(payload);
-    const needsConfirm = deriveConfirmNeeds(payload, normalizedResult);
+    setLatestPayload(mergedPayload);
+    const needsConfirm = deriveConfirmNeeds(mergedPayload, effectiveResult);
     setConfirmMode(needsConfirm);
     setConfirmChoice(options?.defaultChoice ?? (needsConfirm ? 'other' : confirmChoice));
     if (options?.resetInputs) {
@@ -895,7 +941,10 @@ export function DiagnosePage() {
   const handleSubmit = async () => {
     if (!file || !selectedFarmerId) return;
 
+    pendingContinueRequestRef.current = null;
+    continueStartedRef.current = false;
     setLoading(true);
+    let shouldKeepLoadingForContinue = false;
     setResult(null);
     setEarlyDiagnosisResult(null);
     setHasFinalResult(false);
@@ -961,10 +1010,11 @@ export function DiagnosePage() {
       syncConfirmStateFromPayload(payload, normalizedResult, { defaultChoice: 'other' });
 
       if (payload.status !== 'waiting_for_supplement') {
-        const continueResp = await authFetch('/api/diagnose-image/continue', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
+        traceReplayReadyRef.current = false;
+        traceStreamOpenRef.current = false;
+        pendingContinueRequestRef.current = {
+          traceId: typeof payload.trace_id === 'string' ? payload.trace_id : '',
+          payload: {
             trace_id: payload.trace_id,
             image_id: payload.image_id,
             crop_type: cropType || '番茄',
@@ -973,50 +1023,19 @@ export function DiagnosePage() {
             model_id: modelId || null,
             farmer_id: selectedFarmerId,
             base_id: selectedBaseId || null,
-          }),
-        }, authUser);
-        const continueData = await continueResp.json();
-        if (!continueResp.ok) {
-          throw new Error(String(continueData?.detail || `继续诊断失败: ${continueResp.status}`));
-        }
-        if (continueData && typeof continueData === 'object') {
-          const mergedPayload = { ...payload, ...(continueData as Record<string, unknown>) };
-          setLatestPayload(mergedPayload);
-          const mergedResult = buildResultFromPayload(mergedPayload);
-          syncConfirmStateFromPayload(mergedPayload, mergedResult);
-          const mergedStatus = typeof mergedPayload.status === 'string' ? mergedPayload.status : '';
-          if (['waiting_for_supplement', 'completed', 'completed_verification_failed'].includes(mergedStatus)) {
-            setHasFinalResult(true);
-            setResult(mergedResult);
-            setEarlyDiagnosisResult(null);
-          }
-          
-          console.log('latestPayload.events.length', Array.isArray(mergedPayload?.events) ? mergedPayload.events.length : 'no-events');
-          console.log('latestPayload.events.sample', Array.isArray(mergedPayload?.events) ? mergedPayload.events.slice(0, 3) : null);
-          
-          console.log(
-            'continue events brief',
-            (continueData?.events || []).map((e: any) => ({
-              seq: e.seq,
-              node: e.node,
-              agent: e.agent,
-              agent_id: e.agent_id,
-              status: e.status,
-              message: e.message,
-            }))
-          );
-          
-          if (Array.isArray((continueData as Record<string, unknown>).events)) {
-            setTraceEvents((prev) => mergePayloadEventsAsPrimary(prev, (continueData as Record<string, unknown>).events, 'continue'));
-          } else if (Array.isArray(payload.events)) {
-            setTraceEvents((prev) => mergePayloadEventsAsPrimary(prev, payload.events, 'continue'));
-          }
-        }
+          },
+          startPayload: payload,
+        };
+        continueStartedRef.current = false;
+        shouldKeepLoadingForContinue = true;
+        setContinueTrigger((prev) => prev + 1);
       }
     } catch (error) {
       console.error('Diagnosis failed:', error);
     } finally {
-      setLoading(false);
+      if (!shouldKeepLoadingForContinue) {
+        setLoading(false);
+      }
     }
   };
 
@@ -1423,10 +1442,14 @@ export function DiagnosePage() {
 
   useEffect(() => {
     if (!traceId) {
+      pendingContinueRequestRef.current = null;
+      continueStartedRef.current = false;
       traceFetchAbortRef.current?.abort();
       traceFetchAbortRef.current = null;
       traceStreamRef.current?.close();
       traceStreamRef.current = null;
+      traceReplayReadyRef.current = false;
+      traceStreamOpenRef.current = false;
       resultRef.current = null;
       earlyDiagnosisResultRef.current = null;
       hasFinalResultRef.current = false;
@@ -1437,6 +1460,9 @@ export function DiagnosePage() {
       setHasFinalResult(false);
       return;
     }
+    traceReplayReadyRef.current = false;
+    traceStreamOpenRef.current = false;
+    continueStartedRef.current = false;
     resultRef.current = null;
     earlyDiagnosisResultRef.current = null;
     hasFinalResultRef.current = false;
@@ -1444,12 +1470,21 @@ export function DiagnosePage() {
     latestTraceEventKeyRef.current = '';
     setEarlyDiagnosisResult(null);
     setHasFinalResult(false);
-    refreshTrace();
+    void (async () => {
+      await refreshTrace();
+      if (traceId) {
+        traceReplayReadyRef.current = true;
+        setContinueTrigger((prev) => prev + 1);
+      }
+    })();
     return () => {
       traceFetchAbortRef.current?.abort();
       traceFetchAbortRef.current = null;
       traceStreamRef.current?.close();
       traceStreamRef.current = null;
+      traceReplayReadyRef.current = false;
+      traceStreamOpenRef.current = false;
+      continueStartedRef.current = false;
     };
   }, [traceId]);
 
@@ -1467,6 +1502,10 @@ export function DiagnosePage() {
     traceStreamRef.current?.close();
     const es = new EventSource(`/api/traces/${encodeURIComponent(traceId)}/stream`);
     traceStreamRef.current = es;
+    es.onopen = () => {
+      traceStreamOpenRef.current = true;
+      setContinueTrigger((prev) => prev + 1);
+    };
 
     const onTrace = (messageEvent: MessageEvent) => {
       try {
@@ -1499,12 +1538,20 @@ export function DiagnosePage() {
           || ['waiting_for_supplement', 'completed', 'completed_verification_failed'].includes(payloadStatus)
           || node === 'Final'
         ) {
-          const finalResult = buildResultFromPayload({
-            ...(previewPayload ?? {}),
-            ...normalizePayloadRecord(rawEvent.payload),
-            is_early_diagnosis_preview: false,
-            result_phase: 'final',
-          });
+          const streamPayload = normalizePayloadRecord(rawEvent.payload);
+          const base = resultRef.current
+            ?? earlyDiagnosisResultRef.current
+            ?? previewPayload
+            ?? streamPayload;
+          const finalPayload = mergePayloadWithDiseaseFallback(
+            base,
+            {
+              ...streamPayload,
+              is_early_diagnosis_preview: false,
+              result_phase: 'final',
+            },
+          );
+          const finalResult = buildResultFromPayload(finalPayload);
           hasFinalResultRef.current = true;
           resultRef.current = finalResult;
           earlyDiagnosisResultRef.current = null;
@@ -1533,6 +1580,76 @@ export function DiagnosePage() {
       }
     };
   }, [traceId]);
+
+  useEffect(() => {
+    const pending = pendingContinueRequestRef.current;
+    if (!traceId || !pending) return;
+    if (pending.traceId && pending.traceId !== traceId) return;
+    if (!traceReplayReadyRef.current) return;
+    if (!traceStreamOpenRef.current) return;
+    if (continueStartedRef.current) return;
+
+    continueStartedRef.current = true;
+    pendingContinueRequestRef.current = null;
+
+    void (async () => {
+      try {
+        const continueResp = await authFetch('/api/diagnose-image/continue', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(pending.payload),
+        }, authUser);
+        const continueData = await continueResp.json();
+        if (!continueResp.ok) {
+          throw new Error(String(continueData?.detail || `继续诊断失败: ${continueResp.status}`));
+        }
+        if (continueData && typeof continueData === 'object') {
+          const mergedPayload = { ...pending.startPayload, ...(continueData as Record<string, unknown>) };
+          setLatestPayload(mergedPayload);
+          const mergedPayloadWithDisease = mergePayloadWithDiseaseFallback(
+            resultRef.current ?? earlyDiagnosisResultRef.current ?? result,
+            mergedPayload,
+          );
+          const mergedResult = buildResultFromPayload(mergedPayloadWithDisease);
+          syncConfirmStateFromPayload(mergedPayloadWithDisease, mergedResult);
+          const mergedStatus = typeof mergedPayload.status === 'string' ? mergedPayload.status : '';
+          if (['waiting_for_supplement', 'completed', 'completed_verification_failed'].includes(mergedStatus)) {
+            setHasFinalResult(true);
+            setResult(mergedResult);
+            setEarlyDiagnosisResult(null);
+          }
+
+          console.log('latestPayload.events.length', Array.isArray(mergedPayload?.events) ? mergedPayload.events.length : 'no-events');
+          console.log('latestPayload.events.sample', Array.isArray(mergedPayload?.events) ? mergedPayload.events.slice(0, 3) : null);
+
+          const continueEvents = Array.isArray((continueData as Record<string, unknown>)?.events)
+            ? (continueData as Record<string, unknown>).events as Array<Record<string, unknown>>
+            : [];
+          console.log(
+            'continue events brief',
+            continueEvents.map((e) => ({
+              seq: e.seq,
+              node: e.node,
+              agent: e.agent,
+              agent_id: e.agent_id,
+              status: e.status,
+              message: e.message,
+            })),
+          );
+
+          if (continueEvents.length > 0) {
+            setTraceEvents((prev) => mergePayloadEventsAsPrimary(prev, continueEvents, 'continue'));
+          } else if (Array.isArray(pending.startPayload.events)) {
+            setTraceEvents((prev) => mergePayloadEventsAsPrimary(prev, pending.startPayload.events as unknown[], 'continue'));
+          }
+        }
+      } catch (error) {
+        console.error('Continue diagnose failed:', error);
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, [traceId, continueTrigger, authUser]);
 
   useEffect(() => {
     if (!traceEvents.length) return;
@@ -1573,17 +1690,16 @@ export function DiagnosePage() {
       if (eventNode === 'AwaitUserConfirmation' && eventStatus === 'end') return true;
       return ['waiting_for_supplement', 'completed', 'completed_verification_failed'].includes(payloadStatus);
     });
-    if (!resultRef.current && replayFinalEvent) {
+    if ((!resultRef.current || !isKnownDisease(resultRef.current.final_disease)) && replayFinalEvent) {
       const replayFinalPayload = normalizePayloadRecord(
         replayFinalEvent.raw.payload ?? replayFinalEvent.payload ?? replayFinalEvent.raw.outputs,
       );
       const base = normalizePayloadRecord(resultRef.current ?? earlyDiagnosisResultRef.current ?? replayPreviewResult);
-      const finalResult = buildResultFromPayload({
-        ...base,
+      const finalResult = buildResultFromPayload(mergePayloadWithDiseaseFallback(base, {
         ...replayFinalPayload,
         is_early_diagnosis_preview: false,
         result_phase: 'final',
-      });
+      }));
       setResult(finalResult);
       hasFinalResultRef.current = true;
       resultRef.current = finalResult;
@@ -1606,39 +1722,39 @@ export function DiagnosePage() {
     const payload = normalizePayloadRecord(raw.payload ?? latest.payload ?? raw.outputs);
     if (node === 'TreatmentCompleted' || (node === 'TreatmentAgent' && status === 'end')) {
       setResult((prev) => {
-        const base = prev ?? earlyDiagnosisResultRef.current;
-        const nextResult = buildResultFromPayload({
-          ...normalizePayloadRecord(base),
+        const base = prev ?? earlyDiagnosisResultRef.current ?? resultRef.current;
+        const nextResult = buildResultFromPayload(mergePayloadWithDiseaseFallback(base, {
           ...payload,
           is_early_diagnosis_preview: false,
           result_phase: 'final',
-        });
+        }));
         resultRef.current = nextResult;
         return nextResult;
       });
     }
     if (node === 'VerificationCompleted' || (node === 'VerificationAgent' && status === 'end')) {
       setResult((prev) => {
-        const base = prev ?? earlyDiagnosisResultRef.current;
-        const nextResult = buildResultFromPayload({
-          ...normalizePayloadRecord(base),
+        const base = prev ?? earlyDiagnosisResultRef.current ?? resultRef.current;
+        const nextResult = buildResultFromPayload(mergePayloadWithDiseaseFallback(base, {
           ...payload,
           is_early_diagnosis_preview: false,
           result_phase: 'final',
-        });
+        }));
         resultRef.current = nextResult;
         return nextResult;
       });
     }
     if (node === 'AwaitUserConfirmation' && status === 'end') {
       setResult((prev) => {
-        const nextResult = buildResultFromPayload({
-          ...normalizePayloadRecord(prev ?? earlyDiagnosisResultRef.current ?? payload),
+        const nextResult = buildResultFromPayload(mergePayloadWithDiseaseFallback(
+          prev ?? earlyDiagnosisResultRef.current ?? resultRef.current ?? payload,
+          {
           ...payload,
           status: 'waiting_for_supplement',
           is_early_diagnosis_preview: false,
           result_phase: 'final',
-        });
+          },
+        ));
         resultRef.current = nextResult;
         return nextResult;
       });
@@ -1669,10 +1785,16 @@ export function DiagnosePage() {
     return node.includes('kbretrieval') || node.includes('prescription') || node.includes('personalization') || node.includes('validator') || node.includes('verification') || node === 'final';
   });
   const displayResult = earlyDiagnosisResult ?? result;
-const displayDiseaseName =
-  typeof displayResult?.final_disease === 'string'
-    ? displayResult.final_disease.trim()
-    : '';
+  const rawDisplayDiseaseName =
+    typeof displayResult?.final_disease === 'string'
+      ? displayResult.final_disease.trim()
+      : '';
+  const displayDiseaseName = isKnownDisease(rawDisplayDiseaseName)
+    ? rawDisplayDiseaseName
+    : (() => {
+      const fallbackDisease = resolveDiseaseFromCandidates(displayResult ?? {});
+      return isKnownDisease(fallbackDisease) ? fallbackDisease : '';
+    })();
   const hasDisplayDisease =
   !!displayDiseaseName &&
   displayDiseaseName !== '未知' &&
@@ -1919,9 +2041,9 @@ const displayDiseaseName =
         {/* Right Column - Results */}
         <div className="lg:col-span-3 space-y-6">
           <SectionCard sectionKey="diagnosis" title="诊断结果" icon={<CheckCircle className="w-5 h-5 text-[#c8f7c5]" />} open={sectionOpen.diagnosis} onToggle={toggleSection}>
-            {hasDisplayDisease && displayResult ? (
+            {hasDisplayDisease ? (
               <div className="space-y-4 animate-fadeIn">
-                {displayResult.image_url && (
+                {displayResult?.image_url && (
                   <div className="rounded-xl overflow-hidden bg-black/30">
                     <img src={displayResult.image_url} alt="Diagnosed" className="w-full max-h-64 object-contain" />
                   </div>
@@ -1929,23 +2051,23 @@ const displayDiseaseName =
                 <div className={cn('grid gap-4', isAdmin ? 'sm:grid-cols-3' : 'sm:grid-cols-2')}>
                   <div className="bg-white/5 rounded-xl p-4">
                     <div className="mb-1 flex items-center gap-2">
-                      <p className="text-white/60 text-sm">{displayResult.is_early_diagnosis_preview ? '已识别病害（初步）' : '最终病害'}</p>
-                      {displayResult.is_early_diagnosis_preview ? (
+                      <p className="text-white/60 text-sm">{displayResult?.is_early_diagnosis_preview ? '已识别病害（初步）' : '最终病害'}</p>
+                      {displayResult?.is_early_diagnosis_preview ? (
                         <Badge className="bg-blue-500/20 text-blue-200 border border-blue-400/40">初步诊断</Badge>
                       ) : null}
                     </div>
                     <button type="button" onClick={() => navigateToKbDisease(displayDiseaseName)} className="text-left text-xl font-bold text-[#c8f7c5] hover:underline underline-offset-4">{displayDiseaseName}</button>
-                    {displayResult.is_early_diagnosis_preview ? <p className="text-xs text-amber-200/90 mt-2">已识别病害，后续方案与校验结果会自动更新。</p> : null}
+                    {displayResult?.is_early_diagnosis_preview ? <p className="text-xs text-amber-200/90 mt-2">已识别病害，后续方案与校验结果会自动更新。</p> : null}
                   </div>
                   {isAdmin && (
                     <div className="bg-white/5 rounded-xl p-4">
                       <p className="text-white/60 text-sm mb-1">置信度</p>
-                      <p className="text-xl font-bold text-[#c8f7c5]">{displayResult.displayConfidencePct !== null ? `${displayResult.displayConfidencePct.toFixed(2)}%` : "—"}</p>
+                      <p className="text-xl font-bold text-[#c8f7c5]">{displayResult?.displayConfidencePct !== null && displayResult?.displayConfidencePct !== undefined ? `${displayResult.displayConfidencePct.toFixed(2)}%` : "—"}</p>
                     </div>
                   )}
                   <div className="bg-white/5 rounded-xl p-4">
                     <p className="text-white/60 text-sm mb-1">{isAdmin ? '使用模型' : '诊断状态'}</p>
-                    <p className="text-sm font-medium text-white">{isAdmin ? displayResult.model_display_name : (displayResult.status || 'diagnosis_completed')}</p>
+                    <p className="text-sm font-medium text-white">{isAdmin ? (displayResult?.model_display_name || '—') : (displayResult?.status || 'diagnosis_completed')}</p>
                   </div>
                 </div>
               </div>
