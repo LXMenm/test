@@ -1009,7 +1009,10 @@ export function DiagnosePage() {
       syncConfirmStateFromPayload(payload, normalizedResult, { defaultChoice: 'other' });
 
       if (payload.status !== 'waiting_for_supplement') {
+<<<<<<< codex/fix-display-logic-for-diagnosis-card-wic9pc
         traceBootstrapReadyRef.current = false;
+=======
+>>>>>>> main
         pendingContinueRequestRef.current = {
           traceId: typeof payload.trace_id === 'string' ? payload.trace_id : '',
           payload: {
@@ -1468,7 +1471,11 @@ export function DiagnosePage() {
     setHasFinalResult(false);
     void (async () => {
       await refreshTrace();
+<<<<<<< codex/fix-display-logic-for-diagnosis-card-wic9pc
       if (traceId && traceStreamRef.current) {
+=======
+      if (traceId) {
+>>>>>>> main
         traceBootstrapReadyRef.current = true;
         setContinueTrigger((prev) => prev + 1);
       }
@@ -1642,7 +1649,11 @@ export function DiagnosePage() {
         setLoading(false);
       }
     })();
+<<<<<<< codex/fix-display-logic-for-diagnosis-card-wic9pc
   }, [traceId, continueTrigger, authUser]);
+=======
+  }, [traceId, continueTrigger, authUser, result]);
+>>>>>>> main
 
   useEffect(() => {
     if (!traceEvents.length) return;
