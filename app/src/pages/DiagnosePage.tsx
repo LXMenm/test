@@ -736,6 +736,16 @@ export function DiagnosePage() {
     } as Record<string, unknown>;
     return extractDiagnosisPreviewFromPayloadLike(merged, 'stream-event');
   };
+  const logPayloadPreviewEntry = (payloadType: string, payloadLike: unknown) => {
+    const payload = normalizePayloadRecord(payloadLike);
+    console.debug('[diagnosis-preview/payload-entry]', {
+      payloadType,
+      status: String(payload.status ?? ''),
+      hasFinalResult: hasFinalResultRef.current,
+      firstDiagnosisPreviewApplied: firstDiagnosisPreviewAppliedRef.current,
+      rawDisease: resolveDiseaseFromCandidates(payload),
+    });
+  };
 
   const applyDiagnosisPreviewCandidate = (
     sourceLike: unknown,
@@ -764,7 +774,31 @@ export function DiagnosePage() {
       console.debug('[diagnosis-preview/skip]', { source, node, status, stage, reason: 'preview-already-applied' });
       return null;
     }
-    const previewPayload = extractDiagnosisPreviewFromPayloadLike(sourceLike, source);
+    let previewPayload = extractDiagnosisPreviewFromPayloadLike(sourceLike, source);
+    const rawDisease = resolveDiseaseFromCandidates(rawEvent);
+    const isPreFinalEarlySource = (source === 'stream' || source === 'payload')
+      && !hasFinalResultRef.current
+      && !firstDiagnosisPreviewAppliedRef.current;
+    const shouldUseDirectRawFallback = !previewPayload
+      && isPreFinalEarlySource
+      && !isFinalLike
+      && isKnownDisease(rawDisease);
+    if (shouldUseDirectRawFallback) {
+      previewPayload = {
+        ...normalizePayloadRecord(rawEvent),
+        final_disease: rawDisease,
+        is_early_diagnosis_preview: true,
+        result_phase: 'diagnosis_preview',
+      };
+      console.debug('[diagnosis-preview/direct-first-hit]', {
+        source,
+        disease: rawDisease,
+        node,
+        status,
+        hasFinalResult: hasFinalResultRef.current,
+        mode: 'direct-raw-fallback',
+      });
+    }
     if (!previewPayload) {
       console.debug('[diagnosis-preview/skip]', { source, node, status, reason: 'preview-not-found' });
       return null;
@@ -774,15 +808,12 @@ export function DiagnosePage() {
       console.debug('[diagnosis-preview/skip]', { source, node, status, reason: 'invalid-disease' });
       return null;
     }
-    const isPreFinalEarlySource = (source === 'stream' || source === 'payload')
-      && !hasFinalResultRef.current
-      && !firstDiagnosisPreviewAppliedRef.current;
     const allowRelaxedPreFinal = !isStageAllowed
       && options?.allowLateFallback !== true
       && isPreFinalEarlySource
       && isKnownDisease(disease)
       && !isFinalLike;
-    if (!isStageAllowed && options?.allowLateFallback !== true && !allowRelaxedPreFinal) {
+    if (!isStageAllowed && options?.allowLateFallback !== true && !allowRelaxedPreFinal && !shouldUseDirectRawFallback) {
       console.debug('[diagnosis-preview/skip]', { source, node, status, stage, reason: 'not-diagnosis-stage' });
       return null;
     }
@@ -814,6 +845,16 @@ export function DiagnosePage() {
         disease,
         hasFinalResult: hasFinalResultRef.current,
         mode: 'strict-stage',
+      });
+    } else if (!firstDiagnosisPreviewAppliedRef.current && shouldUseDirectRawFallback) {
+      firstDiagnosisPreviewAppliedRef.current = true;
+      console.debug('[diagnosis-preview/first-hit]', {
+        source,
+        node,
+        status,
+        disease,
+        hasFinalResult: hasFinalResultRef.current,
+        mode: 'direct-raw-fallback',
       });
     } else if (!firstDiagnosisPreviewAppliedRef.current && allowRelaxedPreFinal) {
       firstDiagnosisPreviewAppliedRef.current = true;
@@ -1254,6 +1295,7 @@ export function DiagnosePage() {
       if (Array.isArray(payload.events)) {
         setTraceEvents((prev) => mergePayloadEventsAsPrimary(prev, payload.events, 'start'));
       }
+      logPayloadPreviewEntry('start', payload);
       applyDiagnosisPreviewCandidate(payload, 'payload', { rawEvent: payload });
       const normalizedResult = buildResultFromPayload(payload);
       syncConfirmStateFromPayload(payload, normalizedResult, { defaultChoice: 'other' });
@@ -1354,6 +1396,7 @@ export function DiagnosePage() {
       } else {
         setTraceEvents([]);
       }
+      logPayloadPreviewEntry('resubmit', payload);
       applyDiagnosisPreviewCandidate(payload, 'payload', { rawEvent: payload });
       const normalizedResult = buildResultFromPayload(payload);
       syncConfirmStateFromPayload(payload, normalizedResult, { defaultChoice: 'other', resetInputs: true, markResubmitSuccess: true });
@@ -1409,6 +1452,7 @@ export function DiagnosePage() {
       if (payload.trace_id) setTraceId(String(payload.trace_id));
       if (payload.image_id) setImageId(String(payload.image_id));
       if (Array.isArray(payload.events)) setTraceEvents((prev) => mergePayloadEventsAsPrimary(prev, payload.events, 'confirm'));
+      logPayloadPreviewEntry('confirm-resubmit', payload);
       applyDiagnosisPreviewCandidate(payload, 'payload', { rawEvent: payload });
       const normalizedResult = buildResultFromPayload(payload);
       syncConfirmStateFromPayload(payload, normalizedResult, { defaultChoice: 'other', resetInputs: true, markResubmitSuccess: true });
@@ -1484,6 +1528,7 @@ export function DiagnosePage() {
             : (result?.image_url || ''),
       };
       const nextResult = buildResultFromPayload(mergedPayload as Record<string, unknown>);
+      logPayloadPreviewEntry('confirm-candidate', mergedPayload);
       applyDiagnosisPreviewCandidate(mergedPayload, 'payload', { rawEvent: mergedPayload });
       syncConfirmStateFromPayload(mergedPayload, nextResult, { resetInputs: true });
     } catch (error) {
@@ -1565,6 +1610,7 @@ export function DiagnosePage() {
             : (result?.image_url || ''),
       };
       const nextResult = buildResultFromPayload(mergedPayload as Record<string, unknown>);
+      logPayloadPreviewEntry('confirm-symptoms', mergedPayload);
       applyDiagnosisPreviewCandidate(mergedPayload, 'payload', { rawEvent: mergedPayload });
       syncConfirmStateFromPayload(mergedPayload, nextResult);
     } catch (error) {
@@ -1793,15 +1839,33 @@ export function DiagnosePage() {
         const node = String(rawEvent.node || '');
         const status = String(rawEvent.status || '').trim().toLowerCase();
         const payloadStatus = String(normalizePayloadRecord(rawEvent.payload).status || '').trim().toLowerCase();
+        console.debug('[diagnosis-preview/stream-entry]', {
+          node,
+          status,
+          payloadStatus,
+          hasFinalResult: hasFinalResultRef.current,
+          firstDiagnosisPreviewApplied: firstDiagnosisPreviewAppliedRef.current,
+        });
         const previewPayload = extractDiagnosisPreviewFromStreamEvent(rawEvent);
-        if (previewPayload) {
-          applyDiagnosisPreviewCandidate(previewPayload, 'stream', {
-            rawEvent,
-            node,
-            status,
-            stageKind: 'diagnosis',
+        const previewDisease = previewPayload ? resolveDiseaseFromCandidates(previewPayload) : '';
+        const rawDisease = resolveDiseaseFromCandidates(rawEvent);
+        console.debug('[diagnosis-preview/stream-preview-payload]', {
+          hasPreviewPayload: Boolean(previewPayload),
+          previewDisease,
+          rawDisease,
+        });
+        if (!previewPayload && isKnownDisease(rawDisease)) {
+          console.debug('[diagnosis-preview/stream-direct-fallback]', {
+            disease: rawDisease,
+            reason: 'raw-event-disease-direct',
           });
         }
+        applyDiagnosisPreviewCandidate(previewPayload ?? rawEvent, 'stream', {
+          rawEvent,
+          node,
+          status,
+          stageKind: 'diagnosis',
+        });
         if (
           ['waiting_for_supplement', 'completed', 'completed_verification_failed'].includes(status)
           || ['waiting_for_supplement', 'completed', 'completed_verification_failed'].includes(payloadStatus)
@@ -1873,6 +1937,7 @@ export function DiagnosePage() {
         }
         if (continueData && typeof continueData === 'object') {
           const mergedPayload = { ...pending.startPayload, ...(continueData as Record<string, unknown>) };
+          logPayloadPreviewEntry('continue', mergedPayload);
           applyDiagnosisPreviewCandidate(mergedPayload, 'payload', { rawEvent: mergedPayload });
           setLatestPayload(mergedPayload);
           const mergedPayloadWithDisease = mergePayloadWithDiseaseFallback(
