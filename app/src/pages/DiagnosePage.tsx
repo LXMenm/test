@@ -139,6 +139,13 @@ type PendingExpertItem = {
   farmer_name?: string;
   farmer_id?: string;
 };
+type DiagnosisPreviewApplyOptions = {
+  node?: string;
+  status?: string;
+  rawEvent?: unknown;
+  allowLateFallback?: boolean;
+  stageKind?: 'diagnosis' | 'fusion' | 'late' | 'unknown';
+};
 
 type SectionOpenState = {
   diagnosis: boolean;
@@ -248,6 +255,7 @@ export function DiagnosePage() {
   const resultRef = useRef<DiagnosisResult | null>(null);
   const earlyDiagnosisResultRef = useRef<DiagnosisResult | null>(null);
   const hasFinalResultRef = useRef(false);
+  const firstDiagnosisPreviewAppliedRef = useRef(false);
   const replayTraceSnapshotKeyRef = useRef('');
   const latestTraceEventKeyRef = useRef('');
   const prevStatusRef = useRef<string | undefined>(undefined);
@@ -557,6 +565,11 @@ export function DiagnosePage() {
     }
     return '';
   };
+  const resolveTop1DiseaseFromCandidates = (candidates: Top3Candidate[]): string => {
+    if (!Array.isArray(candidates) || candidates.length === 0) return '';
+    const top1 = candidates[0]?.disease;
+    return typeof top1 === 'string' ? top1.trim() : '';
+  };
 
   const resolveDiseaseFromShallowFields = (payloadLike: unknown): string => {
     const payload = normalizePayloadRecord(payloadLike);
@@ -618,15 +631,43 @@ export function DiagnosePage() {
       imageCandidates,
     };
   };
+  const isFinalLikePayloadStatus = (statusLike: unknown): boolean => {
+    const status = String(statusLike ?? '').trim().toLowerCase();
+    return ['waiting_for_supplement', 'completed', 'completed_verification_failed'].includes(status);
+  };
+  const isDiagnosisPreviewStage = (eventLike: unknown): boolean => {
+    const raw = normalizePayloadRecord(eventLike);
+    const payload = normalizePayloadRecord(raw.payload);
+    const outputs = normalizePayloadRecord(raw.outputs);
+    const payloadOutputs = normalizePayloadRecord(payload.outputs);
+    const merged = { ...payload, ...payloadOutputs, ...outputs, ...raw };
+    const node = String(raw.node ?? merged.node ?? payload.node ?? outputs.node ?? '');
+    const agent = String(raw.agent ?? merged.agent ?? payload.agent ?? outputs.agent ?? '');
+    const status = String(raw.status ?? merged.status ?? payload.status ?? outputs.status ?? '').trim().toLowerCase();
+    const payloadStatus = String(payload.status ?? merged.status ?? '').trim().toLowerCase();
+    const nodeAgentText = `${node} ${agent}`.trim().toLowerCase();
+
+    if (isFinalLikePayloadStatus(payloadStatus)) return false;
+    if (nodeAgentText.includes('treatment') || nodeAgentText.includes('verification') || nodeAgentText.includes('awaituserconfirmation') || nodeAgentText.includes('final')) {
+      return false;
+    }
+    if (node === 'DiagnosisCompleted') return true;
+    if (node === 'DiagnosisAgent' && status === 'end') return true;
+    if (nodeAgentText.includes('diagnosis') || nodeAgentText.includes('fusion')) return true;
+    if (!isPayloadFieldEmpty(merged.fusion_top3) || !isPayloadFieldEmpty(merged.current_top1) || !isPayloadFieldEmpty(merged.final_disease)) {
+      return true;
+    }
+    return false;
+  };
 
   const resolveDiseaseFromCandidates = (payloadLike: unknown): string => {
     const payload = normalizePayloadRecord(payloadLike);
     const shallowDisease = resolveDiseaseFromShallowFields(payload);
     if (isKnownDisease(shallowDisease)) return shallowDisease;
     const derived = derivePreviewDiseaseAndCandidates(payload, 'resolveDiseaseFromCandidates');
-    const fusionTop1Disease = derived.fusionCandidates[0]?.disease?.trim() ?? '';
+    const fusionTop1Disease = resolveTop1DiseaseFromCandidates(derived.fusionCandidates);
     if (isKnownDisease(fusionTop1Disease)) return fusionTop1Disease;
-    const imageTop1Disease = derived.imageCandidates[0]?.disease?.trim() ?? '';
+    const imageTop1Disease = resolveTop1DiseaseFromCandidates(derived.imageCandidates);
     if (isKnownDisease(imageTop1Disease)) return imageTop1Disease;
     return '';
   };
@@ -680,15 +721,33 @@ export function DiagnosePage() {
   const applyDiagnosisPreviewCandidate = (
     sourceLike: unknown,
     source: 'stream' | 'replay' | 'latest' | 'payload',
+    options?: DiagnosisPreviewApplyOptions,
   ): DiagnosisResult | null => {
+    const rawEvent = options?.rawEvent ?? sourceLike;
+    const node = options?.node ?? String(normalizePayloadRecord(rawEvent).node ?? '');
+    const status = options?.status ?? String(normalizePayloadRecord(rawEvent).status ?? '');
+    const isStageAllowed = isDiagnosisPreviewStage(rawEvent);
+    const isLateLikeSource = source === 'latest' || options?.stageKind === 'late';
+    if (source === 'latest' && hasFinalResultRef.current) {
+      console.debug('[diagnosis-preview/skip]', { source, node, status, reason: 'late-source-after-final' });
+      return null;
+    }
+    if (!isStageAllowed && options?.allowLateFallback !== true) {
+      console.debug('[diagnosis-preview/skip]', { source, node, status, reason: 'not-diagnosis-stage' });
+      return null;
+    }
+    if (firstDiagnosisPreviewAppliedRef.current && isLateLikeSource) {
+      console.debug('[diagnosis-preview/skip]', { source, node, status, reason: 'preview-already-applied' });
+      return null;
+    }
     const previewPayload = extractDiagnosisPreviewFromPayloadLike(sourceLike, source);
     if (!previewPayload) {
-      console.debug('[diagnosis-preview/skip]', { source, reason: 'preview-not-found' });
+      console.debug('[diagnosis-preview/skip]', { source, node, status, reason: 'preview-not-found' });
       return null;
     }
     const disease = resolveDiseaseFromCandidates(previewPayload);
     if (!isKnownDisease(disease)) {
-      console.debug('[diagnosis-preview/skip]', { source, reason: 'invalid-disease' });
+      console.debug('[diagnosis-preview/skip]', { source, node, status, reason: 'invalid-disease' });
       return null;
     }
     const previewResult = buildResultFromPayload(previewPayload);
@@ -700,8 +759,20 @@ export function DiagnosePage() {
       resultRef.current = previewResult;
       setResult(previewResult);
     }
+    if (!firstDiagnosisPreviewAppliedRef.current && isStageAllowed) {
+      firstDiagnosisPreviewAppliedRef.current = true;
+      console.debug('[diagnosis-preview/first-hit]', {
+        source,
+        node,
+        status,
+        disease,
+        hasFinalResult: hasFinalResultRef.current,
+      });
+    }
     console.debug('[diagnosis-preview/apply]', {
       source,
+      node,
+      status,
       disease,
       hasFinalResult: hasFinalResultRef.current,
     });
@@ -712,6 +783,10 @@ export function DiagnosePage() {
     const shallowDisease = resolveDiseaseFromShallowFields(payload);
     if (isKnownDisease(shallowDisease)) return shallowDisease;
     const derived = derivePreviewDiseaseAndCandidates(payload, 'resolveResultDisease');
+    const fusionTop1Disease = resolveTop1DiseaseFromCandidates(derived.fusionCandidates);
+    if (isKnownDisease(fusionTop1Disease)) return fusionTop1Disease;
+    const imageTop1Disease = resolveTop1DiseaseFromCandidates(derived.imageCandidates);
+    if (isKnownDisease(imageTop1Disease)) return imageTop1Disease;
     if (isKnownDisease(derived.disease)) return derived.disease;
     return '未知';
   };
@@ -941,6 +1016,16 @@ export function DiagnosePage() {
     if (!primaryEvents.length) return existingEvents;
     return mergeAndDedupeTraceEvents(existingEvents, primaryEvents);
   };
+  const findBestDiagnosisPreviewEvent = (eventsLike: unknown[]): unknown | null => {
+    for (const eventLike of eventsLike) {
+      if (!isDiagnosisPreviewStage(eventLike)) continue;
+      const preview = extractDiagnosisPreviewFromStreamEvent(eventLike);
+      if (!preview) continue;
+      const disease = resolveDiseaseFromCandidates(preview);
+      if (isKnownDisease(disease)) return eventLike;
+    }
+    return null;
+  };
 
   const parseProfiles = (raw: unknown): ProfileListItem[] => {
     if (!Array.isArray(raw)) return [];
@@ -1063,6 +1148,7 @@ export function DiagnosePage() {
     setPhase2StartTime(null);
     setPhase1FrozenMs(null);
     setWorkflowRefreshToken((prev) => prev + 1);
+    firstDiagnosisPreviewAppliedRef.current = false;
 
     try {
       const fd = new FormData();
@@ -1109,7 +1195,7 @@ export function DiagnosePage() {
       if (Array.isArray(payload.events)) {
         setTraceEvents((prev) => mergePayloadEventsAsPrimary(prev, payload.events, 'start'));
       }
-      applyDiagnosisPreviewCandidate(payload, 'payload');
+      applyDiagnosisPreviewCandidate(payload, 'payload', { rawEvent: payload });
       const normalizedResult = buildResultFromPayload(payload);
       syncConfirmStateFromPayload(payload, normalizedResult, { defaultChoice: 'other' });
 
@@ -1157,6 +1243,7 @@ export function DiagnosePage() {
     setPhase2StartTime(null);
     setPhase1FrozenMs(null);
     setWorkflowRefreshToken((prev) => prev + 1);
+    firstDiagnosisPreviewAppliedRef.current = false;
     try {
       const fd = new FormData();
       fd.append('trace_id', activeTraceId);
@@ -1208,7 +1295,7 @@ export function DiagnosePage() {
       } else {
         setTraceEvents([]);
       }
-      applyDiagnosisPreviewCandidate(payload, 'payload');
+      applyDiagnosisPreviewCandidate(payload, 'payload', { rawEvent: payload });
       const normalizedResult = buildResultFromPayload(payload);
       syncConfirmStateFromPayload(payload, normalizedResult, { defaultChoice: 'other', resetInputs: true, markResubmitSuccess: true });
     } catch (error) {
@@ -1231,6 +1318,7 @@ export function DiagnosePage() {
     setPhase2StartTime(null);
     setPhase1FrozenMs(null);
     setWorkflowRefreshToken((prev) => prev + 1);
+    firstDiagnosisPreviewAppliedRef.current = false;
     try {
       const fd = new FormData();
       fd.append('trace_id', activeTraceId);
@@ -1262,7 +1350,7 @@ export function DiagnosePage() {
       if (payload.trace_id) setTraceId(String(payload.trace_id));
       if (payload.image_id) setImageId(String(payload.image_id));
       if (Array.isArray(payload.events)) setTraceEvents((prev) => mergePayloadEventsAsPrimary(prev, payload.events, 'confirm'));
-      applyDiagnosisPreviewCandidate(payload, 'payload');
+      applyDiagnosisPreviewCandidate(payload, 'payload', { rawEvent: payload });
       const normalizedResult = buildResultFromPayload(payload);
       syncConfirmStateFromPayload(payload, normalizedResult, { defaultChoice: 'other', resetInputs: true, markResubmitSuccess: true });
     } catch (error) {
@@ -1337,7 +1425,7 @@ export function DiagnosePage() {
             : (result?.image_url || ''),
       };
       const nextResult = buildResultFromPayload(mergedPayload as Record<string, unknown>);
-      applyDiagnosisPreviewCandidate(mergedPayload, 'payload');
+      applyDiagnosisPreviewCandidate(mergedPayload, 'payload', { rawEvent: mergedPayload });
       syncConfirmStateFromPayload(mergedPayload, nextResult, { resetInputs: true });
     } catch (error) {
       console.error('Confirm candidate failed:', error);
@@ -1418,7 +1506,7 @@ export function DiagnosePage() {
             : (result?.image_url || ''),
       };
       const nextResult = buildResultFromPayload(mergedPayload as Record<string, unknown>);
-      applyDiagnosisPreviewCandidate(mergedPayload, 'payload');
+      applyDiagnosisPreviewCandidate(mergedPayload, 'payload', { rawEvent: mergedPayload });
       syncConfirmStateFromPayload(mergedPayload, nextResult);
     } catch (error) {
       console.error('Confirm diagnose failed:', error);
@@ -1540,11 +1628,18 @@ export function DiagnosePage() {
       }
       if (Array.isArray(data?.events)) {
         const replayEvents = data.events as unknown[];
-        for (let idx = replayEvents.length - 1; idx >= 0; idx -= 1) {
-          const preview = extractDiagnosisPreviewFromStreamEvent(replayEvents[idx]);
-          if (!preview) continue;
-          applyDiagnosisPreviewCandidate(preview, 'replay');
-          break;
+        const previewEvent = findBestDiagnosisPreviewEvent(replayEvents);
+        if (previewEvent) {
+          const preview = extractDiagnosisPreviewFromStreamEvent(previewEvent);
+          if (preview) {
+            const previewRaw = normalizePayloadRecord(previewEvent);
+            applyDiagnosisPreviewCandidate(preview, 'replay', {
+              rawEvent: previewRaw,
+              node: String(previewRaw.node ?? ''),
+              status: String(previewRaw.status ?? ''),
+              stageKind: 'diagnosis',
+            });
+          }
         }
         setTraceEvents((prev) => mergePayloadEventsAsPrimary(prev, data.events, 'replay'));
       }
@@ -1570,6 +1665,7 @@ export function DiagnosePage() {
       resultRef.current = null;
       earlyDiagnosisResultRef.current = null;
       hasFinalResultRef.current = false;
+      firstDiagnosisPreviewAppliedRef.current = false;
       replayTraceSnapshotKeyRef.current = '';
       latestTraceEventKeyRef.current = '';
       setTraceEvents([]);
@@ -1583,6 +1679,7 @@ export function DiagnosePage() {
     resultRef.current = null;
     earlyDiagnosisResultRef.current = null;
     hasFinalResultRef.current = false;
+    firstDiagnosisPreviewAppliedRef.current = false;
     replayTraceSnapshotKeyRef.current = '';
     latestTraceEventKeyRef.current = '';
     setEarlyDiagnosisResult(null);
@@ -1637,7 +1734,14 @@ export function DiagnosePage() {
         const status = String(rawEvent.status || '').trim().toLowerCase();
         const payloadStatus = String(normalizePayloadRecord(rawEvent.payload).status || '').trim().toLowerCase();
         const previewPayload = extractDiagnosisPreviewFromStreamEvent(rawEvent);
-        if (previewPayload) applyDiagnosisPreviewCandidate(previewPayload, 'stream');
+        if (previewPayload && isDiagnosisPreviewStage(rawEvent)) {
+          applyDiagnosisPreviewCandidate(previewPayload, 'stream', {
+            rawEvent,
+            node,
+            status,
+            stageKind: 'diagnosis',
+          });
+        }
         if (
           ['waiting_for_supplement', 'completed', 'completed_verification_failed'].includes(status)
           || ['waiting_for_supplement', 'completed', 'completed_verification_failed'].includes(payloadStatus)
@@ -1709,7 +1813,7 @@ export function DiagnosePage() {
         }
         if (continueData && typeof continueData === 'object') {
           const mergedPayload = { ...pending.startPayload, ...(continueData as Record<string, unknown>) };
-          applyDiagnosisPreviewCandidate(mergedPayload, 'payload');
+          applyDiagnosisPreviewCandidate(mergedPayload, 'payload', { rawEvent: mergedPayload });
           setLatestPayload(mergedPayload);
           const mergedPayloadWithDisease = mergePayloadWithDiseaseFallback(
             resultRef.current ?? earlyDiagnosisResultRef.current ?? result,
@@ -1771,11 +1875,18 @@ export function DiagnosePage() {
     replayTraceSnapshotKeyRef.current = replaySnapshotKey;
 
     let replayPreviewResult: DiagnosisResult | null = null;
-    for (const event of traceEvents.slice().reverse()) {
-      const replayPreviewPayload = extractDiagnosisPreviewFromStreamEvent(event.raw);
-      if (!replayPreviewPayload) continue;
-      replayPreviewResult = applyDiagnosisPreviewCandidate(replayPreviewPayload, 'replay') ?? buildResultFromPayload(replayPreviewPayload);
-      break;
+    const replayPreviewEvent = findBestDiagnosisPreviewEvent(traceEvents.map((event) => event.raw));
+    if (replayPreviewEvent) {
+      const replayPreviewPayload = extractDiagnosisPreviewFromStreamEvent(replayPreviewEvent);
+      if (replayPreviewPayload) {
+        const replayRaw = normalizePayloadRecord(replayPreviewEvent);
+        replayPreviewResult = applyDiagnosisPreviewCandidate(replayPreviewPayload, 'replay', {
+          rawEvent: replayRaw,
+          node: String(replayRaw.node ?? ''),
+          status: String(replayRaw.status ?? ''),
+          stageKind: 'diagnosis',
+        }) ?? buildResultFromPayload(replayPreviewPayload);
+      }
     }
 
     const replayFinalEvent = traceEvents.slice().reverse().find((event) => {
@@ -1816,7 +1927,14 @@ export function DiagnosePage() {
     if (latestTraceEventKeyRef.current === latestEventKey) return;
     latestTraceEventKeyRef.current = latestEventKey;
     const latestPreview = extractDiagnosisPreviewFromStreamEvent(raw);
-    if (latestPreview) applyDiagnosisPreviewCandidate(latestPreview, 'latest');
+    if (latestPreview && isDiagnosisPreviewStage(raw) && !hasFinalResultRef.current && !firstDiagnosisPreviewAppliedRef.current) {
+      applyDiagnosisPreviewCandidate(latestPreview, 'latest', {
+        rawEvent: raw,
+        node,
+        status,
+        stageKind: 'diagnosis',
+      });
+    }
     const payload = normalizePayloadRecord(raw.payload ?? latest.payload ?? raw.outputs);
     if (node === 'TreatmentCompleted' || (node === 'TreatmentAgent' && status === 'end')) {
       setResult((prev) => {
