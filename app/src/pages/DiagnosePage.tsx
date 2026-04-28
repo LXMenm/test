@@ -145,7 +145,7 @@ type DiagnosisPreviewApplyOptions = {
   stage?: string;
   rawEvent?: unknown;
   allowLateFallback?: boolean;
-  stageKind?: 'diagnosis' | 'fusion' | 'late' | 'unknown';
+  stageKind?: 'diagnosis' | 'fusion' | 'late' | 'early-relaxed' | 'unknown';
 };
 
 type SectionOpenState = {
@@ -746,6 +746,10 @@ export function DiagnosePage() {
     const node = options?.node ?? String(normalizePayloadRecord(rawEvent).node ?? '');
     const status = options?.status ?? String(normalizePayloadRecord(rawEvent).status ?? '');
     const stage = options?.stage ?? String(normalizePayloadRecord(rawEvent).stage ?? '');
+    const payloadFromRawEvent = normalizePayloadRecord(normalizePayloadRecord(rawEvent).payload);
+    const rawPayloadStatus = String(payloadFromRawEvent.status ?? '').trim().toLowerCase();
+    const mergedStatus = String(status || rawPayloadStatus).trim().toLowerCase();
+    const isFinalLike = isFinalLikePayloadStatus(mergedStatus) || isFinalLikePayloadStatus(rawPayloadStatus);
     const isStageAllowed = isDiagnosisPreviewStage(rawEvent);
     const isLateLikeSource = source === 'latest' || options?.stageKind === 'late';
     if (source === 'latest' && hasFinalResultRef.current) {
@@ -754,10 +758,6 @@ export function DiagnosePage() {
     }
     if (source === 'replay' && hasFinalResultRef.current) {
       console.debug('[diagnosis-preview/skip]', { source, node, status, stage, reason: 'replay-after-final' });
-      return null;
-    }
-    if (!isStageAllowed && options?.allowLateFallback !== true) {
-      console.debug('[diagnosis-preview/skip]', { source, node, status, stage, reason: 'not-diagnosis-stage' });
       return null;
     }
     if ((source === 'replay' && firstDiagnosisPreviewAppliedRef.current) || (firstDiagnosisPreviewAppliedRef.current && isLateLikeSource)) {
@@ -773,6 +773,28 @@ export function DiagnosePage() {
     if (!isKnownDisease(disease)) {
       console.debug('[diagnosis-preview/skip]', { source, node, status, reason: 'invalid-disease' });
       return null;
+    }
+    const isPreFinalEarlySource = (source === 'stream' || source === 'payload')
+      && !hasFinalResultRef.current
+      && !firstDiagnosisPreviewAppliedRef.current;
+    const allowRelaxedPreFinal = !isStageAllowed
+      && options?.allowLateFallback !== true
+      && isPreFinalEarlySource
+      && isKnownDisease(disease)
+      && !isFinalLike;
+    if (!isStageAllowed && options?.allowLateFallback !== true && !allowRelaxedPreFinal) {
+      console.debug('[diagnosis-preview/skip]', { source, node, status, stage, reason: 'not-diagnosis-stage' });
+      return null;
+    }
+    if (allowRelaxedPreFinal) {
+      console.debug('[diagnosis-preview/relaxed-early-allow]', {
+        source,
+        node,
+        status,
+        stage,
+        disease,
+        hasFinalResult: hasFinalResultRef.current,
+      });
     }
     const previewResult = buildResultFromPayload(previewPayload);
     const currentResultDisease = resolveDiseaseFromCandidates(resultRef.current ?? {});
@@ -791,6 +813,17 @@ export function DiagnosePage() {
         status,
         disease,
         hasFinalResult: hasFinalResultRef.current,
+        mode: 'strict-stage',
+      });
+    } else if (!firstDiagnosisPreviewAppliedRef.current && allowRelaxedPreFinal) {
+      firstDiagnosisPreviewAppliedRef.current = true;
+      console.debug('[diagnosis-preview/first-hit]', {
+        source,
+        node,
+        status,
+        disease,
+        hasFinalResult: hasFinalResultRef.current,
+        mode: 'relaxed-pre-final',
       });
     }
     console.debug('[diagnosis-preview/apply]', {
@@ -1761,7 +1794,7 @@ export function DiagnosePage() {
         const status = String(rawEvent.status || '').trim().toLowerCase();
         const payloadStatus = String(normalizePayloadRecord(rawEvent.payload).status || '').trim().toLowerCase();
         const previewPayload = extractDiagnosisPreviewFromStreamEvent(rawEvent);
-        if (previewPayload && isDiagnosisPreviewStage(rawEvent)) {
+        if (previewPayload) {
           applyDiagnosisPreviewCandidate(previewPayload, 'stream', {
             rawEvent,
             node,
