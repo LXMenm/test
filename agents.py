@@ -1247,6 +1247,7 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
         outputs={
             "disease_type": final_disease,
             "final_disease": final_disease,
+            "current_top1": final_disease,
             "disease_confidence": final_confidence,
             "image_confidence": image_confidence,
             "text_confidence": text_confidence,
@@ -1265,6 +1266,12 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
             "weak_conflict_flag": weak_conflict_flag,
             "weak_conflict_candidate": weak_conflict_candidate,
             "diagnosis_evidence": diagnosis_evidence,
+            "image_diagnosis": state.get("image_diagnosis"),
+            "image_result": {
+                "disease": image_top1 or final_disease,
+                "confidence": image_confidence,
+                "top3": image_top3,
+            },
             "follow_up_questions": flags.get("follow_up_questions"),
             "need_confirm": flags.get("need_confirm"),
             "confirm_reasons": flags.get("fallback_reason"),
@@ -1276,6 +1283,23 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
             "resolved_model_path": model_meta["resolved_model_path"],
             "model_fallback_reason": model_meta["model_fallback_reason"],
         },
+    )
+    print(
+        "[diagnosis-backend/early-disease]",
+        json.dumps(
+            {
+                "node": "DiagnosisAgent",
+                "stage": state.get("current_step"),
+                "status": "diagnosis_complete",
+                "payload_status": "diagnosis_preview",
+                "disease": final_disease,
+                "final_disease": final_disease,
+                "current_top1": final_disease,
+                "fusion_top3_count": len(fusion_top3),
+                "trace_id": state.get("trace_id"),
+            },
+            ensure_ascii=False,
+        ),
     )
     return state
 

@@ -4994,38 +4994,84 @@ def _to_stream_event(trace_id: str, event: dict) -> dict:
     payload = event.get("payload") or {}
     if not isinstance(payload, dict):
         payload = {"value": payload}
-    outputs = event.get("outputs") if isinstance(event.get("outputs"), dict) else None
+    outputs = event.get("outputs") if isinstance(event.get("outputs"), dict) else {}
     inputs = event.get("inputs") if isinstance(event.get("inputs"), dict) else None
     payload_outputs = payload.get("outputs") if isinstance(payload.get("outputs"), dict) else {}
     payload_payload = payload.get("payload") if isinstance(payload.get("payload"), dict) else {}
     merged: dict[str, Any] = {}
-    for container in (payload_payload, payload, payload_outputs, outputs or {}):
+    for container in (payload_payload, payload, payload_outputs, outputs, event):
         if isinstance(container, dict):
             merged.update(container)
     agent_id = event.get("agent_id") or payload.get("agent_id") or NODE_TO_AGENT.get(node)
     if agent_id:
         payload = {**payload, "agent_id": agent_id}
-    promoted_fields: dict[str, Any] = {}
-    for field in ("final_disease", "final_confidence", "fusion_top3", "current_top1"):
-        if payload.get(field) is not None:
-            promoted_fields[field] = payload.get(field)
-        elif outputs.get(field) is not None:
-            promoted_fields[field] = outputs.get(field)
+    stage = str(event.get("step") or event.get("status") or "")
+    fusion_top3 = merged.get("fusion_top3")
+    current_top1 = merged.get("current_top1")
+    final_disease = merged.get("final_disease")
+    image_result = merged.get("image_result") if isinstance(merged.get("image_result"), dict) else {}
+    image_diagnosis = merged.get("image_diagnosis") if isinstance(merged.get("image_diagnosis"), dict) else {}
+    if not image_diagnosis and isinstance(outputs.get("image_top3"), list):
+        image_diagnosis = {"top3": outputs.get("image_top3")}
+    if not image_result and image_diagnosis:
+        image_result = {
+            "disease": (_safe_record(image_diagnosis.get("top1")).get("disease") if isinstance(image_diagnosis.get("top1"), dict) else None),
+            "top3": image_diagnosis.get("top3"),
+        }
+    if not final_disease:
+        final_disease = image_result.get("disease") or image_diagnosis.get("disease")
+    if not current_top1:
+        current_top1 = final_disease
+    if not fusion_top3 and isinstance(outputs.get("fusion_top3"), list):
+        fusion_top3 = outputs.get("fusion_top3")
+    payload_status = str(payload.get("status") or merged.get("status") or outputs.get("status") or "").strip().lower()
+    is_diagnosis_like_event = (
+        str(node).strip().lower() in {"diagnosis", "diagnosisagent"}
+        or str(event.get("agent") or "").strip().lower() == "diagnosis"
+        or str(stage).strip().lower() == "diagnosis_complete"
+    )
+    if is_diagnosis_like_event:
+        payload = {
+            **payload,
+            "result_phase": payload.get("result_phase") or "diagnosis_preview",
+            "is_early_diagnosis_preview": True,
+            "status": "diagnosis_preview",
+        }
+        payload_status = "diagnosis_preview"
+    print(
+        "[diagnosis-backend/stream-event]",
+        json.dumps(
+            {
+                "node": node,
+                "stage": stage,
+                "status": event.get("status") or event.get("step") or "",
+                "payload_status": payload_status,
+                "has_final_disease": bool(final_disease),
+                "has_current_top1": bool(current_top1),
+                "has_fusion_top3": bool(isinstance(fusion_top3, list) and len(fusion_top3) > 0),
+                "trace_id": event.get("trace_id") or trace_id,
+            },
+            ensure_ascii=False,
+        ),
+    )
     return {
         "trace_id": event.get("trace_id") or trace_id,
         "ts": event.get("ts"),
         "seq": event.get("seq"),
         "node": node,
+        "stage": stage,
         "agent_id": agent_id,
         "status": event.get("status") or event.get("step") or "info",
         "message": event.get("message") or event.get("step") or "",
         "payload": payload,
         "outputs": outputs,
         "inputs": inputs,
-        "final_disease": merged.get("final_disease"),
+        "final_disease": final_disease,
         "final_confidence": merged.get("final_confidence"),
-        "fusion_top3": merged.get("fusion_top3"),
-        "current_top1": merged.get("current_top1"),
+        "fusion_top3": fusion_top3,
+        "current_top1": current_top1,
+        "image_result": image_result,
+        "image_diagnosis": image_diagnosis,
     }
 
 
