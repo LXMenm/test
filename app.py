@@ -5005,6 +5005,7 @@ def _to_stream_event(trace_id: str, event: dict) -> dict:
     agent_id = event.get("agent_id") or payload.get("agent_id") or NODE_TO_AGENT.get(node)
     if agent_id:
         payload = {**payload, "agent_id": agent_id}
+    stage = str(event.get("step") or event.get("status") or "")
     fusion_top3 = merged.get("fusion_top3")
     current_top1 = merged.get("current_top1")
     final_disease = merged.get("final_disease")
@@ -5023,12 +5024,28 @@ def _to_stream_event(trace_id: str, event: dict) -> dict:
         current_top1 = final_disease
     if not fusion_top3 and isinstance(outputs.get("fusion_top3"), list):
         fusion_top3 = outputs.get("fusion_top3")
+    payload_status = str(payload.get("status") or merged.get("status") or outputs.get("status") or "").strip().lower()
+    is_diagnosis_like_event = (
+        str(node).strip().lower() in {"diagnosis", "diagnosisagent"}
+        or str(event.get("agent") or "").strip().lower() == "diagnosis"
+        or str(stage).strip().lower() == "diagnosis_complete"
+    )
+    if is_diagnosis_like_event:
+        payload = {
+            **payload,
+            "result_phase": payload.get("result_phase") or "diagnosis_preview",
+            "is_early_diagnosis_preview": True,
+            "status": "diagnosis_preview",
+        }
+        payload_status = "diagnosis_preview"
     print(
         "[diagnosis-backend/stream-event]",
         json.dumps(
             {
                 "node": node,
-                "stage": event.get("step") or event.get("status") or "",
+                "stage": stage,
+                "status": event.get("status") or event.get("step") or "",
+                "payload_status": payload_status,
                 "has_final_disease": bool(final_disease),
                 "has_current_top1": bool(current_top1),
                 "has_fusion_top3": bool(isinstance(fusion_top3, list) and len(fusion_top3) > 0),
@@ -5042,6 +5059,7 @@ def _to_stream_event(trace_id: str, event: dict) -> dict:
         "ts": event.get("ts"),
         "seq": event.get("seq"),
         "node": node,
+        "stage": stage,
         "agent_id": agent_id,
         "status": event.get("status") or event.get("step") or "info",
         "message": event.get("message") or event.get("step") or "",

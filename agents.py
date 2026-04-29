@@ -1290,7 +1290,10 @@ def diagnosis_agent(state: CropDiseaseState) -> CropDiseaseState:
             {
                 "node": "DiagnosisAgent",
                 "stage": state.get("current_step"),
+                "status": "diagnosis_complete",
+                "payload_status": "diagnosis_preview",
                 "disease": final_disease,
+                "final_disease": final_disease,
                 "current_top1": final_disease,
                 "fusion_top3_count": len(fusion_top3),
                 "trace_id": state.get("trace_id"),

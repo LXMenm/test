@@ -669,7 +669,7 @@ export function DiagnosePage() {
     const hasPreviewCandidateFields = !isPayloadFieldEmpty(merged.fusion_top3)
       || !isPayloadFieldEmpty(merged.current_top1)
       || !isPayloadFieldEmpty(merged.final_disease);
-    if (isFinalLikePayloadStatus(payloadStatus)) return false;
+    if (isFinalLikePayloadStatus(payloadStatus) && !(hasDiagnosisIdentity && hasPreviewCandidateFields)) return false;
     if (stageNodeAgentText.includes('treatment') || stageNodeAgentText.includes('verification') || stageNodeAgentText.includes('awaituserconfirmation') || stageNodeAgentText.includes('final')) {
       return false;
     }
