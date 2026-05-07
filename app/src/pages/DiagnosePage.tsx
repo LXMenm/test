@@ -766,7 +766,8 @@ export function DiagnosePage() {
       console.debug('[diagnosis-preview/skip]', { source, node, status, stage, reason: 'late-source-after-final' });
       return null;
     }
-    if (source === 'replay' && hasFinalResultRef.current) {
+    const hasAnyFinalResult = hasFinalResultRef.current || hasFinalResult;
+    if (source === 'replay' && hasAnyFinalResult) {
       console.debug('[diagnosis-preview/skip]', { source, node, status, stage, reason: 'replay-after-final' });
       return null;
     }
@@ -2017,7 +2018,7 @@ export function DiagnosePage() {
         firstDiagnosisPreviewApplied: firstDiagnosisPreviewAppliedRef.current,
         isDiagnosisPreviewStage: replayIsDiagnosisStage,
       });
-      if (replayPreviewPayload) {
+      if (replayPreviewPayload && !hasFinalResultRef.current && !hasFinalResult) {
         const replayRaw = replayMeta.raw;
         replayPreviewResult = applyDiagnosisPreviewCandidate(replayPreviewPayload, 'replay', {
           rawEvent: replayRaw,
